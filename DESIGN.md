@@ -354,7 +354,7 @@ DELETE /api/items/{id}
 
 ### 9.1 公开聚合页 `/`（index.html, app.js, styles.css, icon.svg）
 
-- 顶栏：任何宽度下都只有一行薄条（约 42px）：品牌「NEWS」、可横向滑动的主题标签（来自 `/topics`）、中/EN 切换（渲染 `*_en` 字段）；下滑时整条滑出屏幕，上滑即回，让列表占满屏幕。深浅色跟随系统。页脚文案「由 XAI 提供支持」链接到 xairouter.com。
+- 顶栏：任何宽度下都只有一行薄条（约 42px）：品牌「NEWS」、可横向滑动的主题标签（来自 `/topics`）、中/EN 切换（渲染 `*_en` 字段）；下滑时整条滑出屏幕，上滑即回，让列表占满屏幕。深浅色跟随系统。页脚文案「由 XAI 提供支持」链接到 xairouter.com。右侧悬浮 Card 与 m.xairouter.com 一致：`card.xairouter.com/embed.js`，feed `feed_d949561dd4914f6e94179f4f7c1f206a`，mini 模式、右侧、3 秒轮播；CSP 为此放行 card.xairouter.com 的脚本、样式与连接，图片放行任意 HTTPS。
 - 日期条：一行（约 30px）：`‹ 今天 · 9月3日星期四 · 更新于 HH:MM · N 条 ›`，前后切换的数据来自 `/days`。
 - 列表：卡片 = 标题（新窗口链接，`rel=noopener noreferrer`）、来源 · 相对时间（如「2 小时前」）· 重要度徽标（importance ≥ 4 显示「重要」）、摘要、标签；置顶条目带标记；`first_seen_at` 晚于用户上次访问时间（localStorage）的条目显示「NEW」点。
 - 每 5 分钟静默 `fetch('/digest…')`（浏览器按 ETag 复用 304），body 变化才重绘。
