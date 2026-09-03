@@ -34,7 +34,6 @@ const FALLBACK_PLANS = Object.freeze([
 
 const state = {
   user: null,
-  plan: null,
   limits: null,
   usage: null,
   topics: [],
@@ -69,7 +68,7 @@ const el = Object.fromEntries(
     "topicsUsageMeta", "runsUsageValue", "runsUsageProgress", "runsUsageMeta", "paymentPanel", "paymentContent",
     "closePaymentButton", "topicDialog", "topicForm", "topicDialogEyebrow", "topicDialogTitle", "topicId",
     "topicName", "topicBrief", "topicInterval", "intervalHint", "topicEnabled", "topicFormMessage",
-    "saveTopicButton", "confirmDialog", "confirmTitle", "confirmMessage", "cancelConfirmButton",
+    "saveTopicButton", "confirmDialog", "confirmTitle", "confirmMessage",
     "confirmActionButton", "toastRegion",
   ].map((id) => [id, $(`#${id}`)]),
 );
@@ -248,7 +247,6 @@ function showAuth() {
   if (state.statusTimer) window.clearInterval(state.statusTimer);
   state.statusTimer = null;
   state.user = null;
-  state.plan = null;
   state.limits = null;
   state.usage = null;
   state.topics = [];
@@ -326,11 +324,6 @@ function syncEntitlements(source = {}) {
   const activePro = planCode === "pro" && (!proUntil || Date.parse(proUntil) > Date.now());
   state.user.plan = activePro ? "pro" : "free";
   state.user.pro_until = proUntil;
-  state.plan = {
-    ...(findFallbackPlan(activePro ? "pro" : "free") || {}),
-    ...(nestedPlan || {}),
-    code: activePro ? "pro" : "free",
-  };
   state.limits = normalizeLimits(source.limits || user.limits || source.usage || source.daily_usage || {}, state.user.plan);
   state.usage = normalizeUsage(source.usage || source.daily_usage || source, state.limits);
   if (state.usage.timezone && isTimezone(state.usage.timezone)) state.timezone = state.usage.timezone;
@@ -419,6 +412,8 @@ async function loadTopics(selectId) {
     if (epoch !== state.sessionEpoch || !state.user) return state.topics;
     const list = extractList(data, "topics");
     state.topics = list;
+    el.topicsError?.classList.add("hidden");
+    if (el.topicsError) el.topicsError.textContent = "";
     if (state.selectedTopicId && !state.topics.some((topic) => String(topic.id) === state.selectedTopicId)) {
       state.selectedTopicId = null;
       state.items = [];
@@ -592,7 +587,8 @@ function renderItemRow(item) {
   meta.className = "me-item-meta";
   const source = item.source ? document.createElement("span") : null;
   if (source) source.textContent = item.source;
-  const date = item.published_at || item.first_seen_at;
+  // `published_at` may only be a calendar date; show when NEWS actually collected it.
+  const date = item.first_seen_at;
   const when = date ? document.createElement("span") : null;
   if (when) when.textContent = shortDateTime(date);
   meta.append(...[source, when].filter(Boolean));

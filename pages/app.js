@@ -53,7 +53,6 @@ const state = {
   topics: [],
   days: [],
   digest: null,
-  viewer: null,
   personal: false,
   // Items first collected after the previous visit get a NEW mark.
   lastVisit: Number(storage.getItem("news.lastVisit")) || Date.now(),
@@ -121,7 +120,6 @@ async function resolveViewer() {
     const data = await fetchJson("/api/me");
     const viewer = data?.user || data;
     if (viewer?.email && String(viewer.role || "user").toLowerCase() !== "admin") {
-      state.viewer = viewer;
       state.personal = true;
     }
   } catch (error) {
@@ -183,7 +181,6 @@ async function load(silent = false) {
     // instead of leaving a private page permanently stuck on an auth error.
     if (state.personal && [401, 403].includes(error.status) && epoch === state.epoch) {
       state.personal = false;
-      state.viewer = null;
       state.topic = "";
       state.day = "";
       state.topics = [];
@@ -253,7 +250,6 @@ function applyLang() {
 }
 
 function renderScope() {
-  document.body.classList.toggle("is-personal-feed", state.personal);
   el.scope?.classList.toggle("hidden", !state.personal);
   el.space?.classList.toggle("hidden", !state.personal);
   if (el.me) el.me.textContent = t().space;
@@ -311,7 +307,10 @@ function emptyState(groups) {
   const box = document.createElement("div");
   box.className = "empty muted";
   box.append(state.personal ? t().personalEmpty : t().empty);
-  if (state.personal && !state.topics.length) {
+  // A logged-in catalogue always contains public topics, so checking
+  // `state.topics.length` here would hide the management link even when the
+  // account has no personal topic (or the selected day is empty).
+  if (state.personal) {
     box.append(document.createElement("br"));
     const manage = document.createElement("a");
     manage.className = "button button-secondary button-small";
@@ -334,7 +333,9 @@ function card(item) {
 
   const meta = document.createElement("div");
   meta.className = "item-meta";
-  meta.append(span(item.source || hostOf(item.url), "item-source"), "·", span(relativeTime(item.published_at || item.first_seen_at), "item-time"));
+  // Publication dates are often only known to the day and arrive as midnight UTC;
+  // the collection time is the reliable freshness signal shown in the feed.
+  meta.append(span(item.source || hostOf(item.url), "item-source"), "·", span(relativeTime(item.first_seen_at), "item-time"));
   if (item.importance >= 4) meta.append(span(t().top, "badge badge-top"));
   if (Date.parse(item.first_seen_at) > state.lastVisit) meta.append(span(t().fresh, "badge badge-new"));
 
