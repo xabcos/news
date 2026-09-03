@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="NEWS · 每小时由 AI 整理的精选资讯">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f6f4">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1115">
+  <meta name="referrer" content="no-referrer">
+  <title>NEWS</title>
+  <link rel="icon" type="image/svg+xml" href="/icon.svg">
+  <link rel="alternate" type="application/atom+xml" title="NEWS" href="/feed.xml">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body class="public">
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="NEWS">
+      <img class="brand-logo" src="/icon.svg" alt="">
+      <span>NEWS</span>
+    </a>
+    <nav id="tabs" class="tabs" aria-label="主题"></nav>
+    <div class="tools">
+      <button id="langToggle" class="button button-quiet button-small" type="button">EN</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <div class="daybar">
+      <button id="prevDay" class="button button-icon button-quiet" type="button" aria-label="前一天" disabled>‹</button>
+      <div class="day-heading">
+        <h1 id="dayTitle">NEWS</h1>
+        <p id="dayMeta" class="muted small"></p>
+      </div>
+      <button id="nextDay" class="button button-icon button-quiet" type="button" aria-label="后一天" disabled>›</button>
+    </div>
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+    <div id="digest" class="digest"></div>
+  </main>
+
+  <footer class="foot muted small">
+    <span id="footNote">由 AI 每小时整理，来源见各条链接</span>
+    <span class="foot-links"><a href="/digest">API</a><a href="/feed.xml">Atom</a></span>
+  </footer>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

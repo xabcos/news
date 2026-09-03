@@ -1,0 +1,10 @@
+services:
+  news:
+    build: .
+    pull_policy: build
+    environment:
+      PUBLIC_BASE_URL: http://127.0.0.1:8793/
+      EMAIL_LOGIN_DEV_LINKS: "true"
+      REDIS_ADDR: ""
+  news-mail:
+    profiles: [mail]

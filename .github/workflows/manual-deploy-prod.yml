@@ -1,0 +1,26 @@
+name: Deploy to Production
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality-gate:
+    uses: ./.github/workflows/quality-gate.yml
+  deploy-prod:
+    needs: quality-gate
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ywgx
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -e
+            cd /home/ywgx/1/${{ github.event.repository.name }}
+            docker compose pull
+            docker compose up -d

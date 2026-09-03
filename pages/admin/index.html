@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f6f4">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1115">
+  <meta name="referrer" content="no-referrer">
+  <title>NEWS · 管理</title>
+  <link rel="icon" type="image/svg+xml" href="/icon.svg">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body class="admin">
+  <div id="boot" class="boot" role="status" aria-label="正在打开管理页">
+    <img class="brand-logo brand-logo-large" src="/icon.svg" alt="">
+  </div>
+
+  <main class="shell">
+    <section id="authView" class="auth-view hidden" aria-label="登录">
+      <div>
+        <a class="brand brand-hero" href="/" aria-label="NEWS 首页">
+          <img class="brand-logo" src="/icon.svg" alt="">
+          <span>NEWS</span>
+        </a>
+      </div>
+      <div class="panel auth-panel">
+        <form id="loginForm" novalidate>
+          <div class="eyebrow">管理入口</div>
+          <h2>邮箱登录</h2>
+          <p class="muted">用授权邮箱登录，定义抓取方向与节奏。</p>
+          <div class="field">
+            <label for="email">邮箱地址</label>
+            <input id="email" name="email" type="email" autocomplete="email" inputmode="email"
+                   maxlength="254" placeholder="name@example.com" required>
+          </div>
+          <button class="button button-primary button-wide" type="submit">
+            <span>继续</span><span aria-hidden="true">→</span>
+          </button>
+        </form>
+        <div id="mailSent" class="mail-sent hidden" role="status">
+          <div class="mail-icon" aria-hidden="true">✓</div>
+          <div class="eyebrow">邮件已发送</div>
+          <h2>请查收登录链接</h2>
+          <p class="muted">登录链接已发送至 <strong id="sentEmail"></strong>。</p>
+          <a id="devLoginLink" class="button button-primary button-wide hidden" href="#">打开登录链接</a>
+          <button id="sendAgain" class="button button-quiet" type="button">重新输入邮箱</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="appView" class="hidden">
+      <header class="topbar">
+        <a class="brand" href="/admin/" aria-label="NEWS 管理">
+          <img class="brand-logo" src="/icon.svg" alt="">
+          <span>NEWS</span>
+          <span class="brand-tag">管理</span>
+        </a>
+        <div class="account">
+          <span id="statusLine" class="muted small"></span>
+          <span id="accountEmail" class="account-email"></span>
+          <button id="logoutButton" class="button button-quiet button-small" type="button">退出</button>
+        </div>
+      </header>
+
+      <div class="dashboard">
+        <aside class="panel side-panel" aria-label="主题">
+          <div class="section-heading">
+            <h2>主题</h2>
+            <button id="newTopicButton" class="button button-secondary button-icon" type="button"
+                    aria-label="新建主题" title="新建主题">＋</button>
+          </div>
+          <div id="topicList" class="entry-list"></div>
+        </aside>
+
+        <section class="panel content-panel">
+          <div id="emptyState" class="empty-state">
+            <div class="empty-mark" aria-hidden="true">◎</div>
+            <h3>选择一个主题</h3>
+            <p class="muted">或新建一个主题，定义抓取方向与节奏。公开地址形如 <code class="mono">/digest?topic=ai</code>。</p>
+          </div>
+
+          <div id="topicPanel" class="hidden">
+            <form id="topicForm" novalidate>
+              <div class="section-heading">
+                <h2 id="formTitle">新建主题</h2>
+                <div class="inline">
+                  <button id="runButton" class="button button-secondary button-small" type="button"><span>立即抓取</span></button>
+                  <button id="copyUrlButton" class="button button-quiet button-small" type="button">复制公共地址</button>
+                  <button id="deleteTopicButton" class="button button-quiet button-small" type="button">删除</button>
+                </div>
+              </div>
+              <div class="field-grid">
+                <div>
+                  <label for="topicId">ID</label>
+                  <input id="topicId" maxlength="32" pattern="[a-z0-9][a-z0-9-]{0,31}" placeholder="ai" autocomplete="off" required>
+                </div>
+                <div>
+                  <label for="topicName">名称</label>
+                  <input id="topicName" maxlength="60" placeholder="AI 行业动态" required>
+                </div>
+                <div>
+                  <label for="topicNameEn">英文名称</label>
+                  <input id="topicNameEn" maxlength="60" placeholder="AI Industry">
+                </div>
+              </div>
+              <div class="field">
+                <label for="topicDescription">公开说明</label>
+                <input id="topicDescription" maxlength="200" placeholder="显示在页面上的一句话">
+              </div>
+              <div class="field">
+                <label for="topicBrief">方向描述（给模型）</label>
+                <textarea id="topicBrief" maxlength="2000" rows="4"
+                          placeholder="希望模型关注什么：领域、地区、来源偏好、排除项……" required></textarea>
+              </div>
+              <div class="field-grid">
+                <div>
+                  <label for="topicInterval">间隔（分钟）</label>
+                  <input id="topicInterval" type="number" min="15" max="1440" step="5" value="60">
+                </div>
+                <div>
+                  <label for="windowStart">开始（时）</label>
+                  <select id="windowStart"></select>
+                </div>
+                <div>
+                  <label for="windowEnd">结束（时）</label>
+                  <select id="windowEnd"></select>
+                </div>
+              </div>
+              <div class="field">
+                <label>星期</label>
+                <div id="weekdays" class="weekdays"></div>
+              </div>
+              <div class="field-grid">
+                <div>
+                  <label for="topicModel">模型</label>
+                  <input id="topicModel" maxlength="64" placeholder="grok-4.6">
+                </div>
+                <div>
+                  <label for="topicEffort">推理强度</label>
+                  <select id="topicEffort">
+                    <option value="low">low</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="topicMaxItems">每次最多条数</label>
+                  <input id="topicMaxItems" type="number" min="1" max="30" value="8">
+                </div>
+                <div>
+                  <label for="topicLookback">回看（小时）</label>
+                  <input id="topicLookback" type="number" min="1" max="72" value="24">
+                </div>
+                <div>
+                  <label for="topicCap">每日上限</label>
+                  <input id="topicCap" type="number" min="1" max="96" value="24">
+                </div>
+                <div>
+                  <label for="topicSort">排序权重</label>
+                  <input id="topicSort" type="number" value="0">
+                </div>
+              </div>
+              <div class="inline">
+                <button id="saveButton" class="button button-primary" type="submit"><span>保存</span></button>
+                <label class="switch" for="topicEnabled"><input id="topicEnabled" type="checkbox" checked> 启用</label>
+                <span id="scheduleInfo" class="muted small"></span>
+              </div>
+            </form>
+
+            <div id="detailSections">
+              <hr class="divider">
+              <div class="section-heading">
+                <h3>运行历史</h3>
+                <span id="runsMeta" class="muted small"></span>
+              </div>
+              <div class="table-wrap">
+                <table class="runs">
+                  <thead>
+                    <tr>
+                      <th>时间</th><th>状态</th><th>返回 / 新增 / 重复 / 丢弃</th><th>tokens 入 / 出</th>
+                      <th>搜索 web / x</th><th>成本</th><th>耗时</th><th>错误</th>
+                    </tr>
+                  </thead>
+                  <tbody id="runsBody"></tbody>
+                </table>
+              </div>
+
+              <hr class="divider">
+              <div class="section-heading">
+                <h3>条目</h3>
+                <div class="inline">
+                  <input id="itemsDay" type="date" aria-label="日期">
+                  <span id="itemsMeta" class="muted small"></span>
+                </div>
+              </div>
+              <div id="itemList" class="item-admin-list"></div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="confirmDialog" class="dialog-card" role="alertdialog"
+          aria-labelledby="confirmTitle" aria-describedby="confirmMessage">
+    <div class="danger-mark" aria-hidden="true">!</div>
+    <h2 id="confirmTitle"></h2>
+    <p id="confirmMessage" class="muted"></p>
+    <div class="dialog-actions">
+      <button id="cancelConfirmButton" class="button button-quiet" type="button" data-close-dialog>取消</button>
+      <button id="confirmActionButton" class="button button-danger" type="button"><span>确认删除</span></button>
+    </div>
+  </dialog>
+
+  <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+
+  <script src="/admin/app.js" defer></script>
+</body>
+</html>

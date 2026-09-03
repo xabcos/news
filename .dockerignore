@@ -1,0 +1,9 @@
+.git
+.github
+.env
+.env.*
+target
+README.md
+docker-compose*.yml
+Makefile
+pages/*.gz

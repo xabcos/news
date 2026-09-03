@@ -1,0 +1,65 @@
+name: Build and Conditional Production Deploy
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: news-deployment
+  cancel-in-progress: false
+
+jobs:
+  quality-gate:
+    uses: ./.github/workflows/quality-gate.yml
+  build:
+    needs: quality-gate
+    runs-on: ubuntu-latest
+    outputs:
+      deploy_prod: ${{ steps.metadata.outputs.deploy_prod }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      - id: metadata
+        shell: bash
+        run: |
+          message=$(git log -1 --pretty=%B)
+          version=$(grep -oE '[0-9]+(\.[0-9]+)+' <<< "${message}" | head -n 1 || true)
+          echo "CI_DATE=$(date +'%F')" >> "${GITHUB_ENV}"
+          echo "VERSION=${version:-latest}" >> "${GITHUB_ENV}"
+          [[ "${message,,}" == *prod* ]] && echo "deploy_prod=true" >> "${GITHUB_OUTPUT}" || echo "deploy_prod=false" >> "${GITHUB_OUTPUT}"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: |
+            ${{ secrets.DOCKER_HUB_USERNAME }}/${{ github.event.repository.name }}:${{ env.VERSION }}-rust
+            ${{ secrets.DOCKER_HUB_USERNAME }}/${{ github.event.repository.name }}:${{ env.CI_DATE }}-rust
+            ${{ secrets.DOCKER_HUB_USERNAME }}/${{ github.event.repository.name }}:rust
+  deploy-prod:
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.build.outputs.deploy_prod == 'true' }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ywgx
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -e
+            cd /home/ywgx/1/${{ github.event.repository.name }}
+            docker compose pull
+            docker compose up -d
