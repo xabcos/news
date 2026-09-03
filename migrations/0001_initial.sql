@@ -152,12 +152,33 @@ CREATE INDEX items_topic_day_idx
 CREATE INDEX items_day_idx ON items (day DESC);
 CREATE INDEX items_first_run_idx ON items (first_run_id);
 
-INSERT INTO topics (id, name, name_en, description, brief)
-VALUES (
-    'ai',
-    'AI 行业动态',
-    'AI Industry',
-    '大模型、芯片、融资与政策的每日要闻',
-    '人工智能行业的最新动态：大模型与产品发布、重要论文与开源项目、芯片与算力、融资与并购、监管与政策、头部公司的重大事件。面向中文读者，侧重全球视角，同时关注中国市场。'
-)
+INSERT INTO topics (id, name, name_en, description, brief, max_items, sort_weight)
+VALUES
+    (
+        'ai',
+        'AI 行业动态',
+        'AI Industry',
+        '大模型、芯片、融资与政策的每日要闻',
+        '人工智能行业的最新动态：大模型与产品发布、重要论文与开源项目、芯片与算力、融资与并购、监管与政策、头部公司的重大事件。面向中文读者，侧重全球视角，同时关注中国市场。',
+        8,
+        10
+    ),
+    (
+        'openai',
+        'OpenAI',
+        'OpenAI',
+        'OpenAI 官方动态与最新模型',
+        'OpenAI 的官方动态：重点关注 X 平台上 @OpenAI、@OpenAIDevs、@sama 等官方与高管账号的发布，以及 openai.com 的公告、博客与文档。覆盖新模型与能力更新、API 与产品发布、定价与配额变化、重要研究、合作与商业动向。优先一手来源（官方账号、官方博客、官方文档），其次权威媒体的报道；忽略未经证实的传闻与营销转发。面向中文读者。',
+        5,
+        20
+    ),
+    (
+        'claude',
+        'Claude',
+        'Claude',
+        'Anthropic 与 Claude 的官方动态与最新模型',
+        'Anthropic 与 Claude 的官方动态：重点关注 X 平台上 @AnthropicAI、@claudeai 等官方账号及核心成员的发布，以及 anthropic.com 的公告、博客与研究。覆盖 Claude 新模型与能力更新、API、Claude Code、Agent SDK 与开发者工具发布、定价与配额变化、安全与对齐研究、合作与商业动向。优先一手来源（官方账号、官方博客、官方文档），其次权威媒体的报道；忽略未经证实的传闻与营销转发。面向中文读者。',
+        5,
+        30
+    )
 ON CONFLICT (id) DO NOTHING;

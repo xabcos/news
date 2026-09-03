@@ -354,8 +354,8 @@ DELETE /api/items/{id}
 
 ### 9.1 公开聚合页 `/`（index.html, app.js, styles.css, icon.svg）
 
-- 顶栏：品牌「NEWS」、主题标签（来自 `/topics`）、中/EN 切换（渲染 `*_en` 字段）、深浅色跟随系统。
-- 日期条：`‹ 2026-09-03 ›`，数据来自 `/days`；「更新于 HH:MM」取 `updated_at`。
+- 顶栏：任何宽度下都只有一行薄条（约 42px）：品牌「NEWS」、可横向滑动的主题标签（来自 `/topics`）、中/EN 切换（渲染 `*_en` 字段）；下滑时整条滑出屏幕，上滑即回，让列表占满屏幕。深浅色跟随系统。页脚文案「由 XAI 提供支持」链接到 xairouter.com。
+- 日期条：一行（约 30px）：`‹ 今天 · 9月3日星期四 · 更新于 HH:MM · N 条 ›`，前后切换的数据来自 `/days`。
 - 列表：卡片 = 标题（新窗口链接，`rel=noopener noreferrer`）、来源 · 相对时间（如「2 小时前」）· 重要度徽标（importance ≥ 4 显示「重要」）、摘要、标签；置顶条目带标记；`first_seen_at` 晚于用户上次访问时间（localStorage）的条目显示「NEW」点。
 - 每 5 分钟静默 `fetch('/digest…')`（浏览器按 ETag 复用 304），body 变化才重绘。
 - 空状态：「今天还没有新内容」并提示最近有内容的日期。
@@ -451,7 +451,7 @@ CI：`quality-gate.yml`、`build-deploy.yml`、`manual-deploy-prod.yml` 与 broa
 - 公共 API 直接挂根路径：`/digest`、`/topics`、`/days`、`/feed.xml`，不带 `/api/public`。
 - 端口 8793、镜像 `proxyxai/news:rust`、管理员邮箱与 broadcast 相同、默认调度工作日 06:00–24:00 每 60 分钟、effort=low。
 
-用户已于 2026-09-03 确认全部推荐值：双语字段保留；预置主题 `ai`；xai-docs 站内 `/news/` 页面；清理了 codex-cloud/claude-cloud 的 target；保留 `/feed.xml`。代码风格要求：优雅、简洁、高效，避免过度防御的冗余代码。
+用户已于 2026-09-03 确认全部推荐值：双语字段保留；预置主题 `ai`、`openai`、`claude`（后两个围绕官方 X 账号与最新模型，每次最多 5 条）；xai-docs 站内 `/news/` 页面；清理了 codex-cloud/claude-cloud 的 target；保留 `/feed.xml`。代码风格要求：优雅、简洁、高效，避免过度防御的冗余代码。
 
 当前状态：§14 的 1–9 全部完成（2026-09-03），`make release-check` 通过，本地端到端两次真实抓取验证通过。剩余第 10 项部署由用户在生产机执行。
 

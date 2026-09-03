@@ -35,7 +35,7 @@ const state = {
 localStorage.setItem("news.lastVisit", String(Date.now()));
 
 const el = {
-  tabs: $("#tabs"), lang: $("#langToggle"), prev: $("#prevDay"), next: $("#nextDay"),
+  topbar: $("#topbar"), tabs: $("#tabs"), lang: $("#langToggle"), prev: $("#prevDay"), next: $("#nextDay"),
   title: $("#dayTitle"), meta: $("#dayMeta"), status: $("#status"), digest: $("#digest"), note: $("#footNote"),
 };
 const t = () => TEXT[state.lang];
@@ -63,6 +63,7 @@ async function init() {
   setInterval(() => {
     if (document.visibilityState === "visible" && !state.day) load(true);
   }, REFRESH_MS);
+  autoHideTopbar();
 
   try {
     state.topics = (await fetchJson("/topics")).topics;
@@ -240,6 +241,17 @@ function card(item) {
     article.append(tags);
   }
   return article;
+}
+
+// The bar slides away while reading down and returns on the first upward scroll, so the
+// list gets the whole screen without losing the controls.
+function autoHideTopbar() {
+  let last = window.scrollY;
+  window.addEventListener("scroll", () => {
+    const y = Math.max(0, window.scrollY);
+    if (Math.abs(y - last) > 4) el.topbar.classList.toggle("is-hidden", y > last && y > 48);
+    last = y;
+  }, { passive: true });
 }
 
 // ---------------------------------------------------------------------------
