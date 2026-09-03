@@ -536,7 +536,7 @@ struct DayCount {
     count: i64,
 }
 
-/// The small catalogue used by the authenticated home page.  It intentionally contains
+/// The small catalogue used by the authenticated home page. It intentionally contains
 /// only display data and aggregate counts; ownership is enforced by the query and is never
 /// serialized into the response.
 #[derive(Debug, Serialize, FromRow)]
@@ -643,12 +643,16 @@ async fn days(
     Ok(conditional(&headers, &rendered, "application/json"))
 }
 
-/// Returns the current user's enabled topics together with a digest for those topics.
+/// Returns the public catalogue plus the current user's enabled topics together with a
+/// digest for that selection. Public rows are intentionally included here because the
+/// authenticated home page is a personalized view of the public feed, not a replacement
+/// for it.
 ///
 /// This deliberately bypasses `DigestCache`: its Redis and in-memory keys are shared by
 /// the public catalogue, so putting an owner dimension there would make a small feature
-/// surprisingly easy to leak across accounts.  Personal feeds are bounded (at most eight
-/// topics on Pro) and are cheap, direct PostgreSQL reads with a private, no-store response.
+/// surprisingly easy to leak across accounts. The combined selection is small (the public
+/// catalogue plus at most eight personal topics on Pro) and cheap to read directly from
+/// PostgreSQL with a private, no-store response.
 async fn me_feed(
     State(state): State<AppState>,
     user: User,
@@ -658,9 +662,9 @@ async fn me_feed(
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let cards = personal_topic_cards(&state, user.id).await?;
 
-    // `/api/me/feed?topic=...` is a view over the same catalogue.  An id that is not one
-    // of the caller's enabled topics is intentionally reported as not found, matching the
-    // public digest's topic selector while avoiding an existence oracle for other accounts.
+    // `/api/me/feed?topic=...` is a view over the public catalogue plus the caller's
+    // enabled topics. An id outside that set is reported as not found; private topics owned
+    // by another account never enter `cards`, so this does not create an existence oracle.
     let selected = match query.topic.as_deref() {
         Some(id) => vec![
             cards
@@ -739,11 +743,12 @@ async fn personal_topic_cards(state: &AppState, user_id: i64) -> Result<Vec<Pers
         LEFT JOIN items
           ON items.topic_id = topics.id
          AND NOT items.hidden
-        WHERE topics.owner_user_id = $1
-          AND topics.enabled
+        WHERE topics.enabled
+          AND (topics.owner_user_id IS NULL OR topics.owner_user_id = $1)
         GROUP BY topics.id, topics.name, topics.name_en, topics.description,
-                 topics.created_at
-        ORDER BY topics.created_at, topics.id
+                 topics.owner_user_id, topics.sort_weight, topics.created_at
+        ORDER BY topics.owner_user_id NULLS FIRST,
+                 topics.sort_weight, topics.created_at, topics.id
         "#,
     )
     .bind(user_id)
@@ -762,8 +767,8 @@ async fn personal_days(
         SELECT items.day, COUNT(*) AS count
         FROM items
         JOIN topics ON topics.id = items.topic_id
-        WHERE topics.owner_user_id = $1
-          AND topics.enabled
+        WHERE topics.enabled
+          AND (topics.owner_user_id IS NULL OR topics.owner_user_id = $1)
           AND NOT items.hidden
           AND ($2::text IS NULL OR items.topic_id = $2)
         GROUP BY items.day
@@ -791,8 +796,8 @@ async fn personal_day_stats(
                MAX(items.first_seen_at) AS updated_at
         FROM items
         JOIN topics ON topics.id = items.topic_id
-        WHERE topics.owner_user_id = $1
-          AND topics.enabled
+        WHERE topics.enabled
+          AND (topics.owner_user_id IS NULL OR topics.owner_user_id = $1)
           AND NOT items.hidden
           AND items.day = $2
           AND ($3::text IS NULL OR items.topic_id = $3)
@@ -830,7 +835,7 @@ async fn personal_items(
         FROM items
         JOIN topics ON topics.id = items.topic_id
         WHERE items.topic_id = $1
-          AND topics.owner_user_id = $2
+          AND (topics.owner_user_id IS NULL OR topics.owner_user_id = $2)
           AND topics.enabled
           AND items.day = $3
           AND NOT items.hidden

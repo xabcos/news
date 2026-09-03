@@ -2,13 +2,13 @@
 
 > 最后更新：2026-09-04
 
-NEWS 是一个单实例、轻量的 AI 新闻聚合服务。它把「公共新闻」和「个人主题」放在同一个进程里，但只保留一层清晰的账户边界：普通用户使用 `/me/`，管理员使用 `/admin/`。没有团队、组织、邀请或多级角色；公共接口保持开放，个人摘要接口按会话隔离。
+NEWS 是一个单实例、轻量的 AI 新闻聚合服务。它把「公共新闻」和「个人主题」放在同一个进程里，但只保留一层清晰的账户边界：普通用户使用 `/me/`，管理员使用 `/admin/`。没有团队、组织、邀请或多级角色；公共接口保持开放，账户摘要接口按会话隔离。
 
 ## 1. 产品边界
 
 每个有效邮箱都可以通过一次性邮件链接登录。登录后：
 
-- 普通用户只能读写自己创建的主题、运行记录和条目；登录后首页展示自己的启用主题，个人条目不会进入公共 digest。
+- 普通用户只能读写自己创建的主题、运行记录和条目；登录后首页展示公共主题和自己的启用主题，个人条目不会进入公共 digest。
 - 管理员可以管理所有公共主题、触发抓取和维护公共条目。
 - 管理员只在 `/admin/` 管理公共主题；管理员接口不会读取个人主题。
 
@@ -29,7 +29,7 @@ NEWS 是一个单实例、轻量的 AI 新闻聚合服务。它把「公共新�
 
 ## 3. 数据模型
 
-基础表在 `migrations/0001_initial.sql`，账户与支付扩展在 `migrations/0002_membership_payment.sql`。
+完整 schema（账户、主题、套餐与支付表）统一在 `migrations/0001_initial.sql`；项目按全新部署设计，启动时只需执行这一份初始 migration。
 
 ### users
 
@@ -87,11 +87,11 @@ GET          /api/me/topics/{id}/items
 PATCH/DELETE /api/me/items/{id}
 ```
 
-`/api/me/*` 始终按当前会话过滤。管理员专用的同构路由是 `/api/admin/*`，每个入口都调用 `require_admin`。公共内容只通过只读的 digest 接口提供，不暴露含糊的共享主题写接口。
+`/api/me/*` 始终按当前会话过滤。管理员专用的同构路由是 `/api/admin/*`，每个入口都调用 `require_admin`。公共主题没有面向普通用户的写入口；外部读取走只读 digest，账户首页则在私有响应中复用这些公共内容。
 
 `GET /api/me` 返回账户、当前套餐限制以及 `topic_count`、`runs_today`，个人控制台只需一次请求即可渲染用量。个人主题内容接口省略日期时选该主题最近有内容的一天。
 
-登录后的首页通过 `GET /api/me/feed` 读取当前账户的启用主题。它一次返回 `topics`、`days` 和与公共 `/digest` 同形的 `digest`，支持 `topic`、`day`、`limit` 查询；查询始终带 `owner_user_id = current_user.id`，响应 `no-store`，不使用公共 DigestCache/Redis，避免个人内容污染或进入公共首页。
+登录后的首页通过 `GET /api/me/feed` 读取启用的公共主题和当前账户的个人主题。它一次返回 `topics`、`days` 和与公共 `/digest` 同形的 `digest`，支持 `topic`、`day`、`limit` 查询；查询只允许 `owner_user_id IS NULL` 或 `owner_user_id = current_user.id`，响应 `no-store`，不使用公共 DigestCache/Redis，避免个人内容污染或进入公共缓存。
 
 ## 5. YPay 微信支付
 

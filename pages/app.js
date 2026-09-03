@@ -32,7 +32,7 @@ const TEXT = {
     locale: "zh-CN", lang: "EN", all: "全部", today: "今天", updated: "更新于", top: "重要",
     fresh: "NEW", loading: "加载中…", failed: "加载失败", retry: "重试",
     empty: "这一天还没有内容", latest: "查看最近有内容的一天", prev: "前一天", next: "后一天",
-    personal: "我的主题", space: "个人空间", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
+    personal: "我的订阅", space: "我的空间", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
     items: (n) => `${n} 条`, note: ["由 ", " 提供支持"],
   },
   en: {
@@ -40,7 +40,7 @@ const TEXT = {
     fresh: "NEW", loading: "Loading…", failed: "Failed to load", retry: "Retry",
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
     prev: "Previous day", next: "Next day",
-    personal: "My topics", space: "My space", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
+    personal: "My feed", space: "My space", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
     items: (n) => `${n} ${n === 1 ? "item" : "items"}`, note: ["Powered by ", ""],
   },
 };
@@ -114,8 +114,8 @@ async function fetchJson(path) {
   return response.json();
 }
 
-// The public page is cacheable, but the selected personal feed is always fetched with
-// the session cookie and never allowed to fall into a shared browser cache.
+// The public page is cacheable, but the selected account feed is always fetched with the
+// session cookie and never allowed to fall into a shared browser cache.
 async function resolveViewer() {
   try {
     const data = await fetchJson("/api/me");
@@ -196,9 +196,9 @@ async function load(silent = false) {
       await load(silent);
       return;
     }
-    // A link copied from the public catalogue can contain a topic that is not part of
-    // this account. Drop that selector and show the account's own catalogue instead of
-    // leaving the page on a confusing 404.
+    // A link can still contain a topic outside this account's visible catalogue (for
+    // example, another user's private topic). Drop that selector instead of leaving the
+    // page on a confusing 404.
     if (state.personal && error.status === 404 && state.topic && epoch === state.epoch) {
       state.topic = "";
       state.day = "";
@@ -239,7 +239,7 @@ function setStatus(message, failed = false) {
 function applyLang() {
   document.documentElement.lang = t().locale;
   el.lang.textContent = t().lang;
-  if (el.me) el.me.textContent = state.lang === "en" ? "My space" : "个人空间";
+  if (el.me) el.me.textContent = t().space;
   if (el.space) el.space.textContent = t().space;
   if (el.scope) el.scope.textContent = t().personal;
   el.prev.setAttribute("aria-label", t().prev);
