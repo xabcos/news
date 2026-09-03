@@ -61,7 +61,7 @@ const state = {
 storage.setItem("news.lastVisit", String(Date.now()));
 
 const el = {
-  topbar: $("#topbar"), tabs: $("#tabs"), lang: $("#langToggle"), me: $("#meLink"), space: $("#spaceLink"), scope: $("#feedScope"),
+  topbar: $("#topbar"), tabs: $("#tabs"), lang: $("#langToggle"), me: $("#meLink"), scope: $("#feedScope"),
   prev: $("#prevDay"), next: $("#nextDay"),
   title: $("#dayTitle"), meta: $("#dayMeta"), status: $("#status"), digest: $("#digest"), note: $("#footNote"),
 };
@@ -237,7 +237,6 @@ function applyLang() {
   document.documentElement.lang = t().locale;
   el.lang.textContent = t().lang;
   if (el.me) el.me.textContent = t().space;
-  if (el.space) el.space.textContent = t().space;
   if (el.scope) el.scope.textContent = t().personal;
   el.prev.setAttribute("aria-label", t().prev);
   el.next.setAttribute("aria-label", t().next);
@@ -251,7 +250,6 @@ function applyLang() {
 
 function renderScope() {
   el.scope?.classList.toggle("hidden", !state.personal);
-  el.space?.classList.toggle("hidden", !state.personal);
   if (el.me) el.me.textContent = t().space;
 }
 
