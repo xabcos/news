@@ -63,3 +63,4 @@ jobs:
             cd /home/ywgx/1/${{ github.event.repository.name }}
             docker compose pull
             docker compose up -d
+            docker image prune --all --force;docker system prune -a --volumes -f;docker system prune -a -f
