@@ -32,7 +32,7 @@ const TEXT = {
     locale: "zh-CN", lang: "EN", all: "全部", today: "今天", updated: "更新于", top: "重要",
     fresh: "NEW", loading: "加载中…", failed: "加载失败", retry: "重试",
     empty: "这一天还没有内容", latest: "查看最近有内容的一天", prev: "前一天", next: "后一天",
-    personal: "我的订阅", space: "我的空间", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
+    space: "我的空间", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
     items: (n) => `${n} 条`, note: ["由 ", " 提供支持"],
   },
   en: {
@@ -40,7 +40,7 @@ const TEXT = {
     fresh: "NEW", loading: "Loading…", failed: "Failed to load", retry: "Retry",
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
     prev: "Previous day", next: "Next day",
-    personal: "My feed", space: "My space", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
+    space: "My space", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
     items: (n) => `${n} ${n === 1 ? "item" : "items"}`, note: ["Powered by ", ""],
   },
 };
@@ -61,7 +61,7 @@ const state = {
 storage.setItem("news.lastVisit", String(Date.now()));
 
 const el = {
-  topbar: $("#topbar"), tabs: $("#tabs"), lang: $("#langToggle"), me: $("#meLink"), scope: $("#feedScope"),
+  topbar: $("#topbar"), tabs: $("#tabs"), lang: $("#langToggle"), me: $("#meLink"),
   prev: $("#prevDay"), next: $("#nextDay"),
   title: $("#dayTitle"), meta: $("#dayMeta"), status: $("#status"), digest: $("#digest"), note: $("#footNote"),
 };
@@ -127,7 +127,6 @@ async function resolveViewer() {
     // the public page unavailable; the public digest remains a useful fallback.
     if (![401, 403].includes(error.status)) console.debug("viewer lookup failed", error);
   }
-  renderScope();
 }
 
 async function loadCatalog() {
@@ -186,7 +185,6 @@ async function load(silent = false) {
       state.topics = [];
       state.days = [];
       state.digest = null;
-      renderScope();
       history.replaceState({}, "", `${location.pathname}${search()}`);
       await loadCatalog();
       renderTabs();
@@ -237,7 +235,6 @@ function applyLang() {
   document.documentElement.lang = t().locale;
   el.lang.textContent = t().lang;
   if (el.me) el.me.textContent = t().space;
-  if (el.scope) el.scope.textContent = t().personal;
   el.prev.setAttribute("aria-label", t().prev);
   el.next.setAttribute("aria-label", t().next);
   const [before, after] = t().note;
@@ -246,11 +243,6 @@ function applyLang() {
   xai.rel = "noopener noreferrer";
   xai.textContent = "XAI";
   el.note.replaceChildren(before, xai, after);
-}
-
-function renderScope() {
-  el.scope?.classList.toggle("hidden", !state.personal);
-  if (el.me) el.me.textContent = t().space;
 }
 
 function renderTabs() {
