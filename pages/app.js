@@ -9,14 +9,14 @@ const TEXT = {
     locale: "zh-CN", lang: "EN", all: "全部", today: "今天", updated: "更新于", top: "重要",
     fresh: "NEW", loading: "加载中…", failed: "加载失败", retry: "重试",
     empty: "这一天还没有内容", latest: "查看最近有内容的一天", prev: "前一天", next: "后一天",
-    items: (n) => `${n} 条`, note: "由 AI 每小时整理，来源见各条链接",
+    items: (n) => `${n} 条`, note: ["由 ", " 提供支持"],
   },
   en: {
     locale: "en", lang: "中文", all: "All", today: "Today", updated: "Updated", top: "Top",
     fresh: "NEW", loading: "Loading…", failed: "Failed to load", retry: "Retry",
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
     prev: "Previous day", next: "Next day",
-    items: (n) => `${n} ${n === 1 ? "item" : "items"}`, note: "Curated hourly by AI; every item links to its source",
+    items: (n) => `${n} ${n === 1 ? "item" : "items"}`, note: ["Powered by ", ""],
   },
 };
 
@@ -140,7 +140,12 @@ function applyLang() {
   el.lang.textContent = t().lang;
   el.prev.setAttribute("aria-label", t().prev);
   el.next.setAttribute("aria-label", t().next);
-  el.note.textContent = t().note;
+  const [before, after] = t().note;
+  const xai = document.createElement("a");
+  xai.href = "https://xairouter.com";
+  xai.rel = "noopener noreferrer";
+  xai.textContent = "XAI";
+  el.note.replaceChildren(before, xai, after);
 }
 
 function renderTabs() {
