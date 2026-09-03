@@ -1,4 +1,5 @@
 use crate::{
+    auth::{self, User},
     error::{ApiQuery, AppError, Result},
     state::AppState,
 };
@@ -32,6 +33,7 @@ const DEFAULT_LIMIT: usize = 30;
 const MAX_LIMIT: usize = 100;
 const MAX_DAYS: i64 = 366;
 const FEED_LIMIT: usize = 50;
+const PERSONAL_DAYS_LIMIT: i64 = MAX_DAYS;
 /// Today and yesterday live in memory and in Redis for two days; archive days only pass
 /// through Redis briefly.
 const HOT_TTL_SECS: u64 = 48 * 3600;
@@ -484,13 +486,19 @@ async fn redis_delete_topic(
 // ---------------------------------------------------------------------------
 
 pub(crate) fn router() -> Router<AppState> {
-    Router::new()
+    // Keep the authenticated feed outside the public-CORS layer.  Its response contains
+    // account-owned topics and must never be readable by an arbitrary cross-origin page.
+    let public = Router::new()
         .route("/digest", get(digest))
         .route("/topics", get(topics))
         .route("/days", get(days))
         .route("/feed.xml", get(feed))
         .layer(CompressionLayer::new())
-        .layer(middleware::from_fn(public_cors))
+        .layer(middleware::from_fn(public_cors));
+    let personal = Router::new()
+        .route("/api/me/feed", get(me_feed))
+        .layer(CompressionLayer::new());
+    public.merge(personal)
 }
 
 /// Applied outside the handlers so failures are readable cross-origin too; without it a
@@ -526,6 +534,61 @@ struct DaysQuery {
 struct DayCount {
     day: NaiveDate,
     count: i64,
+}
+
+/// The small catalogue used by the authenticated home page.  It intentionally contains
+/// only display data and aggregate counts; ownership is enforced by the query and is never
+/// serialized into the response.
+#[derive(Debug, Serialize, FromRow)]
+struct PersonalTopicCard {
+    id: String,
+    name: String,
+    name_en: String,
+    description: String,
+    latest_day: Option<NaiveDate>,
+    today_count: i64,
+    updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, FromRow)]
+struct PersonalDayStats {
+    topic_id: String,
+    total: i64,
+    updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PersonalFeedQuery {
+    topic: Option<String>,
+    day: Option<NaiveDate>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+struct PersonalFeedResponse {
+    topics: Vec<PersonalTopicCard>,
+    days: Vec<DayCount>,
+    digest: PersonalDigest,
+}
+
+#[derive(Debug, Serialize)]
+struct PersonalDigest {
+    day: Option<NaiveDate>,
+    timezone: String,
+    generated_at: DateTime<Utc>,
+    topics: Vec<PersonalTopicDigest>,
+}
+
+#[derive(Debug, Serialize)]
+struct PersonalTopicDigest {
+    id: String,
+    name: String,
+    name_en: String,
+    description: String,
+    latest_day: Option<NaiveDate>,
+    updated_at: Option<DateTime<Utc>>,
+    total: usize,
+    items: Vec<PublicItem>,
 }
 
 async fn digest(
@@ -578,6 +641,211 @@ async fn days(
     .await?;
     let rendered = Rendered::new(json!({ "topic": query.topic, "days": days }).to_string());
     Ok(conditional(&headers, &rendered, "application/json"))
+}
+
+/// Returns the current user's enabled topics together with a digest for those topics.
+///
+/// This deliberately bypasses `DigestCache`: its Redis and in-memory keys are shared by
+/// the public catalogue, so putting an owner dimension there would make a small feature
+/// surprisingly easy to leak across accounts.  Personal feeds are bounded (at most eight
+/// topics on Pro) and are cheap, direct PostgreSQL reads with a private, no-store response.
+async fn me_feed(
+    State(state): State<AppState>,
+    user: User,
+    ApiQuery(query): ApiQuery<PersonalFeedQuery>,
+) -> Result<Response> {
+    auth::require_personal(&user)?;
+    let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    let cards = personal_topic_cards(&state, user.id).await?;
+
+    // `/api/me/feed?topic=...` is a view over the same catalogue.  An id that is not one
+    // of the caller's enabled topics is intentionally reported as not found, matching the
+    // public digest's topic selector while avoiding an existence oracle for other accounts.
+    let selected = match query.topic.as_deref() {
+        Some(id) => vec![
+            cards
+                .iter()
+                .position(|topic| topic.id == id)
+                .ok_or_else(|| AppError::NotFound("主题不存在".into()))?,
+        ],
+        None => (0..cards.len()).collect(),
+    };
+
+    let days = personal_days(&state, user.id, query.topic.as_deref()).await?;
+    // As with `/digest`, an omitted day means the newest day that has content in the
+    // selection.  An explicit empty day is retained so the UI can render its empty state.
+    let selected_day = query.day.or_else(|| days.first().map(|entry| entry.day));
+    let stats = match selected_day {
+        Some(day) => personal_day_stats(&state, user.id, query.topic.as_deref(), day).await?,
+        None => Vec::new(),
+    };
+    let stats = stats
+        .into_iter()
+        .map(|entry| (entry.topic_id.clone(), entry))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    let mut digest_topics = Vec::with_capacity(selected.len());
+    for index in selected {
+        let card = &cards[index];
+        let (items, total, updated_at) = match selected_day {
+            Some(day) => (
+                personal_items(&state, user.id, &card.id, day, limit).await?,
+                stats.get(&card.id).map_or(0, |entry| entry.total),
+                stats.get(&card.id).and_then(|entry| entry.updated_at),
+            ),
+            None => (Vec::new(), 0, None),
+        };
+        digest_topics.push(PersonalTopicDigest {
+            id: card.id.clone(),
+            name: card.name.clone(),
+            name_en: card.name_en.clone(),
+            description: card.description.clone(),
+            latest_day: card.latest_day,
+            updated_at,
+            total: usize::try_from(total).unwrap_or(usize::MAX),
+            items,
+        });
+    }
+
+    let payload = PersonalFeedResponse {
+        topics: cards,
+        days,
+        digest: PersonalDigest {
+            day: selected_day,
+            timezone: state.config.timezone.name().to_owned(),
+            generated_at: Utc::now(),
+            topics: digest_topics,
+        },
+    };
+    let mut response = axum::Json(payload).into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(header::VARY, HeaderValue::from_static("Cookie"));
+    Ok(response)
+}
+
+async fn personal_topic_cards(state: &AppState, user_id: i64) -> Result<Vec<PersonalTopicCard>> {
+    Ok(sqlx::query_as::<_, PersonalTopicCard>(
+        r#"
+        SELECT
+            topics.id,
+            topics.name,
+            topics.name_en,
+            topics.description,
+            MAX(items.day) AS latest_day,
+            COUNT(items.id) FILTER (WHERE items.day = $2) AS today_count,
+            MAX(items.first_seen_at) FILTER (WHERE items.day = $2) AS updated_at
+        FROM topics
+        LEFT JOIN items
+          ON items.topic_id = topics.id
+         AND NOT items.hidden
+        WHERE topics.owner_user_id = $1
+          AND topics.enabled
+        GROUP BY topics.id, topics.name, topics.name_en, topics.description,
+                 topics.created_at
+        ORDER BY topics.created_at, topics.id
+        "#,
+    )
+    .bind(user_id)
+    .bind(state.digest.today())
+    .fetch_all(&state.pool)
+    .await?)
+}
+
+async fn personal_days(
+    state: &AppState,
+    user_id: i64,
+    topic: Option<&str>,
+) -> Result<Vec<DayCount>> {
+    Ok(sqlx::query_as::<_, DayCount>(
+        r#"
+        SELECT items.day, COUNT(*) AS count
+        FROM items
+        JOIN topics ON topics.id = items.topic_id
+        WHERE topics.owner_user_id = $1
+          AND topics.enabled
+          AND NOT items.hidden
+          AND ($2::text IS NULL OR items.topic_id = $2)
+        GROUP BY items.day
+        ORDER BY items.day DESC
+        LIMIT $3
+        "#,
+    )
+    .bind(user_id)
+    .bind(topic)
+    .bind(PERSONAL_DAYS_LIMIT)
+    .fetch_all(&state.pool)
+    .await?)
+}
+
+async fn personal_day_stats(
+    state: &AppState,
+    user_id: i64,
+    topic: Option<&str>,
+    day: NaiveDate,
+) -> Result<Vec<PersonalDayStats>> {
+    Ok(sqlx::query_as::<_, PersonalDayStats>(
+        r#"
+        SELECT items.topic_id,
+               COUNT(*) AS total,
+               MAX(items.first_seen_at) AS updated_at
+        FROM items
+        JOIN topics ON topics.id = items.topic_id
+        WHERE topics.owner_user_id = $1
+          AND topics.enabled
+          AND NOT items.hidden
+          AND items.day = $2
+          AND ($3::text IS NULL OR items.topic_id = $3)
+        GROUP BY items.topic_id
+        "#,
+    )
+    .bind(user_id)
+    .bind(day)
+    .bind(topic)
+    .fetch_all(&state.pool)
+    .await?)
+}
+
+async fn personal_items(
+    state: &AppState,
+    user_id: i64,
+    topic: &str,
+    day: NaiveDate,
+    limit: usize,
+) -> Result<Vec<PublicItem>> {
+    Ok(sqlx::query_as::<_, PublicItem>(
+        r#"
+        SELECT items.id,
+               items.title,
+               items.summary,
+               items.title_en,
+               items.summary_en,
+               items.url,
+               items.source,
+               items.published_at,
+               items.first_seen_at,
+               items.tags,
+               items.importance,
+               items.pinned
+        FROM items
+        JOIN topics ON topics.id = items.topic_id
+        WHERE items.topic_id = $1
+          AND topics.owner_user_id = $2
+          AND topics.enabled
+          AND items.day = $3
+          AND NOT items.hidden
+        ORDER BY items.pinned DESC,
+                 items.published_at DESC NULLS LAST,
+                 items.first_seen_at DESC
+        LIMIT $4
+        "#,
+    )
+    .bind(topic)
+    .bind(user_id)
+    .bind(day)
+    .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+    .fetch_all(&state.pool)
+    .await?)
 }
 
 /// Atom 1.0 over the last two days of the selection, newest collected first.

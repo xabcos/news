@@ -64,6 +64,9 @@
 .me .panel-heading h2 { margin: 0 0 .15rem; font-size: 1.08rem; }
 .me-sidebar { display: grid; gap: 1.1rem; position: sticky; top: 1rem; }
 .me-plan-panel, .me-usage-panel, .me-payment-panel { overflow: hidden; }
+/* Sidebar panels do not have the content padding used by the topics panel. Keep
+   their headings aligned with the cards below instead of touching the border. */
+.me-sidebar > .panel > .panel-heading { padding: 1.25rem 1.25rem 0; }
 
 .me-topic-list { display: grid; gap: .65rem; margin: 1.15rem 0 0; padding: 0; list-style: none; }
 .me-topic-row {

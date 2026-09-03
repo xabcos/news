@@ -32,6 +32,7 @@ const TEXT = {
     locale: "zh-CN", lang: "EN", all: "全部", today: "今天", updated: "更新于", top: "重要",
     fresh: "NEW", loading: "加载中…", failed: "加载失败", retry: "重试",
     empty: "这一天还没有内容", latest: "查看最近有内容的一天", prev: "前一天", next: "后一天",
+    personal: "我的主题", space: "个人空间", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
     items: (n) => `${n} 条`, note: ["由 ", " 提供支持"],
   },
   en: {
@@ -39,6 +40,7 @@ const TEXT = {
     fresh: "NEW", loading: "Loading…", failed: "Failed to load", retry: "Retry",
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
     prev: "Previous day", next: "Next day",
+    personal: "My topics", space: "My space", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
     items: (n) => `${n} ${n === 1 ? "item" : "items"}`, note: ["Powered by ", ""],
   },
 };
@@ -51,6 +53,8 @@ const state = {
   topics: [],
   days: [],
   digest: null,
+  viewer: null,
+  personal: false,
   // Items first collected after the previous visit get a NEW mark.
   lastVisit: Number(storage.getItem("news.lastVisit")) || Date.now(),
   epoch: 0,
@@ -58,7 +62,8 @@ const state = {
 storage.setItem("news.lastVisit", String(Date.now()));
 
 const el = {
-  topbar: $("#topbar"), tabs: $("#tabs"), lang: $("#langToggle"), me: $("#meLink"), prev: $("#prevDay"), next: $("#nextDay"),
+  topbar: $("#topbar"), tabs: $("#tabs"), lang: $("#langToggle"), me: $("#meLink"), space: $("#spaceLink"), scope: $("#feedScope"),
+  prev: $("#prevDay"), next: $("#nextDay"),
   title: $("#dayTitle"), meta: $("#dayMeta"), status: $("#status"), digest: $("#digest"), note: $("#footNote"),
 };
 const t = () => TEXT[state.lang];
@@ -88,19 +93,52 @@ async function init() {
   }, REFRESH_MS);
   autoHideTopbar();
 
-  try {
-    state.topics = (await fetchJson("/topics")).topics;
-  } catch {
-    // The digest still loads; the tabs just stay empty.
-  }
+  await resolveViewer();
+  await loadCatalog();
   renderTabs();
   await load();
 }
 
 async function fetchJson(path) {
-  const response = await fetch(path, { headers: { Accept: "application/json" } });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const privatePath = path === "/api/me" || path.startsWith("/api/me/");
+  const response = await fetch(path, {
+    credentials: "same-origin",
+    cache: privatePath ? "no-store" : "default",
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) {
+    const error = new Error(`HTTP ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
   return response.json();
+}
+
+// The public page is cacheable, but the selected personal feed is always fetched with
+// the session cookie and never allowed to fall into a shared browser cache.
+async function resolveViewer() {
+  try {
+    const data = await fetchJson("/api/me");
+    const viewer = data?.user || data;
+    if (viewer?.email && String(viewer.role || "user").toLowerCase() !== "admin") {
+      state.viewer = viewer;
+      state.personal = true;
+    }
+  } catch (error) {
+    // A missing session is the normal anonymous path. Other failures should not make
+    // the public page unavailable; the public digest remains a useful fallback.
+    if (![401, 403].includes(error.status)) console.debug("viewer lookup failed", error);
+  }
+  renderScope();
+}
+
+async function loadCatalog() {
+  if (state.personal) return;
+  try {
+    state.topics = (await fetchJson("/topics")).topics || [];
+  } catch {
+    // The digest still loads; the tabs just stay empty.
+  }
 }
 
 function search(extra = {}) {
@@ -116,19 +154,58 @@ async function load(silent = false) {
   const epoch = ++state.epoch;
   if (!silent) setStatus(t().loading);
   try {
-    const topicQuery = state.topic ? `?topic=${encodeURIComponent(state.topic)}` : "";
-    const [digest, days] = await Promise.all([
-      fetchJson(`/digest${search({ limit: PAGE_LIMIT })}`),
-      fetchJson(`/days${topicQuery}`),
-    ]);
+    let digest;
+    let days;
+    if (state.personal) {
+      const payload = await fetchJson(`/api/me/feed${search({ limit: PAGE_LIMIT })}`);
+      digest = payload?.digest || payload;
+      days = payload?.days || [];
+      if (epoch === state.epoch && Array.isArray(payload?.topics)) state.topics = payload.topics;
+    } else {
+      const topicQuery = state.topic ? `?topic=${encodeURIComponent(state.topic)}` : "";
+      [digest, days] = await Promise.all([
+        fetchJson(`/digest${search({ limit: PAGE_LIMIT })}`),
+        fetchJson(`/days${topicQuery}`),
+      ]);
+    }
     if (epoch !== state.epoch) return;
-    state.days = days.days.map((entry) => entry.day);
+    state.days = (Array.isArray(days) ? days : days?.days || []).map((entry) =>
+      typeof entry === "string" ? entry : entry?.day,
+    ).filter(Boolean);
+    if (state.personal) renderTabs();
     // A background refresh only repaints when something actually changed.
     if (silent && JSON.stringify(digest.topics) === JSON.stringify(state.digest?.topics)) return;
     state.digest = digest;
     setStatus("");
     render();
-  } catch {
+  } catch (error) {
+    // If a session expires while the page is open, switch back to the public feed
+    // instead of leaving a private page permanently stuck on an auth error.
+    if (state.personal && [401, 403].includes(error.status) && epoch === state.epoch) {
+      state.personal = false;
+      state.viewer = null;
+      state.topic = "";
+      state.day = "";
+      state.topics = [];
+      state.days = [];
+      state.digest = null;
+      renderScope();
+      history.replaceState({}, "", `${location.pathname}${search()}`);
+      await loadCatalog();
+      renderTabs();
+      await load(silent);
+      return;
+    }
+    // A link copied from the public catalogue can contain a topic that is not part of
+    // this account. Drop that selector and show the account's own catalogue instead of
+    // leaving the page on a confusing 404.
+    if (state.personal && error.status === 404 && state.topic && epoch === state.epoch) {
+      state.topic = "";
+      state.day = "";
+      history.replaceState({}, "", `${location.pathname}${search()}`);
+      await load(silent);
+      return;
+    }
     if (epoch === state.epoch && !silent) setStatus(t().failed, true);
   }
 }
@@ -163,6 +240,8 @@ function applyLang() {
   document.documentElement.lang = t().locale;
   el.lang.textContent = t().lang;
   if (el.me) el.me.textContent = state.lang === "en" ? "My space" : "个人空间";
+  if (el.space) el.space.textContent = t().space;
+  if (el.scope) el.scope.textContent = t().personal;
   el.prev.setAttribute("aria-label", t().prev);
   el.next.setAttribute("aria-label", t().next);
   const [before, after] = t().note;
@@ -171,6 +250,13 @@ function applyLang() {
   xai.rel = "noopener noreferrer";
   xai.textContent = "XAI";
   el.note.replaceChildren(before, xai, after);
+}
+
+function renderScope() {
+  document.body.classList.toggle("is-personal-feed", state.personal);
+  el.scope?.classList.toggle("hidden", !state.personal);
+  el.space?.classList.toggle("hidden", !state.personal);
+  if (el.me) el.me.textContent = t().space;
 }
 
 function renderTabs() {
@@ -224,7 +310,15 @@ function render() {
 function emptyState(groups) {
   const box = document.createElement("div");
   box.className = "empty muted";
-  box.append(t().empty);
+  box.append(state.personal ? t().personalEmpty : t().empty);
+  if (state.personal && !state.topics.length) {
+    box.append(document.createElement("br"));
+    const manage = document.createElement("a");
+    manage.className = "button button-secondary button-small";
+    manage.href = "/me/";
+    manage.textContent = t().manageTopics;
+    box.append(manage);
+  }
   const latest = groups.map((group) => group.latest_day).filter(Boolean).sort().pop();
   if (latest && latest !== state.digest.day) {
     box.append(document.createElement("br"));

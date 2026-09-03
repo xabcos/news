@@ -1,6 +1,6 @@
 # NEWS
 
-一个轻量的新闻聚合服务。NEWS 按主题调用 `grok-4.6`（Responses API，`web_search` + `x_search`）检索最新报道，按天写入 PostgreSQL，热数据放 Redis 和进程内存，对外提供无鉴权的公共 JSON API、Atom 源和一个简洁的聚合页。每个有效邮箱都可以登录自己的个人空间 `/me/`；管理员使用 `/admin/` 管理公共主题。
+一个轻量的新闻聚合服务。NEWS 按主题调用 `grok-4.6`（Responses API，`web_search` + `x_search`）检索最新报道，按天写入 PostgreSQL，热数据放 Redis 和进程内存，对外提供无鉴权的公共 JSON API、Atom 源和一个简洁的聚合页；登录用户还可读取自己的个人摘要。每个有效邮箱都可以登录自己的个人空间 `/me/`；管理员使用 `/admin/` 管理公共主题。
 
 生产地址：`https://news.xairouter.com`，个人空间 `/me/`，管理员空间 `/admin/`。设计说明见 [`DESIGN.md`](DESIGN.md)。
 
@@ -30,7 +30,7 @@ GET https://news.xairouter.com/feed.xml?topic=ai
 - **三层数据**：读路径 内存 → Redis → PostgreSQL，逐级回填；写路径 PostgreSQL 事务提交 → Redis → 原子替换内存快照。启动时预热今天与昨天，第一次请求就命中内存。每天 00:00 淘汰前天的内存快照；Redis key 48 小时过期；PostgreSQL 永久保留（可用 `NEWS_RETENTION_DAYS` 限制）。`REDIS_ADDR` 为空时自动降级为内存 + PostgreSQL。
 - **单实例**：内存快照只在本进程内失效，多实例部署会长期返回旧数据。
 - **成本**：每次抓取约 $0.06–0.10（`usage.cost_in_usd_ticks`，1 tick = 1e-10 USD）。管理页按次显示 tokens、搜索次数和成本，以及今日合计。
-- **个人主题**：个人主题只在自己的 `/me/` 空间可见，不进入公共 digest；管理员主题仍是公共内容源。
+- **个人主题**：登录后首页自动展示当前账户启用的个人主题；`/me/` 负责管理它们。个人主题不会进入公共 digest；管理员主题仍是公共内容源。
 - **个人排程**：个人主题默认每天 06:00–24:00 运行，用户只需设置抓取间隔；Free/Pro 的最短间隔分别为 120/60 分钟。
 
 ## 本地运行
@@ -74,6 +74,7 @@ cargo run
 
 ```text
 GET    /api/me
+GET    /api/me/feed?topic=&day=&limit=
 GET    /api/me/status
 GET    /api/me/topics             POST   /api/me/topics
 PATCH  /api/me/topics/{id}        DELETE /api/me/topics/{id}
@@ -96,6 +97,8 @@ POST   /api/webhooks/payment
 ```
 
 个人主题的 `GET /api/me/topics/{id}/items` 在省略 `day` 时返回该主题最近有内容的一天；传入 `day=YYYY-MM-DD` 可查看指定日期。
+
+登录后首页使用 `GET /api/me/feed` 读取当前账户的启用主题和个人摘要。响应包含 `topics`（主题卡片）、`days`（所选主题有内容的日期，最新优先）以及与公共 `/digest` 同形的 `digest`；`topic`、`day`、`limit` 的语义与公共接口一致。该响应按会话隔离并始终 `no-store`，不会进入公共 Redis 或内存缓存。
 
 登录发送频率限制与 broadcast 相同：同一邮箱 60 秒内不重发，10 分钟内最多 3 次，全站 60 秒内最多 120 次。
 
