@@ -10,6 +10,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::Duration,
 };
+use tokio::sync::Semaphore;
 use url::Url;
 
 const DATABASE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -29,6 +30,8 @@ pub struct AppState {
     pub(crate) digest: DigestCache,
     /// Topics with a fetch in flight; one run per topic at a time.
     in_flight: Arc<Mutex<HashSet<String>>>,
+    /// One process-wide budget shared by scheduled and manual runs.
+    pub(crate) run_slots: Arc<Semaphore>,
 }
 
 impl AppState {
@@ -58,6 +61,7 @@ impl AppState {
             .connect_timeout(HTTP_CONNECT_TIMEOUT)
             .timeout(config.fetch_timeout)
             .build()?;
+        let max_concurrent_runs = config.max_concurrent_runs;
         let state = Self {
             pool,
             redis,
@@ -65,6 +69,7 @@ impl AppState {
             digest: DigestCache::new(config.timezone),
             config: Arc::new(config),
             in_flight: Arc::default(),
+            run_slots: Arc::new(Semaphore::new(max_concurrent_runs)),
         };
         state.digest.warm(&state).await?;
         Ok(state)

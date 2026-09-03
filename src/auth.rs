@@ -10,7 +10,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, NaiveTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -24,11 +24,56 @@ const LOGIN_GLOBAL_LOCK_ID: i64 = 0x584e_4557_534c_4f43; // "XNEWSLOC"
 const CLEANUP_BATCH_SIZE: i64 = 500;
 const CLEANUP_MAX_BATCHES: usize = 20;
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub(crate) struct User {
-    id: i64,
-    email: String,
-    status: bool,
+    pub(crate) id: i64,
+    pub(crate) email: String,
+    pub(crate) status: bool,
+    pub(crate) role: String,
+    pub(crate) pro_until: Option<DateTime<Utc>>,
+}
+
+/// The deliberately small plan surface used by both the API and scheduler.
+/// A plan is effective while `pro_until` is in the future; there is no separate
+/// subscription state to keep in sync.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub(crate) struct PlanLimits {
+    pub(crate) max_topics: i64,
+    pub(crate) min_interval_minutes: i32,
+    pub(crate) daily_run_cap: i32,
+}
+
+pub(crate) const FREE_LIMITS: PlanLimits = PlanLimits {
+    max_topics: 1,
+    min_interval_minutes: 120,
+    daily_run_cap: 12,
+};
+pub(crate) const PRO_LIMITS: PlanLimits = PlanLimits {
+    max_topics: 8,
+    min_interval_minutes: 60,
+    daily_run_cap: 48,
+};
+
+impl User {
+    pub(crate) fn is_admin(&self) -> bool {
+        self.role == "admin"
+    }
+
+    pub(crate) fn is_pro(&self) -> bool {
+        self.pro_until.is_some_and(|until| until > Utc::now())
+    }
+
+    pub(crate) fn plan(&self) -> &'static str {
+        if self.is_pro() { "pro" } else { "free" }
+    }
+
+    pub(crate) fn limits(&self) -> PlanLimits {
+        if self.is_pro() {
+            PRO_LIMITS
+        } else {
+            FREE_LIMITS
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -56,7 +101,13 @@ pub(crate) struct ConsumeEmailLoginRequest {
 
 #[derive(Serialize)]
 struct PublicUser<'a> {
+    id: i64,
     email: &'a str,
+    role: &'a str,
+    plan: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pro_until: Option<DateTime<Utc>>,
+    limits: PlanLimits,
 }
 
 impl FromRequestParts<AppState> for User {
@@ -72,9 +123,6 @@ pub(crate) async fn start_email_login(
     ApiJson(request): ApiJson<StartEmailLoginRequest>,
 ) -> Result<Json<StartEmailLoginResponse>> {
     let email = normalize_email(&request.email)?;
-    if !state.config.allowed_emails.contains(&email) {
-        return Err(AppError::Forbidden("此邮箱没有管理权限".into()));
-    }
     let login_url = create_login_link(&state, &email).await?;
 
     Ok(Json(StartEmailLoginResponse {
@@ -116,13 +164,22 @@ pub(crate) async fn consume_email_login(
 
     let user = sqlx::query_as::<_, User>(
         r#"
-        INSERT INTO users (email)
-        VALUES ($1)
-        ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email
-        RETURNING id, email, status
+        INSERT INTO users (email, role)
+        VALUES ($1, $2)
+        ON CONFLICT (email) DO UPDATE SET
+            role = CASE
+                WHEN users.role = 'admin' OR EXCLUDED.role = 'admin' THEN 'admin'
+                ELSE users.role
+            END
+        RETURNING id, email, status, role, pro_until
         "#,
     )
-    .bind(email)
+    .bind(&email)
+    .bind(if state.config.admin_emails.contains(&email) {
+        "admin"
+    } else {
+        "user"
+    })
     .fetch_one(&mut *transaction)
     .await?;
     if !user.status {
@@ -149,12 +206,64 @@ pub(crate) async fn consume_email_login(
     Ok(response)
 }
 
-pub(crate) async fn me(user: User) -> Result<Json<serde_json::Value>> {
-    Ok(Json(serde_json::json!({ "user": public_user(&user) })))
+pub(crate) async fn me(
+    State(state): State<AppState>,
+    user: User,
+) -> Result<Json<serde_json::Value>> {
+    let topic_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM topics WHERE owner_user_id = $1")
+            .bind(user.id)
+            .fetch_one(&state.pool)
+            .await?;
+    let since = crate::topics::day_start(&state);
+    let reset_at = crate::topics::to_utc(
+        state.config.timezone,
+        state
+            .digest
+            .today()
+            .succ_opt()
+            .expect("date in range")
+            .and_time(NaiveTime::MIN),
+    );
+    let runs_today = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM runs JOIN topics ON topics.id = runs.topic_id WHERE topics.owner_user_id = $1 AND runs.started_at >= $2",
+    )
+    .bind(user.id)
+    .bind(since)
+    .fetch_one(&state.pool)
+    .await?;
+    Ok(Json(serde_json::json!({
+        "user": public_user(&user),
+        "usage": {
+            "topic_count": topic_count,
+            "runs_today": runs_today,
+            "reset_at": reset_at,
+            "timezone": state.config.timezone.name(),
+        },
+    })))
 }
 
 fn public_user(user: &User) -> PublicUser<'_> {
-    PublicUser { email: &user.email }
+    PublicUser {
+        id: user.id,
+        email: &user.email,
+        role: &user.role,
+        plan: user.plan(),
+        pro_until: user.pro_until,
+        limits: user.limits(),
+    }
+}
+
+pub(crate) fn require_admin(user: &User) -> Result<()> {
+    user.is_admin()
+        .then_some(())
+        .ok_or_else(|| AppError::Forbidden("需要管理员权限".into()))
+}
+
+pub(crate) fn require_personal(user: &User) -> Result<()> {
+    (!user.is_admin())
+        .then_some(())
+        .ok_or_else(|| AppError::Forbidden("管理员请使用 /admin/".into()))
 }
 
 pub(crate) async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
@@ -178,7 +287,7 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<User> {
         .ok_or_else(|| AppError::Unauthorized("请先登录".into()))?;
     let user = sqlx::query_as::<_, User>(
         r#"
-        SELECT users.id, users.email, users.status
+        SELECT users.id, users.email, users.status, users.role, users.pro_until
         FROM sessions
         JOIN users ON users.id = sessions.user_id
         WHERE sessions.token_hash = $1
@@ -458,7 +567,7 @@ fn hash_token(token: &str) -> Vec<u8> {
 
 fn build_login_url(base: &url::Url, token: &str) -> String {
     let mut url = base.clone();
-    url.set_path("/admin/");
+    url.set_path("/me/");
     url.set_query(None);
     url.set_fragment(Some(&format!("login_token={token}")));
     url.to_string()
@@ -526,7 +635,7 @@ mod tests {
         let base = Url::parse("https://news.example.com/").expect("valid URL");
         assert_eq!(
             build_login_url(&base, "abc_123"),
-            "https://news.example.com/admin/#login_token=abc_123"
+            "https://news.example.com/me/#login_token=abc_123"
         );
     }
 

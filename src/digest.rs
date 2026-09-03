@@ -101,6 +101,10 @@ struct Inner {
     hot: RwLock<Option<Arc<Rendered>>>,
     /// Bumped by every write. A load that began before a write must not be stored after it.
     generation: AtomicU64,
+    /// Serializes cache misses and explicit refreshes. Without this small
+    /// critical section, two concurrent refreshes could both observe a newer
+    /// generation and leave Redis with neither snapshot.
+    cache_write: tokio::sync::Mutex<()>,
 }
 
 fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
@@ -120,6 +124,7 @@ impl DigestCache {
             latest: RwLock::default(),
             hot: RwLock::default(),
             generation: AtomicU64::new(0),
+            cache_write: tokio::sync::Mutex::new(()),
         }))
     }
 
@@ -140,13 +145,23 @@ impl DigestCache {
     }
 
     pub async fn reload_topics(&self, state: &AppState) -> Result<()> {
+        let _cache_guard = self.0.cache_write.lock().await;
         let topics = sqlx::query_as::<_, TopicMeta>(
-            "SELECT id, name, name_en, description FROM topics WHERE enabled ORDER BY sort_weight, created_at",
+            "SELECT id, name, name_en, description FROM topics WHERE enabled AND owner_user_id IS NULL ORDER BY sort_weight, created_at",
         )
         .fetch_all(&state.pool)
         .await?;
+        // Invalidate in-memory snapshots together with the topic catalogue.  This
+        // matters when an administrator disables and later re-enables a topic:
+        // the next request must re-read its current items.
+        self.0.generation.fetch_add(1, Ordering::AcqRel);
         *write(&self.0.topics) = Arc::new(topics);
+        write(&self.0.days).clear();
+        write(&self.0.latest).clear();
         *write(&self.0.hot) = None;
+        // A reader may have started in the small window between the first
+        // fence and the catalogue swap; fence that reader as well.
+        self.0.generation.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
 
@@ -171,12 +186,22 @@ impl DigestCache {
         if let Some(hit) = read(&self.0.days).get(&key).cloned() {
             return Ok(hit);
         }
+        let _cache_guard = self.0.cache_write.lock().await;
+        // Another miss may have filled memory while this request waited for
+        // the writer section.
+        if let Some(hit) = read(&self.0.days).get(&key).cloned() {
+            return Ok(hit);
+        }
         let generation = self.0.generation.load(Ordering::Acquire);
         let snapshot = match redis_get(state, topic, day).await {
             Some(snapshot) => snapshot,
             None => {
                 let snapshot = load(state, topic, day).await?;
-                redis_set(state, topic, day, &snapshot, self.ttl(day)).await;
+                // A write may have invalidated this read while it was in
+                // flight.  Do not repopulate Redis with the old snapshot.
+                if self.0.generation.load(Ordering::Acquire) == generation {
+                    redis_set(state, topic, day, &snapshot, self.ttl(day)).await;
+                }
                 snapshot
             }
         };
@@ -193,10 +218,28 @@ impl DigestCache {
     /// Rebuilds one topic-day from PostgreSQL after a write and pushes it through Redis
     /// into memory.
     pub async fn refresh(&self, state: &AppState, topic: &str, day: NaiveDate) -> Result<()> {
+        let _cache_guard = self.0.cache_write.lock().await;
+        let visible = sqlx::query_scalar::<_, bool>(
+            "SELECT enabled FROM topics WHERE id = $1 AND owner_user_id IS NULL",
+        )
+        .bind(topic)
+        .fetch_optional(&state.pool)
+        .await?;
+        if !visible.unwrap_or(false) {
+            // Disabled/deleted topics must not leave an empty snapshot behind
+            // that would hide fresh items when the topic is enabled again.
+            self.forget_topic_locked(state, topic).await;
+            return Ok(());
+        }
+        // Fence snapshots that started before this refresh.  The second bump
+        // below fences reads that begin while PostgreSQL is being loaded.
+        let generation = self.0.generation.fetch_add(1, Ordering::AcqRel) + 1;
         let snapshot = Arc::new(load(state, topic, day).await?);
-        redis_set(state, topic, day, &snapshot, self.ttl(day)).await;
-        self.0.generation.fetch_add(1, Ordering::AcqRel);
-        if self.is_recent(day) {
+        if self.0.generation.load(Ordering::Acquire) == generation {
+            redis_set(state, topic, day, &snapshot, self.ttl(day)).await;
+        }
+        let final_generation = self.0.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        if self.is_recent(day) && self.0.generation.load(Ordering::Acquire) == final_generation {
             write(&self.0.days).insert((topic.to_owned(), day), snapshot);
         }
         write(&self.0.latest).remove(topic);
@@ -204,14 +247,30 @@ impl DigestCache {
         Ok(())
     }
 
-    pub fn forget_topic(&self, topic: &str) {
+    pub async fn forget_topic(&self, state: &AppState, topic: &str) {
+        let _cache_guard = self.0.cache_write.lock().await;
+        self.forget_topic_locked(state, topic).await;
+    }
+
+    async fn forget_topic_locked(&self, state: &AppState, topic: &str) {
+        self.0.generation.fetch_add(1, Ordering::AcqRel);
         write(&self.0.days).retain(|(id, _), _| id != topic);
         write(&self.0.latest).remove(topic);
         *write(&self.0.hot) = None;
+        // A deleted topic may be recreated with the same id. Remove every
+        // archive key as well as today's hot keys, otherwise stale items can
+        // survive their normal Redis TTL.
+        if let Some(mut redis) = state.redis.clone()
+            && let Err(error) = redis_delete_topic(&mut redis, topic).await
+        {
+            tracing::warn!(%error, topic, "redis topic invalidation failed");
+        }
+        self.0.generation.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Runs once the local date changes: the day before yesterday leaves memory.
     pub fn rollover(&self) {
+        self.0.generation.fetch_add(1, Ordering::AcqRel);
         let keep_from = self.yesterday();
         write(&self.0.days).retain(|(_, day), _| *day >= keep_from);
         write(&self.0.latest).clear();
@@ -228,13 +287,16 @@ impl DigestCache {
         if let Some(cached) = read(&self.0.latest).get(topic).copied() {
             return Ok(cached);
         }
+        let generation = self.0.generation.load(Ordering::Acquire);
         let day = sqlx::query_scalar::<_, Option<NaiveDate>>(
-            "SELECT MAX(day) FROM items WHERE topic_id = $1 AND NOT hidden",
+            "SELECT MAX(items.day) FROM items JOIN topics ON topics.id = items.topic_id WHERE items.topic_id = $1 AND topics.enabled AND topics.owner_user_id IS NULL AND NOT items.hidden",
         )
         .bind(topic)
         .fetch_one(&state.pool)
         .await?;
-        write(&self.0.latest).insert(topic.to_owned(), day);
+        if self.0.generation.load(Ordering::Acquire) == generation {
+            write(&self.0.latest).insert(topic.to_owned(), day);
+        }
         Ok(day)
     }
 
@@ -273,6 +335,7 @@ impl DigestCache {
         if hot_path && let Some(hit) = read(&self.0.hot).clone() {
             return Ok(hit);
         }
+        let generation = self.0.generation.load(Ordering::Acquire);
         let (topics, selected) = self.selected(topic)?;
         let mut latest = Vec::with_capacity(selected.len());
         for &index in &selected {
@@ -311,7 +374,7 @@ impl DigestCache {
                 .collect(),
         };
         let rendered = Arc::new(Rendered::new(serde_json::to_string(&body)?));
-        if hot_path {
+        if hot_path && self.0.generation.load(Ordering::Acquire) == generation {
             *write(&self.0.hot) = Some(Arc::clone(&rendered));
         }
         Ok(rendered)
@@ -340,8 +403,9 @@ struct TopicDigest<'a> {
 
 async fn load(state: &AppState, topic: &str, day: NaiveDate) -> Result<Snapshot> {
     let items = sqlx::query_as::<_, PublicItem>(
-        "SELECT id, title, summary, title_en, summary_en, url, source, published_at, first_seen_at, tags, importance, pinned \
-         FROM items WHERE topic_id = $1 AND day = $2 AND NOT hidden \
+        "SELECT items.id, items.title, items.summary, items.title_en, items.summary_en, items.url, items.source, items.published_at, items.first_seen_at, items.tags, items.importance, items.pinned \
+         FROM items JOIN topics ON topics.id = items.topic_id \
+         WHERE items.topic_id = $1 AND items.day = $2 AND topics.enabled AND topics.owner_user_id IS NULL AND NOT items.hidden \
          ORDER BY pinned DESC, published_at DESC NULLS LAST, first_seen_at DESC",
     )
     .bind(topic)
@@ -387,6 +451,31 @@ async fn redis_set(state: &AppState, topic: &str, day: NaiveDate, snapshot: &Sna
         .await
     {
         tracing::warn!(%error, "redis write failed; memory and PostgreSQL stay authoritative");
+    }
+}
+
+async fn redis_delete_topic(
+    redis: &mut redis::aio::ConnectionManager,
+    topic: &str,
+) -> std::result::Result<(), redis::RedisError> {
+    let pattern = format!("news:v1:{topic}:*");
+    let mut cursor = 0_u64;
+    loop {
+        let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg(&pattern)
+            .arg("COUNT")
+            .arg(1_000_u16)
+            .query_async(redis)
+            .await?;
+        if !keys.is_empty() {
+            let _: i64 = redis::cmd("DEL").arg(keys).query_async(redis).await?;
+        }
+        if next_cursor == 0 {
+            return Ok(());
+        }
+        cursor = next_cursor;
     }
 }
 
@@ -478,9 +567,10 @@ async fn days(
     headers: HeaderMap,
 ) -> Result<Response> {
     let days = sqlx::query_as::<_, DayCount>(
-        "SELECT day, COUNT(*) AS count FROM items \
-         WHERE ($1::text IS NULL OR topic_id = $1) AND NOT hidden \
-         GROUP BY day ORDER BY day DESC LIMIT $2",
+        "SELECT items.day, COUNT(*) AS count FROM items \
+         JOIN topics ON topics.id = items.topic_id \
+         WHERE ($1::text IS NULL OR items.topic_id = $1) AND topics.enabled AND topics.owner_user_id IS NULL AND NOT items.hidden \
+         GROUP BY items.day ORDER BY items.day DESC LIMIT $2",
     )
     .bind(&query.topic)
     .bind(query.limit.unwrap_or(30).clamp(1, MAX_DAYS))

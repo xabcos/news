@@ -1,4 +1,4 @@
-use crate::{auth, digest, error::Result, state::AppState, topics};
+use crate::{auth, digest, error::Result, payment, state::AppState, topics};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Request, State},
@@ -9,6 +9,7 @@ use axum::{
 };
 use std::time::Duration;
 use tower_http::{services::ServeDir, trace::TraceLayer};
+use url::Url;
 
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const HTTP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -25,6 +26,14 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/api/auth/email/consume", post(auth::consume_email_login))
         .route("/api/auth/logout", post(auth::logout))
         .route("/api/me", get(auth::me))
+        .route("/api/plans", get(payment::list_plans))
+        .route(
+            "/api/orders",
+            get(payment::list_orders).post(payment::create_order),
+        )
+        .route("/api/orders/{out_trade_no}", get(payment::get_order))
+        .route("/api/orders/{out_trade_no}/qr.svg", get(payment::order_qr))
+        .route("/api/webhooks/payment", post(payment::payment_webhook))
         .merge(topics::router())
         .merge(digest::router())
         .route("/api", any(api_not_found))
@@ -53,10 +62,13 @@ async fn api_not_found() -> Response {
 }
 
 async fn validate_origin(State(state): State<AppState>, request: Request, next: Next) -> Response {
-    if !matches!(
-        *request.method(),
-        Method::GET | Method::HEAD | Method::OPTIONS
-    ) {
+    let is_payment_webhook = request.uri().path() == "/api/webhooks/payment";
+    if !is_payment_webhook
+        && !matches!(
+            *request.method(),
+            Method::GET | Method::HEAD | Method::OPTIONS
+        )
+    {
         let expected = state.config.public_base_url.origin().ascii_serialization();
         let origin = request
             .headers()
@@ -70,10 +82,13 @@ async fn validate_origin(State(state): State<AppState>, request: Request, next: 
         // Either signal alone is enough to accept, but a wrong value in either is fatal.
         // Requiring at least one of them present closes the "no Origin header, therefore
         // allowed" path that a plain Origin comparison leaves open.
-        let origin_is_valid = origin.is_some_and(|value| value == expected);
+        let origin_is_valid = origin.is_some_and(|value| {
+            origin_matches(&expected, value, state.config.email_login_dev_links)
+        });
         let fetch_is_valid = fetch_site == Some("same-origin");
-        let explicitly_invalid = origin.is_some_and(|value| value != expected)
-            || fetch_site.is_some_and(|value| value != "same-origin");
+        let explicitly_invalid = origin.is_some_and(|value| {
+            !origin_matches(&expected, value, state.config.email_login_dev_links)
+        }) || fetch_site.is_some_and(|value| value != "same-origin");
         if explicitly_invalid || (!origin_is_valid && !fetch_is_valid) {
             return (
                 StatusCode::FORBIDDEN,
@@ -85,10 +100,44 @@ async fn validate_origin(State(state): State<AppState>, request: Request, next: 
     next.run(request).await
 }
 
+fn origin_matches(expected: &str, actual: &str, allow_loopback_alias: bool) -> bool {
+    if actual == expected {
+        return true;
+    }
+    if !allow_loopback_alias {
+        return false;
+    }
+    let Ok(expected_url) = Url::parse(expected) else {
+        return false;
+    };
+    let Ok(actual_url) = Url::parse(actual) else {
+        return false;
+    };
+    expected_url.scheme() == actual_url.scheme()
+        && expected_url.port_or_known_default() == actual_url.port_or_known_default()
+        && is_loopback_host(expected_url.host_str())
+        && is_loopback_host(actual_url.host_str())
+}
+
+fn is_loopback_host(host: Option<&str>) -> bool {
+    let Some(host) = host else {
+        return false;
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
 async fn security_headers(request: Request, next: Next) -> Response {
     let is_private = {
         let path = request.uri().path();
-        path == "/api" || path.starts_with("/api/") || path.starts_with("/admin")
+        path == "/api"
+            || path.starts_with("/api/")
+            || path == "/admin"
+            || path.starts_with("/admin/")
+            || path == "/me"
+            || path.starts_with("/me/")
     };
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
@@ -232,4 +281,43 @@ async fn shutdown_signal() {
         () = terminate => {}
     }
     tracing::info!("shutdown signal received");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::origin_matches;
+
+    #[test]
+    fn origin_matching_only_relaxes_loopback_hosts_in_dev() {
+        assert!(origin_matches(
+            "http://localhost:8080",
+            "http://localhost:8080",
+            false
+        ));
+        assert!(!origin_matches(
+            "http://localhost:8080",
+            "http://127.0.0.1:8080",
+            false
+        ));
+        assert!(origin_matches(
+            "http://localhost:8080",
+            "http://127.0.0.1:8080",
+            true
+        ));
+        assert!(!origin_matches(
+            "http://localhost:8080",
+            "https://127.0.0.1:8080",
+            true
+        ));
+        assert!(!origin_matches(
+            "http://localhost:8080",
+            "http://127.0.0.1:8081",
+            true
+        ));
+        assert!(!origin_matches(
+            "https://news.example.com",
+            "https://127.0.0.1",
+            true
+        ));
+    }
 }

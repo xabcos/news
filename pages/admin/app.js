@@ -7,6 +7,7 @@ const WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"];
 const RUN_POLL_MS = 5000;
 const STATUS_REFRESH_MS = 60000;
 const USD_PER_TICK = 1e-10;
+const DEFAULT_TIMEZONE = "Asia/Shanghai";
 
 const state = {
   user: null,
@@ -18,6 +19,8 @@ const state = {
   items: [],
   loginInFlight: false,
   confirmAction: null,
+  timezone: DEFAULT_TIMEZONE,
+  sessionEpoch: 0,
   // Guards against a slow response for one topic landing after the user picked another.
   epoch: 0,
   poll: null,
@@ -64,7 +67,8 @@ function buildStaticInputs() {
     wrap.append(box, `周${label}`);
     return wrap;
   }));
-  el.itemsDay.value = localDate(new Date()).slice(0, 10);
+  el.itemsDay.value = dateInTimezone(new Date());
+  el.itemsDay.dataset.userSelected = "false";
 }
 
 function bindEvents() {
@@ -80,6 +84,7 @@ function bindEvents() {
   el.copyUrlButton.addEventListener("click", copyPublicUrl);
   el.deleteTopicButton.addEventListener("click", confirmDeleteTopic);
   el.itemsDay.addEventListener("change", () => {
+    el.itemsDay.dataset.userSelected = "true";
     if (state.selected) reloadItems();
   });
   el.confirmActionButton.addEventListener("click", runConfirmedAction);
@@ -179,23 +184,33 @@ async function finishLogin(token) {
 
 async function enterApp(user) {
   if (!user?.email) throw new Error("登录状态无效，请重新登录");
+  if (String(user.role || "user").toLowerCase() !== "admin") {
+    // A regular account has its own, deliberately smaller console.
+    window.location.replace("/me/");
+    return;
+  }
+  state.sessionEpoch += 1;
   state.user = user;
   el.authView.classList.add("hidden");
   el.appView.classList.remove("hidden");
   el.accountEmail.textContent = user.email;
   try {
-    await Promise.all([loadTopics(), refreshStatus()]);
+    // Load the service timezone before choosing the initial item date.
+    await refreshStatus();
+    await loadTopics();
   } catch (error) {
     showToast(error.message, "error");
   }
 }
 
 function showAuth() {
+  state.sessionEpoch += 1;
   state.user = null;
   state.topics = [];
   state.selected = null;
   state.epoch += 1;
   window.clearInterval(state.poll);
+  state.poll = null;
   closeDialog(el.confirmDialog);
   el.topicList.replaceChildren();
   el.accountEmail.textContent = "";
@@ -233,16 +248,45 @@ async function logout() {
 // ---------------------------------------------------------------------------
 
 async function loadTopics(selectId = state.selected?.id) {
-  state.topics = (await api("/api/topics")) || [];
-  const selected = state.topics.find((topic) => topic.id === selectId) || state.topics[0];
+  const sessionEpoch = state.sessionEpoch;
+  const selectionEpoch = state.epoch;
+  const topics = (await api("/api/admin/topics")) || [];
+  if (sessionEpoch !== state.sessionEpoch || !state.user) return;
+  state.topics = topics;
+  // A user may have selected another topic while the request was in flight.
+  // Keep that newer choice instead of letting the older request jump back.
+  const selectionChanged = selectionEpoch !== state.epoch;
+  const currentId = state.selected?.id;
+  const targetId = selectionChanged ? currentId : selectId;
+  const selected = state.topics.find((topic) => topic.id === targetId)
+    || (selectionChanged ? null : state.topics[0]);
   renderTopics();
+  if (selectionChanged) {
+    if (selected) {
+      state.selected = selected;
+      if (!state.creating) showTopic(selected);
+    } else if (!state.creating) {
+      state.selected = null;
+      showTopic(null);
+    }
+    return;
+  }
   if (selected) await selectTopic(selected.id);
   else showTopic(null);
 }
 
 async function refreshStatus() {
+  const sessionEpoch = state.sessionEpoch;
   try {
-    const status = await api("/api/status");
+    const status = await api("/api/admin/status");
+    if (sessionEpoch !== state.sessionEpoch || !state.user) return;
+    if (status.timezone && isTimezone(status.timezone)) {
+      const changed = state.timezone !== status.timezone;
+      state.timezone = status.timezone;
+      if (changed && el.itemsDay.dataset.userSelected !== "true") {
+        el.itemsDay.value = dateInTimezone(new Date());
+      }
+    }
     state.running = status.running;
     el.statusLine.textContent = `在飞 ${status.running.length} · 今日 ${status.today.runs} 次 · ${usd(status.today.cost_ticks, 2)}`;
     renderTopics();
@@ -379,8 +423,8 @@ async function saveTopic(event) {
   setBusy(el.saveButton, true, "保存中…");
   try {
     const saved = creating
-      ? await api("/api/topics", { method: "POST", body: JSON.stringify({ id, ...formPayload() }) })
-      : await api(`/api/topics/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(formPayload()) });
+      ? await api("/api/admin/topics", { method: "POST", body: JSON.stringify({ id, ...formPayload() }) })
+      : await api(`/api/admin/topics/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(formPayload()) });
     showToast(creating ? "主题已创建。" : "已保存。");
     state.creating = false;
     await loadTopics(saved.id);
@@ -395,7 +439,7 @@ function confirmDeleteTopic() {
   const topic = state.selected;
   if (!topic) return;
   openConfirm("删除这个主题？", `“${topic.name}”及其全部运行记录和条目都会永久删除。`, async () => {
-    await api(`/api/topics/${encodeURIComponent(topic.id)}`, { method: "DELETE" });
+    await api(`/api/admin/topics/${encodeURIComponent(topic.id)}`, { method: "DELETE" });
     state.selected = null;
     await loadTopics();
     showToast("主题已删除。");
@@ -417,7 +461,7 @@ async function runNow() {
   if (!topic) return;
   setBusy(el.runButton, true, "已提交…");
   try {
-    await api(`/api/topics/${encodeURIComponent(topic.id)}/run`, { method: "POST" });
+    await api(`/api/admin/topics/${encodeURIComponent(topic.id)}/run`, { method: "POST" });
     showToast("抓取已开始，通常需要 1 到 2 分钟。");
     await refreshStatus();
     pollRuns(topic.id);
@@ -432,19 +476,30 @@ async function runNow() {
 function pollRuns(topicId) {
   window.clearInterval(state.poll);
   let remaining = 90;
-  state.poll = window.setInterval(async () => {
-    if (state.selected?.id !== topicId || remaining-- <= 0) return window.clearInterval(state.poll);
+  let timer;
+  const stop = () => {
+    window.clearInterval(timer);
+    if (state.poll === timer) state.poll = null;
+  };
+  const sessionEpoch = state.sessionEpoch;
+  timer = window.setInterval(async () => {
+    if (sessionEpoch !== state.sessionEpoch || !state.user || state.selected?.id !== topicId || remaining-- <= 0) return stop();
     try {
-      state.runs = await loadRuns(topicId);
+      const runs = await loadRuns(topicId);
+      if (sessionEpoch !== state.sessionEpoch || !state.user || state.selected?.id !== topicId) return stop();
+      state.runs = runs;
       renderRuns();
       if (state.runs[0] && state.runs[0].status !== "running") {
-        window.clearInterval(state.poll);
-        await Promise.all([loadTopics(topicId), refreshStatus()]);
+        stop();
+        await loadTopics(topicId);
+        if (sessionEpoch !== state.sessionEpoch || !state.user || state.selected?.id !== topicId) return;
+        await refreshStatus();
       }
     } catch {
       // Keep polling; the next tick may succeed.
     }
   }, RUN_POLL_MS);
+  state.poll = timer;
 }
 
 // ---------------------------------------------------------------------------
@@ -452,11 +507,11 @@ function pollRuns(topicId) {
 // ---------------------------------------------------------------------------
 
 function loadRuns(topicId) {
-  return api(`/api/topics/${encodeURIComponent(topicId)}/runs?limit=50`).then((list) => list || []);
+  return api(`/api/admin/topics/${encodeURIComponent(topicId)}/runs?limit=50`).then((list) => list || []);
 }
 
 function loadItems(topicId) {
-  return api(`/api/topics/${encodeURIComponent(topicId)}/items?day=${encodeURIComponent(el.itemsDay.value)}`)
+  return api(`/api/admin/topics/${encodeURIComponent(topicId)}/items?day=${encodeURIComponent(el.itemsDay.value)}`)
     .then((list) => list || []);
 }
 
@@ -559,7 +614,7 @@ function itemRow(item) {
 async function patchItem(item, changes) {
   const epoch = state.epoch;
   try {
-    const updated = await api(`/api/items/${encodeURIComponent(item.id)}`, { method: "PATCH", body: JSON.stringify(changes) });
+    const updated = await api(`/api/admin/items/${encodeURIComponent(item.id)}`, { method: "PATCH", body: JSON.stringify(changes) });
     if (epoch !== state.epoch) return;
     state.items = state.items.map((entry) => (entry.id === updated.id ? updated : entry));
     renderItems();
@@ -571,7 +626,7 @@ async function patchItem(item, changes) {
 function confirmDeleteItem(item) {
   const epoch = state.epoch;
   openConfirm("删除这条内容？", "删除后不会再出现在公开页面。", async () => {
-    await api(`/api/items/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+    await api(`/api/admin/items/${encodeURIComponent(item.id)}`, { method: "DELETE" });
     showToast("已删除。");
     if (epoch !== state.epoch) return;
     state.items = state.items.filter((entry) => entry.id !== item.id);
@@ -690,12 +745,35 @@ const usd = (ticks, digits) => `$${(ticks * USD_PER_TICK).toFixed(digits)}`;
 
 function localDate(value) {
   const date = new Date(value);
-  const pad = (number) => String(number).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
-    + `T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: state.timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date).reduce((result, part) => {
+    result[part.type] = part.value;
+    return result;
+  }, {});
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour === "24" ? "00" : parts.hour}:${parts.minute}`;
 }
 
 const shortDateTime = (value) => localDate(value).replace("T", " ").slice(5);
+
+function dateInTimezone(value) {
+  return localDate(value).slice(0, 10);
+}
+
+function isTimezone(value) {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value }).format();
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function safeLoginUrl(value) {
   if (!value) return "";

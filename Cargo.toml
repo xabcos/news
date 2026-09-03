@@ -11,6 +11,9 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 dotenvy = "0.15"
 getrandom = "0.4"
+hmac = "0.12"
+hex = "0.4"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 redis = { version = "1", default-features = false, features = ["tokio-rustls-comp", "connection-manager"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "gzip"] }
 serde = { version = "1", features = ["derive"] }

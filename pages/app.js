@@ -3,6 +3,29 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const REFRESH_MS = 5 * 60 * 1000;
 const PAGE_LIMIT = 100;
+const storage = (() => {
+  try {
+    const store = window.localStorage;
+    return {
+      getItem(key) {
+        try {
+          return store.getItem(key);
+        } catch {
+          return null;
+        }
+      },
+      setItem(key, value) {
+        try {
+          store.setItem(key, value);
+        } catch {
+          // Private browsing and full storage should not break the public page.
+        }
+      },
+    };
+  } catch {
+    return { getItem: () => null, setItem: () => {} };
+  }
+})();
 
 const TEXT = {
   zh: {
@@ -22,20 +45,20 @@ const TEXT = {
 
 const initial = new URLSearchParams(location.search);
 const state = {
-  lang: localStorage.getItem("news.lang") === "en" ? "en" : "zh",
+  lang: storage.getItem("news.lang") === "en" ? "en" : "zh",
   topic: initial.get("topic") || "",
   day: initial.get("day") || "",
   topics: [],
   days: [],
   digest: null,
   // Items first collected after the previous visit get a NEW mark.
-  lastVisit: Number(localStorage.getItem("news.lastVisit")) || Date.now(),
+  lastVisit: Number(storage.getItem("news.lastVisit")) || Date.now(),
   epoch: 0,
 };
-localStorage.setItem("news.lastVisit", String(Date.now()));
+storage.setItem("news.lastVisit", String(Date.now()));
 
 const el = {
-  topbar: $("#topbar"), tabs: $("#tabs"), lang: $("#langToggle"), prev: $("#prevDay"), next: $("#nextDay"),
+  topbar: $("#topbar"), tabs: $("#tabs"), lang: $("#langToggle"), me: $("#meLink"), prev: $("#prevDay"), next: $("#nextDay"),
   title: $("#dayTitle"), meta: $("#dayMeta"), status: $("#status"), digest: $("#digest"), note: $("#footNote"),
 };
 const t = () => TEXT[state.lang];
@@ -46,7 +69,7 @@ async function init() {
   applyLang();
   el.lang.addEventListener("click", () => {
     state.lang = state.lang === "zh" ? "en" : "zh";
-    localStorage.setItem("news.lang", state.lang);
+    storage.setItem("news.lang", state.lang);
     applyLang();
     renderTabs();
     render();
@@ -139,6 +162,7 @@ function setStatus(message, failed = false) {
 function applyLang() {
   document.documentElement.lang = t().locale;
   el.lang.textContent = t().lang;
+  if (el.me) el.me.textContent = state.lang === "en" ? "My space" : "个人空间";
   el.prev.setAttribute("aria-label", t().prev);
   el.next.setAttribute("aria-label", t().next);
   const [before, after] = t().note;

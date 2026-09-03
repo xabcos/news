@@ -6,6 +6,7 @@ pub mod digest;
 pub mod email;
 pub mod error;
 pub mod fetch;
+pub mod payment;
 pub mod runner;
 pub mod state;
 pub mod topics;

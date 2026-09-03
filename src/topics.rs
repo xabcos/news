@@ -1,5 +1,5 @@
 use crate::{
-    auth::User,
+    auth::{self, PlanLimits, User},
     error::{ApiJson, ApiQuery, AppError, Result},
     runner,
     state::AppState,
@@ -20,11 +20,28 @@ use serde_json::json;
 use sqlx::FromRow;
 use uuid::Uuid;
 
+/// The local date boundary is shared by the user dashboard and scheduler.
+pub(crate) fn day_start(state: &AppState) -> DateTime<Utc> {
+    to_utc(
+        state.config.timezone,
+        state.digest.today().and_time(NaiveTime::MIN),
+    )
+}
+
 /// One editorial direction with its fetch cadence. Hours and weekdays are in the service
 /// timezone; `weekdays` uses ISO numbering (1 = Monday).
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Topic {
     pub id: String,
+    /// NULL marks one of the administrator-managed public topics.  Non-NULL
+    /// topics belong to exactly one personal account.
+    #[serde(skip_serializing)]
+    pub owner_user_id: Option<i64>,
+    /// Set only on personal API responses when the current plan no longer
+    /// covers this retained topic. It is not persisted in the database.
+    #[serde(skip_serializing_if = "is_false")]
+    #[sqlx(default)]
+    pub plan_locked: bool,
     pub name: String,
     pub name_en: String,
     pub description: String,
@@ -46,6 +63,22 @@ pub struct Topic {
     pub consecutive_failures: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+#[derive(Clone, Copy)]
+enum TopicScope {
+    Personal,
+    Public,
+}
+
+impl TopicScope {
+    fn is_public(self) -> bool {
+        matches!(self, Self::Public)
+    }
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -117,7 +150,8 @@ struct TopicFields {
 
 #[derive(Debug, Deserialize)]
 struct CreateTopic {
-    id: String,
+    #[serde(default)]
+    id: Option<String>,
     #[serde(flatten)]
     fields: TopicFields,
 }
@@ -139,15 +173,145 @@ struct ItemsQuery {
     day: Option<NaiveDate>,
 }
 
+/// Returns the limits currently effective for a topic owner. Public topics are
+/// administrator-managed and retain the original service-wide daily guard.
+pub(crate) async fn limits_for_topic(state: &AppState, topic: &Topic) -> Result<PlanLimits> {
+    let Some(owner_user_id) = topic.owner_user_id else {
+        return Ok(PlanLimits {
+            max_topics: i64::MAX,
+            min_interval_minutes: 15,
+            daily_run_cap: topic.daily_run_cap.max(1),
+        });
+    };
+    let pro_until =
+        sqlx::query_scalar::<_, Option<DateTime<Utc>>>("SELECT pro_until FROM users WHERE id = $1")
+            .bind(owner_user_id)
+            .fetch_optional(&state.pool)
+            .await?
+            .flatten();
+    Ok(if pro_until.is_some_and(|until| until > Utc::now()) {
+        auth::PRO_LIMITS
+    } else {
+        auth::FREE_LIMITS
+    })
+}
+
+/// A downgraded account keeps its old topics, but only the oldest topics that
+/// fit the current plan remain runnable. Deleting one naturally promotes the
+/// next topic without another subscription-state column.
+pub(crate) async fn personal_topic_allowed(
+    state: &AppState,
+    topic: &Topic,
+    max_topics: i64,
+) -> Result<bool> {
+    let Some(owner_user_id) = topic.owner_user_id else {
+        return Ok(true);
+    };
+    let position = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM topics
+         WHERE owner_user_id = $1
+           AND (created_at < $2 OR (created_at = $2 AND id <= $3))",
+    )
+    .bind(owner_user_id)
+    .bind(topic.created_at)
+    .bind(&topic.id)
+    .fetch_one(&state.pool)
+    .await?;
+    Ok(position <= max_topics)
+}
+
+/// Wakes the topics that fit a newly active plan. Topics that were retained
+/// while a user was on Free have no due slot; setting only NULL slots avoids
+/// disturbing an already scheduled cadence.
+pub(crate) async fn wake_personal_topics(
+    state: &AppState,
+    user_id: i64,
+    max_topics: i64,
+) -> Result<()> {
+    sqlx::query(
+        "WITH allowed AS (
+             SELECT id FROM topics
+             WHERE owner_user_id = $1
+             ORDER BY created_at, id
+             LIMIT $2
+         )
+         UPDATE topics
+         SET next_run_at = COALESCE(next_run_at, NOW())
+         WHERE enabled AND id IN (SELECT id FROM allowed)",
+    )
+    .bind(user_id)
+    .bind(max_topics)
+    .execute(&state.pool)
+    .await?;
+    Ok(())
+}
+
+async fn load_topic(state: &AppState, id: &str, user: &User, scope: TopicScope) -> Result<Topic> {
+    let topic = if scope.is_public() {
+        sqlx::query_as::<_, Topic>("SELECT * FROM topics WHERE id = $1 AND owner_user_id IS NULL")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await?
+    } else {
+        sqlx::query_as::<_, Topic>("SELECT * FROM topics WHERE id = $1 AND owner_user_id = $2")
+            .bind(id)
+            .bind(user.id)
+            .fetch_optional(&state.pool)
+            .await?
+    };
+    topic.ok_or_else(|| AppError::NotFound("主题不存在".into()))
+}
+
+fn generated_topic_id() -> String {
+    // UUID's compact hexadecimal form fits the existing 32-character slug
+    // constraint and prevents a personal topic from colliding with a public id.
+    Uuid::new_v4().simple().to_string()
+}
+
+fn validate_interval(interval: Option<i32>, limits: PlanLimits) -> Result<()> {
+    if interval.is_some_and(|minutes| minutes < limits.min_interval_minutes) {
+        return Err(AppError::BadRequest(
+            format!(
+                "当前套餐的最小抓取间隔是 {} 分钟",
+                limits.min_interval_minutes
+            )
+            .into(),
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
-        .route("/api/status", get(status))
-        .route("/api/topics", get(list_topics).post(create_topic))
-        .route("/api/topics/{id}", patch(update_topic).delete(delete_topic))
-        .route("/api/topics/{id}/run", post(run_topic))
-        .route("/api/topics/{id}/runs", get(list_runs))
-        .route("/api/topics/{id}/items", get(list_items))
-        .route("/api/items/{id}", patch(update_item).delete(delete_item))
+        .route("/api/me/topics", get(me_list_topics).post(me_create_topic))
+        .route(
+            "/api/me/topics/{id}",
+            patch(me_update_topic).delete(me_delete_topic),
+        )
+        .route("/api/me/topics/{id}/run", post(me_run_topic))
+        .route("/api/me/topics/{id}/runs", get(me_list_runs))
+        .route("/api/me/topics/{id}/items", get(me_list_items))
+        .route(
+            "/api/me/items/{id}",
+            patch(me_update_item).delete(me_delete_item),
+        )
+        .route("/api/me/status", get(me_status))
+        .route(
+            "/api/admin/topics",
+            get(admin_list_topics).post(admin_create_topic),
+        )
+        .route(
+            "/api/admin/topics/{id}",
+            patch(admin_update_topic).delete(admin_delete_topic),
+        )
+        .route("/api/admin/topics/{id}/run", post(admin_run_topic))
+        .route("/api/admin/topics/{id}/runs", get(admin_list_runs))
+        .route("/api/admin/topics/{id}/items", get(admin_list_items))
+        .route(
+            "/api/admin/items/{id}",
+            patch(admin_update_item).delete(admin_delete_item),
+        )
+        .route("/api/admin/status", get(admin_status))
 }
 
 // ---------------------------------------------------------------------------
@@ -165,13 +329,27 @@ pub fn next_run(
     last: Option<DateTime<Utc>>,
     today_runs: i64,
 ) -> DateTime<Utc> {
+    next_run_with_min_interval(topic, tz, now, last, today_runs, 15)
+}
+
+/// Variant used by personal topics after the plan floor is applied.  Keeping
+/// the floor here prevents a failure backoff from scheduling a free topic at
+/// 15 minutes and then being rejected by the same admission policy.
+pub fn next_run_with_min_interval(
+    topic: &Topic,
+    tz: Tz,
+    now: DateTime<Utc>,
+    last: Option<DateTime<Utc>>,
+    today_runs: i64,
+    min_interval_minutes: i32,
+) -> DateTime<Utc> {
     let local = |at: DateTime<Utc>| at.with_timezone(&tz).naive_local();
     let interval = Duration::minutes(i64::from(topic.interval_minutes));
     let delay = match topic.consecutive_failures {
         0 => interval,
-        failures => {
-            interval.min(Duration::minutes(15) * 2_i32.pow((failures.clamp(1, 7) - 1) as u32))
-        }
+        failures => interval
+            .min(Duration::minutes(15) * 2_i32.pow((failures.clamp(1, 7) - 1) as u32))
+            .max(Duration::minutes(i64::from(min_interval_minutes))),
     };
     let now = local(now);
     let mut candidate = last.map_or(now, |at| local(at) + delay).max(now);
@@ -216,18 +394,44 @@ pub fn to_utc(tz: Tz, local: NaiveDateTime) -> DateTime<Utc> {
 // Admin API
 // ---------------------------------------------------------------------------
 
-async fn status(State(state): State<AppState>, _user: User) -> Result<Json<serde_json::Value>> {
-    let running = state.in_flight().iter().cloned().collect::<Vec<_>>();
-    let since = to_utc(
-        state.config.timezone,
-        state.digest.today().and_time(NaiveTime::MIN),
-    );
-    let (runs, cost_ticks) = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT COUNT(*), COALESCE(SUM(cost_ticks), 0)::BIGINT FROM runs WHERE started_at >= $1",
-    )
-    .bind(since)
-    .fetch_one(&state.pool)
-    .await?;
+async fn status(
+    State(state): State<AppState>,
+    user: User,
+    scope: TopicScope,
+) -> Result<Json<serde_json::Value>> {
+    let mut running = state.in_flight().iter().cloned().collect::<Vec<_>>();
+    let since = day_start(&state);
+    let (runs, cost_ticks) = if scope.is_public() {
+        let public =
+            sqlx::query_scalar::<_, String>("SELECT id FROM topics WHERE owner_user_id IS NULL")
+                .fetch_all(&state.pool)
+                .await?
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>();
+        running.retain(|id| public.contains(id));
+        sqlx::query_as::<_, (i64, i64)>(
+            "SELECT COUNT(runs.*), COALESCE(SUM(runs.cost_ticks), 0)::BIGINT FROM runs JOIN topics ON topics.id = runs.topic_id WHERE topics.owner_user_id IS NULL AND runs.started_at >= $1",
+        )
+        .bind(since)
+        .fetch_one(&state.pool)
+        .await?
+    } else {
+        let owned =
+            sqlx::query_scalar::<_, String>("SELECT id FROM topics WHERE owner_user_id = $1")
+                .bind(user.id)
+                .fetch_all(&state.pool)
+                .await?
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>();
+        running.retain(|id| owned.contains(id));
+        sqlx::query_as::<_, (i64, i64)>(
+            "SELECT COUNT(*), COALESCE(SUM(runs.cost_ticks), 0)::BIGINT FROM runs JOIN topics ON topics.id = runs.topic_id WHERE topics.owner_user_id = $1 AND runs.started_at >= $2",
+        )
+        .bind(user.id)
+        .bind(since)
+        .fetch_one(&state.pool)
+        .await?
+    };
     Ok(Json(json!({
         "running": running,
         "today": { "runs": runs, "cost_ticks": cost_ticks },
@@ -236,18 +440,39 @@ async fn status(State(state): State<AppState>, _user: User) -> Result<Json<serde
     })))
 }
 
-async fn list_topics(State(state): State<AppState>, _user: User) -> Result<Json<Vec<Topic>>> {
-    Ok(Json(
-        sqlx::query_as("SELECT * FROM topics ORDER BY sort_weight, created_at")
-            .fetch_all(&state.pool)
-            .await?,
-    ))
+async fn list_topics(
+    State(state): State<AppState>,
+    user: User,
+    scope: TopicScope,
+) -> Result<Json<Vec<Topic>>> {
+    let mut topics = if scope.is_public() {
+        sqlx::query_as::<_, Topic>(
+            "SELECT * FROM topics WHERE owner_user_id IS NULL ORDER BY sort_weight, created_at",
+        )
+        .fetch_all(&state.pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, Topic>(
+            "SELECT * FROM topics WHERE owner_user_id = $1 ORDER BY created_at, id",
+        )
+        .bind(user.id)
+        .fetch_all(&state.pool)
+        .await?
+    };
+    if !scope.is_public() {
+        let max_topics = user.limits().max_topics as usize;
+        for (index, topic) in topics.iter_mut().enumerate() {
+            topic.plan_locked = index >= max_topics;
+        }
+    }
+    Ok(Json(topics))
 }
 
 async fn create_topic(
     State(state): State<AppState>,
-    _user: User,
+    user: User,
     ApiJson(request): ApiJson<CreateTopic>,
+    scope: TopicScope,
 ) -> Result<(StatusCode, Json<Topic>)> {
     let f = request.fields;
     let name = f
@@ -256,52 +481,162 @@ async fn create_topic(
     let brief = f
         .brief
         .ok_or_else(|| AppError::BadRequest("需要 brief".into()))?;
+    let limits = user.limits();
+    let interval = f.interval_minutes.unwrap_or(if scope.is_public() {
+        60
+    } else {
+        limits.min_interval_minutes
+    });
+    if !scope.is_public() {
+        validate_interval(Some(interval), limits)?;
+    }
+    let id = if scope.is_public() {
+        request.id.unwrap_or_else(generated_topic_id)
+    } else {
+        generated_topic_id()
+    };
+    let owner_user_id = (!scope.is_public()).then_some(user.id);
+    let model = if scope.is_public() {
+        f.model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    } else {
+        None
+    };
+    let reasoning_effort = if scope.is_public() {
+        f.reasoning_effort
+    } else {
+        None
+    };
+    let max_items = if scope.is_public() { f.max_items } else { None };
+    let lookback_hours = if scope.is_public() {
+        f.lookback_hours
+    } else {
+        None
+    };
+    let daily_run_cap = if scope.is_public() {
+        f.daily_run_cap
+    } else {
+        Some(limits.daily_run_cap)
+    };
+    let sort_weight = if scope.is_public() {
+        f.sort_weight
+    } else {
+        Some(0)
+    };
+    let (window_start, window_end, weekdays) = if scope.is_public() {
+        (f.window_start, f.window_end, f.weekdays)
+    } else {
+        // Personal scheduling stays deliberately small: run every day in the
+        // normal daytime window; calendar controls remain administrator-only.
+        (Some(6), Some(24), Some(vec![1, 2, 3, 4, 5, 6, 7]))
+    };
+    let mut transaction = state.pool.begin().await?;
+    if !scope.is_public() {
+        // Serialising the count and insert keeps two tabs from creating a
+        // second topic at the same time without requiring a trigger.
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(user.id)
+            .execute(&mut *transaction)
+            .await?;
+        let count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM topics WHERE owner_user_id = $1")
+                .bind(user.id)
+                .fetch_one(&mut *transaction)
+                .await?;
+        if count >= limits.max_topics {
+            return Err(AppError::TooManyRequests(
+                format!("当前套餐最多创建 {} 个主题", limits.max_topics).into(),
+            ));
+        }
+    }
     let topic = sqlx::query_as::<_, Topic>(
         r#"
         INSERT INTO topics (
-            id, name, name_en, description, brief, enabled, interval_minutes, window_start,
+            id, owner_user_id, name, name_en, description, brief, enabled, interval_minutes, window_start,
             window_end, weekdays, model, reasoning_effort, max_items, lookback_hours,
             daily_run_cap, sort_weight
         ) VALUES (
-            LOWER(BTRIM($1)), BTRIM($2), BTRIM(COALESCE($3, '')), BTRIM(COALESCE($4, '')), BTRIM($5),
-            COALESCE($6, TRUE), COALESCE($7, 60), COALESCE($8, 6), COALESCE($9, 24),
-            COALESCE($10, '{1,2,3,4,5}'), COALESCE(NULLIF(BTRIM($11), ''), $17), COALESCE($12, 'low'),
-            COALESCE($13, 8), COALESCE($14, 24), COALESCE($15, 24), COALESCE($16, 0)
+            LOWER(BTRIM($1)), $2, BTRIM($3), BTRIM(COALESCE($4, '')), BTRIM(COALESCE($5, '')), BTRIM($6),
+            COALESCE($7, TRUE), $8, COALESCE($9, 6), COALESCE($10, 24),
+            COALESCE($11, '{1,2,3,4,5}'), COALESCE(NULLIF(BTRIM($12), ''), $18), COALESCE($13, 'low'),
+            COALESCE($14, 8), COALESCE($15, 24), COALESCE($16, 24), COALESCE($17, 0)
         )
         RETURNING *
         "#,
     )
-    .bind(request.id)
+    .bind(id)
+    .bind(owner_user_id)
     .bind(name)
     .bind(f.name_en)
     .bind(f.description)
     .bind(brief)
     .bind(f.enabled)
-    .bind(f.interval_minutes)
-    .bind(f.window_start)
-    .bind(f.window_end)
-    .bind(f.weekdays)
-    .bind(f.model)
-    .bind(f.reasoning_effort)
-    .bind(f.max_items)
-    .bind(f.lookback_hours)
-    .bind(f.daily_run_cap)
-    .bind(f.sort_weight)
+    .bind(interval)
+    .bind(window_start)
+    .bind(window_end)
+    .bind(weekdays)
+    .bind(model)
+    .bind(reasoning_effort)
+    .bind(max_items)
+    .bind(lookback_hours)
+    .bind(daily_run_cap)
+    .bind(sort_weight)
     .bind(&state.config.ai_default_model)
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *transaction)
     .await
     .map_err(map_db_error)?;
-    let topic = runner::reschedule(&state, topic).await?;
-    state.digest.reload_topics(&state).await?;
+    transaction.commit().await?;
+    let topic = runner::reschedule_or_defer(&state, topic).await?;
+    if scope.is_public() {
+        state.digest.reload_topics(&state).await?;
+    }
     Ok((StatusCode::CREATED, Json(topic)))
 }
 
 async fn update_topic(
     State(state): State<AppState>,
-    _user: User,
+    user: User,
     Path(id): Path<String>,
     ApiJson(f): ApiJson<TopicFields>,
+    scope: TopicScope,
 ) -> Result<Json<Topic>> {
+    // Resolve ownership before applying the patch; an inaccessible id is
+    // intentionally indistinguishable from a missing one.
+    let current = load_topic(&state, &id, &user, scope).await?;
+    let limits = if scope.is_public() {
+        PlanLimits {
+            max_topics: i64::MAX,
+            min_interval_minutes: 15,
+            daily_run_cap: current.daily_run_cap,
+        }
+    } else {
+        user.limits()
+    };
+    validate_interval(f.interval_minutes, limits)?;
+    let (model, reasoning_effort, max_items, lookback_hours, daily_run_cap, sort_weight) =
+        if scope.is_public() {
+            (
+                f.model,
+                f.reasoning_effort,
+                f.max_items,
+                f.lookback_hours,
+                f.daily_run_cap,
+                f.sort_weight,
+            )
+        } else {
+            // Personal accounts control the editorial direction and cadence,
+            // while model/cost knobs stay on the service defaults.
+            (None, None, None, None, Some(limits.daily_run_cap), None)
+        };
+    let (window_start, window_end, weekdays) = if scope.is_public() {
+        (f.window_start, f.window_end, f.weekdays)
+    } else {
+        // Keep personal topics on the simple every-day daytime schedule.
+        (Some(6), Some(24), Some(vec![1, 2, 3, 4, 5, 6, 7]))
+    };
     // COALESCE merges the provided fields in the database, so no read-before-write is
     // needed and the schema's CHECK constraints validate exactly what changed.
     let topic = sqlx::query_as::<_, Topic>(
@@ -323,7 +658,7 @@ async fn update_topic(
             daily_run_cap = COALESCE($15, daily_run_cap),
             sort_weight = COALESCE($16, sort_weight),
             updated_at = NOW()
-        WHERE id = $1
+        WHERE id = $1 AND (($17 AND owner_user_id IS NULL) OR (NOT $17 AND owner_user_id = $18))
         RETURNING *
         "#,
     )
@@ -334,62 +669,84 @@ async fn update_topic(
     .bind(f.brief)
     .bind(f.enabled)
     .bind(f.interval_minutes)
-    .bind(f.window_start)
-    .bind(f.window_end)
-    .bind(f.weekdays)
-    .bind(f.model)
-    .bind(f.reasoning_effort)
-    .bind(f.max_items)
-    .bind(f.lookback_hours)
-    .bind(f.daily_run_cap)
-    .bind(f.sort_weight)
+    .bind(window_start)
+    .bind(window_end)
+    .bind(weekdays)
+    .bind(model)
+    .bind(reasoning_effort)
+    .bind(max_items)
+    .bind(lookback_hours)
+    .bind(daily_run_cap)
+    .bind(sort_weight)
+    .bind(scope.is_public())
+    .bind(user.id)
     .fetch_optional(&state.pool)
     .await
     .map_err(map_db_error)?
     .ok_or_else(|| AppError::NotFound("主题不存在".into()))?;
-    let topic = runner::reschedule(&state, topic).await?;
-    state.digest.reload_topics(&state).await?;
+    let topic = runner::reschedule_or_defer(&state, topic).await?;
+    if scope.is_public() {
+        state.digest.reload_topics(&state).await?;
+    }
     Ok(Json(topic))
 }
 
 async fn delete_topic(
     State(state): State<AppState>,
-    _user: User,
+    user: User,
     Path(id): Path<String>,
+    scope: TopicScope,
 ) -> Result<Response> {
-    let deleted = sqlx::query("DELETE FROM topics WHERE id = $1")
+    let mut transaction = state.pool.begin().await?;
+    if !scope.is_public() {
+        // Keep deletion and the quota-promotion wake-up ordered with create and
+        // run admission for this account.
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(user.id)
+            .execute(&mut *transaction)
+            .await?;
+    }
+    let deleted = sqlx::query("DELETE FROM topics WHERE id = $1 AND (($2 AND owner_user_id IS NULL) OR (NOT $2 AND owner_user_id = $3))")
         .bind(&id)
-        .execute(&state.pool)
+        .bind(scope.is_public())
+        .bind(user.id)
+        .execute(&mut *transaction)
         .await?
         .rows_affected();
     if deleted == 0 {
         return Err(AppError::NotFound("主题不存在".into()));
     }
-    state.digest.forget_topic(&id);
-    state.digest.reload_topics(&state).await?;
+    transaction.commit().await?;
+    if scope.is_public() {
+        state.digest.forget_topic(&state, &id).await;
+        state.digest.reload_topics(&state).await?;
+    } else {
+        if let Err(error) = wake_personal_topics(&state, user.id, user.limits().max_topics).await {
+            tracing::warn!(%error, user_id = user.id, "failed to wake personal topics");
+        }
+    }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 async fn run_topic(
     State(state): State<AppState>,
-    _user: User,
+    user: User,
     Path(id): Path<String>,
+    scope: TopicScope,
 ) -> Result<(StatusCode, Json<serde_json::Value>)> {
-    let topic = sqlx::query_as::<_, Topic>("SELECT * FROM topics WHERE id = $1")
-        .bind(&id)
-        .fetch_optional(&state.pool)
-        .await?
-        .ok_or_else(|| AppError::NotFound("主题不存在".into()))?;
+    let topic = load_topic(&state, &id, &user, scope).await?;
     let run_id = runner::start(&state, topic, "manual").await?;
     Ok((StatusCode::ACCEPTED, Json(json!({ "run_id": run_id }))))
 }
 
 async fn list_runs(
     State(state): State<AppState>,
-    _user: User,
+    user: User,
     Path(id): Path<String>,
     ApiQuery(query): ApiQuery<RunsQuery>,
+    scope: TopicScope,
 ) -> Result<Json<Vec<Run>>> {
+    load_topic(&state, &id, &user, scope).await?;
     let runs = sqlx::query_as::<_, Run>(&format!(
         "SELECT {RUN_COLUMNS} FROM runs WHERE topic_id = $1 ORDER BY started_at DESC LIMIT $2"
     ))
@@ -402,16 +759,28 @@ async fn list_runs(
 
 async fn list_items(
     State(state): State<AppState>,
-    _user: User,
+    user: User,
     Path(id): Path<String>,
     ApiQuery(query): ApiQuery<ItemsQuery>,
+    scope: TopicScope,
 ) -> Result<Json<Vec<Item>>> {
+    load_topic(&state, &id, &user, scope).await?;
+    let day = match query.day {
+        Some(day) => day,
+        None => sqlx::query_scalar::<_, Option<NaiveDate>>(
+            "SELECT MAX(day) FROM items WHERE topic_id = $1",
+        )
+        .bind(&id)
+        .fetch_one(&state.pool)
+        .await?
+        .unwrap_or_else(|| state.digest.today()),
+    };
     let items = sqlx::query_as::<_, Item>(&format!(
         "SELECT {ITEM_COLUMNS} FROM items WHERE topic_id = $1 AND day = $2 \
          ORDER BY pinned DESC, published_at DESC NULLS LAST, first_seen_at DESC"
     ))
     .bind(&id)
-    .bind(query.day.unwrap_or_else(|| state.digest.today()))
+    .bind(day)
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(items))
@@ -419,41 +788,228 @@ async fn list_items(
 
 async fn update_item(
     State(state): State<AppState>,
-    _user: User,
+    user: User,
     Path(id): Path<Uuid>,
     ApiJson(request): ApiJson<UpdateItem>,
+    scope: TopicScope,
 ) -> Result<Json<Item>> {
     let item = sqlx::query_as::<_, Item>(&format!(
         "UPDATE items SET hidden = COALESCE($2, hidden), pinned = COALESCE($3, pinned) \
-         WHERE id = $1 RETURNING {ITEM_COLUMNS}"
+         WHERE id = $1 AND EXISTS (SELECT 1 FROM topics WHERE topics.id = items.topic_id AND (($4 AND topics.owner_user_id IS NULL) OR (NOT $4 AND topics.owner_user_id = $5))) RETURNING {ITEM_COLUMNS}"
     ))
     .bind(id)
     .bind(request.hidden)
     .bind(request.pinned)
+    .bind(scope.is_public())
+    .bind(user.id)
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(|| AppError::NotFound("条目不存在".into()))?;
-    state
-        .digest
-        .refresh(&state, &item.topic_id, item.day)
-        .await?;
+    if scope.is_public() {
+        state
+            .digest
+            .refresh(&state, &item.topic_id, item.day)
+            .await?;
+    }
     Ok(Json(item))
 }
 
 async fn delete_item(
     State(state): State<AppState>,
-    _user: User,
+    user: User,
     Path(id): Path<Uuid>,
+    scope: TopicScope,
 ) -> Result<Response> {
     let (topic_id, day) = sqlx::query_as::<_, (String, NaiveDate)>(
-        "DELETE FROM items WHERE id = $1 RETURNING topic_id, day",
+        "DELETE FROM items WHERE id = $1 AND EXISTS (SELECT 1 FROM topics WHERE topics.id = items.topic_id AND (($2 AND topics.owner_user_id IS NULL) OR (NOT $2 AND topics.owner_user_id = $3))) RETURNING topic_id, day",
     )
     .bind(id)
+    .bind(scope.is_public())
+    .bind(user.id)
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(|| AppError::NotFound("条目不存在".into()))?;
-    state.digest.refresh(&state, &topic_id, day).await?;
+    if scope.is_public() {
+        state.digest.refresh(&state, &topic_id, day).await?;
+    }
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+// Route wrappers make the data scope explicit: `/me` is always one account,
+// while `/admin` is limited to the public editorial catalogue.
+async fn me_status(State(state): State<AppState>, user: User) -> Result<Json<serde_json::Value>> {
+    auth::require_personal(&user)?;
+    status(State(state), user, TopicScope::Personal).await
+}
+
+async fn me_list_topics(State(state): State<AppState>, user: User) -> Result<Json<Vec<Topic>>> {
+    auth::require_personal(&user)?;
+    list_topics(State(state), user, TopicScope::Personal).await
+}
+
+async fn me_create_topic(
+    State(state): State<AppState>,
+    user: User,
+    request: ApiJson<CreateTopic>,
+) -> Result<(StatusCode, Json<Topic>)> {
+    auth::require_personal(&user)?;
+    create_topic(State(state), user, request, TopicScope::Personal).await
+}
+
+async fn me_update_topic(
+    State(state): State<AppState>,
+    user: User,
+    path: Path<String>,
+    fields: ApiJson<TopicFields>,
+) -> Result<Json<Topic>> {
+    auth::require_personal(&user)?;
+    update_topic(State(state), user, path, fields, TopicScope::Personal).await
+}
+
+async fn me_delete_topic(
+    State(state): State<AppState>,
+    user: User,
+    path: Path<String>,
+) -> Result<Response> {
+    auth::require_personal(&user)?;
+    delete_topic(State(state), user, path, TopicScope::Personal).await
+}
+
+async fn me_run_topic(
+    State(state): State<AppState>,
+    user: User,
+    path: Path<String>,
+) -> Result<(StatusCode, Json<serde_json::Value>)> {
+    auth::require_personal(&user)?;
+    run_topic(State(state), user, path, TopicScope::Personal).await
+}
+
+async fn me_list_runs(
+    State(state): State<AppState>,
+    user: User,
+    path: Path<String>,
+    query: ApiQuery<RunsQuery>,
+) -> Result<Json<Vec<Run>>> {
+    auth::require_personal(&user)?;
+    list_runs(State(state), user, path, query, TopicScope::Personal).await
+}
+
+async fn me_list_items(
+    State(state): State<AppState>,
+    user: User,
+    path: Path<String>,
+    query: ApiQuery<ItemsQuery>,
+) -> Result<Json<Vec<Item>>> {
+    auth::require_personal(&user)?;
+    list_items(State(state), user, path, query, TopicScope::Personal).await
+}
+
+async fn me_update_item(
+    State(state): State<AppState>,
+    user: User,
+    path: Path<Uuid>,
+    request: ApiJson<UpdateItem>,
+) -> Result<Json<Item>> {
+    auth::require_personal(&user)?;
+    update_item(State(state), user, path, request, TopicScope::Personal).await
+}
+
+async fn me_delete_item(
+    State(state): State<AppState>,
+    user: User,
+    path: Path<Uuid>,
+) -> Result<Response> {
+    auth::require_personal(&user)?;
+    delete_item(State(state), user, path, TopicScope::Personal).await
+}
+
+async fn admin_status(
+    State(state): State<AppState>,
+    user: User,
+) -> Result<Json<serde_json::Value>> {
+    auth::require_admin(&user)?;
+    status(State(state), user, TopicScope::Public).await
+}
+
+async fn admin_list_topics(State(state): State<AppState>, user: User) -> Result<Json<Vec<Topic>>> {
+    auth::require_admin(&user)?;
+    list_topics(State(state), user, TopicScope::Public).await
+}
+
+async fn admin_create_topic(
+    State(state): State<AppState>,
+    user: User,
+    request: ApiJson<CreateTopic>,
+) -> Result<(StatusCode, Json<Topic>)> {
+    auth::require_admin(&user)?;
+    create_topic(State(state), user, request, TopicScope::Public).await
+}
+
+async fn admin_update_topic(
+    State(state): State<AppState>,
+    user: User,
+    path: Path<String>,
+    fields: ApiJson<TopicFields>,
+) -> Result<Json<Topic>> {
+    auth::require_admin(&user)?;
+    update_topic(State(state), user, path, fields, TopicScope::Public).await
+}
+
+async fn admin_delete_topic(
+    State(state): State<AppState>,
+    user: User,
+    path: Path<String>,
+) -> Result<Response> {
+    auth::require_admin(&user)?;
+    delete_topic(State(state), user, path, TopicScope::Public).await
+}
+
+async fn admin_run_topic(
+    State(state): State<AppState>,
+    user: User,
+    path: Path<String>,
+) -> Result<(StatusCode, Json<serde_json::Value>)> {
+    auth::require_admin(&user)?;
+    run_topic(State(state), user, path, TopicScope::Public).await
+}
+
+async fn admin_list_runs(
+    State(state): State<AppState>,
+    user: User,
+    path: Path<String>,
+    query: ApiQuery<RunsQuery>,
+) -> Result<Json<Vec<Run>>> {
+    auth::require_admin(&user)?;
+    list_runs(State(state), user, path, query, TopicScope::Public).await
+}
+
+async fn admin_list_items(
+    State(state): State<AppState>,
+    user: User,
+    path: Path<String>,
+    query: ApiQuery<ItemsQuery>,
+) -> Result<Json<Vec<Item>>> {
+    auth::require_admin(&user)?;
+    list_items(State(state), user, path, query, TopicScope::Public).await
+}
+
+async fn admin_update_item(
+    State(state): State<AppState>,
+    user: User,
+    path: Path<Uuid>,
+    request: ApiJson<UpdateItem>,
+) -> Result<Json<Item>> {
+    auth::require_admin(&user)?;
+    update_item(State(state), user, path, request, TopicScope::Public).await
+}
+
+async fn admin_delete_item(
+    State(state): State<AppState>,
+    user: User,
+    path: Path<Uuid>,
+) -> Result<Response> {
+    auth::require_admin(&user)?;
+    delete_item(State(state), user, path, TopicScope::Public).await
 }
 
 /// Translates the schema's own guarantees back into the API's error contract, so the
@@ -496,6 +1052,8 @@ mod tests {
     fn topic() -> Topic {
         Topic {
             id: "ai".into(),
+            owner_user_id: None,
+            plan_locked: false,
             name: "AI".into(),
             name_en: String::new(),
             description: String::new(),

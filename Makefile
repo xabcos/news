@@ -29,6 +29,7 @@ audit:
 js-check:
 	node --check pages/app.js
 	node --check pages/admin/app.js
+	node --check pages/me/app.js
 
 compose-check:
 	docker compose config >/dev/null

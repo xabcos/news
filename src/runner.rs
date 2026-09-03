@@ -1,16 +1,17 @@
 use crate::{
-    auth,
+    auth::{self, PlanLimits},
     error::{AppError, Result},
     fetch::{self, Known},
     state::AppState,
     topics::{self, Topic},
 };
-use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, NaiveTime, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Utc};
 use serde_json::Value;
 use std::{
     collections::HashSet,
     time::{Duration, Instant},
 };
+use tokio::sync::OwnedSemaphorePermit;
 use tokio::{task::JoinSet, time::MissedTickBehavior};
 use uuid::Uuid;
 
@@ -25,8 +26,17 @@ pub fn spawn(state: AppState) -> JoinSet<()> {
     let mut tasks = JoinSet::new();
     if state.config.scheduler_enabled {
         tasks.spawn(schedule_loop(state.clone()));
+        tasks.spawn(maintenance_loop(state));
+    } else {
+        // Read-only mode still clears stale running markers from a previous
+        // process, so the consoles do not remain stuck on "running".
+        tasks.spawn(async move {
+            if let Err(error) = recover(&state).await {
+                tracing::error!(%error, "failed to recover scheduler state");
+            }
+            maintenance_loop(state).await;
+        });
     }
-    tasks.spawn(maintenance_loop(state));
     tasks
 }
 
@@ -51,12 +61,24 @@ async fn recover(state: &AppState) -> Result<()> {
     )
     .execute(&state.pool)
     .await?;
+    // `register_run` marks the topic as running before the async task starts.
+    // Clear that marker on restart as well, otherwise both consoles would show
+    // a permanently running topic even though its run was interrupted.
+    sqlx::query(
+        "UPDATE topics
+         SET last_status = 'interrupted', consecutive_failures = consecutive_failures + 1
+         WHERE last_status = 'running'",
+    )
+    .execute(&state.pool)
+    .await?;
     let unscheduled =
         sqlx::query_as::<_, Topic>("SELECT * FROM topics WHERE enabled AND next_run_at IS NULL")
             .fetch_all(&state.pool)
             .await?;
     for topic in unscheduled {
-        reschedule(state, topic).await?;
+        if let Err(error) = reschedule_or_defer(state, topic.clone()).await {
+            tracing::warn!(topic = %topic.id, %error, "failed to recover topic schedule");
+        }
     }
     Ok(())
 }
@@ -64,13 +86,36 @@ async fn recover(state: &AppState) -> Result<()> {
 /// Recomputes and stores `next_run_at` from the topic's last run; disabled topics stay
 /// unscheduled.
 pub(crate) async fn reschedule(state: &AppState, topic: Topic) -> Result<Topic> {
+    let limits = topics::limits_for_topic(state, &topic).await?;
+    if topic.owner_user_id.is_some()
+        && !topics::personal_topic_allowed(state, &topic, limits.max_topics).await?
+    {
+        // Keep the topic visible for a later upgrade, but remove its due slot
+        // so the scheduler does not repeatedly attempt a downgraded topic.
+        return Ok(sqlx::query_as(
+            "UPDATE topics SET next_run_at = NULL WHERE id = $1 RETURNING *",
+        )
+        .bind(&topic.id)
+        .fetch_one(&state.pool)
+        .await?);
+    }
+    let mut schedule_topic = topic.clone();
+    // A plan change takes effect without rewriting every stored topic.  The
+    // effective cadence/cap are applied at each scheduling boundary.
+    if topic.owner_user_id.is_some() {
+        schedule_topic.interval_minutes = schedule_topic
+            .interval_minutes
+            .max(limits.min_interval_minutes);
+        schedule_topic.daily_run_cap = limits.daily_run_cap;
+    }
     let next = match topic.enabled {
-        true => Some(topics::next_run(
-            &topic,
+        true => Some(topics::next_run_with_min_interval(
+            &schedule_topic,
             state.config.timezone,
             Utc::now(),
             topic.last_run_at,
-            today_runs(state, &topic.id).await?,
+            today_runs(state, &topic).await?,
+            limits.min_interval_minutes,
         )),
         false => None,
     };
@@ -83,27 +128,62 @@ pub(crate) async fn reschedule(state: &AppState, topic: Topic) -> Result<Topic> 
     )
 }
 
-async fn today_runs(state: &AppState, topic_id: &str) -> Result<i64> {
-    let since = topics::to_utc(
-        state.config.timezone,
-        state.digest.today().and_time(NaiveTime::MIN),
-    );
-    Ok(
-        sqlx::query_scalar("SELECT COUNT(*) FROM runs WHERE topic_id = $1 AND started_at >= $2")
-            .bind(topic_id)
+/// A topic is already committed before scheduling is recalculated (for
+/// example after a create or a run finishes). If a transient lookup fails,
+/// leave a short retry slot instead of a permanent NULL schedule.
+pub(crate) async fn reschedule_or_defer(state: &AppState, topic: Topic) -> Result<Topic> {
+    match reschedule(state, topic.clone()).await {
+        Ok(topic) => Ok(topic),
+        Err(error) => {
+            tracing::warn!(topic = %topic.id, %error, "topic reschedule failed; deferring retry");
+            match sqlx::query_as::<_, Topic>(
+                "UPDATE topics
+                 SET next_run_at = COALESCE(next_run_at, NOW() + INTERVAL '1 minute')
+                 WHERE id = $1
+                 RETURNING *",
+            )
+            .bind(&topic.id)
+            .fetch_optional(&state.pool)
+            .await
+            {
+                Ok(Some(topic)) => Ok(topic),
+                Ok(None) => Err(error),
+                Err(defer_error) => {
+                    tracing::warn!(%defer_error, topic = %topic.id, "failed to defer topic retry");
+                    Err(error)
+                }
+            }
+        }
+    }
+}
+
+async fn today_runs(state: &AppState, topic: &Topic) -> Result<i64> {
+    let since = topics::day_start(state);
+    if let Some(owner_user_id) = topic.owner_user_id {
+        Ok(sqlx::query_scalar(
+            "SELECT COUNT(*) FROM runs JOIN topics ON topics.id = runs.topic_id WHERE topics.owner_user_id = $1 AND runs.started_at >= $2",
+        )
+        .bind(owner_user_id)
+        .bind(since)
+        .fetch_one(&state.pool)
+        .await?)
+    } else {
+        Ok(
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM runs WHERE topic_id = $1 AND started_at >= $2",
+            )
+            .bind(&topic.id)
             .bind(since)
             .fetch_one(&state.pool)
             .await?,
-    )
+        )
+    }
 }
 
 /// Claims due topics up to the free concurrency slots and starts them. Claiming clears
 /// `next_run_at`, so a topic cannot be picked twice; the run reschedules it on completion.
 async fn tick(state: &AppState) -> Result<()> {
-    let slots = state
-        .config
-        .max_concurrent_runs
-        .saturating_sub(state.in_flight().len());
+    let slots = state.run_slots.available_permits();
     if slots == 0 {
         return Ok(());
     }
@@ -125,8 +205,14 @@ async fn tick(state: &AppState) -> Result<()> {
     .await?;
     for topic in due {
         // A manual run may be in flight; it reschedules the topic when it finishes.
-        if let Err(error) = start(state, topic, "schedule").await {
+        if let Err(error) = start(state, topic.clone(), "schedule").await {
             tracing::info!(%error, "scheduled run skipped");
+            // Claiming clears next_run_at.  If admission rejected the run,
+            // put the topic back on a future slot instead of silently stopping
+            // its schedule.
+            if let Err(reschedule_error) = reschedule_or_defer(state, topic).await {
+                tracing::warn!(%reschedule_error, "failed to reschedule skipped topic");
+            }
         }
     }
     Ok(())
@@ -138,12 +224,122 @@ pub(crate) async fn start(
     topic: Topic,
     triggered_by: &'static str,
 ) -> Result<Uuid> {
+    let permit = state
+        .run_slots
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| AppError::TooManyRequests("当前运行任务较多，请稍后重试".into()))?;
     if !state.in_flight().insert(topic.id.clone()) {
+        drop(permit);
         return Err(AppError::Conflict("该主题正在抓取中".into()));
     }
     let run_id = Uuid::new_v4();
     let started_at = Utc::now();
-    let registered = sqlx::query(
+    let topic_id = topic.id.clone();
+    let registered = register_run(state, &topic, run_id, started_at, triggered_by).await;
+    let topic = match registered {
+        Ok(topic) => topic,
+        Err(error) => {
+            state.in_flight().remove(&topic_id);
+            return Err(error);
+        }
+    };
+    tokio::spawn(run(state.clone(), topic, run_id, started_at, permit));
+    Ok(run_id)
+}
+
+/// Checks cadence/cost admission and inserts the running row in one transaction.
+/// A user advisory lock makes the daily cap hard across several personal topics;
+/// the topic row lock also prevents two instances from starting the same topic.
+async fn register_run(
+    state: &AppState,
+    requested: &Topic,
+    run_id: Uuid,
+    started_at: DateTime<Utc>,
+    triggered_by: &'static str,
+) -> Result<Topic> {
+    let mut transaction = state.pool.begin().await?;
+    if let Some(owner_user_id) = requested.owner_user_id {
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(owner_user_id)
+            .execute(&mut *transaction)
+            .await?;
+    }
+    let topic = sqlx::query_as::<_, Topic>("SELECT * FROM topics WHERE id = $1 FOR UPDATE")
+        .bind(&requested.id)
+        .fetch_optional(&mut *transaction)
+        .await?
+        .ok_or_else(|| AppError::NotFound("主题不存在".into()))?;
+    if !topic.enabled {
+        return Err(AppError::Conflict("该主题已停用".into()));
+    }
+    let limits = if let Some(owner_user_id) = topic.owner_user_id {
+        let pro_until = sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+            "SELECT pro_until FROM users WHERE id = $1",
+        )
+        .bind(owner_user_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if pro_until.is_some_and(|until| until > Utc::now()) {
+            auth::PRO_LIMITS
+        } else {
+            auth::FREE_LIMITS
+        }
+    } else {
+        PlanLimits {
+            max_topics: i64::MAX,
+            min_interval_minutes: 15,
+            daily_run_cap: topic.daily_run_cap.max(1),
+        }
+    };
+    if let Some(owner_user_id) = topic.owner_user_id {
+        let position = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM topics
+             WHERE owner_user_id = $1
+               AND (created_at < $2 OR (created_at = $2 AND id <= $3))",
+        )
+        .bind(owner_user_id)
+        .bind(topic.created_at)
+        .bind(&topic.id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if position > limits.max_topics {
+            return Err(AppError::Conflict(
+                "当前套餐只支持部分主题，请升级 Pro 或删除多余主题".into(),
+            ));
+        }
+    }
+    let interval = i64::from(topic.interval_minutes.max(limits.min_interval_minutes));
+    if let Some(last) = topic.last_run_at {
+        let elapsed = (Utc::now() - last).num_minutes();
+        if elapsed < interval {
+            return Err(AppError::TooManyRequests(
+                format!("请在 {} 分钟后再运行该主题", interval - elapsed).into(),
+            ));
+        }
+    }
+    let since = topics::day_start(state);
+    let runs_today = if let Some(owner_user_id) = topic.owner_user_id {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM runs JOIN topics ON topics.id = runs.topic_id WHERE topics.owner_user_id = $1 AND runs.started_at >= $2",
+        )
+        .bind(owner_user_id)
+        .bind(since)
+        .fetch_one(&mut *transaction)
+        .await?
+    } else {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM runs WHERE topic_id = $1 AND started_at >= $2",
+        )
+        .bind(&topic.id)
+        .bind(since)
+        .fetch_one(&mut *transaction)
+        .await?
+    };
+    if runs_today >= i64::from(limits.daily_run_cap) {
+        return Err(AppError::TooManyRequests("今日运行次数已达到上限".into()));
+    }
+    sqlx::query(
         "INSERT INTO runs (id, topic_id, triggered_by, status, started_at, model) VALUES ($1, $2, $3, 'running', $4, $5)",
     )
     .bind(run_id)
@@ -151,17 +347,26 @@ pub(crate) async fn start(
     .bind(triggered_by)
     .bind(started_at)
     .bind(&topic.model)
-    .execute(&state.pool)
-    .await;
-    if let Err(error) = registered {
-        state.in_flight().remove(&topic.id);
-        return Err(error.into());
-    }
-    tokio::spawn(run(state.clone(), topic, run_id, started_at));
-    Ok(run_id)
+    .execute(&mut *transaction)
+    .await?;
+    // Reserve the cadence before releasing the row lock. This also prevents a
+    // second process from starting the same topic while the first fetch runs.
+    sqlx::query("UPDATE topics SET last_run_at = $2, last_status = 'running' WHERE id = $1")
+        .bind(&topic.id)
+        .bind(started_at)
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+    Ok(topic)
 }
 
-async fn run(state: AppState, topic: Topic, run_id: Uuid, started_at: DateTime<Utc>) {
+async fn run(
+    state: AppState,
+    topic: Topic,
+    run_id: Uuid,
+    started_at: DateTime<Utc>,
+    _permit: OwnedSemaphorePermit,
+) {
     let clock = Instant::now();
     let outcome =
         match tokio::time::timeout(state.config.fetch_timeout, execute(&state, &topic, run_id))
@@ -171,7 +376,16 @@ async fn run(state: AppState, topic: Topic, run_id: Uuid, started_at: DateTime<U
             Err(_) => Err(AppError::Internal("抓取超时".into())),
         };
     let status = if outcome.is_ok() { "ok" } else { "failed" };
-    match finish(&state, &topic.id, run_id, started_at, outcome).await {
+    match finish(
+        &state,
+        &topic.id,
+        topic.owner_user_id.is_none(),
+        run_id,
+        started_at,
+        outcome,
+    )
+    .await
+    {
         Ok(()) => tracing::info!(
             topic = %topic.id,
             status,
@@ -278,6 +492,7 @@ async fn execute(state: &AppState, topic: &Topic, run_id: Uuid) -> Result<Comple
 async fn finish(
     state: &AppState,
     topic_id: &str,
+    public_topic: bool,
     run_id: Uuid,
     started_at: DateTime<Utc>,
     outcome: Result<Completed>,
@@ -285,7 +500,7 @@ async fn finish(
     let (status, refreshed_day) = match outcome {
         Ok(done) => {
             let usage = &done.usage;
-            sqlx::query(
+            if let Err(error) = sqlx::query(
                 "UPDATE runs SET status = 'ok', finished_at = NOW(), response_id = $2, input_tokens = $3, cached_tokens = $4, \
                  output_tokens = $5, reasoning_tokens = $6, web_search_calls = $7, x_search_calls = $8, cost_ticks = $9, \
                  returned_count = $10, new_count = $11, dup_count = $12, dropped_count = $13, payload = $14 WHERE id = $1",
@@ -305,21 +520,29 @@ async fn finish(
             .bind(done.dropped)
             .bind(&done.payload)
             .execute(&state.pool)
-            .await?;
+            .await
+            {
+                defer_after_finish_error(state, topic_id).await;
+                return Err(error.into());
+            }
             ("ok", (done.new > 0).then_some(done.day))
         }
         Err(error) => {
-            sqlx::query(
+            if let Err(update_error) = sqlx::query(
                 "UPDATE runs SET status = 'failed', finished_at = NOW(), error = $2 WHERE id = $1",
             )
             .bind(run_id)
             .bind(error.to_string())
             .execute(&state.pool)
-            .await?;
+            .await
+            {
+                defer_after_finish_error(state, topic_id).await;
+                return Err(update_error.into());
+            }
             ("failed", None)
         }
     };
-    let topic = sqlx::query_as::<_, Topic>(
+    let topic = match sqlx::query_as::<_, Topic>(
         "UPDATE topics SET last_run_at = $2, last_status = $3, \
          consecutive_failures = CASE WHEN $3 = 'ok' THEN 0 ELSE consecutive_failures + 1 END \
          WHERE id = $1 RETURNING *",
@@ -328,12 +551,39 @@ async fn finish(
     .bind(started_at)
     .bind(status)
     .fetch_one(&state.pool)
-    .await?;
-    reschedule(state, topic).await?;
-    if let Some(day) = refreshed_day {
+    .await
+    {
+        Ok(topic) => topic,
+        Err(error) => {
+            // The claim cleared next_run_at before the fetch started. A transient
+            // status-write failure must not turn the topic into a permanent orphan.
+            defer_after_finish_error(state, topic_id).await;
+            return Err(error.into());
+        }
+    };
+    reschedule_or_defer(state, topic).await?;
+    if public_topic && let Some(day) = refreshed_day {
         state.digest.refresh(state, topic_id, day).await?;
     }
     Ok(())
+}
+
+/// A claimed topic has `next_run_at = NULL` until `finish` schedules it again.
+/// If either completion write fails, leave a short retry slot so a transient
+/// database error cannot orphan the topic indefinitely.
+async fn defer_after_finish_error(state: &AppState, topic_id: &str) {
+    if let Err(error) = sqlx::query(
+        "UPDATE topics
+         SET next_run_at = COALESCE(next_run_at, NOW() + INTERVAL '1 minute'),
+             last_status = CASE WHEN last_status = 'running' THEN 'interrupted' ELSE last_status END
+         WHERE id = $1",
+    )
+    .bind(topic_id)
+    .execute(&state.pool)
+    .await
+    {
+        tracing::warn!(%error, topic = %topic_id, "failed to defer topic after finish error");
+    }
 }
 
 /// Every minute: roll the day over when the local date changes; hourly: expire auth rows.

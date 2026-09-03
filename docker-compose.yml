@@ -13,12 +13,18 @@ services:
     environment:
       TZ: Asia/Shanghai
       DATABASE_URL: postgres://postgres:io@news-postgres:5432/news?sslmode=disable
-      PUBLIC_BASE_URL: https://news.xairouter.com
-      NEWS_ALLOWED_EMAILS: ywgx@xabcloud.com,ywgx@xairouter.com
+      PUBLIC_BASE_URL: https://news.xairouter.com/
+      NEWS_ADMIN_EMAILS: ${NEWS_ADMIN_EMAILS:-ywgx@xabcloud.com,ywgx@xairouter.com}
       NEWS_TIMEZONE: Asia/Shanghai
       REDIS_ADDR: news-redis:6379
       REDIS_DB: 1
       AI_BASE_URL: https://api.zairouter.com
+      # Leave these empty to disable checkout in local/staging deployments.
+      YPAY_BASE_URL: ${YPAY_BASE_URL:-}
+      YPAY_TENANT_CODE: ${YPAY_TENANT_CODE:-news}
+      YPAY_STORE_API_KEY: ${YPAY_STORE_API_KEY:-}
+      YPAY_PAY_METHOD: ${YPAY_PAY_METHOD:-native}
+      PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET:-}
       # Provided by .env (0600); never written into this file.
       AI_API_KEY: ${AI_API_KEY}
     networks: [network]
@@ -28,6 +34,7 @@ services:
     image: proxyxai/mail
     pull_policy: always
     restart: always
+    stop_grace_period: 45s
     depends_on: [news-redis]
     environment:
       TZ: Asia/Shanghai
