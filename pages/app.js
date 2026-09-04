@@ -412,7 +412,7 @@ function updateDaybar(digest) {
   const total = totalItems(digest);
   const updated = groups.map((group) => group.updated_at).filter(Boolean).sort().pop();
 
-  el.title.textContent = digest.day ? formatDay(digest.day, digest.timezone) : "𝐍𝐞𝐰𝐬";
+  el.title.textContent = digest.day ? formatDay(digest.day, digest.timezone) : "𝑵𝒆𝒘𝒔";
   el.meta.textContent = digest.day
     ? [updated && `${t().updated} ${formatTime(updated, digest.timezone)}`, t().items(total)].filter(Boolean).join(" · ")
     : "";
