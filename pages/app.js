@@ -261,7 +261,7 @@ function render() {
   const total = groups.reduce((sum, group) => sum + group.total, 0);
   const updated = groups.map((group) => group.updated_at).filter(Boolean).sort().pop();
 
-  el.title.textContent = digest.day ? formatDay(digest.day, digest.timezone) : "NEWS";
+  el.title.textContent = digest.day ? formatDay(digest.day, digest.timezone) : "𝐍𝐞𝐰𝐬";
   el.meta.textContent = digest.day
     ? [updated && `${t().updated} ${formatTime(updated, digest.timezone)}`, t().items(total)].filter(Boolean).join(" · ")
     : "";

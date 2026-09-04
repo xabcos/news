@@ -197,7 +197,7 @@ async function finishLogin(token) {
       body: JSON.stringify({ token }),
       skipAuthRedirect: true,
     }));
-    showToast("已登录 NEWS");
+    showToast("已登录 𝐍𝐞𝐰𝐬");
   } finally {
     state.loginInFlight = false;
   }

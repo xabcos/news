@@ -205,6 +205,7 @@ p { margin-top: 0; }
 .daybar .button-icon { width: 1.9rem; height: 1.9rem; font-size: 1.1rem; }
 
 .status { min-height: 1.5rem; padding: .5rem 0; text-align: center; }
+.status:empty { min-height: 0; padding: 0; }
 
 .group + .group { margin-top: 1.5rem; }
 .group-title {
