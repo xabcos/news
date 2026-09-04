@@ -87,6 +87,7 @@ p { margin-top: 0; }
   letter-spacing: .04em;
   text-decoration: none;
 }
+.brand h1 { margin: 0; font: inherit; }
 .brand-logo { width: 1.75rem; height: 1.35rem; }
 .brand-tag {
   padding: .1rem .45rem;
