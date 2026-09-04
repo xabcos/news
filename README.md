@@ -33,6 +33,7 @@ GET https://news.xairouter.com/feed.xml?topic=ai
 - **成本**：每次抓取约 $0.06–0.10（`usage.cost_in_usd_ticks`，1 tick = 1e-10 USD）。管理页按次显示 tokens、搜索次数和成本，以及今日合计。
 - **个人主题**：登录后首页保留公共主题，并追加当前账户启用的个人主题；`/me/` 负责管理个人主题。个人主题不会进入公共 digest；管理员主题仍是公共内容源。
 - **个人排程**：个人主题默认每天 06:00–24:00 运行，用户只需设置抓取间隔；Free/Pro 的最短间隔分别为 120/60 分钟。
+- **访问统计**：公共首页通过同源 `stats.js` 向 Stats 发送匿名页面访问；查询参数、锚点、主题切换和无限下拉不会重复计数。统计失败不影响页面使用，个人空间和管理页不接入统计。
 
 ## 本地运行
 
@@ -125,7 +126,7 @@ CI 与 broadcast 相同：`quality-gate.yml` 执行 `make release-check`；`buil
 ## 验证
 
 ```bash
-make release-check   # fmt、test、clippy、三份 JS 语法、compose 配置
+make release-check   # fmt、test、clippy、四份 JS 语法、compose 配置
 ```
 
 单元测试覆盖调度计算、URL 规范化与指纹、标题相似度、条目校验、真实 Responses 返回样例（`tests/fixtures/`）的解析、ETag/304。

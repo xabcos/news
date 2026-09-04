@@ -27,6 +27,7 @@ audit:
 
 # One file per invocation: node only syntax-checks the first path it is given.
 js-check:
+	node --check pages/stats.js
 	node --check pages/app.js
 	node --check pages/admin/app.js
 	node --check pages/me/app.js
