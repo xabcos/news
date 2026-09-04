@@ -188,6 +188,10 @@ p { margin-top: 0; }
 .status { min-height: 1.5rem; padding: .5rem 0; text-align: center; }
 .status:empty { min-height: 0; padding: 0; }
 
+@media (max-width: 768px) {
+  .digest { touch-action: pan-y pinch-zoom; }
+}
+
 .day-block {
   content-visibility: auto;
 }

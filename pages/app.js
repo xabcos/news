@@ -6,6 +6,9 @@ const PAGE_LIMIT = 100;
 // Keep the simple timeline bounded to the archive window exposed by the API.
 const DAYS_LIMIT = 366;
 const PRELOAD_MARGIN = "0px 0px 70% 0px";
+const SWIPE_MIN_DISTANCE = 48;
+const SWIPE_AXIS_RATIO = 1.2;
+const MOBILE_QUERY = "(max-width: 768px)";
 const storage = (() => {
   try {
     const store = window.localStorage;
@@ -61,7 +64,6 @@ const state = {
   historyLoading: false,
   historyError: false,
   historyDone: false,
-  historyObserver: null,
   // Items first collected after the previous visit get a NEW mark.
   lastVisit: Number(storage.getItem("news.lastVisit")) || Date.now(),
   epoch: 0,
@@ -98,6 +100,7 @@ async function init() {
   }, REFRESH_MS);
   autoHideTopbar();
   setupInfiniteScroll();
+  setupTopicSwipe();
 
   await resolveViewer();
   await loadCatalog();
@@ -294,7 +297,7 @@ async function loadOlder() {
       return;
     }
     state.timeline.push({ day: digest.day, digest });
-    el.digest.append(renderDayBlock(digest, state.timeline.length - 1));
+    el.digest.append(renderDayBlock(digest));
     updateHistoryBoundary();
   } catch {
     if (timeline === state.timeline) state.historyError = true;
@@ -316,16 +319,67 @@ function maybeLoadOlder() {
 function setupInfiniteScroll() {
   if (!el.loadMore) return;
   if (typeof window.IntersectionObserver === "function") {
-    state.historyObserver = new window.IntersectionObserver(
+    const observer = new window.IntersectionObserver(
       (entries) => entries.some((entry) => entry.isIntersecting) && loadOlder(),
       { rootMargin: PRELOAD_MARGIN },
     );
-    state.historyObserver.observe(el.loadMore);
+    observer.observe(el.loadMore);
     return;
   }
   window.addEventListener("scroll", () => {
     if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - window.innerHeight) loadOlder();
   }, { passive: true });
+}
+
+// On a phone, a horizontal gesture over the feed moves between topics. Keep the
+// tab strip's native horizontal scrolling and article links untouched.
+function setupTopicSwipe() {
+  if (!el.digest || typeof window.PointerEvent !== "function" || typeof window.matchMedia !== "function") return;
+  const mobile = window.matchMedia(MOBILE_QUERY);
+  let gesture = null;
+
+  const reset = () => { gesture = null; };
+  const isInteractive = (target) => Boolean(target?.closest?.("a, button, input, textarea, select, [contenteditable]"));
+
+  el.digest.addEventListener("pointerdown", (event) => {
+    if (!event.isPrimary || event.pointerType !== "touch" || !mobile.matches || isInteractive(event.target)) {
+      reset();
+      return;
+    }
+    gesture = { id: event.pointerId, x: event.clientX, y: event.clientY };
+  }, { passive: true });
+
+  window.addEventListener("pointerup", (event) => {
+    if (!gesture || event.pointerId !== gesture.id) return;
+    const { x, y } = gesture;
+    reset();
+    const dx = event.clientX - x;
+    const dy = event.clientY - y;
+    if (Math.abs(dx) < SWIPE_MIN_DISTANCE || Math.abs(dx) <= Math.abs(dy) * SWIPE_AXIS_RATIO) return;
+    changeTopic(dx < 0 ? 1 : -1);
+  }, { passive: true });
+  window.addEventListener("pointercancel", (event) => {
+    if (gesture?.id === event.pointerId) reset();
+  }, { passive: true });
+}
+
+function changeTopic(direction) {
+  const topicIds = ["", ...state.topics.map((topic) => topic.id)];
+  const current = topicIds.indexOf(state.topic);
+  const next = (current < 0 ? 0 : current) + direction;
+  if (next < 0 || next >= topicIds.length) return;
+
+  el.topbar.classList.remove("is-hidden");
+  document.scrollingElement.scrollTop = 0;
+  navigate({ topic: topicIds[next], day: "" });
+  window.requestAnimationFrame(() => {
+    const active = el.tabs.querySelector('[aria-current="true"]');
+    active?.scrollIntoView?.({
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+      block: "nearest",
+      inline: "center",
+    });
+  });
 }
 
 function updateHistoryLoader() {
