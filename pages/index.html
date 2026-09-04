@@ -20,6 +20,7 @@
     </a>
     <nav id="tabs" class="tabs" aria-label="主题"></nav>
     <div class="tools">
+      <a id="meLink" class="space-link button button-quiet button-small" href="/me/">我的空间</a>
       <button id="langToggle" class="button button-quiet button-small" type="button">EN</button>
     </div>
   </header>
@@ -35,12 +36,8 @@
     </div>
     <div id="status" class="status" role="status" aria-live="polite"></div>
     <div id="digest" class="digest"></div>
+    <div id="loadMore" class="load-more" role="status" aria-live="polite"></div>
   </main>
-
-  <footer class="foot muted small">
-    <span id="footNote">由 <a href="https://xairouter.com" rel="noopener noreferrer">XAI</a> 提供支持</span>
-    <span class="foot-links"><a id="meLink" href="/me/">我的空间</a><a href="/digest">API</a><a href="/feed.xml">Atom</a></span>
-  </footer>
 
   <script src="/app.js" defer></script>
   <script async src="https://card.xairouter.com/embed.js" referrerpolicy="no-referrer"

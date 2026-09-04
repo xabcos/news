@@ -3,6 +3,9 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const REFRESH_MS = 5 * 60 * 1000;
 const PAGE_LIMIT = 100;
+// Keep the simple timeline bounded to the archive window exposed by the API.
+const DAYS_LIMIT = 366;
+const PRELOAD_MARGIN = "0px 0px 70% 0px";
 const storage = (() => {
   try {
     const store = window.localStorage;
@@ -30,18 +33,18 @@ const storage = (() => {
 const TEXT = {
   zh: {
     locale: "zh-CN", lang: "EN", all: "全部", today: "今天", updated: "更新于", top: "重要",
-    fresh: "NEW", loading: "加载中…", failed: "加载失败", retry: "重试",
+    fresh: "NEW", loading: "加载中…", loadingOlder: "加载更早内容…", failed: "加载失败", retry: "重试",
     empty: "这一天还没有内容", latest: "查看最近有内容的一天", prev: "前一天", next: "后一天",
     space: "我的空间", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
-    items: (n) => `${n} 条`, note: ["由 ", " 提供支持"],
+    items: (n) => `${n} 条`,
   },
   en: {
     locale: "en", lang: "中文", all: "All", today: "Today", updated: "Updated", top: "Top",
-    fresh: "NEW", loading: "Loading…", failed: "Failed to load", retry: "Retry",
+    fresh: "NEW", loading: "Loading…", loadingOlder: "Loading older news…", failed: "Failed to load", retry: "Retry",
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
     prev: "Previous day", next: "Next day",
     space: "My space", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
-    items: (n) => `${n} ${n === 1 ? "item" : "items"}`, note: ["Powered by ", ""],
+    items: (n) => `${n} ${n === 1 ? "item" : "items"}`,
   },
 };
 
@@ -53,7 +56,13 @@ const state = {
   topics: [],
   days: [],
   digest: null,
+  // One digest per loaded day; navigation/reload starts a fresh, bounded timeline.
+  timeline: [],
   personal: false,
+  historyLoading: false,
+  historyError: false,
+  historyDone: false,
+  historyObserver: null,
   // Items first collected after the previous visit get a NEW mark.
   lastVisit: Number(storage.getItem("news.lastVisit")) || Date.now(),
   epoch: 0,
@@ -63,7 +72,7 @@ storage.setItem("news.lastVisit", String(Date.now()));
 const el = {
   topbar: $("#topbar"), tabs: $("#tabs"), lang: $("#langToggle"), me: $("#meLink"),
   prev: $("#prevDay"), next: $("#nextDay"),
-  title: $("#dayTitle"), meta: $("#dayMeta"), status: $("#status"), digest: $("#digest"), note: $("#footNote"),
+  title: $("#dayTitle"), meta: $("#dayMeta"), status: $("#status"), digest: $("#digest"), loadMore: $("#loadMore"),
 };
 const t = () => TEXT[state.lang];
 
@@ -72,11 +81,12 @@ document.addEventListener("DOMContentLoaded", init);
 async function init() {
   applyLang();
   el.lang.addEventListener("click", () => {
+    const scrollTop = window.scrollY;
     state.lang = state.lang === "zh" ? "en" : "zh";
     storage.setItem("news.lang", state.lang);
     applyLang();
     renderTabs();
-    render();
+    render(true, scrollTop);
   });
   el.prev.addEventListener("click", () => step(1));
   el.next.addEventListener("click", () => step(-1));
@@ -91,6 +101,7 @@ async function init() {
     if (document.visibilityState === "visible" && !state.day) load(true);
   }, REFRESH_MS);
   autoHideTopbar();
+  setupInfiniteScroll();
 
   await resolveViewer();
   await loadCatalog();
@@ -147,9 +158,38 @@ function search(extra = {}) {
   return query ? `?${query}` : "";
 }
 
+function catalogPath() {
+  const params = new URLSearchParams();
+  if (state.topic) params.set("topic", state.topic);
+  params.set("limit", String(DAYS_LIMIT));
+  return `/days?${params}`;
+}
+
+function dayPath(day) {
+  const params = new URLSearchParams({ day, limit: String(PAGE_LIMIT) });
+  if (state.topic) params.set("topic", state.topic);
+  return `${state.personal ? "/api/me/feed" : "/digest"}?${params}`;
+}
+
+function normalizeDays(payload) {
+  const values = Array.isArray(payload) ? payload : payload?.days || [];
+  return values
+    .map((entry) => typeof entry === "string" ? entry : entry?.day)
+    .filter((day, index, list) => day && list.indexOf(day) === index);
+}
+
 async function load(silent = false) {
   const epoch = ++state.epoch;
-  if (!silent) setStatus(t().loading);
+  if (!silent) {
+    state.digest = null;
+    state.timeline = [];
+    state.historyLoading = false;
+    state.historyError = false;
+    state.historyDone = false;
+    el.digest.replaceChildren();
+    updateHistoryLoader();
+    setStatus(t().loading);
+  }
   try {
     let digest;
     let days;
@@ -159,22 +199,35 @@ async function load(silent = false) {
       days = payload?.days || [];
       if (epoch === state.epoch && Array.isArray(payload?.topics)) state.topics = payload.topics;
     } else {
-      const topicQuery = state.topic ? `?topic=${encodeURIComponent(state.topic)}` : "";
       [digest, days] = await Promise.all([
         fetchJson(`/digest${search({ limit: PAGE_LIMIT })}`),
-        fetchJson(`/days${topicQuery}`),
+        fetchJson(catalogPath()),
       ]);
     }
     if (epoch !== state.epoch) return;
-    state.days = (Array.isArray(days) ? days : days?.days || []).map((entry) =>
-      typeof entry === "string" ? entry : entry?.day,
-    ).filter(Boolean);
+    state.days = normalizeDays(days);
     if (state.personal) renderTabs();
     // A background refresh only repaints when something actually changed.
-    if (silent && JSON.stringify(digest.topics) === JSON.stringify(state.digest?.topics)) return;
-    state.digest = digest;
+    if (silent
+      && digest?.day === state.digest?.day
+      && JSON.stringify(digest?.topics) === JSON.stringify(state.digest?.topics)) {
+      updateDaybar(state.digest);
+      updateHistoryBoundary();
+      setStatus("");
+      updateHistoryLoader();
+      return;
+    }
+    if (silent && state.timeline.length) {
+      if (state.timeline[0].day === digest?.day) state.timeline[0] = { day: digest?.day || "", digest };
+      else state.timeline.unshift({ day: digest?.day || "", digest });
+    } else {
+      state.timeline = [{ day: digest?.day || "", digest }];
+    }
+    state.digest = state.timeline[0].digest;
+    state.historyError = false;
+    updateHistoryBoundary();
     setStatus("");
-    render();
+    render(silent);
   } catch (error) {
     // If a session expires while the page is open, switch back to the public feed
     // instead of leaving a private page permanently stuck on an auth error.
@@ -185,6 +238,9 @@ async function load(silent = false) {
       state.topics = [];
       state.days = [];
       state.digest = null;
+      state.timeline = [];
+      state.historyDone = false;
+      state.historyError = false;
       history.replaceState({}, "", `${location.pathname}${search()}`);
       await loadCatalog();
       renderTabs();
@@ -197,11 +253,96 @@ async function load(silent = false) {
     if (state.personal && error.status === 404 && state.topic && epoch === state.epoch) {
       state.topic = "";
       state.day = "";
+      state.timeline = [];
+      state.digest = null;
       history.replaceState({}, "", `${location.pathname}${search()}`);
       await load(silent);
       return;
     }
     if (epoch === state.epoch && !silent) setStatus(t().failed, true);
+  }
+}
+
+function nextTimelineDay() {
+  const lastDay = state.timeline[state.timeline.length - 1]?.day;
+  if (!lastDay) return state.days[0];
+  const index = state.days.indexOf(lastDay);
+  if (index >= 0) return state.days[index + 1];
+  return state.days.find((day) => day < lastDay);
+}
+
+function updateHistoryBoundary() {
+  state.historyDone = !nextTimelineDay();
+}
+
+async function loadOlder() {
+  if (state.historyLoading || state.historyError || state.historyDone || !state.timeline.length) return;
+  const day = nextTimelineDay();
+  if (!day) {
+    state.historyDone = true;
+    updateHistoryLoader();
+    return;
+  }
+  // A five-minute refresh may replace today's digest while this request is in flight.
+  // Keep the request attached to this timeline, rather than the main-load epoch, so a
+  // harmless refresh cannot leave the loader stuck in its "loading" state.
+  const timeline = state.timeline;
+  state.historyLoading = true;
+  state.historyError = false;
+  updateHistoryLoader();
+  try {
+    const payload = await fetchJson(dayPath(day));
+    if (timeline !== state.timeline) return;
+    const digest = payload?.digest || payload;
+    if (!digest?.day || state.timeline.some((entry) => entry.day === digest.day)) {
+      state.historyDone = true;
+      return;
+    }
+    state.timeline.push({ day: digest.day, digest });
+    el.digest.append(renderDayBlock(digest, state.timeline.length - 1));
+    updateHistoryBoundary();
+  } catch {
+    if (timeline === state.timeline) state.historyError = true;
+  } finally {
+    if (timeline === state.timeline) {
+      state.historyLoading = false;
+      updateHistoryLoader();
+      window.setTimeout(maybeLoadOlder, 0);
+    }
+  }
+}
+
+function maybeLoadOlder() {
+  if (!el.loadMore || state.historyLoading || state.historyError || state.historyDone || !state.timeline.length) return;
+  const remaining = document.documentElement.scrollHeight - window.scrollY - window.innerHeight;
+  if (remaining < window.innerHeight * .7) loadOlder();
+}
+
+function setupInfiniteScroll() {
+  if (!el.loadMore) return;
+  if (typeof window.IntersectionObserver === "function") {
+    state.historyObserver = new IntersectionObserver(
+      (entries) => entries.some((entry) => entry.isIntersecting) && loadOlder(),
+      { rootMargin: PRELOAD_MARGIN },
+    );
+    state.historyObserver.observe(el.loadMore);
+    return;
+  }
+  window.addEventListener("scroll", () => {
+    if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - window.innerHeight) loadOlder();
+  }, { passive: true });
+}
+
+function updateHistoryLoader() {
+  if (!el.loadMore) return;
+  el.loadMore.replaceChildren();
+  if (state.historyLoading) {
+    el.loadMore.append(t().loadingOlder);
+  } else if (state.historyError) {
+    el.loadMore.append(t().failed, " ", button(t().retry, () => {
+      state.historyError = false;
+      loadOlder();
+    }, "button button-quiet button-small"));
   }
 }
 
@@ -237,12 +378,7 @@ function applyLang() {
   if (el.me) el.me.textContent = t().space;
   el.prev.setAttribute("aria-label", t().prev);
   el.next.setAttribute("aria-label", t().next);
-  const [before, after] = t().note;
-  const xai = document.createElement("a");
-  xai.href = "https://xairouter.com";
-  xai.rel = "noopener noreferrer";
-  xai.textContent = "XAI";
-  el.note.replaceChildren(before, xai, after);
+  updateHistoryLoader();
 }
 
 function renderTabs() {
@@ -254,11 +390,26 @@ function renderTabs() {
   }));
 }
 
-function render() {
-  const digest = state.digest;
+function render(preserveScroll = false, scrollTop = window.scrollY) {
+  const digest = state.timeline[0]?.digest || state.digest;
   if (!digest) return;
-  const groups = digest.topics;
-  const total = groups.reduce((sum, group) => sum + group.total, 0);
+  state.digest = digest;
+  updateDaybar(digest);
+  const timeline = state.timeline.length ? state.timeline : [{ day: digest.day || "", digest }];
+  el.digest.replaceChildren(...timeline.map((entry, index) => renderDayBlock(entry.digest, index)));
+  updateHistoryLoader();
+  if (preserveScroll) {
+    // Off-screen blocks settle after the first layout pass; restore after two paints.
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      document.scrollingElement.scrollTop = scrollTop;
+    }));
+  }
+  window.setTimeout(maybeLoadOlder, 0);
+}
+
+function updateDaybar(digest) {
+  const groups = digest.topics || [];
+  const total = totalItems(digest);
   const updated = groups.map((group) => group.updated_at).filter(Boolean).sort().pop();
 
   el.title.textContent = digest.day ? formatDay(digest.day, digest.timezone) : "𝐍𝐞𝐰𝐬";
@@ -268,13 +419,36 @@ function render() {
   const index = state.days.indexOf(digest.day);
   el.prev.disabled = !(index < 0 ? state.days.length : state.days[index + 1]);
   el.next.disabled = index <= 0;
+}
 
-  if (!total) {
-    el.digest.replaceChildren(emptyState(groups));
-    return;
+function renderDayBlock(digest, index) {
+  const block = document.createElement("section");
+  block.className = "day-block";
+  block.dataset.day = digest.day || "";
+  if (index > 0 && digest.day) {
+    const divider = document.createElement("div");
+    divider.className = "day-divider";
+    const title = document.createElement("h2");
+    title.textContent = formatDay(digest.day, digest.timezone);
+    const count = document.createElement("p");
+    count.className = "muted small";
+    count.textContent = t().items(totalItems(digest));
+    divider.append(title, count);
+    block.append(divider);
   }
-  const single = groups.length === 1;
-  el.digest.replaceChildren(...groups.filter((group) => group.items.length).map((group) => {
+  if (!totalItems(digest)) {
+    block.append(emptyState(digest.topics || [], digest.day));
+    return block;
+  }
+  block.append(...renderGroups(digest));
+  return block;
+}
+
+function renderGroups(digest) {
+  const groups = digest.topics || [];
+  const visible = groups.filter((group) => (group.items || []).length);
+  const single = visible.length === 1;
+  return visible.map((group) => {
     const section = document.createElement("section");
     section.className = "group";
     if (!single) {
@@ -288,12 +462,16 @@ function render() {
       heading.append(title, count);
       section.append(heading);
     }
-    section.append(...group.items.map(card));
+    section.append(...(group.items || []).map(card));
     return section;
-  }));
+  });
 }
 
-function emptyState(groups) {
+function totalItems(digest) {
+  return (digest?.topics || []).reduce((sum, group) => sum + (group.total || 0), 0);
+}
+
+function emptyState(groups, day) {
   const box = document.createElement("div");
   box.className = "empty muted";
   box.append(state.personal ? t().personalEmpty : t().empty);
@@ -309,7 +487,7 @@ function emptyState(groups) {
     box.append(manage);
   }
   const latest = groups.map((group) => group.latest_day).filter(Boolean).sort().pop();
-  if (latest && latest !== state.digest.day) {
+  if (latest && latest !== day) {
     box.append(document.createElement("br"));
     box.append(button(`${t().latest} · ${latest}`, () => navigate({ day: "" }), "button button-secondary button-small"));
   }
