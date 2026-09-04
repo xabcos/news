@@ -2,7 +2,7 @@
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const REFRESH_MS = 5 * 60 * 1000;
-const PAGE_LIMIT = 100;
+const PAGE_LIMIT = 128;
 // Keep the simple timeline bounded to the archive window exposed by the API.
 const DAYS_LIMIT = 366;
 const PRELOAD_MARGIN = "0px 0px 70% 0px";

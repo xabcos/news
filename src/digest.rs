@@ -30,7 +30,7 @@ use tower_http::compression::CompressionLayer;
 use uuid::Uuid;
 
 const DEFAULT_LIMIT: usize = 30;
-const MAX_LIMIT: usize = 100;
+const MAX_LIMIT: usize = 128;
 const MAX_DAYS: i64 = 366;
 const FEED_LIMIT: usize = 50;
 const PERSONAL_DAYS_LIMIT: i64 = MAX_DAYS;
