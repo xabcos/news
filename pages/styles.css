@@ -184,27 +184,6 @@ p { margin-top: 0; }
 
 .public .shell { max-width: 46rem; margin: 0 auto; padding: .75rem 1.25rem 3rem; }
 
-.daybar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: .5rem;
-  margin-bottom: .2rem;
-}
-.day-heading {
-  display: flex;
-  flex: 1;
-  flex-wrap: wrap;
-  justify-content: center;
-  column-gap: .5rem;
-  min-width: 0;
-  font-size: .9rem;
-  line-height: 1.5;
-}
-.day-heading h1 { margin: 0; font-size: inherit; font-weight: 700; letter-spacing: -.01em; }
-.day-heading p { margin: 0; }
-.daybar .button-icon { width: 1.9rem; height: 1.9rem; font-size: 1.1rem; }
-
 .status { min-height: 1.5rem; padding: .5rem 0; text-align: center; }
 .status:empty { min-height: 0; padding: 0; }
 
@@ -221,7 +200,7 @@ p { margin-top: 0; }
   border-bottom: 2px solid var(--text);
 }
 .day-divider h2 { margin: 0; font-size: 1rem; font-weight: 750; letter-spacing: .01em; }
-.day-divider p { margin: 0; }
+.day-block:first-child .day-divider { margin-top: .5rem; }
 .day-block:not(:first-child) > .group:first-of-type .group-title { margin-top: .8rem; }
 .load-more {
   display: flex;

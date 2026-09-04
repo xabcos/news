@@ -32,17 +32,16 @@ const storage = (() => {
 
 const TEXT = {
   zh: {
-    locale: "zh-CN", lang: "EN", all: "全部", today: "今天", updated: "更新于", top: "重要",
+    locale: "zh-CN", lang: "EN", all: "全部", today: "今天", top: "重要",
     fresh: "NEW", loading: "加载中…", loadingOlder: "加载更早内容…", failed: "加载失败", retry: "重试",
-    empty: "这一天还没有内容", latest: "查看最近有内容的一天", prev: "前一天", next: "后一天",
+    empty: "这一天还没有内容", latest: "查看最近有内容的一天",
     space: "我的空间", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
     items: (n) => `${n} 条`,
   },
   en: {
-    locale: "en", lang: "中文", all: "All", today: "Today", updated: "Updated", top: "Top",
+    locale: "en", lang: "中文", all: "All", today: "Today", top: "Top",
     fresh: "NEW", loading: "Loading…", loadingOlder: "Loading older news…", failed: "Failed to load", retry: "Retry",
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
-    prev: "Previous day", next: "Next day",
     space: "My space", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
     items: (n) => `${n} ${n === 1 ? "item" : "items"}`,
   },
@@ -71,8 +70,7 @@ storage.setItem("news.lastVisit", String(Date.now()));
 
 const el = {
   topbar: $("#topbar"), tabs: $("#tabs"), lang: $("#langToggle"), me: $("#meLink"),
-  prev: $("#prevDay"), next: $("#nextDay"),
-  title: $("#dayTitle"), meta: $("#dayMeta"), status: $("#status"), digest: $("#digest"), loadMore: $("#loadMore"),
+  status: $("#status"), digest: $("#digest"), loadMore: $("#loadMore"),
 };
 const t = () => TEXT[state.lang];
 
@@ -88,8 +86,6 @@ async function init() {
     renderTabs();
     render(true, scrollTop);
   });
-  el.prev.addEventListener("click", () => step(1));
-  el.next.addEventListener("click", () => step(-1));
   window.addEventListener("popstate", () => {
     const params = new URLSearchParams(location.search);
     state.topic = params.get("topic") || "";
@@ -211,7 +207,6 @@ async function load(silent = false) {
     if (silent
       && digest?.day === state.digest?.day
       && JSON.stringify(digest?.topics) === JSON.stringify(state.digest?.topics)) {
-      updateDaybar(state.digest);
       updateHistoryBoundary();
       setStatus("");
       updateHistoryLoader();
@@ -321,7 +316,7 @@ function maybeLoadOlder() {
 function setupInfiniteScroll() {
   if (!el.loadMore) return;
   if (typeof window.IntersectionObserver === "function") {
-    state.historyObserver = new IntersectionObserver(
+    state.historyObserver = new window.IntersectionObserver(
       (entries) => entries.some((entry) => entry.isIntersecting) && loadOlder(),
       { rootMargin: PRELOAD_MARGIN },
     );
@@ -353,15 +348,6 @@ function navigate(changes) {
   load();
 }
 
-// state.days is newest first: +1 walks back in time, -1 forward.
-function step(direction) {
-  const current = state.digest?.day;
-  const index = state.days.indexOf(current);
-  const target = index < 0 ? (direction > 0 ? state.days[0] : undefined) : state.days[index + direction];
-  if (!target) return;
-  navigate({ day: target === state.days[0] ? "" : target });
-}
-
 function setStatus(message, failed = false) {
   el.status.replaceChildren();
   if (!message) return;
@@ -376,8 +362,6 @@ function applyLang() {
   document.documentElement.lang = t().locale;
   el.lang.textContent = t().lang;
   if (el.me) el.me.textContent = t().space;
-  el.prev.setAttribute("aria-label", t().prev);
-  el.next.setAttribute("aria-label", t().next);
   updateHistoryLoader();
 }
 
@@ -394,9 +378,8 @@ function render(preserveScroll = false, scrollTop = window.scrollY) {
   const digest = state.timeline[0]?.digest || state.digest;
   if (!digest) return;
   state.digest = digest;
-  updateDaybar(digest);
   const timeline = state.timeline.length ? state.timeline : [{ day: digest.day || "", digest }];
-  el.digest.replaceChildren(...timeline.map((entry, index) => renderDayBlock(entry.digest, index)));
+  el.digest.replaceChildren(...timeline.map((entry) => renderDayBlock(entry.digest)));
   updateHistoryLoader();
   if (preserveScroll) {
     // Off-screen blocks settle after the first layout pass; restore after two paints.
@@ -407,33 +390,16 @@ function render(preserveScroll = false, scrollTop = window.scrollY) {
   window.setTimeout(maybeLoadOlder, 0);
 }
 
-function updateDaybar(digest) {
-  const groups = digest.topics || [];
-  const total = totalItems(digest);
-  const updated = groups.map((group) => group.updated_at).filter(Boolean).sort().pop();
-
-  el.title.textContent = digest.day ? formatDay(digest.day, digest.timezone) : "𝑵𝒆𝒘𝒔";
-  el.meta.textContent = digest.day
-    ? [updated && `${t().updated} ${formatTime(updated, digest.timezone)}`, t().items(total)].filter(Boolean).join(" · ")
-    : "";
-  const index = state.days.indexOf(digest.day);
-  el.prev.disabled = !(index < 0 ? state.days.length : state.days[index + 1]);
-  el.next.disabled = index <= 0;
-}
-
-function renderDayBlock(digest, index) {
+function renderDayBlock(digest) {
   const block = document.createElement("section");
   block.className = "day-block";
   block.dataset.day = digest.day || "";
-  if (index > 0 && digest.day) {
+  if (digest.day) {
     const divider = document.createElement("div");
     divider.className = "day-divider";
     const title = document.createElement("h2");
     title.textContent = formatDay(digest.day, digest.timezone);
-    const count = document.createElement("p");
-    count.className = "muted small";
-    count.textContent = t().items(totalItems(digest));
-    divider.append(title, count);
+    divider.append(title);
     block.append(divider);
   }
   if (!totalItems(digest)) {
@@ -585,10 +551,6 @@ function formatDay(day, timeZone) {
     weekday: "long",
   }).format(new Date(year, month - 1, date));
   return day === todayIn(timeZone) ? `${t().today} · ${label}` : label;
-}
-
-function formatTime(iso, timeZone) {
-  return new Intl.DateTimeFormat(t().locale, { hour: "2-digit", minute: "2-digit", timeZone }).format(new Date(iso));
 }
 
 function relativeTime(iso) {
