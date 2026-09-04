@@ -15,9 +15,9 @@ const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const HTTP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const STATIC_MAX_AGE: &str = "public, max-age=300";
 const HTML_MAX_AGE: &str = "public, max-age=60";
-/// The public page hosts the Card embed and sends anonymous page views to Stats;
+/// The public page hosts Card and Broadcast embeds and sends anonymous page views to Stats;
 /// card images from any HTTPS origin. Everything else stays same-origin.
-const CSP: &str = "default-src 'self'; script-src 'self' https://card.xairouter.com; style-src 'self' https://card.xairouter.com; img-src 'self' data: https:; font-src 'self'; connect-src 'self' https://card.xairouter.com https://stats.xairouter.com; media-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
+const CSP: &str = "default-src 'self'; script-src 'self' https://card.xairouter.com https://broadcast.xairouter.com; style-src 'self' https://card.xairouter.com; img-src 'self' data: https:; font-src 'self'; connect-src 'self' https://card.xairouter.com https://stats.xairouter.com https://broadcast.xairouter.com; media-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
 
 pub(crate) fn router(state: AppState) -> Router {
     let pages_dir = state.config.pages_dir.clone();

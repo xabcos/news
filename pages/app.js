@@ -297,7 +297,7 @@ async function loadOlder() {
       return;
     }
     state.timeline.push({ day: digest.day, digest });
-    el.digest.append(renderDayBlock(digest));
+    el.digest.append(renderDayBlock(digest, true));
     updateHistoryBoundary();
   } catch {
     if (timeline === state.timeline) state.historyError = true;
@@ -433,7 +433,11 @@ function render(preserveScroll = false, scrollTop = window.scrollY) {
   if (!digest) return;
   state.digest = digest;
   const timeline = state.timeline.length ? state.timeline : [{ day: digest.day || "", digest }];
-  el.digest.replaceChildren(...timeline.map((entry) => renderDayBlock(entry.digest)));
+  el.digest.replaceChildren(...timeline.map((entry, index) => {
+    const day = entry.digest.day;
+    const showDayHeading = index > 0 || !day || day !== todayIn(entry.digest.timezone);
+    return renderDayBlock(entry.digest, showDayHeading);
+  }));
   updateHistoryLoader();
   if (preserveScroll) {
     // Off-screen blocks settle after the first layout pass; restore after two paints.
@@ -444,11 +448,12 @@ function render(preserveScroll = false, scrollTop = window.scrollY) {
   window.setTimeout(maybeLoadOlder, 0);
 }
 
-function renderDayBlock(digest) {
+function renderDayBlock(digest, showDayHeading = true) {
   const block = document.createElement("section");
   block.className = "day-block";
+  block.classList.toggle("day-heading-hidden", !showDayHeading);
   block.dataset.day = digest.day || "";
-  if (digest.day) {
+  if (showDayHeading && digest.day) {
     const divider = document.createElement("div");
     divider.className = "day-divider";
     const title = document.createElement("h2");
