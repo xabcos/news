@@ -8,9 +8,9 @@
   --muted: #6b7079;
   --line: rgba(23, 25, 31, .1);
   --line-strong: rgba(23, 25, 31, .18);
-  --primary: #2d5be3;
-  --primary-strong: #1f47bd;
-  --primary-soft: #e7edfc;
+  --primary: #e55235;
+  --primary-strong: #c44129;
+  --primary-soft: rgba(229, 82, 53, .08);
   --danger: #b4423a;
   --danger-soft: #f9e8e6;
   --gold: #a16207;
@@ -521,16 +521,16 @@ textarea { resize: vertical; min-height: 5.5rem; }
     --muted: #9a9fab;
     --line: rgba(233, 234, 239, .1);
     --line-strong: rgba(233, 234, 239, .18);
-    --primary: #7c9dff;
-    --primary-strong: #a3b9ff;
-    --primary-soft: rgba(124, 157, 255, .16);
+    --primary: #e55235;
+    --primary-strong: #f07a61;
+    --primary-soft: rgba(229, 82, 53, .18);
     --danger: #ef8d86;
     --danger-soft: rgba(181, 70, 63, .18);
     --gold: #e0b45a;
     --gold-soft: rgba(224, 180, 90, .16);
     --shadow: 0 24px 80px rgba(0, 0, 0, .3);
     --shadow-small: 0 12px 36px rgba(0, 0, 0, .2);
-    --on-primary: #0b1530;
+    --on-primary: #2b0f0d;
     --on-danger: #2b0f0d;
   }
   input, textarea, select, .button-secondary { background-color: rgba(10, 11, 15, .6); }
