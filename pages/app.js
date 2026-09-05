@@ -355,9 +355,9 @@ function setupTopicSwipe() {
 
 function changeTopic(direction) {
   const topicIds = ["", ...state.topics.map((topic) => topic.id)];
+  if (topicIds.length <= 1) return;
   const current = topicIds.indexOf(state.topic);
-  const next = (current < 0 ? 0 : current) + direction;
-  if (next < 0 || next >= topicIds.length) return;
+  const next = ((current < 0 ? 0 : current) + direction + topicIds.length) % topicIds.length;
 
   el.topbar.classList.remove("is-hidden");
   document.scrollingElement.scrollTop = 0;
