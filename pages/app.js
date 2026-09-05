@@ -546,11 +546,19 @@ function card(item) {
 function setupScrollControls() {
   let last = window.scrollY;
   let backToTopVisible = false;
+  let scrollAnchor = last;
   const update = () => {
     const y = Math.max(0, window.scrollY);
     if (y <= 48 || Math.abs(y - last) > 4) el.topbar.classList.toggle("is-hidden", y > last && y > 48);
-    // Separate show/hide thresholds keep the button steady while reading.
-    backToTopVisible = y > (backToTopVisible ? 100 : window.innerHeight);
+    // Track the turning point so slow scrolling counts without reacting to tiny reversals.
+    scrollAnchor = backToTopVisible ? Math.min(scrollAnchor, y) : Math.max(scrollAnchor, y);
+    if (y <= 100) {
+      backToTopVisible = false;
+      scrollAnchor = y;
+    } else if (Math.abs(y - scrollAnchor) >= 8) {
+      backToTopVisible = y < scrollAnchor && y > window.innerHeight;
+      scrollAnchor = y;
+    }
     el.backToTop.classList.toggle("is-visible", backToTopVisible);
     last = y;
   };

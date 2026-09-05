@@ -229,15 +229,15 @@ p { margin-top: 0; }
 .day-block {
   content-visibility: auto;
 }
-.day-divider {
+.day-divider, .group-title {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: .75rem;
-  margin: 2rem 0 .1rem;
   padding-bottom: .5rem;
   border-bottom: 2px solid var(--text);
 }
+.day-divider { margin: 2rem 0 .1rem; }
 .day-divider h2 { margin: 0; font-size: 1rem; font-weight: 750; letter-spacing: .01em; }
 .day-block.day-heading-hidden > .group:first-of-type .group-title { margin-top: .5rem; }
 .day-block:not(:first-child) > .group:first-of-type .group-title { margin-top: .8rem; }
@@ -254,15 +254,7 @@ p { margin-top: 0; }
 .load-more:empty { padding: 0; }
 
 .group + .group { margin-top: 1.5rem; }
-.group-title {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: .75rem;
-  margin: 1.2rem 0 .1rem;
-  padding-bottom: .5rem;
-  border-bottom: 2px solid var(--text);
-}
+.group-title { margin: 1.2rem 0 .1rem; }
 .group-title h2 { font-size: 1rem; font-weight: 750; letter-spacing: .02em; text-transform: uppercase; }
 .group-title p { margin: 0; }
 
@@ -329,7 +321,6 @@ p { margin-top: 0; }
     --muted: #9a9fab;
     --line: rgba(233, 234, 239, .1);
     --line-strong: rgba(233, 234, 239, .18);
-    --primary: #e55235;
     --primary-strong: #f07a61;
     --primary-soft: rgba(229, 82, 53, .18);
     --danger: #ef8d86;
@@ -340,7 +331,6 @@ p { margin-top: 0; }
     --on-primary: #2b0f0d;
     --on-danger: #2b0f0d;
   }
-  .button-secondary { background-color: rgba(10, 11, 15, .6); }
   .brand-logo { filter: brightness(0) invert(1); }
   .group-title { border-bottom-color: var(--line-strong); }
 }
