@@ -43,8 +43,6 @@ details[open] > summary { margin-bottom: 1rem; }
 .runs .error-cell { min-width: 10rem; max-width: 22rem; white-space: normal; overflow-wrap: anywhere; color: var(--danger); }
 .danger-text { color: var(--danger); }
 
-.boot { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: var(--bg); }
-.boot .brand-logo { width: 5rem; height: 4rem; animation: breathe 1.5s ease-in-out infinite; }
 @keyframes breathe { 0%, 100% { opacity: .4; } 50% { opacity: 1; } }
 .auth-view { min-height: 90dvh; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 2rem; }
 .auth-panel { width: min(100%, 25rem); padding: 2rem; }
@@ -111,4 +109,4 @@ fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
   .dialog-actions .button { padding: .55rem .7rem; font-size: .8rem; }
   .plan-offer { align-items: flex-start; flex-direction: column; }
 }
-@media (prefers-reduced-motion: reduce) { .boot .brand-logo, .dot.running { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .dot.running { animation: none; } }

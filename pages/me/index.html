@@ -13,7 +13,6 @@
   <link rel="stylesheet" href="/me/styles.css">
 </head>
 <body>
-  <div id="boot" class="boot" role="status" aria-label="正在打开工作台"><img class="brand-logo" src="/icon.svg" alt=""></div>
   <main class="workspace-shell">
     <section id="authView" class="auth-view hidden" aria-label="邮箱登录">
       <a class="brand brand-hero" href="/" aria-label="𝑵𝒆𝒘𝒔 首页"><img class="brand-logo" src="/icon.svg" alt=""><span>𝑵𝒆𝒘𝒔</span></a>
@@ -42,11 +41,11 @@
       </header>
       <div class="workspace-heading">
         <div><h1 id="workspaceTitle">主题</h1><p id="statusLine" class="muted small" role="status"></p></div>
-        <button id="newTopicButton" class="button button-primary" type="button">＋ 新建主题</button>
+        <button id="newTopicButton" class="button button-primary" type="button" disabled>＋ 新建主题</button>
       </div>
       <section class="panel topics-panel" aria-label="主题列表">
         <div class="panel-heading"><h2>主题</h2><button id="refreshButton" class="button button-quiet button-small" type="button">刷新</button></div>
-        <p id="topicsMessage" class="empty-state" role="status">正在载入主题…</p><ul id="topicList" class="topic-list"></ul>
+        <p id="topicsMessage" class="empty-state hidden" role="status"></p><ul id="topicList" class="topic-list"></ul>
       </section>
       <section id="contentPanel" class="panel content-panel hidden" aria-labelledby="contentTitle">
         <div class="panel-heading">

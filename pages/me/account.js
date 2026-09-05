@@ -16,11 +16,11 @@ export function createAccount(session, onChanged) {
   $("#accountButton").addEventListener("click", () => {
     openDialog(dialog);
     update();
-    void withBusy($("#accountButton"), "读取中…", async () => {
+    void withBusy($("#accountButton"), null, async () => {
       await Promise.all([onChanged(), loadPlans(), loadOrders()]);
     });
   }, { signal: session.controller.signal });
-  $("#refreshOrdersButton").addEventListener("click", () => withBusy($("#refreshOrdersButton"), "刷新中…", loadOrders), { signal: session.controller.signal });
+  $("#refreshOrdersButton").addEventListener("click", () => withBusy($("#refreshOrdersButton"), null, loadOrders), { signal: session.controller.signal });
   dialog.addEventListener("close", stopPayment, { signal: session.controller.signal });
 
   function update() {
@@ -40,7 +40,7 @@ export function createAccount(session, onChanged) {
 
   async function loadPlans() {
     catalogue = null;
-    $("#planOffer").textContent = "正在载入套餐…";
+    $("#planOffer").replaceChildren();
     let data;
     try { data = await session.request("/api/plans"); }
     catch (error) {
@@ -74,7 +74,7 @@ export function createAccount(session, onChanged) {
 
   async function loadOrders() {
     const version = ++ordersVersion;
-    $("#ordersMessage").textContent = "正在载入…";
+    $("#ordersMessage").textContent = "";
     try {
       const orders = await session.request("/api/orders");
       if (!active || version !== ordersVersion) return;

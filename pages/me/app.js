@@ -21,8 +21,9 @@ function beginAuthRequest() {
 
 async function authenticate(token) {
   const signal = beginAuthRequest();
-  showAuth();
-  $("#boot").classList.remove("hidden");
+  endSession();
+  $("#authView").classList.add("hidden");
+  $("#appView").classList.add("hidden");
   try {
     if (token) await api("/api/auth/email/consume", { method: "POST", body: { token }, signal });
     await enterApp(await api("/api/me", { signal }));
@@ -31,8 +32,6 @@ async function authenticate(token) {
       showAuth();
       if (token || error.status !== 401) reportError(error);
     }
-  } finally {
-    if (!signal.aborted) $("#boot").classList.add("hidden");
   }
 }
 
@@ -62,8 +61,8 @@ function bindEvents() {
     showAuth();
   }));
   $("#newTopicButton").addEventListener("click", () => openEditor());
-  $("#refreshButton").addEventListener("click", () => withBusy($("#refreshButton"), "刷新中…", () => refresh(session)));
-  $("#refreshItemsButton").addEventListener("click", () => withBusy($("#refreshItemsButton"), "刷新中…", () => loadItems(session)));
+  $("#refreshButton").addEventListener("click", () => withBusy($("#refreshButton"), null, () => refresh(session)));
+  $("#refreshItemsButton").addEventListener("click", () => withBusy($("#refreshItemsButton"), null, () => loadItems(session)));
   $("#itemsDay").addEventListener("change", () => void loadItems(session));
   $("#latestButton").addEventListener("click", () => { $("#itemsDay").value = ""; void loadItems(session); });
   $("#runsPanel").addEventListener("toggle", () => {
@@ -170,7 +169,8 @@ async function enterApp(data) {
   $("#accountButton").classList.toggle("hidden", s.admin);
   $("#dateTools").classList.toggle("hidden", !s.admin);
   $("#runsPanel").classList.toggle("hidden", !s.admin);
-  message("topicsMessage", "正在载入主题…");
+  $("#newTopicButton").disabled = true;
+  message("topicsMessage", "");
   try { await refresh(s); }
   catch (error) {
     if (session === s) { message("topicsMessage", "主题载入失败，请点击刷新重试。"); reportError(error); }
@@ -282,7 +282,7 @@ async function loadItems(s) {
   $("#contentTitle").textContent = topic.name;
   $("#itemsMeta").textContent = "";
   $("#itemList").replaceChildren();
-  message("itemsMessage", "正在载入内容…");
+  message("itemsMessage", "");
   try {
     const items = await s.request(`${s.base}/topics/${encodeURIComponent(id)}/items${day ? `?day=${day}` : ""}`);
     if (session !== s || version !== s.itemsVersion) return;
@@ -324,7 +324,7 @@ function renderItem(s, item) {
 async function loadRuns(s) {
   if (!s || session !== s || !s.admin || !s.selected) return;
   const version = ++s.runsVersion;
-  message("runsMessage", "正在载入运行记录…");
+  message("runsMessage", "");
   try {
     const runs = await s.request(`${s.base}/topics/${encodeURIComponent(s.selected)}/runs?limit=50`);
     if (session !== s || version !== s.runsVersion) return;

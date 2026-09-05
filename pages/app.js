@@ -36,14 +36,14 @@ const storage = (() => {
 const TEXT = {
   zh: {
     locale: "zh-CN", lang: "EN", all: "全部", today: "今天", top: "重要",
-    fresh: "NEW", loading: "加载中…", loadingOlder: "加载更早内容…", failed: "加载失败", retry: "重试",
+    fresh: "NEW", failed: "加载失败", retry: "重试",
     empty: "这一天还没有内容", latest: "查看最近有内容的一天",
     space: "工作台", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
     items: (n) => `${n} 条`,
   },
   en: {
     locale: "en", lang: "中文", all: "All", today: "Today", top: "Top",
-    fresh: "NEW", loading: "Loading…", loadingOlder: "Loading older news…", failed: "Failed to load", retry: "Retry",
+    fresh: "NEW", failed: "Failed to load", retry: "Retry",
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
     space: "Workspace", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
     items: (n) => `${n} ${n === 1 ? "item" : "items"}`,
@@ -187,7 +187,7 @@ async function load(silent = false) {
     state.historyDone = false;
     el.digest.replaceChildren();
     updateHistoryLoader();
-    setStatus(t().loading);
+    setStatus("");
   }
   try {
     let digest;
@@ -385,9 +385,7 @@ function changeTopic(direction) {
 function updateHistoryLoader() {
   if (!el.loadMore) return;
   el.loadMore.replaceChildren();
-  if (state.historyLoading) {
-    el.loadMore.append(t().loadingOlder);
-  } else if (state.historyError) {
+  if (state.historyError) {
     el.loadMore.append(t().failed, " ", button(t().retry, () => {
       state.historyError = false;
       loadOlder();

@@ -41,7 +41,7 @@ export async function withBusy(element, label, action) {
   const original = element.textContent;
   element.disabled = true;
   element.setAttribute("aria-busy", "true");
-  element.textContent = label;
+  element.textContent = label ?? original;
   try { await action(); }
   catch (error) { reportError(error); }
   finally {
