@@ -116,8 +116,8 @@ Pro 订单固定为 ¥99 / 31 天，通过 YPay 的 store-token 接口创建微�
 ```bash
 cd /home/ywgx/1/news
 printf 'NEWS_ADMIN_EMAILS=admin@example.com\nAI_API_KEY=…\nEMAIL_PASS=…\nYPAY_BASE_URL=…\nYPAY_TENANT_CODE=news\nYPAY_STORE_API_KEY=…\nPAYMENT_WEBHOOK_SECRET=…\n' > .env && chmod 0600 .env
-docker compose config >/dev/null
-docker compose up -d
+docker-compose config >/dev/null
+docker-compose up -d
 ```
 
 当前版本按全新部署设计，数据库 schema 已合并为一份初始 migration；部署前请使用空数据库（或重建 `postgres_data` volume），不要在旧的 `_sqlx_migrations` 记录上直接启动。
