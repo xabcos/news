@@ -132,12 +132,7 @@ fn is_loopback_host(host: Option<&str>) -> bool {
 async fn security_headers(request: Request, next: Next) -> Response {
     let is_private = {
         let path = request.uri().path();
-        path == "/api"
-            || path.starts_with("/api/")
-            || path == "/admin"
-            || path.starts_with("/admin/")
-            || path == "/me"
-            || path.starts_with("/me/")
+        path == "/api" || path.starts_with("/api/") || path == "/me" || path.starts_with("/me/")
     };
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
@@ -169,7 +164,7 @@ async fn security_headers(request: Request, next: Next) -> Response {
         header::STRICT_TRANSPORT_SECURITY,
         HeaderValue::from_static("max-age=31536000"),
     );
-    // The public site is meant to be found; the admin console and API are not.
+    // The public site is meant to be found; the workspace and API are not.
     if is_private {
         headers.insert(
             header::HeaderName::from_static("x-robots-tag"),

@@ -7,223 +7,120 @@
   <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f6f4">
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1115">
   <meta name="referrer" content="no-referrer">
-  <title>𝑵𝒆𝒘𝒔 · 我的主题</title>
+  <title>𝑵𝒆𝒘𝒔 · 工作台</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/me/styles.css">
 </head>
-<body class="me">
-  <div id="boot" class="boot" role="status" aria-label="正在打开个人空间">
-    <img class="brand-logo brand-logo-large" src="/icon.svg" alt="">
-  </div>
-
-  <main class="shell">
-    <section id="authView" class="auth-view hidden" aria-label="登录 𝑵𝒆𝒘𝒔">
-      <div class="me-auth-copy">
-        <a class="brand brand-hero" href="/" aria-label="𝑵𝒆𝒘𝒔 首页">
-          <img class="brand-logo" src="/icon.svg" alt="">
-          <span>𝑵𝒆𝒘𝒔</span>
-        </a>
-        <p class="muted">创建自己的新闻主题，按你的节奏获取每日重点。</p>
-      </div>
-
+<body>
+  <div id="boot" class="boot" role="status" aria-label="正在打开工作台"><img class="brand-logo" src="/icon.svg" alt=""></div>
+  <main class="workspace-shell">
+    <section id="authView" class="auth-view hidden" aria-label="邮箱登录">
+      <a class="brand brand-hero" href="/" aria-label="𝑵𝒆𝒘𝒔 首页"><img class="brand-logo" src="/icon.svg" alt=""><span>𝑵𝒆𝒘𝒔</span></a>
       <div class="panel auth-panel">
-        <form id="loginForm" novalidate>
-          <div class="eyebrow">个人空间</div>
-          <h2>邮箱登录</h2>
-          <p class="muted">我们会向你的邮箱发送一次性登录链接。</p>
-          <div class="field">
-            <label for="email">邮箱地址</label>
-            <input id="email" name="email" type="email" autocomplete="email" inputmode="email"
-                   maxlength="254" placeholder="name@example.com" required>
-          </div>
-          <button class="button button-primary button-wide" type="submit">
-            <span>继续</span><span aria-hidden="true">→</span>
-          </button>
+        <form id="loginForm">
+          <h1>登录工作台</h1><p class="muted">用邮箱登录，管理你的新闻主题。</p>
+          <label for="email">邮箱地址</label>
+          <input id="email" name="email" type="email" autocomplete="email" inputmode="email" maxlength="254" placeholder="name@example.com" required>
+          <button class="button button-primary button-wide" type="submit">发送登录链接</button>
         </form>
-
-        <div id="mailSent" class="mail-sent hidden" role="status" tabindex="-1">
-          <div class="mail-icon" aria-hidden="true">✓</div>
-          <div class="eyebrow">邮件已发送</div>
-          <h2>请查收登录链接</h2>
-          <p class="muted">登录链接已发送至 <strong id="sentEmail"></strong>。</p>
-          <a id="devLoginLink" class="button button-primary button-wide hidden" href="#">打开登录链接</a>
+        <div id="mailSent" class="hidden" role="status">
+          <h2>请查收邮件</h2><p class="muted">登录链接已发送至 <strong id="sentEmail"></strong>。</p>
+          <a id="devLoginLink" class="button button-primary button-wide hidden">打开登录链接</a>
           <button id="sendAgain" class="button button-quiet" type="button">重新输入邮箱</button>
         </div>
       </div>
     </section>
-
-    <section id="appView" class="me-app hidden" aria-label="个人主题">
-      <header class="topbar">
-        <a class="brand" href="/" aria-label="𝑵𝒆𝒘𝒔 首页">
-          <img class="brand-logo" src="/icon.svg" alt="">
-          <span>𝑵𝒆𝒘𝒔</span>
-          <span class="brand-tag">我的主题</span>
-        </a>
-        <div class="account">
-          <span id="planBadge" class="me-plan-badge">Free</span>
-          <span id="accountEmail" class="account-email"></span>
+    <section id="appView" class="hidden" aria-label="工作台">
+      <header class="workspace-topbar">
+        <a class="brand" href="/" aria-label="𝑵𝒆𝒘𝒔 首页"><img class="brand-logo" src="/icon.svg" alt=""><span>𝑵𝒆𝒘𝒔</span><span class="brand-tag">工作台</span></a>
+        <div class="account-tools">
+          <span id="accountEmail" class="account-email muted small"></span><span id="adminBadge" class="brand-tag hidden">管理员</span>
+          <button id="accountButton" class="button button-quiet button-small hidden" type="button">套餐与用量</button>
           <button id="logoutButton" class="button button-quiet button-small" type="button">退出</button>
         </div>
       </header>
-
-      <div class="me-dashboard">
-        <header class="me-heading">
-          <div>
-            <div class="eyebrow">个人空间</div>
-            <h1>你的新闻主题</h1>
-            <p class="muted">告诉 𝑵𝒆𝒘𝒔 你关心什么，剩下的交给它。</p>
-          </div>
-          <button id="newTopicButton" class="button button-primary" type="button">
-            <span aria-hidden="true">＋</span><span>新建主题</span>
-          </button>
-        </header>
-
-        <div class="me-grid">
-          <section class="panel me-topics-panel" aria-labelledby="topicsTitle">
-            <header class="panel-heading">
-              <div>
-                <h2 id="topicsTitle">主题</h2>
-                <p id="topicCount" class="muted small">正在载入…</p>
-              </div>
-              <button id="refreshTopicsButton" class="button button-quiet button-small" type="button">刷新</button>
-            </header>
-
-            <div id="topicsLoading" class="loading-state" role="status">
-              <span class="spinner" aria-hidden="true"></span><span>正在载入主题…</span>
-            </div>
-            <div id="topicsEmpty" class="empty-state hidden">
-              <div class="empty-mark" aria-hidden="true">◎</div>
-              <h3>还没有主题</h3>
-              <p class="muted">从一个你每天想知道的方向开始。</p>
-              <button id="emptyCreateButton" class="button button-secondary" type="button">新建主题</button>
-            </div>
-            <div id="topicsError" class="me-inline-message hidden" role="alert"></div>
-            <ul id="topicList" class="me-topic-list hidden" aria-label="我的主题"></ul>
-            <section id="itemsPanel" class="me-items-panel hidden" aria-labelledby="itemsTitle">
-              <header class="panel-heading me-items-heading">
-                <div>
-                  <h2 id="itemsTitle">最近内容</h2>
-                  <p id="itemsMeta" class="muted small"></p>
-                </div>
-                <button id="refreshItemsButton" class="button button-quiet button-small" type="button">刷新</button>
-              </header>
-              <div id="itemsLoading" class="loading-state hidden" role="status">
-                <span class="spinner" aria-hidden="true"></span><span>正在载入内容…</span>
-              </div>
-              <div id="itemsEmpty" class="empty-state hidden">
-                <h3>今天还没有新内容</h3>
-                <p class="muted">主题运行后，新闻会显示在这里。</p>
-              </div>
-              <div id="itemsError" class="me-inline-message hidden" role="alert"></div>
-              <ul id="itemsList" class="me-item-list hidden" aria-label="主题内容"></ul>
-            </section>
-          </section>
-
-          <aside class="me-sidebar" aria-label="套餐与用量">
-            <section class="panel me-plan-panel" aria-labelledby="planTitle">
-              <header class="panel-heading">
-                <div>
-                  <h2 id="planTitle">套餐</h2>
-                  <p class="muted small">简单的限制，刚好的节奏。</p>
-                </div>
-              </header>
-              <div id="currentPlan" class="me-current-plan"></div>
-              <div id="planCards" class="me-plan-cards"></div>
-              <div id="ordersList" class="me-orders hidden" aria-label="最近订单"></div>
-              <div id="plansEmpty" class="muted small me-plans-empty hidden">套餐信息暂不可用。</div>
-            </section>
-
-            <section class="panel me-usage-panel" aria-labelledby="usageTitle">
-              <header class="panel-heading">
-                <div>
-                  <h2 id="usageTitle">今日用量</h2>
-                  <p id="usageReset" class="muted small">每日自动重置</p>
-                </div>
-                <button id="refreshUsageButton" class="button button-quiet button-small" type="button">刷新</button>
-              </header>
-              <div class="me-usage-grid">
-                <article class="me-usage-card">
-                  <div class="me-usage-head"><span>主题</span><strong id="topicsUsageValue">— / —</strong></div>
-                  <div id="topicsUsageProgress" class="me-progress" role="progressbar" aria-label="主题数量" aria-valuemin="0"><span></span></div>
-                  <p id="topicsUsageMeta" class="muted small">正在读取</p>
-                </article>
-                <article class="me-usage-card">
-                  <div class="me-usage-head"><span>运行</span><strong id="runsUsageValue">— / —</strong></div>
-                  <div id="runsUsageProgress" class="me-progress" role="progressbar" aria-label="今日运行次数" aria-valuemin="0"><span></span></div>
-                  <p id="runsUsageMeta" class="muted small">正在读取</p>
-                </article>
-              </div>
-            </section>
-
-            <section id="paymentPanel" class="panel me-payment-panel hidden" aria-labelledby="paymentTitle">
-              <header class="panel-heading">
-                <div>
-                  <h2 id="paymentTitle">开通 Pro</h2>
-                  <p class="muted small">微信扫码完成支付。</p>
-                </div>
-                <button id="closePaymentButton" class="button button-quiet button-small" type="button">关闭</button>
-              </header>
-              <div id="paymentContent" class="me-payment-content"></div>
-            </section>
-          </aside>
-        </div>
+      <div class="workspace-heading">
+        <div><h1 id="workspaceTitle">主题</h1><p id="statusLine" class="muted small" role="status"></p></div>
+        <button id="newTopicButton" class="button button-primary" type="button">＋ 新建主题</button>
       </div>
+      <section class="panel topics-panel" aria-label="主题列表">
+        <div class="panel-heading"><h2>主题</h2><button id="refreshButton" class="button button-quiet button-small" type="button">刷新</button></div>
+        <p id="topicsMessage" class="empty-state" role="status">正在载入主题…</p><ul id="topicList" class="topic-list"></ul>
+      </section>
+      <section id="contentPanel" class="panel content-panel hidden" aria-labelledby="contentTitle">
+        <div class="panel-heading">
+          <div><h2 id="contentTitle">最近内容</h2><p id="itemsMeta" class="muted small" role="status"></p></div>
+          <div class="inline">
+            <div id="dateTools" class="inline hidden"><input id="itemsDay" type="date" aria-label="内容日期"><button id="latestButton" class="button button-quiet button-small" type="button">最近</button></div>
+            <button id="refreshItemsButton" class="button button-quiet button-small" type="button">刷新</button>
+          </div>
+        </div>
+        <p id="itemsMessage" class="empty-state" role="status"></p><ul id="itemList" class="item-list"></ul>
+        <details id="runsPanel" class="runs-panel hidden">
+          <summary>运行记录</summary><p id="runsMessage" class="muted small" role="status"></p>
+          <div class="table-wrap" tabindex="0" role="region" aria-label="运行记录表格">
+            <table class="runs"><thead><tr><th>时间</th><th>状态</th><th>返回 / 新增 / 重复 / 丢弃</th><th>tokens 入 / 出</th><th>搜索 web / x</th><th>成本</th><th>耗时</th><th>错误</th></tr></thead><tbody id="runsBody"></tbody></table>
+          </div>
+        </details>
+      </section>
     </section>
   </main>
-
-  <dialog id="topicDialog" class="dialog-card me-dialog" aria-labelledby="topicDialogTitle">
-    <form id="topicForm" novalidate>
-      <div class="me-dialog-heading">
-        <div>
-          <div id="topicDialogEyebrow" class="eyebrow">新主题</div>
-          <h2 id="topicDialogTitle">创建主题</h2>
-        </div>
-        <button class="dialog-close" type="button" data-close-dialog aria-label="关闭">×</button>
+  <dialog id="topicDialog" class="dialog-card topic-dialog" aria-labelledby="topicDialogTitle">
+    <form id="topicForm">
+      <div class="panel-heading"><h2 id="topicDialogTitle">新建主题</h2><button class="button button-quiet button-small" type="button" data-close-dialog aria-label="关闭">关闭</button></div>
+      <div class="field"><label for="topicName">名称</label><input id="topicName" name="name" maxlength="60" placeholder="例如：AI 行业动态" required></div>
+      <div class="field"><label for="topicBrief">关注方向</label><textarea id="topicBrief" name="brief" maxlength="2000" rows="4" placeholder="关注的领域、地区、来源偏好或排除项……" required></textarea></div>
+      <div class="form-row">
+        <div class="field"><label for="topicInterval">抓取间隔（分钟）</label><input id="topicInterval" name="interval_minutes" type="number" min="15" max="1440" step="1" required><p id="intervalHint" class="field-hint muted"></p></div>
+        <label class="switch"><input id="topicEnabled" name="enabled" type="checkbox" checked> 启用抓取</label>
       </div>
-      <input id="topicId" type="hidden">
-      <div class="field">
-        <label for="topicName">名称</label>
-        <input id="topicName" name="name" type="text" maxlength="60" autocomplete="off" placeholder="例如：AI 行业动态" required>
-      </div>
-      <div class="field">
-        <label for="topicBrief">关注方向</label>
-        <textarea id="topicBrief" name="brief" maxlength="2000" rows="5" placeholder="希望关注的领域、地区、来源偏好或排除项……" required></textarea>
-      </div>
-      <div class="me-form-row">
-        <div class="field">
-          <label for="topicInterval">抓取间隔</label>
-          <div class="me-input-suffix">
-            <input id="topicInterval" name="interval_minutes" type="number" min="120" max="1440" step="5" value="120" required>
-            <span>分钟</span>
+      <details id="advancedSettings" class="advanced-settings hidden">
+        <summary>发布与抓取设置</summary>
+        <fieldset id="adminFields" disabled>
+          <div class="field-grid">
+            <div><label for="topicId">公共 ID</label><input id="topicId" name="id" maxlength="32" pattern="[a-z0-9][a-z0-9-]{0,31}" placeholder="例如 ai，留空自动生成"></div>
+            <div><label for="topicNameEn">英文名称</label><input id="topicNameEn" name="name_en" maxlength="60"></div>
           </div>
-          <p id="intervalHint" class="field-hint">Free 最短 120 分钟</p>
-        </div>
-        <label class="me-switch" for="topicEnabled">
-          <input id="topicEnabled" name="enabled" type="checkbox" checked>
-          <span class="switch-track" aria-hidden="true"></span>
-          <span>启用抓取</span>
-        </label>
-      </div>
-      <p id="topicFormMessage" class="me-inline-message hidden" role="alert"></p>
+          <div class="field"><label for="topicDescription">公开说明</label><input id="topicDescription" name="description" maxlength="200" placeholder="显示在新闻首页的一句话"></div>
+          <div class="field-grid">
+            <div><label for="windowStart">开始（时）</label><select id="windowStart" name="window_start"></select></div>
+            <div><label for="windowEnd">结束（时）</label><select id="windowEnd" name="window_end"></select></div>
+          </div>
+          <p id="scheduleTimezone" class="field-hint muted"></p>
+          <fieldset class="field"><legend>运行日期</legend><div id="weekdays" class="weekdays"></div></fieldset>
+          <div class="field-grid">
+            <div><label for="topicModel">模型</label><input id="topicModel" name="model" maxlength="64" placeholder="使用服务默认模型"></div>
+            <div><label for="topicEffort">推理强度</label><select id="topicEffort" name="reasoning_effort"><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></div>
+            <div><label for="topicMaxItems">每次最多条数</label><input id="topicMaxItems" name="max_items" type="number" min="1" max="30" required></div>
+            <div><label for="topicLookback">回看（小时）</label><input id="topicLookback" name="lookback_hours" type="number" min="1" max="72" required></div>
+            <div><label for="topicCap">每日运行上限</label><input id="topicCap" name="daily_run_cap" type="number" min="1" max="96" required></div>
+            <div><label for="topicSort">排序权重</label><input id="topicSort" name="sort_weight" type="number" required></div>
+          </div>
+        </fieldset>
+      </details>
+      <p id="topicFormMessage" class="form-message hidden" role="alert"></p>
       <footer class="dialog-actions">
-        <button class="button button-quiet" type="button" data-close-dialog>取消</button>
+        <button id="deleteTopicButton" class="button button-quiet danger-text hidden" type="button">删除主题</button>
+        <button id="copyUrlButton" class="button button-quiet hidden" type="button">复制公共地址</button>
         <button id="saveTopicButton" class="button button-primary" type="submit">保存主题</button>
       </footer>
     </form>
   </dialog>
-
-  <dialog id="confirmDialog" class="dialog-card me-dialog-small" aria-labelledby="confirmTitle" aria-describedby="confirmMessage">
-    <div class="danger-mark" aria-hidden="true">!</div>
-    <h2 id="confirmTitle">删除主题？</h2>
-    <p id="confirmMessage" class="muted"></p>
-    <div class="dialog-actions">
-      <button id="cancelConfirmButton" class="button button-quiet" type="button" data-close-dialog>取消</button>
-      <button id="confirmActionButton" class="button button-danger" type="button">确认删除</button>
-    </div>
+  <dialog id="accountDialog" class="dialog-card" aria-labelledby="accountTitle">
+    <div class="panel-heading"><h2 id="accountTitle">套餐与用量</h2><button class="button button-quiet button-small" type="button" data-close-dialog>关闭</button></div>
+    <div id="accountSummary"></div><div id="planOffer" class="account-section"></div>
+    <section id="paymentPanel" class="account-section hidden" aria-label="微信支付"><div id="paymentContent"></div></section>
+    <section class="account-section" aria-labelledby="ordersTitle">
+      <div class="panel-heading"><h3 id="ordersTitle">最近订单</h3><button id="refreshOrdersButton" class="button button-quiet button-small" type="button">刷新</button></div>
+      <p id="ordersMessage" class="muted small" role="status"></p><ul id="ordersList" class="orders-list"></ul>
+    </section>
   </dialog>
-
+  <dialog id="confirmDialog" class="dialog-card confirm-dialog" role="alertdialog" aria-labelledby="confirmTitle" aria-describedby="confirmMessage">
+    <h2 id="confirmTitle"></h2><p id="confirmMessage" class="muted"></p>
+    <div class="dialog-actions"><button class="button button-quiet" type="button" data-close-dialog>取消</button><button id="confirmActionButton" class="button button-danger" type="button">确认删除</button></div>
+  </dialog>
   <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
-  <script src="/me/app.js" defer></script>
+  <script src="/me/app.js" type="module"></script>
 </body>
 </html>

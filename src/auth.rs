@@ -263,7 +263,7 @@ pub(crate) fn require_admin(user: &User) -> Result<()> {
 pub(crate) fn require_personal(user: &User) -> Result<()> {
     (!user.is_admin())
         .then_some(())
-        .ok_or_else(|| AppError::Forbidden("管理员请使用 /admin/".into()))
+        .ok_or_else(|| AppError::Forbidden("管理员账户仅管理公共主题".into()))
 }
 
 pub(crate) async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
@@ -617,6 +617,22 @@ mod tests {
         build_login_url, hash_token, new_token, normalize_email, valid_email,
     };
     use url::Url;
+
+    #[test]
+    fn workspace_roles_keep_personal_and_public_access_exclusive() {
+        let mut user = super::User {
+            id: 1,
+            email: "user@example.com".into(),
+            status: true,
+            role: "user".into(),
+            pro_until: None,
+        };
+        assert!(super::require_personal(&user).is_ok());
+        assert!(super::require_admin(&user).is_err());
+        user.role = "admin".into();
+        assert!(super::require_admin(&user).is_ok());
+        assert!(super::require_personal(&user).is_err());
+    }
 
     #[test]
     fn validates_and_normalizes_email_addresses() {

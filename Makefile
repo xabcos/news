@@ -25,12 +25,8 @@ audit:
 	# SQLx records its optional MySQL driver in Cargo.lock; rsa is not in this project's build tree.
 	cargo audit --ignore RUSTSEC-2023-0071
 
-# One file per invocation: node only syntax-checks the first path it is given.
 js-check:
-	node --check pages/stats.js
-	node --check pages/app.js
-	node --check pages/admin/app.js
-	node --check pages/me/app.js
+	@for file in pages/*.js pages/me/*.js; do node --check "$$file" || exit; done
 
 compose-check:
 	docker compose config >/dev/null

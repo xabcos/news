@@ -1,8 +1,8 @@
 # NEWS 设计说明
 
-> 最后更新：2026-09-04
+> 最后更新：2026-09-05
 
-NEWS 是一个单实例、轻量的 AI 新闻聚合服务。它把「公共新闻」和「个人主题」放在同一个进程里，但只保留一层清晰的账户边界：普通用户使用 `/me/`，管理员使用 `/admin/`。没有团队、组织、邀请或多级角色；公共接口保持开放，账户摘要接口按会话隔离。
+NEWS 是一个单实例、轻量的 AI 新闻聚合服务。它把「公共新闻」和「个人主题」放在同一个进程里，但只保留一层清晰的账户边界：所有账户使用 `/me/` 工作台，按角色管理个人或公共主题。没有团队、组织、邀请或多级角色；公共接口保持开放，账户摘要接口按会话隔离。
 
 ## 1. 产品边界
 
@@ -10,7 +10,7 @@ NEWS 是一个单实例、轻量的 AI 新闻聚合服务。它把「公共新�
 
 - 普通用户只能读写自己创建的主题、运行记录和条目；登录后首页展示公共主题和自己的启用主题，个人条目不会进入公共 digest。
 - 管理员可以管理所有公共主题、触发抓取和维护公共条目。
-- 管理员只在 `/admin/` 管理公共主题；管理员接口不会读取个人主题。
+- 管理员在工作台中只管理公共主题，不提供个人主题、套餐或订单入口；管理员接口不会读取个人主题。
 
 主题的默认编辑面保持很小：名称、关注方向、启用状态和抓取间隔。个人主题默认每天 06:00–24:00 运行；服务端保留模型、时间窗等字段供管理员维护，个人用户不需要理解这些成本参数。
 
@@ -48,7 +48,7 @@ owner_user_id NULL    = 管理员维护的公共主题
 owner_user_id 非 NULL = 对应账户的个人主题
 ```
 
-个人主题由服务端生成 32 位紧凑 UUID，避免与 `ai`、`openai` 等公共 slug 冲突，也不需要让普通用户设计 URL。所有个人 CRUD 查询都带 `owner_user_id = current_user.id`；管理员接口明确检查 `role` 后才读取全部主题。
+个人主题由服务端生成 32 位紧凑 UUID，避免与 `ai`、`openai` 等公共 slug 冲突，也不需要让普通用户设计 URL。所有个人 CRUD 查询都带 `owner_user_id = current_user.id`；管理员接口明确检查 `role` 后只读取 `owner_user_id IS NULL` 的公共主题。
 
 ### plans / orders / payment_events
 
@@ -89,7 +89,7 @@ PATCH/DELETE /api/me/items/{id}
 
 `/api/me/*` 始终按当前会话过滤。管理员专用的同构路由是 `/api/admin/*`，每个入口都调用 `require_admin`。公共主题没有面向普通用户的写入口；外部读取走只读 digest，账户首页则在私有响应中复用这些公共内容。
 
-`GET /api/me` 返回账户、当前套餐限制以及 `topic_count`、`runs_today`，个人控制台只需一次请求即可渲染用量。个人主题内容接口省略日期时选该主题最近有内容的一天。
+`GET /api/me` 返回账户、当前套餐限制以及 `topic_count`、`runs_today`，工作台只需一次请求即可渲染用量。个人主题内容接口省略日期时选该主题最近有内容的一天。
 
 登录后的首页通过 `GET /api/me/feed` 读取启用的公共主题和当前账户的个人主题。它一次返回 `topics`、`days` 和与公共 `/digest` 同形的 `digest`，支持 `topic`、`day`、`limit` 查询；查询只允许 `owner_user_id IS NULL` 或 `owner_user_id = current_user.id`，响应 `no-store`，不使用公共 DigestCache/Redis，避免个人内容污染或进入公共缓存。
 
@@ -97,7 +97,7 @@ PATCH/DELETE /api/me/items/{id}
 
 支付选择固定为 YPay 的 store-token + webhook 模式，不在 NEWS 内实现微信 SDK：
 
-1. 个人空间点击 Pro，服务端只接受 `plan_code=pro`，并从数据库目录读取固定 ¥99 / 31 天。
+1. 普通账户在工作台的「套餐与用量」面板中升级或续费 Pro，服务端只接受 `plan_code=pro`，并从数据库目录读取固定 ¥99 / 31 天。
 2. NEWS 调用 `POST /t/{tenant}/store/orders/create`，传入用户 ID、订单号、金额和 `pay_method=native`。
 3. YPay 返回 `code_url`；NEWS 保存支付响应，并由 `/api/orders/{out_trade_no}/qr.svg` 在同源生成二维码。
 4. YPay 向 `/api/webhooks/payment` 发送 HMAC-SHA256 签名的 `paid` 回调。验签成功后事务性地开通或顺延 Pro；已有有效期时从原到期时间继续顺延 31 天。
@@ -110,7 +110,7 @@ fulfillment_mode  = webhook
 fulfillment_url   = https://news.xairouter.com/api/webhooks/payment
 ```
 
-`fulfillment_secret` 与 NEWS 的 `PAYMENT_WEBHOOK_SECRET` 相同。NEWS 启动时要求 `YPAY_BASE_URL`、`YPAY_STORE_API_KEY`、`PAYMENT_WEBHOOK_SECRET` 三项要么全部配置、要么全部为空；支付未配置时个人空间仍可正常使用 Free。
+`fulfillment_secret` 与 NEWS 的 `PAYMENT_WEBHOOK_SECRET` 相同。NEWS 启动时要求 `YPAY_BASE_URL`、`YPAY_STORE_API_KEY`、`PAYMENT_WEBHOOK_SECRET` 三项要么全部配置、要么全部为空；支付未配置时普通账户仍可正常使用 Free。
 
 ## 6. 调度与数据流
 
@@ -132,15 +132,19 @@ PostgreSQL 事务写入 items + runs
 公共主题刷新 Redis / 内存快照
 ```
 
-个人条目不构建公共快照，但仍完整保存在 PostgreSQL，个人控制台按主题读取最近内容。
+个人条目不构建公共快照，但仍完整保存在 PostgreSQL，工作台按主题读取最近内容。
 
 页面卡片的相对时间使用 `first_seen_at`（NEWS 收录时间）；`published_at` 继续作为 API 的来源发布时间保留。很多来源只能确定日期，直接把日期归一到 UTC 午夜会让刚收录的内容看起来过时。
 
 ## 7. 前端
 
-`pages/me/` 复用根目录 `pages/styles.css` 的颜色、按钮、面板和排版，只增加个人空间需要的两栏布局、用量卡片、套餐卡片和支付面板。桌面端保持宽屏信息密度，`700px` 以下折为单列；管理员页面继续使用原有紧凑编辑器。
+`/me/` 是唯一工作台页面。所有账户共用登录、主题列表、基础编辑器、内容展示和请求生命周期；前端按登录角色选择 `/api/me/*` 或 `/api/admin/*`，服务端继续独立执行角色与归属检查。管理员没有个人主题和套餐功能。
 
-个人页面只展示五个核心动作：新建主题、编辑、抓取、查看内容、删除。二维码使用同源 SVG，不依赖额外的前端二维码脚本；支付失败时仍保留可复制的 YPay 链接。
+默认页面集中展示主题和最近内容。基础编辑只包含名称、关注方向、启用状态和抓取间隔；管理员的公共 ID、公开说明、模型与排程参数收进「发布与抓取设置」，运行记录按需展开，内容保留置顶、隐藏与删除操作。个人账户的套餐、用量、订单和扫码支付在「套餐与用量」面板中。
+
+前端沿用原生 JavaScript 模块：`app.js` 管理会话与主题，`account.js` 管理个人套餐与支付，`ui.js` 提供请求和对话框等公共交互。字段直接使用当前服务端契约。切换账户或退出时清空旧账户数据并中止请求和轮询，切换主题时忽略旧响应；后台刷新不改写正在编辑的表单，并通过运行时间变化同步抓取结果。操作成功后的刷新失败单独处理，支付结果支持重试同步套餐与用量。
+
+`pages/styles.css` 提供全站基础样式和新闻首页样式，`pages/me/styles.css` 集中管理工作台布局与控件，沿用既有颜色和排版，并支持手机与深色模式。旧管理员页面已删除，不保留跳转入口。
 
 ## 8. 配置与部署
 
@@ -169,4 +173,4 @@ PAYMENT_WEBHOOK_SECRET
 make release-check
 ```
 
-它覆盖 Rust 格式、单元测试、Clippy、公开页/管理员页/个人页的 JavaScript 语法检查和 Docker Compose 配置检查。
+它覆盖 Rust 格式、单元测试、Clippy、全部前端模块的 JavaScript 语法检查和 Docker Compose 配置检查。

@@ -835,8 +835,8 @@ async fn delete_item(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-// Route wrappers make the data scope explicit: `/me` is always one account,
-// while `/admin` is limited to the public editorial catalogue.
+// API wrappers make the data scope explicit: `/api/me` is one personal account,
+// while `/api/admin` is limited to the public editorial catalogue.
 async fn me_status(State(state): State<AppState>, user: User) -> Result<Json<serde_json::Value>> {
     auth::require_personal(&user)?;
     status(State(state), user, TopicScope::Personal).await

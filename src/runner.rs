@@ -29,7 +29,7 @@ pub fn spawn(state: AppState) -> JoinSet<()> {
         tasks.spawn(maintenance_loop(state));
     } else {
         // Read-only mode still clears stale running markers from a previous
-        // process, so the consoles do not remain stuck on "running".
+        // process, so the workspace does not remain stuck on "running".
         tasks.spawn(async move {
             if let Err(error) = recover(&state).await {
                 tracing::error!(%error, "failed to recover scheduler state");
@@ -62,7 +62,7 @@ async fn recover(state: &AppState) -> Result<()> {
     .execute(&state.pool)
     .await?;
     // `register_run` marks the topic as running before the async task starts.
-    // Clear that marker on restart as well, otherwise both consoles would show
+    // Clear that marker on restart as well, otherwise the workspace would show
     // a permanently running topic even though its run was interrupted.
     sqlx::query(
         "UPDATE topics

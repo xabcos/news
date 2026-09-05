@@ -1,8 +1,8 @@
 # NEWS
 
-一个轻量的新闻聚合服务。NEWS 按主题调用 `grok-4.6`（Responses API，`web_search` + `x_search`）检索最新报道，按天写入 PostgreSQL，热数据放 Redis 和进程内存，对外提供无鉴权的公共 JSON API、Atom 源和一个简洁的聚合页；登录用户还可读取包含公共与个人主题的个性化摘要。每个有效邮箱都可以登录自己的个人空间 `/me/`；管理员使用 `/admin/` 管理公共主题。
+一个轻量的新闻聚合服务。NEWS 按主题调用 `grok-4.6`（Responses API，`web_search` + `x_search`）检索最新报道，按天写入 PostgreSQL，热数据放 Redis 和进程内存，对外提供无鉴权的公共 JSON API、Atom 源和一个简洁的聚合页；登录用户还可读取包含公共与个人主题的个性化摘要。每个有效邮箱都可以登录统一工作台 `/me/`；普通账户管理个人主题，管理员管理公共主题。
 
-生产地址：`https://news.xairouter.com`，个人空间 `/me/`，管理员空间 `/admin/`。设计说明见 [`DESIGN.md`](DESIGN.md)。
+生产地址：`https://news.xairouter.com`，工作台 `/me/`。设计说明见 [`DESIGN.md`](DESIGN.md)。
 
 套餐只有两档：`free` 最多 1 个主题、最短 120 分钟；`pro` 最多 8 个主题、最短 60 分钟，微信支付 ¥99 开通 31 天（每日运行上限分别为 12 次和 48 次）。
 
@@ -30,10 +30,10 @@ GET https://news.xairouter.com/feed.xml?topic=ai
 - **时间显示**：API 同时保留来源发布时间 `published_at` 和 NEWS 收录时间 `first_seen_at`；页面卡片的相对时间以 `first_seen_at` 为准，避免来源只提供日期时被误显示成数小时前。
 - **三层数据**：读路径 内存 → Redis → PostgreSQL，逐级回填；写路径 PostgreSQL 事务提交 → Redis → 原子替换内存快照。启动时预热今天与昨天，第一次请求就命中内存。每天 00:00 淘汰前天的内存快照；Redis key 48 小时过期；PostgreSQL 永久保留（可用 `NEWS_RETENTION_DAYS` 限制）。`REDIS_ADDR` 为空时自动降级为内存 + PostgreSQL。
 - **单实例**：内存快照只在本进程内失效，多实例部署会长期返回旧数据。
-- **成本**：每次抓取约 $0.06–0.10（`usage.cost_in_usd_ticks`，1 tick = 1e-10 USD）。管理页按次显示 tokens、搜索次数和成本，以及今日合计。
+- **成本**：每次抓取约 $0.06–0.10（`usage.cost_in_usd_ticks`，1 tick = 1e-10 USD）。工作台的管理员运行记录按次显示 tokens、搜索次数和成本，以及今日合计。
 - **个人主题**：登录后首页保留公共主题，并追加当前账户启用的个人主题；`/me/` 负责管理个人主题。个人主题不会进入公共 digest；管理员主题仍是公共内容源。
 - **个人排程**：个人主题默认每天 06:00–24:00 运行，用户只需设置抓取间隔；Free/Pro 的最短间隔分别为 120/60 分钟。
-- **访问统计**：公共首页通过同源 `stats.js` 向 Stats 发送匿名页面访问；查询参数、锚点、主题切换和无限下拉不会重复计数。统计失败不影响页面使用，个人空间和管理页不接入统计。
+- **访问统计**：公共首页通过同源 `stats.js` 向 Stats 发送匿名页面访问；查询参数、锚点、主题切换和无限下拉不会重复计数。统计失败不影响页面使用，工作台不接入统计。
 - **页面广播**：公共首页复用 Broadcast 的 `feed_news?mode=sequence`；没有有效消息时通知条自动隐藏。
 
 ## 本地运行
@@ -45,7 +45,7 @@ cp .env.example .env   # 填写 DATABASE_URL、NEWS_ADMIN_EMAILS、AI_API_KEY
 cargo run
 ```
 
-打开 `http://127.0.0.1:8788/`（公开页）、`http://127.0.0.1:8788/me/`（个人空间）和 `http://127.0.0.1:8788/admin/`（管理员空间）。`EMAIL_LOGIN_DEV_LINKS=true` 时登录响应直接给出一次性链接，只允许回环地址。`NEWS_SCHEDULER_ENABLED=false` 可以只读运行、不花钱。
+打开 `http://127.0.0.1:8788/`（公开页）、`http://127.0.0.1:8788/me/`（统一工作台）。`EMAIL_LOGIN_DEV_LINKS=true` 时登录响应直接给出一次性链接，只允许回环地址。`NEWS_SCHEDULER_ENABLED=false` 可以只读运行、不花钱。
 
 完全容器化：`make docker-up-local`。
 
@@ -127,7 +127,7 @@ CI 与 broadcast 相同：`quality-gate.yml` 执行 `make release-check`；`buil
 ## 验证
 
 ```bash
-make release-check   # fmt、test、clippy、四份 JS 语法、compose 配置
+make release-check   # fmt、test、clippy、全部 JS 语法、compose 配置
 ```
 
-单元测试覆盖调度计算、URL 规范化与指纹、标题相似度、条目校验、真实 Responses 返回样例（`tests/fixtures/`）的解析、ETag/304。
+单元测试覆盖工作台角色边界、调度计算、URL 规范化与指纹、标题相似度、条目校验、真实 Responses 返回样例（`tests/fixtures/`）的解析、ETag/304。

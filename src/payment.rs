@@ -113,8 +113,6 @@ pub(crate) struct YpayPayment {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CreateOrderRequest {
-    /// `plan` is accepted as a short alias so the console API reads naturally.
-    #[serde(alias = "plan")]
     pub(crate) plan_code: String,
 }
 
