@@ -173,15 +173,14 @@ p { margin-top: 0; }
   position: fixed;
   z-index: 9;
   right: max(calc(1rem + env(safe-area-inset-right, 0px)), calc((100% - 46rem) / 2 - 3.75rem));
-  top: 60%;
+  top: 61.8%;
   width: 44px;
   height: 44px;
   padding: 0;
   color: var(--muted);
   border-color: var(--line);
-  background: color-mix(in srgb, var(--surface-solid) 65%, transparent);
+  background: color-mix(in srgb, var(--surface-solid) 20%, transparent);
   box-shadow: var(--shadow-small);
-  backdrop-filter: blur(14px);
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
