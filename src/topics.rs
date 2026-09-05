@@ -589,7 +589,7 @@ async fn create_topic(
     .await
     .map_err(map_db_error)?;
     transaction.commit().await?;
-    let topic = runner::reschedule_or_defer(&state, topic).await?;
+    let topic = runner::reschedule_or_defer(&state, &topic).await?;
     if scope.is_public() {
         state.digest.reload_topics(&state).await?;
     }
@@ -684,7 +684,7 @@ async fn update_topic(
     .await
     .map_err(map_db_error)?
     .ok_or_else(|| AppError::NotFound("主题不存在".into()))?;
-    let topic = runner::reschedule_or_defer(&state, topic).await?;
+    let topic = runner::reschedule_or_defer(&state, &topic).await?;
     if scope.is_public() {
         state.digest.reload_topics(&state).await?;
     }
@@ -735,7 +735,7 @@ async fn run_topic(
     scope: TopicScope,
 ) -> Result<(StatusCode, Json<serde_json::Value>)> {
     let topic = load_topic(&state, &id, &user, scope).await?;
-    let run_id = runner::start(&state, topic, "manual").await?;
+    let run_id = runner::start(&state, &topic, "manual").await?;
     Ok((StatusCode::ACCEPTED, Json(json!({ "run_id": run_id }))))
 }
 

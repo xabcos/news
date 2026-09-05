@@ -76,7 +76,7 @@ async fn recover(state: &AppState) -> Result<()> {
             .fetch_all(&state.pool)
             .await?;
     for topic in unscheduled {
-        if let Err(error) = reschedule_or_defer(state, topic.clone()).await {
+        if let Err(error) = reschedule_or_defer(state, &topic).await {
             tracing::warn!(topic = %topic.id, %error, "failed to recover topic schedule");
         }
     }
@@ -85,10 +85,10 @@ async fn recover(state: &AppState) -> Result<()> {
 
 /// Recomputes and stores `next_run_at` from the topic's last run; disabled topics stay
 /// unscheduled.
-pub(crate) async fn reschedule(state: &AppState, topic: Topic) -> Result<Topic> {
-    let limits = topics::limits_for_topic(state, &topic).await?;
+async fn reschedule(state: &AppState, topic: &Topic) -> Result<Topic> {
+    let limits = topics::limits_for_topic(state, topic).await?;
     if topic.owner_user_id.is_some()
-        && !topics::personal_topic_allowed(state, &topic, limits.max_topics).await?
+        && !topics::personal_topic_allowed(state, topic, limits.max_topics).await?
     {
         // Keep the topic visible for a later upgrade, but remove its due slot
         // so the scheduler does not repeatedly attempt a downgraded topic.
@@ -114,7 +114,7 @@ pub(crate) async fn reschedule(state: &AppState, topic: Topic) -> Result<Topic> 
             state.config.timezone,
             Utc::now(),
             topic.last_run_at,
-            today_runs(state, &topic).await?,
+            today_runs(state, topic).await?,
             limits.min_interval_minutes,
         )),
         false => None,
@@ -131,8 +131,8 @@ pub(crate) async fn reschedule(state: &AppState, topic: Topic) -> Result<Topic> 
 /// A topic is already committed before scheduling is recalculated (for
 /// example after a create or a run finishes). If a transient lookup fails,
 /// leave a short retry slot instead of a permanent NULL schedule.
-pub(crate) async fn reschedule_or_defer(state: &AppState, topic: Topic) -> Result<Topic> {
-    match reschedule(state, topic.clone()).await {
+pub(crate) async fn reschedule_or_defer(state: &AppState, topic: &Topic) -> Result<Topic> {
+    match reschedule(state, topic).await {
         Ok(topic) => Ok(topic),
         Err(error) => {
             tracing::warn!(topic = %topic.id, %error, "topic reschedule failed; deferring retry");
@@ -205,12 +205,12 @@ async fn tick(state: &AppState) -> Result<()> {
     .await?;
     for topic in due {
         // A manual run may be in flight; it reschedules the topic when it finishes.
-        if let Err(error) = start(state, topic.clone(), "schedule").await {
+        if let Err(error) = start(state, &topic, "schedule").await {
             tracing::info!(%error, "scheduled run skipped");
             // Claiming clears next_run_at.  If admission rejected the run,
             // put the topic back on a future slot instead of silently stopping
             // its schedule.
-            if let Err(reschedule_error) = reschedule_or_defer(state, topic).await {
+            if let Err(reschedule_error) = reschedule_or_defer(state, &topic).await {
                 tracing::warn!(%reschedule_error, "failed to reschedule skipped topic");
             }
         }
@@ -221,7 +221,7 @@ async fn tick(state: &AppState) -> Result<()> {
 /// Registers a run and spawns the fetch. One run per topic at a time.
 pub(crate) async fn start(
     state: &AppState,
-    topic: Topic,
+    topic: &Topic,
     triggered_by: &'static str,
 ) -> Result<Uuid> {
     let permit = state
@@ -236,7 +236,7 @@ pub(crate) async fn start(
     let run_id = Uuid::new_v4();
     let started_at = Utc::now();
     let topic_id = topic.id.clone();
-    let registered = register_run(state, &topic, run_id, started_at, triggered_by).await;
+    let registered = register_run(state, topic, run_id, started_at, triggered_by).await;
     let topic = match registered {
         Ok(topic) => topic,
         Err(error) => {
@@ -561,7 +561,7 @@ async fn finish(
             return Err(error.into());
         }
     };
-    reschedule_or_defer(state, topic).await?;
+    reschedule_or_defer(state, &topic).await?;
     if public_topic && let Some(day) = refreshed_day {
         state.digest.refresh(state, topic_id, day).await?;
     }

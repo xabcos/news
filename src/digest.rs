@@ -33,7 +33,6 @@ const DEFAULT_LIMIT: usize = 30;
 const MAX_LIMIT: usize = 128;
 const MAX_DAYS: i64 = 366;
 const FEED_LIMIT: usize = 50;
-const PERSONAL_DAYS_LIMIT: i64 = MAX_DAYS;
 /// Today and yesterday live in memory and in Redis for two days; archive days only pass
 /// through Redis briefly.
 const HOT_TTL_SECS: u64 = 48 * 3600;
@@ -557,13 +556,6 @@ struct PersonalDayStats {
     updated_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Deserialize)]
-struct PersonalFeedQuery {
-    topic: Option<String>,
-    day: Option<NaiveDate>,
-    limit: Option<usize>,
-}
-
 #[derive(Debug, Serialize)]
 struct PersonalFeedResponse {
     topics: Vec<PersonalTopicCard>,
@@ -656,7 +648,7 @@ async fn days(
 async fn me_feed(
     State(state): State<AppState>,
     user: User,
-    ApiQuery(query): ApiQuery<PersonalFeedQuery>,
+    ApiQuery(query): ApiQuery<DigestQuery>,
 ) -> Result<Response> {
     auth::require_personal(&user)?;
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
@@ -778,7 +770,7 @@ async fn personal_days(
     )
     .bind(user_id)
     .bind(topic)
-    .bind(PERSONAL_DAYS_LIMIT)
+    .bind(MAX_DAYS)
     .fetch_all(&state.pool)
     .await?)
 }

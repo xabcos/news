@@ -39,6 +39,7 @@ const TEXT = {
     fresh: "NEW", failed: "加载失败", retry: "重试",
     empty: "这一天还没有内容", latest: "查看最近有内容的一天",
     space: "工作台", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
+    backToTop: "回到顶部",
     items: (n) => `${n} 条`,
   },
   en: {
@@ -46,6 +47,7 @@ const TEXT = {
     fresh: "NEW", failed: "Failed to load", retry: "Retry",
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
     space: "Workspace", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
+    backToTop: "Back to top",
     items: (n) => `${n} ${n === 1 ? "item" : "items"}`,
   },
 };
@@ -72,6 +74,7 @@ storage.setItem("news.lastVisit", String(Date.now()));
 const el = {
   topbar: $("#topbar"), tabs: $("#tabs"), lang: $("#langToggle"), me: $("#meLink"),
   status: $("#status"), digest: $("#digest"), loadMore: $("#loadMore"),
+  backToTop: $("#backToTop"),
 };
 const t = () => TEXT[state.lang];
 
@@ -97,7 +100,7 @@ async function init() {
   setInterval(() => {
     if (document.visibilityState === "visible" && !state.day) load(true);
   }, REFRESH_MS);
-  autoHideTopbar();
+  setupScrollControls();
   setupInfiniteScroll();
   setupTopicSwipe();
 
@@ -400,6 +403,8 @@ function applyLang() {
   document.documentElement.lang = t().locale;
   el.lang.textContent = t().lang;
   el.me.textContent = t().space;
+  el.backToTop.setAttribute("aria-label", t().backToTop);
+  el.backToTop.title = t().backToTop;
   updateHistoryLoader();
 }
 
@@ -538,13 +543,27 @@ function card(item) {
 
 // The bar slides away while reading down and returns on the first upward scroll, so the
 // list gets the whole screen without losing the controls.
-function autoHideTopbar() {
+function setupScrollControls() {
   let last = window.scrollY;
-  window.addEventListener("scroll", () => {
+  let backToTopVisible = false;
+  const update = () => {
     const y = Math.max(0, window.scrollY);
-    if (Math.abs(y - last) > 4) el.topbar.classList.toggle("is-hidden", y > last && y > 48);
+    if (y <= 48 || Math.abs(y - last) > 4) el.topbar.classList.toggle("is-hidden", y > last && y > 48);
+    // Separate show/hide thresholds keep the button steady while reading.
+    backToTopVisible = y > (backToTopVisible ? 100 : window.innerHeight);
+    el.backToTop.classList.toggle("is-visible", backToTopVisible);
     last = y;
-  }, { passive: true });
+  };
+  window.addEventListener("scroll", update, { passive: true });
+  window.addEventListener("resize", update);
+  window.addEventListener("pageshow", update);
+  el.backToTop.addEventListener("click", () => {
+    el.topbar.classList.remove("is-hidden");
+    el.topbar.querySelector(".brand").focus({ preventScroll: true });
+    // The existing CSS handles smooth scrolling and reduced-motion preferences.
+    window.scrollTo({ top: 0, behavior: "auto" });
+  });
+  update();
 }
 
 // ---------------------------------------------------------------------------

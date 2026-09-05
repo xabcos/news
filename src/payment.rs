@@ -50,9 +50,6 @@ pub(crate) struct Plan {
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub(crate) struct Order {
     pub(crate) id: i64,
-    #[serde(skip_serializing)]
-    #[allow(dead_code)]
-    pub(crate) user_id: i64,
     pub(crate) plan_code: String,
     pub(crate) out_trade_no: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -213,7 +210,7 @@ pub(crate) async fn create_order(
     .await?;
     let mut order = if let Some(order) = sqlx::query_as::<_, Order>(
         r#"
-        SELECT id, user_id, plan_code, out_trade_no, provider_trade_no,
+        SELECT id, plan_code, out_trade_no, provider_trade_no,
                amount_fen, duration_days, status, expires_at, paid_at, payment,
                payment_started_at,
                created_at, updated_at
@@ -237,7 +234,7 @@ pub(crate) async fn create_order(
             INSERT INTO orders
                 (user_id, plan_code, out_trade_no, amount_fen, duration_days)
             VALUES ($1, $2, $3, $4, $5)
-            RETURNING id, user_id, plan_code, out_trade_no, provider_trade_no,
+            RETURNING id, plan_code, out_trade_no, provider_trade_no,
                       amount_fen, duration_days, status, expires_at, paid_at, payment,
                       payment_started_at,
                       created_at, updated_at
@@ -283,7 +280,7 @@ pub(crate) async fn create_order(
             INSERT INTO orders
                 (user_id, plan_code, out_trade_no, amount_fen, duration_days)
             VALUES ($1, $2, $3, $4, $5)
-            RETURNING id, user_id, plan_code, out_trade_no, provider_trade_no,
+            RETURNING id, plan_code, out_trade_no, provider_trade_no,
                       amount_fen, duration_days, status, expires_at, paid_at, payment,
                       payment_started_at, created_at, updated_at
             "#,
@@ -301,7 +298,7 @@ pub(crate) async fn create_order(
         UPDATE orders
         SET payment_started_at = NOW(), updated_at = NOW()
         WHERE id = $1 AND status = 'pending'
-        RETURNING id, user_id, plan_code, out_trade_no, provider_trade_no,
+        RETURNING id, plan_code, out_trade_no, provider_trade_no,
                   amount_fen, duration_days, status, expires_at, paid_at, payment,
                   payment_started_at, created_at, updated_at
         "#,
@@ -325,7 +322,7 @@ pub(crate) async fn create_order(
         SET payment = $2, expires_at = COALESCE($3, expires_at),
             payment_started_at = NULL, updated_at = NOW()
         WHERE id = $1 AND status = 'pending' AND payment_started_at = $4
-        RETURNING id, user_id, plan_code, out_trade_no, provider_trade_no,
+        RETURNING id, plan_code, out_trade_no, provider_trade_no,
                   amount_fen, duration_days, status, expires_at, paid_at, payment,
                   payment_started_at, created_at, updated_at
         "#,
@@ -362,7 +359,7 @@ pub(crate) async fn list_orders(
     close_expired_orders(&state, user.id).await?;
     let orders = sqlx::query_as::<_, Order>(
         r#"
-        SELECT id, user_id, plan_code, out_trade_no, provider_trade_no,
+        SELECT id, plan_code, out_trade_no, provider_trade_no,
                amount_fen, duration_days, status, expires_at, paid_at, payment,
                payment_started_at,
                created_at, updated_at
@@ -386,21 +383,7 @@ pub(crate) async fn get_order(
     auth::require_personal(&user)?;
     validate_out_trade_no(&out_trade_no)?;
     close_expired_orders(&state, user.id).await?;
-    let order = sqlx::query_as::<_, Order>(
-        r#"
-        SELECT id, user_id, plan_code, out_trade_no, provider_trade_no,
-               amount_fen, duration_days, status, expires_at, paid_at, payment,
-               payment_started_at,
-               created_at, updated_at
-        FROM orders
-        WHERE user_id = $1 AND out_trade_no = $2
-        "#,
-    )
-    .bind(user.id)
-    .bind(&out_trade_no)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("订单不存在".into()))?;
+    let order = load_user_order(&state, user.id, &out_trade_no).await?;
     let payment = (order.status == "pending")
         .then(|| stored_payment(&order))
         .flatten();
@@ -415,21 +398,7 @@ pub(crate) async fn order_qr(
     auth::require_personal(&user)?;
     validate_out_trade_no(&out_trade_no)?;
     close_expired_orders(&state, user.id).await?;
-    let order = sqlx::query_as::<_, Order>(
-        r#"
-        SELECT id, user_id, plan_code, out_trade_no, provider_trade_no,
-               amount_fen, duration_days, status, expires_at, paid_at, payment,
-               payment_started_at,
-               created_at, updated_at
-        FROM orders
-        WHERE user_id = $1 AND out_trade_no = $2
-        "#,
-    )
-    .bind(user.id)
-    .bind(&out_trade_no)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("订单不存在".into()))?;
+    let order = load_user_order(&state, user.id, &out_trade_no).await?;
     if order.status != "pending" || order.expires_at <= Utc::now() {
         return Err(AppError::Conflict("当前订单无需继续支付".into()));
     }
@@ -492,10 +461,27 @@ async fn close_expired_orders(state: &AppState, user_id: i64) -> Result<()> {
     Ok(())
 }
 
+async fn load_user_order(state: &AppState, user_id: i64, out_trade_no: &str) -> Result<Order> {
+    sqlx::query_as::<_, Order>(
+        r#"
+        SELECT id, plan_code, out_trade_no, provider_trade_no,
+               amount_fen, duration_days, status, expires_at, paid_at, payment,
+               payment_started_at, created_at, updated_at
+        FROM orders
+        WHERE user_id = $1 AND out_trade_no = $2
+        "#,
+    )
+    .bind(user_id)
+    .bind(out_trade_no)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("订单不存在".into()))
+}
+
 async fn load_order(state: &AppState, order_id: i64) -> Result<Order> {
     sqlx::query_as::<_, Order>(
         r#"
-        SELECT id, user_id, plan_code, out_trade_no, provider_trade_no,
+        SELECT id, plan_code, out_trade_no, provider_trade_no,
                amount_fen, duration_days, status, expires_at, paid_at, payment,
                payment_started_at, created_at, updated_at
         FROM orders

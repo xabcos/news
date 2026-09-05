@@ -31,16 +31,15 @@
     }
   };
 
-  let previousUrl = canonicalize(document.referrer);
+  const referrer = canonicalize(document.referrer);
   let currentUrl = "";
 
   const track = () => {
     const url = canonicalize(window.location.href);
     if (!url || url === currentUrl) return;
 
-    const referer = currentUrl || previousUrl;
+    const referer = currentUrl || referrer;
     currentUrl = url;
-    previousUrl = url;
     void fetch(trackUrl, {
       method: "POST",
       credentials: "omit",

@@ -169,6 +169,35 @@ p { margin-top: 0; }
 
 .public .shell { max-width: 46rem; margin: 0 auto; padding: .75rem 1.25rem 3rem; }
 
+.back-to-top {
+  position: fixed;
+  z-index: 9;
+  right: max(calc(1rem + env(safe-area-inset-right, 0px)), calc((100% - 46rem) / 2 - 3.75rem));
+  bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  color: var(--muted);
+  border-color: var(--line);
+  background: var(--surface);
+  box-shadow: var(--shadow-small);
+  backdrop-filter: blur(14px);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(6px);
+  transition: opacity .18s ease, transform .18s ease, visibility .18s ease, color .18s ease, border-color .18s ease;
+}
+.back-to-top.is-visible {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+@media (hover: hover) {
+  .back-to-top:hover { color: var(--primary-strong); border-color: var(--primary); }
+}
+
 .broadcast-strip {
   min-width: 0;
   margin: 0 0 .3rem;
@@ -311,7 +340,7 @@ p { margin-top: 0; }
     --on-primary: #2b0f0d;
     --on-danger: #2b0f0d;
   }
-  input, textarea, select, .button-secondary { background-color: rgba(10, 11, 15, .6); }
+  .button-secondary { background-color: rgba(10, 11, 15, .6); }
   .brand-logo { filter: brightness(0) invert(1); }
   .group-title { border-bottom-color: var(--line-strong); }
 }
