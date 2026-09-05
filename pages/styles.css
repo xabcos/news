@@ -179,7 +179,7 @@ p { margin-top: 0; }
   padding: 0;
   color: var(--muted);
   border-color: var(--line);
-  background: color-mix(in srgb, var(--surface-solid) 20%, transparent);
+  background: transparent;
   box-shadow: var(--shadow-small);
   opacity: 0;
   visibility: hidden;
