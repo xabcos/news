@@ -206,11 +206,13 @@ async function load(silent = false) {
       updateHistoryLoader();
       return;
     }
-    if (silent && state.timeline.length) {
+    // Preserve loaded history only while the latest day stays the same or advances.
+    if (silent && current?.day && digest.day >= current.day) {
       if (current.day === digest.day) state.timeline[0] = digest;
       else state.timeline.unshift(digest);
     } else {
       state.timeline = [digest];
+      state.historyLoading = false;
     }
     state.historyError = false;
     updateHistoryBoundary();
@@ -225,13 +227,10 @@ async function load(silent = false) {
       state.day = "";
       state.topics = [];
       state.days = [];
-      state.timeline = [];
-      state.historyDone = false;
-      state.historyError = false;
       history.replaceState({}, "", `${location.pathname}${search()}`);
-      await loadCatalog();
       renderTabs();
-      await load(silent);
+      await Promise.all([loadCatalog(), load()]);
+      renderTabs();
       return;
     }
     // A link can still contain a topic outside this account's visible catalogue (for
@@ -240,9 +239,9 @@ async function load(silent = false) {
     if (state.personal && error.status === 404 && state.topic && epoch === state.epoch) {
       state.topic = "";
       state.day = "";
-      state.timeline = [];
       history.replaceState({}, "", `${location.pathname}${search()}`);
-      await load(silent);
+      renderTabs();
+      await load();
       return;
     }
     if (epoch === state.epoch && !silent) setStatus(t().failed, true);
