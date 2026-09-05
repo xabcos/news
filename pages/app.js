@@ -1,6 +1,6 @@
 "use strict";
 
-const $ = (selector, root = document) => root.querySelector(selector);
+const $ = (selector) => document.querySelector(selector);
 const REFRESH_MS = 5 * 60 * 1000;
 const PAGE_LIMIT = 128;
 // Keep the simple timeline bounded to the archive window exposed by the API.
@@ -57,7 +57,6 @@ const state = {
   day: initial.get("day") || "",
   topics: [],
   days: [],
-  digest: null,
   // One digest per loaded day; navigation/reload starts a fresh, bounded timeline.
   timeline: [],
   personal: false,
@@ -127,11 +126,8 @@ async function fetchJson(path) {
 // session cookie and never allowed to fall into a shared browser cache.
 async function resolveViewer() {
   try {
-    const data = await fetchJson("/api/me");
-    const viewer = data?.user || data;
-    if (viewer?.email && String(viewer.role || "user").toLowerCase() !== "admin") {
-      state.personal = true;
-    }
+    const { user } = await fetchJson("/api/me");
+    state.personal = user.role === "user";
   } catch (error) {
     // A missing session is the normal anonymous path. Other failures should not make
     // the public page unavailable; the public digest remains a useful fallback.
@@ -142,7 +138,7 @@ async function resolveViewer() {
 async function loadCatalog() {
   if (state.personal) return;
   try {
-    state.topics = (await fetchJson("/topics")).topics || [];
+    state.topics = (await fetchJson("/topics")).topics;
   } catch {
     // The digest still loads; the tabs just stay empty.
   }
@@ -170,17 +166,9 @@ function dayPath(day) {
   return `${state.personal ? "/api/me/feed" : "/digest"}?${params}`;
 }
 
-function normalizeDays(payload) {
-  const values = Array.isArray(payload) ? payload : payload?.days || [];
-  return values
-    .map((entry) => typeof entry === "string" ? entry : entry?.day)
-    .filter((day, index, list) => day && list.indexOf(day) === index);
-}
-
 async function load(silent = false) {
   const epoch = ++state.epoch;
   if (!silent) {
-    state.digest = null;
     state.timeline = [];
     state.historyLoading = false;
     state.historyError = false;
@@ -194,34 +182,36 @@ async function load(silent = false) {
     let days;
     if (state.personal) {
       const payload = await fetchJson(`/api/me/feed${search({ limit: PAGE_LIMIT })}`);
-      digest = payload?.digest || payload;
-      days = payload?.days || [];
-      if (epoch === state.epoch && Array.isArray(payload?.topics)) state.topics = payload.topics;
+      digest = payload.digest;
+      days = payload.days;
+      if (epoch === state.epoch) state.topics = payload.topics;
     } else {
-      [digest, days] = await Promise.all([
+      const [data, archive] = await Promise.all([
         fetchJson(`/digest${search({ limit: PAGE_LIMIT })}`),
         fetchJson(catalogPath()),
       ]);
+      digest = data;
+      days = archive.days;
     }
     if (epoch !== state.epoch) return;
-    state.days = normalizeDays(days);
+    state.days = days.map((entry) => entry.day);
     if (state.personal) renderTabs();
     // A background refresh only repaints when something actually changed.
+    const current = state.timeline[0];
     if (silent
-      && digest?.day === state.digest?.day
-      && JSON.stringify(digest?.topics) === JSON.stringify(state.digest?.topics)) {
+      && digest.day === current?.day
+      && JSON.stringify(digest.topics) === JSON.stringify(current?.topics)) {
       updateHistoryBoundary();
       setStatus("");
       updateHistoryLoader();
       return;
     }
     if (silent && state.timeline.length) {
-      if (state.timeline[0].day === digest?.day) state.timeline[0] = { day: digest?.day || "", digest };
-      else state.timeline.unshift({ day: digest?.day || "", digest });
+      if (current.day === digest.day) state.timeline[0] = digest;
+      else state.timeline.unshift(digest);
     } else {
-      state.timeline = [{ day: digest?.day || "", digest }];
+      state.timeline = [digest];
     }
-    state.digest = state.timeline[0].digest;
     state.historyError = false;
     updateHistoryBoundary();
     setStatus("");
@@ -235,7 +225,6 @@ async function load(silent = false) {
       state.day = "";
       state.topics = [];
       state.days = [];
-      state.digest = null;
       state.timeline = [];
       state.historyDone = false;
       state.historyError = false;
@@ -252,7 +241,6 @@ async function load(silent = false) {
       state.topic = "";
       state.day = "";
       state.timeline = [];
-      state.digest = null;
       history.replaceState({}, "", `${location.pathname}${search()}`);
       await load(silent);
       return;
@@ -285,18 +273,19 @@ async function loadOlder() {
   // Keep the request attached to this timeline, rather than the main-load epoch, so a
   // harmless refresh cannot leave the loader stuck in its "loading" state.
   const timeline = state.timeline;
+  const personal = state.personal;
   state.historyLoading = true;
   state.historyError = false;
   updateHistoryLoader();
   try {
     const payload = await fetchJson(dayPath(day));
     if (timeline !== state.timeline) return;
-    const digest = payload?.digest || payload;
+    const digest = personal ? payload.digest : payload;
     if (!digest?.day || state.timeline.some((entry) => entry.day === digest.day)) {
       state.historyDone = true;
       return;
     }
-    state.timeline.push({ day: digest.day, digest });
+    state.timeline.push(digest);
     el.digest.append(renderDayBlock(digest, true));
     updateHistoryBoundary();
   } catch {
@@ -311,13 +300,12 @@ async function loadOlder() {
 }
 
 function maybeLoadOlder() {
-  if (!el.loadMore || state.historyLoading || state.historyError || state.historyDone || !state.timeline.length) return;
+  if (state.historyLoading || state.historyError || state.historyDone || !state.timeline.length) return;
   const remaining = document.documentElement.scrollHeight - window.scrollY - window.innerHeight;
   if (remaining < window.innerHeight * .7) loadOlder();
 }
 
 function setupInfiniteScroll() {
-  if (!el.loadMore) return;
   if (typeof window.IntersectionObserver === "function") {
     const observer = new window.IntersectionObserver(
       (entries) => entries.some((entry) => entry.isIntersecting) && loadOlder(),
@@ -334,7 +322,7 @@ function setupInfiniteScroll() {
 // On a phone, a horizontal gesture over the feed moves between topics. Keep the
 // tab strip's native horizontal scrolling and article links untouched.
 function setupTopicSwipe() {
-  if (!el.digest || typeof window.PointerEvent !== "function" || typeof window.matchMedia !== "function") return;
+  if (typeof window.PointerEvent !== "function" || typeof window.matchMedia !== "function") return;
   const mobile = window.matchMedia(MOBILE_QUERY);
   let gesture = null;
 
@@ -383,7 +371,6 @@ function changeTopic(direction) {
 }
 
 function updateHistoryLoader() {
-  if (!el.loadMore) return;
   el.loadMore.replaceChildren();
   if (state.historyError) {
     el.loadMore.append(t().failed, " ", button(t().retry, () => {
@@ -413,7 +400,7 @@ function setStatus(message, failed = false) {
 function applyLang() {
   document.documentElement.lang = t().locale;
   el.lang.textContent = t().lang;
-  if (el.me) el.me.textContent = t().space;
+  el.me.textContent = t().space;
   updateHistoryLoader();
 }
 
@@ -427,14 +414,11 @@ function renderTabs() {
 }
 
 function render(preserveScroll = false, scrollTop = window.scrollY) {
-  const digest = state.timeline[0]?.digest || state.digest;
-  if (!digest) return;
-  state.digest = digest;
-  const timeline = state.timeline.length ? state.timeline : [{ day: digest.day || "", digest }];
-  el.digest.replaceChildren(...timeline.map((entry, index) => {
-    const day = entry.digest.day;
-    const showDayHeading = index > 0 || !day || day !== todayIn(entry.digest.timezone);
-    return renderDayBlock(entry.digest, showDayHeading);
+  if (!state.timeline.length) return;
+  el.digest.replaceChildren(...state.timeline.map((digest, index) => {
+    const day = digest.day;
+    const showDayHeading = index > 0 || !day || day !== todayIn(digest.timezone);
+    return renderDayBlock(digest, showDayHeading);
   }));
   updateHistoryLoader();
   if (preserveScroll) {

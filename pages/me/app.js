@@ -141,7 +141,6 @@ function showAuth() {
 }
 
 async function enterApp(data) {
-  endSession();
   const s = {
     user: data.user, usage: data.usage, admin: data.user.role === "admin",
     controller: new AbortController(), topics: [], running: new Set(), selected: null,
@@ -195,10 +194,10 @@ async function refresh(s) {
     s.timezone = status.timezone;
     s.today = status.today;
     if (account) { s.user = account.user; s.usage = account.usage; s.account.update(); }
-    renderTopics(s);
     if (!selected) {
       await selectTopic(s, topics[0]?.id);
     } else {
+      renderTopics(s);
       $("#contentTitle").textContent = selected.name;
       if (finished || contentChanged) await loadItems(s);
     }

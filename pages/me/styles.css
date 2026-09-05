@@ -29,7 +29,7 @@
 .item-row a { font-size: 1rem; font-weight: 650; text-decoration: none; overflow-wrap: anywhere; }
 .item-row a:hover { color: var(--primary); }
 .item-row p { margin: .4rem 0; color: var(--muted); font-size: .88rem; }
-.item-meta { display: flex; flex-wrap: wrap; gap: .45rem; color: var(--muted); font-size: .72rem; }
+.item-meta { font-size: .72rem; }
 .item-actions { display: flex; gap: .3rem; margin-top: .6rem; }
 .item-actions .button { padding: .2rem .5rem; min-height: 1.8rem; }
 .is-pinned > a::before { content: "置顶 · "; color: var(--primary); }
