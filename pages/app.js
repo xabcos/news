@@ -42,7 +42,7 @@ const TEXT = {
     space: "工作台", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
     backToTop: "回到顶部", insightEmpty: "𝐀𝐈 将在首次分析完成后显示。", last24h: "近 24 小时", updated: "更新于",
     changes: "相较上次", coverSource: "原文", wealth: "财富与商业", employment: "就业与技能",
-    risks: "风险预警", actions: "观察方向", confidence: (n) => `信心 ${n}/5`, sources: "来源",
+    risks: "风险预警", actions: "观察方向", confidence: (n) => `可信度 ${n}/5`, sources: "来源",
     items: (n) => `${n} 条`,
   },
   en: {
