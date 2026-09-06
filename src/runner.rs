@@ -2,6 +2,7 @@ use crate::{
     auth::{self, PlanLimits},
     error::{AppError, Result},
     fetch::{self, Known},
+    insight,
     state::AppState,
     topics::{self, Topic},
 };
@@ -58,6 +59,11 @@ async fn schedule_loop(state: AppState) {
 async fn recover(state: &AppState) -> Result<()> {
     sqlx::query(
         "UPDATE runs SET status = 'interrupted', finished_at = NOW() WHERE status = 'running'",
+    )
+    .execute(&state.pool)
+    .await?;
+    sqlx::query(
+        "UPDATE ai_insights SET status = 'failed', finished_at = NOW(), error = '进程重启中断' WHERE status = 'running'",
     )
     .execute(&state.pool)
     .await?;
@@ -215,6 +221,7 @@ async fn tick(state: &AppState) -> Result<()> {
             }
         }
     }
+    insight::tick(state).await?;
     Ok(())
 }
 

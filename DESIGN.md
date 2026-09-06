@@ -62,6 +62,7 @@ owner_user_id 非 NULL = 对应账户的个人主题
 
 ```text
 GET /digest?topic=&day=&limit=
+GET /insight
 GET /topics
 GET /days?topic=&limit=
 GET /feed.xml?topic=
@@ -134,6 +135,8 @@ PostgreSQL 事务写入 items + runs
 
 个人条目不构建公共快照，但仍完整保存在 PostgreSQL，工作台按主题读取最近内容。
 
+综合研判是独立于新闻主题的公共栏目。调度器默认每两小时读取六个公共主题最近 24 小时的条目，同时读取上一份 `ai_insights` 内容，再使用 `AI_INSIGHT_MODEL`（默认 `gpt-6-astra`）生成中英文短标题、核心判断、变化、财富与商业信号、就业与技能变化、风险预警和观察方向。新闻抓取会在有可靠结果时保留一张热点照片及图注，研判从带图新闻中选择一张主图；没有可靠图片就保持纯文字。首页在 `𝐀𝐋𝐋` 右侧展示 `𝐀𝐈`，点击来源仍直接打开原文。
+
 页面卡片的相对时间使用 `first_seen_at`（NEWS 收录时间）；`published_at` 继续作为 API 的来源发布时间保留。很多来源只能确定日期，直接把日期归一到 UTC 午夜会让刚收录的内容看起来过时。
 
 ## 7. 前端
@@ -157,6 +160,9 @@ DATABASE_URL
 PUBLIC_BASE_URL
 NEWS_ADMIN_EMAILS
 AI_API_KEY                 # 调度开启时
+AI_DEFAULT_MODEL=grok-4.6
+AI_INSIGHT_MODEL=gpt-6-astra
+AI_INSIGHT_INTERVAL_MINUTES=120
 ```
 
 生产登录邮件仍通过 `~/xabcos/mail` 的 Redis 契约发送。支付启用时再配置：

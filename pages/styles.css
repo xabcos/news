@@ -222,6 +222,31 @@ p { margin-top: 0; }
 .status { min-height: 1.5rem; padding: .5rem 0; text-align: center; }
 .status:empty { min-height: 0; padding: 0; }
 
+.insight-heading {
+  padding: .85rem 0 .7rem;
+  border-bottom: 2px solid var(--text);
+}
+.insight-heading h2 { margin: 0 0 .15rem; font-size: clamp(1.35rem, 4vw, 1.8rem); line-height: 1.25; }
+.insight-heading p { margin: 0; }
+.insight-cover { margin: .9rem 0 1rem; }
+.insight-cover > a { display: block; overflow: hidden; border-radius: var(--radius-m); background: var(--surface-soft); }
+.insight-cover img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
+.insight-cover figcaption { padding: .45rem 0 0; font-size: .78rem; line-height: 1.45; }
+.insight-cover figcaption a { color: var(--primary-strong); text-decoration: none; }
+.insight-cover figcaption a:hover { text-decoration: underline; text-underline-offset: .15em; }
+.insight-lead { margin: 1rem 0 .8rem; color: color-mix(in srgb, var(--text) 88%, var(--muted)); font-size: 1.02rem; line-height: 1.72; }
+.insight-change { margin: .65rem 0 1.15rem; padding: .7rem .85rem; border-left: 3px solid var(--primary); background: var(--primary-soft); }
+.insight-change h3 { margin-bottom: .2rem; font-size: .82rem; }
+.insight-change p { margin: 0; color: color-mix(in srgb, var(--text) 82%, var(--muted)); }
+.insight-group .group-title { margin-top: 1.25rem; padding-bottom: .4rem; border-bottom-width: 1px; }
+.insight-group .group-title h2 { font-size: .9rem; }
+.insight-item-heading { display: flex; align-items: baseline; justify-content: space-between; gap: .75rem; }
+.insight-item-heading .item-title { margin: 0; }
+.insight-item .item-summary { margin-bottom: 0; }
+.insight-sources { display: flex; flex-wrap: wrap; align-items: center; gap: .55rem; margin-top: .55rem; font-size: .75rem; }
+.insight-sources a { color: var(--primary-strong); text-decoration: none; }
+.insight-sources a:hover { text-decoration: underline; text-underline-offset: .15em; }
+
 @media (max-width: 768px) {
   .digest { touch-action: pan-y pinch-zoom; }
 }

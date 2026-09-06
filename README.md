@@ -10,12 +10,14 @@
 
 ```text
 GET https://news.xairouter.com/digest?topic=ai&day=2026-09-03&limit=30
+GET https://news.xairouter.com/insight
 GET https://news.xairouter.com/topics
 GET https://news.xairouter.com/days?topic=ai&limit=30
 GET https://news.xairouter.com/feed.xml?topic=ai
 ```
 
 - `topic` 省略时返回全部启用主题；`day` 省略时返回最近一个有内容的日期（响应里的 `day` 字段说明是哪一天）；`limit` 1–128，默认 30，按主题各自截断。
+- `/insight` 返回基于最近 24 小时 NEWS 内容的 `𝐀𝐈` 综合研判，默认每 2 小时更新一次，并保留上一份研判作为下一次分析的上下文；有可靠来源时返回一张热点主图、图注和来源链接。
 - 每条包含 `title/summary`（中文）、`title_en/summary_en`、`url`、`source`、`published_at`、`first_seen_at`、`tags`、`importance`（1–5）、`pinned`。
 - 全部开放 CORS，带 `ETag` 与 `Cache-Control: public, max-age=60, stale-while-revalidate=300`，浏览器和 Cloudflare 都能直接复用；错误响应同样带 CORS 且 `no-store`。
 
@@ -57,10 +59,11 @@ cargo run
 | `PUBLIC_BASE_URL` | – | 对外根地址，用于登录链接与 Origin 校验；非回环必须 HTTPS |
 | `NEWS_ADMIN_EMAILS` | – | 管理员邮箱，逗号分隔；其他有效邮箱自动使用 Free |
 | `AI_API_KEY` | – | 调用模型的密钥，只存在于环境变量 |
-| `AI_BASE_URL` / `AI_DEFAULT_MODEL` | `https://api.zairouter.com` / `grok-4.6` | |
+| `AI_BASE_URL` / `AI_DEFAULT_MODEL` | `https://api.zairouter.com` / `grok-4.6` | 新闻抓取接口与默认模型 |
 | `NEWS_TIMEZONE` | `Asia/Shanghai` | 天边界与时间窗 |
 | `NEWS_SCHEDULER_ENABLED` | `true` | `false` 时只提供页面与 API |
 | `NEWS_FETCH_TIMEOUT_SECS` / `NEWS_MAX_CONCURRENT_RUNS` | `300` / `2` | |
+| `AI_INSIGHT_MODEL` / `AI_INSIGHT_INTERVAL_MINUTES` | `gpt-6-astra` / `120` | 综合研判模型与更新间隔 |
 | `NEWS_RETENTION_DAYS` | `0` | `0` 永久保留条目 |
 | `REDIS_ADDR` / `REDIS_PASS` / `REDIS_DB` | 空 / 空 / `1` | 邮件队列与缓存 |
 | `SESSION_COOKIE_NAME` / `SESSION_TTL_DAYS` / `EMAIL_LOGIN_LINK_TTL_MINUTES` | `news_session` / `30` / `30` | |
@@ -120,7 +123,7 @@ docker-compose config >/dev/null
 docker-compose up -d
 ```
 
-当前版本按全新部署设计，数据库 schema 已合并为一份初始 migration；部署前请使用空数据库（或重建 `postgres_data` volume），不要在旧的 `_sqlx_migrations` 记录上直接启动。
+数据库会按顺序自动执行 `migrations/` 中的 migration；当前版本按全新部署设计，请使用空数据库，或重建 `postgres_data` volume 后再启动。
 
 CI 与 broadcast 相同：`quality-gate.yml` 执行 `make release-check`；`build-deploy.yml` 在 `main` push 后构建并推送 `rust`、`<date>-rust`、`<version>-rust` 标签，commit message 含 `prod` 或手动触发时部署生产；`manual-deploy-prod.yml` 直接部署当前镜像。
 

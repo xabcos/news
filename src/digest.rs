@@ -79,7 +79,7 @@ pub struct Rendered {
 }
 
 impl Rendered {
-    fn new(body: String) -> Self {
+    pub(crate) fn new(body: String) -> Self {
         Self {
             etag: entity_tag(&body),
             body: Bytes::from(body),
@@ -489,6 +489,7 @@ pub(crate) fn router() -> Router<AppState> {
     // account-owned topics and must never be readable by an arbitrary cross-origin page.
     let public = Router::new()
         .route("/digest", get(digest))
+        .route("/insight", get(crate::insight::latest))
         .route("/topics", get(topics))
         .route("/days", get(days))
         .route("/feed.xml", get(feed))
@@ -909,7 +910,11 @@ async fn feed(
 /// Serves a rendered body, or 304 when the client already holds this exact version.
 /// Proxies that recompress the body (Cloudflare does) downgrade the tag to W/"...";
 /// If-None-Match is defined as a weak comparison anyway.
-fn conditional(headers: &HeaderMap, rendered: &Rendered, content_type: &'static str) -> Response {
+pub(crate) fn conditional(
+    headers: &HeaderMap,
+    rendered: &Rendered,
+    content_type: &'static str,
+) -> Response {
     let unchanged = headers
         .get(header::IF_NONE_MATCH)
         .and_then(|value| value.to_str().ok())

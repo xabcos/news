@@ -34,6 +34,8 @@ pub struct Config {
     pub(crate) ai_base_url: Url,
     pub(crate) ai_api_key: String,
     pub(crate) ai_default_model: String,
+    pub(crate) ai_insight_model: String,
+    pub(crate) ai_insight_interval_minutes: u64,
     pub(crate) timezone: Tz,
     pub(crate) fetch_timeout: Duration,
     pub(crate) max_concurrent_runs: usize,
@@ -146,6 +148,12 @@ impl Config {
         }
         let ai_base_url = Url::parse(&env_value("AI_BASE_URL", "https://api.zairouter.com"))
             .map_err(|_| AppError::Config("AI_BASE_URL 必须是有效的 URL".into()))?;
+        let ai_insight_interval_minutes = parse_env("AI_INSIGHT_INTERVAL_MINUTES", 120_u64)?;
+        if !(30..=1440).contains(&ai_insight_interval_minutes) {
+            return Err(AppError::Config(
+                "AI_INSIGHT_INTERVAL_MINUTES 必须在 30 到 1440 分钟之间".into(),
+            ));
+        }
         let timezone = env_value("NEWS_TIMEZONE", "Asia/Shanghai")
             .parse::<Tz>()
             .map_err(|_| AppError::Config("NEWS_TIMEZONE 必须是有效的 IANA 时区".into()))?;
@@ -188,6 +196,8 @@ impl Config {
             ai_base_url,
             ai_api_key,
             ai_default_model: env_value("AI_DEFAULT_MODEL", "grok-4.6"),
+            ai_insight_model: env_value("AI_INSIGHT_MODEL", "gpt-6-astra"),
+            ai_insight_interval_minutes,
             timezone,
             fetch_timeout: Duration::from_secs(fetch_timeout_secs),
             max_concurrent_runs,

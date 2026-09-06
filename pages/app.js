@@ -9,6 +9,7 @@ const PRELOAD_MARGIN = "0px 0px 70% 0px";
 const SWIPE_MIN_DISTANCE = 48;
 const SWIPE_AXIS_RATIO = 1.2;
 const MOBILE_QUERY = "(max-width: 768px)";
+const INSIGHT_ID = "insight";
 const storage = (() => {
   try {
     const store = window.localStorage;
@@ -35,19 +36,23 @@ const storage = (() => {
 
 const TEXT = {
   zh: {
-    locale: "zh-CN", lang: "EN", all: "全部", today: "今天", top: "重要",
+    locale: "zh-CN", lang: "EN", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", today: "今天", top: "重要",
     fresh: "NEW", failed: "加载失败", retry: "重试",
     empty: "这一天还没有内容", latest: "查看最近有内容的一天",
     space: "工作台", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
-    backToTop: "回到顶部",
+    backToTop: "回到顶部", insightEmpty: "𝐀𝐈 将在首次分析完成后显示。", last24h: "近 24 小时", updated: "更新于",
+    changes: "相较上次", coverSource: "原文", wealth: "财富与商业", employment: "就业与技能",
+    risks: "风险预警", actions: "观察方向", confidence: (n) => `信心 ${n}/5`, sources: "来源",
     items: (n) => `${n} 条`,
   },
   en: {
-    locale: "en", lang: "中文", all: "All", today: "Today", top: "Top",
+    locale: "en", lang: "中文", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", today: "Today", top: "Top",
     fresh: "NEW", failed: "Failed to load", retry: "Retry",
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
     space: "Workspace", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
-    backToTop: "Back to top",
+    backToTop: "Back to top", insightEmpty: "𝐀𝐈 will appear after its first analysis.", last24h: "Last 24 hours", updated: "Updated",
+    changes: "Since the previous briefing", coverSource: "Source", wealth: "Wealth & business", employment: "Employment & skills",
+    risks: "Risk alerts", actions: "What to watch", confidence: (n) => `Confidence ${n}/5`, sources: "Sources",
     items: (n) => `${n} ${n === 1 ? "item" : "items"}`,
   },
 };
@@ -61,6 +66,7 @@ const state = {
   days: [],
   // One digest per loaded day; navigation/reload starts a fresh, bounded timeline.
   timeline: [],
+  insight: null,
   personal: false,
   historyLoading: false,
   historyError: false,
@@ -88,12 +94,13 @@ async function init() {
     storage.setItem("news.lang", state.lang);
     applyLang();
     renderTabs();
-    render(true, scrollTop);
+    if (state.topic === INSIGHT_ID) renderInsight(state.insight, true, scrollTop);
+    else render(true, scrollTop);
   });
   window.addEventListener("popstate", () => {
     const params = new URLSearchParams(location.search);
     state.topic = params.get("topic") || "";
-    state.day = params.get("day") || "";
+    state.day = state.topic === INSIGHT_ID ? "" : params.get("day") || "";
     renderTabs();
     load();
   });
@@ -170,6 +177,7 @@ function dayPath(day) {
 }
 
 async function load(silent = false) {
+  if (state.topic === INSIGHT_ID) return loadInsight(silent);
   const epoch = ++state.epoch;
   if (!silent) {
     state.timeline = [];
@@ -247,6 +255,36 @@ async function load(silent = false) {
       await load();
       return;
     }
+    if (epoch === state.epoch && !silent) setStatus(t().failed, true);
+  }
+}
+
+async function loadInsight(silent = false) {
+  const epoch = ++state.epoch;
+  if (state.day) {
+    state.day = "";
+    history.replaceState({}, "", `${location.pathname}${search()}`);
+  }
+  if (!silent) {
+    state.timeline = [];
+    state.days = [];
+    state.historyLoading = false;
+    state.historyError = false;
+    state.historyDone = true;
+    el.digest.replaceChildren();
+    updateHistoryLoader();
+    setStatus("");
+  }
+  try {
+    const payload = await fetchJson("/insight");
+    if (epoch !== state.epoch) return;
+    state.insight = payload.insight;
+    state.historyLoading = false;
+    state.historyError = false;
+    state.historyDone = true;
+    setStatus("");
+    renderInsight(state.insight, silent);
+  } catch {
     if (epoch === state.epoch && !silent) setStatus(t().failed, true);
   }
 }
@@ -354,7 +392,7 @@ function setupTopicSwipe() {
 }
 
 function changeTopic(direction) {
-  const topicIds = ["", ...state.topics.map((topic) => topic.id)];
+  const topicIds = ["", INSIGHT_ID, ...state.topics.map((topic) => topic.id)];
   if (topicIds.length <= 1) return;
   const current = topicIds.indexOf(state.topic);
   const next = ((current < 0 ? 0 : current) + direction + topicIds.length) % topicIds.length;
@@ -409,7 +447,11 @@ function applyLang() {
 }
 
 function renderTabs() {
-  const tabs = [{ id: "", label: t().all }, ...state.topics.map((topic) => ({ id: topic.id, label: name(topic) }))];
+  const tabs = [
+    { id: "", label: t().all },
+    { id: INSIGHT_ID, label: t().insight },
+    ...state.topics.map((topic) => ({ id: topic.id, label: name(topic) })),
+  ];
   el.tabs.replaceChildren(...tabs.map(({ id, label }) => {
     const tab = button(label, () => navigate({ topic: id, day: "" }), "tab");
     if (id === state.topic) tab.setAttribute("aria-current", "true");
@@ -432,6 +474,135 @@ function render(preserveScroll = false, scrollTop = window.scrollY) {
     }));
   }
   window.setTimeout(maybeLoadOlder, 0);
+}
+
+function renderInsight(insight, preserveScroll = false, scrollTop = window.scrollY) {
+  el.digest.replaceChildren();
+  updateHistoryLoader();
+  if (!insight) {
+    const empty = document.createElement("div");
+    empty.className = "empty muted";
+    empty.textContent = t().insightEmpty;
+    el.digest.append(empty);
+    return;
+  }
+  const section = document.createElement("section");
+  section.className = "insight";
+  const heading = document.createElement("div");
+  heading.className = "insight-heading";
+  const title = document.createElement("h2");
+  title.textContent = pick(insight, "headline");
+  const meta = document.createElement("p");
+  meta.className = "muted small";
+  meta.textContent = `${t().last24h} · ${t().updated} ${relativeTime(insight.generated_at)}`;
+  heading.append(title, meta);
+  section.append(heading);
+  if (insight.cover?.url) section.append(insightCover(insight.cover));
+  const overview = document.createElement("p");
+  overview.className = "insight-lead";
+  overview.textContent = pick(insight, "overview");
+  section.append(overview);
+  section.append(insightParagraph(t().changes, pick(insight, "changes"), "insight-change"));
+  for (const [label, items] of [
+    [t().wealth, insight.wealth],
+    [t().employment, insight.employment],
+    [t().risks, insight.risks],
+    [t().actions, insight.actions],
+  ]) {
+    section.append(...renderInsightGroup(label, items || [], insight.sources || []));
+  }
+  el.digest.append(section);
+  if (preserveScroll) {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      document.scrollingElement.scrollTop = scrollTop;
+    }));
+  }
+}
+
+function insightCover(cover) {
+  const figure = document.createElement("figure");
+  figure.className = "insight-cover";
+  const link = document.createElement("a");
+  link.href = cover.source_url;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  const image = document.createElement("img");
+  image.src = cover.url;
+  image.alt = pick(cover, "caption");
+  image.loading = "eager";
+  image.decoding = "async";
+  image.referrerPolicy = "no-referrer";
+  image.addEventListener("error", () => figure.remove(), { once: true });
+  link.append(image);
+  const caption = document.createElement("figcaption");
+  const source = document.createElement("a");
+  source.href = cover.source_url;
+  source.target = "_blank";
+  source.rel = "noopener noreferrer";
+  source.textContent = `${t().coverSource} ↗`;
+  caption.append(span(pick(cover, "caption"), "insight-caption"), span(` · ${cover.credit} · `, "muted small"), source);
+  figure.append(link, caption);
+  return figure;
+}
+
+function insightParagraph(label, text, className = "insight-paragraph") {
+  const block = document.createElement("div");
+  block.className = className;
+  const title = document.createElement("h3");
+  title.textContent = label;
+  const body = document.createElement("p");
+  body.textContent = text;
+  block.append(title, body);
+  return block;
+}
+
+function renderInsightGroup(label, items, sources) {
+  if (!items.length) return [];
+  const section = document.createElement("section");
+  section.className = "group insight-group";
+  const heading = document.createElement("div");
+  heading.className = "group-title";
+  const title = document.createElement("h2");
+  title.textContent = label;
+  heading.append(title);
+  section.append(heading, ...items.map((item) => insightCard(item, sources)));
+  return [section];
+}
+
+function insightCard(item, sources) {
+  const article = document.createElement("article");
+  article.className = "item insight-item";
+  const itemHeading = document.createElement("div");
+  itemHeading.className = "insight-item-heading";
+  const title = document.createElement("h3");
+  title.className = "item-title";
+  title.textContent = pick(item, "title");
+  itemHeading.append(title, span(t().confidence(item.confidence), "muted small"));
+  const summary = document.createElement("p");
+  summary.className = "item-summary";
+  summary.textContent = pick(item, "summary");
+  article.append(itemHeading, summary);
+  const seen = new Set();
+  const links = (item.source_indexes || [])
+    .map((index) => sources[index])
+    .filter((source) => source && !seen.has(source.index) && seen.add(source.index))
+    .slice(0, 2);
+  if (links.length) {
+    const sourceList = document.createElement("div");
+    sourceList.className = "insight-sources";
+    sourceList.append(span(t().sources, "muted small"));
+    sourceList.append(...links.map((source) => {
+      const link = document.createElement("a");
+      link.href = source.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.title = pick(source, "title");
+      link.textContent = `${source.source || hostOf(source.url)} ↗`;
+      return link;
+    }));
+    article.append(sourceList);
+  }
+  return article;
 }
 
 function renderDayBlock(digest, showDayHeading = true) {
