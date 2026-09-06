@@ -40,7 +40,7 @@ const TEXT = {
     fresh: "NEW", failed: "加载失败", retry: "重试",
     empty: "这一天还没有内容", latest: "查看最近有内容的一天",
     space: "工作台", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
-    backToTop: "回到顶部", insightEmpty: "𝐀𝐈 将在首次分析完成后显示。", last24h: "近 24 小时", updated: "更新于",
+    backToTop: "回到顶部", insightEmpty: "𝐀𝐈 将在首次分析完成后显示。",
     changes: "趋势分析", coverSource: "原文", wealth: "财富与商业", employment: "就业与技能",
     risks: "风险预警", actions: "观察方向", confidence: (n) => `可信度 ${n}/5`, sources: "来源",
     items: (n) => `${n} 条`,
@@ -50,7 +50,7 @@ const TEXT = {
     fresh: "NEW", failed: "Failed to load", retry: "Retry",
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
     space: "Workspace", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
-    backToTop: "Back to top", insightEmpty: "𝐀𝐈 will appear after its first analysis.", last24h: "Last 24 hours", updated: "Updated",
+    backToTop: "Back to top", insightEmpty: "𝐀𝐈 will appear after its first analysis.",
     changes: "Trend analysis", coverSource: "Source", wealth: "Wealth & business", employment: "Employment & skills",
     risks: "Risk alerts", actions: "What to watch", confidence: (n) => `Confidence ${n}/5`, sources: "Sources",
     items: (n) => `${n} ${n === 1 ? "item" : "items"}`,
@@ -492,10 +492,7 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
   heading.className = "insight-heading";
   const title = document.createElement("h2");
   title.textContent = pick(insight, "headline");
-  const meta = document.createElement("p");
-  meta.className = "muted small";
-  meta.textContent = `${t().last24h} · ${t().updated} ${relativeTime(insight.generated_at)}`;
-  heading.append(title, meta);
+  heading.append(title);
   section.append(heading);
   if (insight.cover?.url) section.append(insightCover(insight.cover));
   const overview = document.createElement("p");

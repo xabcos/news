@@ -225,9 +225,9 @@ p { margin-top: 0; }
 .insight-heading {
   padding: .85rem 0 .7rem;
   border-bottom: 2px solid var(--text);
+  text-align: center;
 }
-.insight-heading h2 { margin: 0 0 .15rem; font-size: clamp(1.35rem, 4vw, 1.8rem); line-height: 1.25; }
-.insight-heading p { margin: 0; }
+.insight-heading h2 { margin: 0; font-size: clamp(1.35rem, 4vw, 1.8rem); line-height: 1.25; }
 .insight-cover { margin: .9rem 0 1rem; }
 .insight-cover > a { display: block; overflow: hidden; border-radius: var(--radius-m); background: var(--surface-soft); }
 .insight-cover img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
