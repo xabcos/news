@@ -202,7 +202,7 @@ impl Config {
             fetch_timeout: Duration::from_secs(fetch_timeout_secs),
             max_concurrent_runs,
             scheduler_enabled,
-            retention_days: parse_env("NEWS_RETENTION_DAYS", 0_u32)?,
+            retention_days: parse_env("NEWS_RETENTION_DAYS", 128_u32)?,
         })
     }
 }

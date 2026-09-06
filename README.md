@@ -30,7 +30,8 @@ GET https://news.xairouter.com/feed.xml?topic=ai
 - **调度**：每个主题有间隔（分钟）、时间窗（整点）、星期和每日上限，全部按 `NEWS_TIMEZONE`（默认 Asia/Shanghai）解释。调度器每 30 秒认领到期主题并异步抓取，一次抓取通常 40–130 秒；失败按 15 分钟起指数退避，不超过正常间隔。
 - **增量**：每次把最近两天已收录的标题和链接交给模型，只要新增或有实质进展的条目；服务端再按规范化 URL 指纹和标题相似度去重。当天的摘要随时间累积，而不是每小时整页替换。
 - **时间显示**：API 同时保留来源发布时间 `published_at` 和 NEWS 收录时间 `first_seen_at`；页面卡片的相对时间以 `first_seen_at` 为准，避免来源只提供日期时被误显示成数小时前。
-- **三层数据**：读路径 内存 → Redis → PostgreSQL，逐级回填；写路径 PostgreSQL 事务提交 → Redis → 原子替换内存快照。启动时预热今天与昨天，第一次请求就命中内存。每天 00:00 淘汰前天的内存快照；Redis key 48 小时过期；PostgreSQL 永久保留（可用 `NEWS_RETENTION_DAYS` 限制）。`REDIS_ADDR` 为空时自动降级为内存 + PostgreSQL。
+- **三层数据**：读路径 内存 → Redis → PostgreSQL，逐级回填；写路径 PostgreSQL 事务提交 → Redis → 原子替换内存快照。启动时预热今天与昨天，第一次请求就命中内存。每天 00:00 淘汰前天的内存快照；Redis key 48 小时过期；新闻条目默认保留 128 天（可用 `NEWS_RETENTION_DAYS` 调整）。`REDIS_ADDR` 为空时自动降级为内存 + PostgreSQL。
+- **自动清理**：服务启动时和之后每小时分批清理数据；抓取运行记录保留 3 天，AI 研判历史保留 32 天，新闻条目按 `NEWS_RETENTION_DAYS` 保留，避免依赖外部定时任务。
 - **单实例**：内存快照只在本进程内失效，多实例部署会长期返回旧数据。
 - **成本**：每次抓取约 $0.06–0.10（`usage.cost_in_usd_ticks`，1 tick = 1e-10 USD）。工作台的管理员运行记录按次显示 tokens、搜索次数和成本，以及今日合计。
 - **个人主题**：登录后首页保留公共主题，并追加当前账户启用的个人主题；`/me/` 负责管理个人主题。个人主题不会进入公共 digest；管理员主题仍是公共内容源。
@@ -64,7 +65,7 @@ cargo run
 | `NEWS_SCHEDULER_ENABLED` | `true` | `false` 时只提供页面与 API |
 | `NEWS_FETCH_TIMEOUT_SECS` / `NEWS_MAX_CONCURRENT_RUNS` | `1800` / `2` | 新闻抓取、综合研判与 AI Agent 共用超时，默认为 30 分钟 |
 | `AI_INSIGHT_MODEL` / `AI_INSIGHT_INTERVAL_MINUTES` | `gpt-6-astra` / `120` | 综合研判模型与更新间隔 |
-| `NEWS_RETENTION_DAYS` | `0` | `0` 永久保留条目 |
+| `NEWS_RETENTION_DAYS` | `128` | 新闻条目保留天数，超过期限自动清理 |
 | `REDIS_ADDR` / `REDIS_PASS` / `REDIS_DB` | 空 / 空 / `1` | 邮件队列与缓存 |
 | `SESSION_COOKIE_NAME` / `SESSION_TTL_DAYS` / `EMAIL_LOGIN_LINK_TTL_MINUTES` | `news_session` / `30` / `30` | |
 | `EMAIL_STREAM_PRIORITY` / `EMAIL_OID` / `EMAIL_REPLY_TO` | `important` / `0` / 空 | 与 `~/xabcos/mail` 的契约一致 |

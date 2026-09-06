@@ -18,9 +18,12 @@ use uuid::Uuid;
 
 const TICK: Duration = Duration::from_secs(30);
 const MAINTENANCE_TICK: Duration = Duration::from_secs(60);
-const AUTH_CLEANUP_EVERY_TICKS: u32 = 60;
+const CLEANUP_EVERY_TICKS: u32 = 60;
 const KNOWN_LIMIT: i64 = 80;
-const PAYLOAD_RETENTION_DAYS: i32 = 30;
+const RUN_RETENTION_DAYS: i64 = 3;
+const INSIGHT_RETENTION_DAYS: i64 = 32;
+const CLEANUP_BATCH_SIZE: i64 = 500;
+const CLEANUP_MAX_BATCHES: usize = 20;
 
 /// Starts the scheduler (unless disabled) and the maintenance loop.
 pub fn spawn(state: AppState) -> JoinSet<()> {
@@ -593,12 +596,16 @@ async fn defer_after_finish_error(state: &AppState, topic_id: &str) {
     }
 }
 
-/// Every minute: roll the day over when the local date changes; hourly: expire auth rows.
+/// Every minute: roll the day over when the local date changes; hourly: prune old data and
+/// expire authentication rows. The initial prune makes a restart sufficient to catch up.
 async fn maintenance_loop(state: AppState) {
     let mut interval = tokio::time::interval(MAINTENANCE_TICK);
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut day = state.digest.today();
     let mut ticks = 0_u32;
+    if let Err(error) = prune(&state, day).await {
+        tracing::warn!(%error, "initial data pruning failed");
+    }
     loop {
         interval.tick().await;
         ticks += 1;
@@ -606,33 +613,161 @@ async fn maintenance_loop(state: AppState) {
         if today != day {
             day = today;
             state.digest.rollover();
-            if let Err(error) = prune(&state, today).await {
-                tracing::warn!(%error, "daily pruning failed");
-            }
         }
-        if ticks.is_multiple_of(AUTH_CLEANUP_EVERY_TICKS)
-            && let Err(error) = auth::cleanup(&state).await
-        {
-            tracing::warn!(%error, "failed to clean expired authentication records");
+        if ticks >= CLEANUP_EVERY_TICKS {
+            ticks = 0;
+            if let Err(error) = prune(&state, today).await {
+                tracing::warn!(%error, "scheduled data pruning failed");
+            }
+            if let Err(error) = auth::cleanup(&state).await {
+                tracing::warn!(%error, "failed to clean expired authentication records");
+            }
         }
     }
 }
 
-/// Model payloads are only useful for recent troubleshooting; items are kept forever unless
-/// a retention is configured.
+/// Removes old runtime history and news items in bounded batches. A failed table does not
+/// prevent the other tables from being attempted during the same maintenance pass.
 async fn prune(state: &AppState, today: NaiveDate) -> Result<()> {
-    sqlx::query(
-        "UPDATE runs SET payload = NULL WHERE payload IS NOT NULL AND started_at < NOW() - $1 * INTERVAL '1 day'",
-    )
-    .bind(PAYLOAD_RETENTION_DAYS)
-    .execute(&state.pool)
-    .await?;
+    let mut first_error = None;
+    if let Err(error) = cleanup_runs(state).await {
+        tracing::warn!(%error, "run history pruning failed");
+        first_error = Some(error);
+    }
+    if let Err(error) = cleanup_insights(state).await {
+        tracing::warn!(%error, "AI insight history pruning failed");
+        if first_error.is_none() {
+            first_error = Some(error);
+        }
+    }
     if state.config.retention_days > 0 {
         let keep_from = today - ChronoDuration::days(i64::from(state.config.retention_days));
-        sqlx::query("DELETE FROM items WHERE day < $1")
-            .bind(keep_from)
+        if let Err(error) = cleanup_items(state, keep_from).await {
+            tracing::warn!(%error, "news item pruning failed");
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
+        }
+        if let Err(error) = state.digest.prune_before(state, keep_from).await {
+            tracing::warn!(%error, "news cache pruning failed");
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+async fn cleanup_runs(state: &AppState) -> Result<()> {
+    cleanup_in_batches(
+        state,
+        "runs",
+        r#"
+        WITH expired AS (
+            SELECT id
+            FROM runs
+            WHERE status <> 'running'
+              AND started_at < NOW() - ($2 * INTERVAL '1 day')
+            ORDER BY started_at
+            LIMIT $1
+            FOR UPDATE SKIP LOCKED
+        )
+        DELETE FROM runs
+        USING expired
+        WHERE runs.id = expired.id
+        "#,
+        RUN_RETENTION_DAYS,
+    )
+    .await
+}
+
+async fn cleanup_insights(state: &AppState) -> Result<()> {
+    cleanup_in_batches(
+        state,
+        "ai_insights",
+        r#"
+        WITH expired AS (
+            SELECT id
+            FROM ai_insights
+            WHERE status <> 'running'
+              AND started_at < NOW() - ($2 * INTERVAL '1 day')
+            ORDER BY started_at
+            LIMIT $1
+            FOR UPDATE SKIP LOCKED
+        )
+        DELETE FROM ai_insights
+        USING expired
+        WHERE ai_insights.id = expired.id
+        "#,
+        INSIGHT_RETENTION_DAYS,
+    )
+    .await
+}
+
+async fn cleanup_items(state: &AppState, keep_from: NaiveDate) -> Result<()> {
+    let mut total = 0_u64;
+    for batch_index in 0..CLEANUP_MAX_BATCHES {
+        let deleted = sqlx::query(
+            r#"
+            WITH expired AS (
+                SELECT id
+                FROM items
+                WHERE day < $2
+                ORDER BY day, id
+                LIMIT $1
+                FOR UPDATE SKIP LOCKED
+            )
+            DELETE FROM items
+            USING expired
+            WHERE items.id = expired.id
+            "#,
+        )
+        .bind(CLEANUP_BATCH_SIZE)
+        .bind(keep_from)
+        .execute(&state.pool)
+        .await?
+        .rows_affected();
+        total += deleted;
+        if deleted < CLEANUP_BATCH_SIZE as u64 {
+            return Ok(());
+        }
+        if batch_index + 1 == CLEANUP_MAX_BATCHES {
+            tracing::warn!(
+                table = "items",
+                total,
+                "cleanup reached its per-run limit; remaining rows are deferred"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Deletes in bounded batches so a large backlog never holds locks for a whole pass.
+async fn cleanup_in_batches(
+    state: &AppState,
+    table: &'static str,
+    statement: &str,
+    cutoff_days: i64,
+) -> Result<()> {
+    let mut total = 0_u64;
+    for batch_index in 0..CLEANUP_MAX_BATCHES {
+        let deleted = sqlx::query(statement)
+            .bind(CLEANUP_BATCH_SIZE)
+            .bind(cutoff_days)
             .execute(&state.pool)
-            .await?;
+            .await?
+            .rows_affected();
+        total += deleted;
+        if deleted < CLEANUP_BATCH_SIZE as u64 {
+            return Ok(());
+        }
+        if batch_index + 1 == CLEANUP_MAX_BATCHES {
+            tracing::warn!(
+                table,
+                total,
+                "cleanup reached its per-run limit; remaining rows are deferred"
+            );
+        }
     }
     Ok(())
 }

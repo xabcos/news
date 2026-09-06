@@ -253,6 +253,24 @@ impl DigestCache {
         self.forget_topic_locked(state, topic).await;
     }
 
+    /// Drops cached archive snapshots that are no longer present in PostgreSQL after
+    /// retention pruning. The memory generation fence prevents an in-flight read from
+    /// repopulating a deleted day after this invalidation.
+    pub(crate) async fn prune_before(&self, state: &AppState, keep_from: NaiveDate) -> Result<()> {
+        let _cache_guard = self.0.cache_write.lock().await;
+        self.0.generation.fetch_add(1, Ordering::AcqRel);
+        write(&self.0.days).retain(|(_, day), _| *day >= keep_from);
+        write(&self.0.latest).clear();
+        *write(&self.0.hot) = None;
+        let result = if let Some(mut redis) = state.redis.clone() {
+            redis_delete_before(&mut redis, keep_from).await
+        } else {
+            Ok(())
+        };
+        self.0.generation.fetch_add(1, Ordering::AcqRel);
+        result.map_err(Into::into)
+    }
+
     async fn forget_topic_locked(&self, state: &AppState, topic: &str) {
         self.0.generation.fetch_add(1, Ordering::AcqRel);
         write(&self.0.days).retain(|(id, _), _| id != topic);
@@ -472,6 +490,38 @@ async fn redis_delete_topic(
             .await?;
         if !keys.is_empty() {
             let _: i64 = redis::cmd("DEL").arg(keys).query_async(redis).await?;
+        }
+        if next_cursor == 0 {
+            return Ok(());
+        }
+        cursor = next_cursor;
+    }
+}
+
+async fn redis_delete_before(
+    redis: &mut redis::aio::ConnectionManager,
+    keep_from: NaiveDate,
+) -> std::result::Result<(), redis::RedisError> {
+    let mut cursor = 0_u64;
+    loop {
+        let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg("news:v1:*")
+            .arg("COUNT")
+            .arg(1_000_u16)
+            .query_async(redis)
+            .await?;
+        let expired = keys
+            .into_iter()
+            .filter(|key| {
+                key.rsplit_once(':')
+                    .and_then(|(_, day)| day.parse::<NaiveDate>().ok())
+                    .is_some_and(|day| day < keep_from)
+            })
+            .collect::<Vec<_>>();
+        if !expired.is_empty() {
+            let _: i64 = redis::cmd("DEL").arg(expired).query_async(redis).await?;
         }
         if next_cursor == 0 {
             return Ok(());
