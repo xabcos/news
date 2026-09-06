@@ -462,8 +462,8 @@ function renderTabs() {
 function render(preserveScroll = false, scrollTop = window.scrollY) {
   if (!state.timeline.length) return;
   el.digest.replaceChildren(...state.timeline.map((digest, index) => {
-    const day = digest.day;
-    const showDayHeading = index > 0 || !day || day !== todayIn(digest.timezone);
+    // Keep the latest block compact; dates remain visible on loaded history blocks.
+    const showDayHeading = index > 0;
     return renderDayBlock(digest, showDayHeading);
   }));
   updateHistoryLoader();
@@ -499,7 +499,12 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
   overview.className = "insight-lead";
   overview.textContent = pick(insight, "overview");
   section.append(overview);
-  section.append(insightParagraph(t().changes, pick(insight, "changes"), "insight-change"));
+  section.append(insightParagraph(
+    t().changes,
+    pick(insight, "changes"),
+    "insight-change",
+    relativeTime(insight.generated_at),
+  ));
   for (const [label, items] of [
     [t().wealth, insight.wealth],
     [t().employment, insight.employment],
@@ -542,14 +547,18 @@ function insightCover(cover) {
   return figure;
 }
 
-function insightParagraph(label, text, className = "insight-paragraph") {
+function insightParagraph(label, text, className = "insight-paragraph", metaText = "") {
   const block = document.createElement("div");
   block.className = className;
+  const heading = document.createElement("div");
+  heading.className = `${className}-heading`;
   const title = document.createElement("h3");
   title.textContent = label;
+  heading.append(title);
+  if (metaText) heading.append(span(metaText, `${className}-meta muted small`));
   const body = document.createElement("p");
   body.textContent = text;
-  block.append(title, body);
+  block.append(heading, body);
   return block;
 }
 
@@ -789,7 +798,9 @@ function formatDay(day, timeZone) {
 }
 
 function relativeTime(iso) {
-  const minutes = Math.round((Date.parse(iso) - Date.now()) / 60000);
+  const timestamp = Date.parse(iso);
+  if (!Number.isFinite(timestamp)) return "";
+  const minutes = Math.round((timestamp - Date.now()) / 60000);
   const format = new Intl.RelativeTimeFormat(t().locale, { numeric: "auto" });
   if (Math.abs(minutes) < 60) return format.format(minutes, "minute");
   if (Math.abs(minutes) < 60 * 24) return format.format(Math.round(minutes / 60), "hour");
