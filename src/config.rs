@@ -157,7 +157,7 @@ impl Config {
         let timezone = env_value("NEWS_TIMEZONE", "Asia/Shanghai")
             .parse::<Tz>()
             .map_err(|_| AppError::Config("NEWS_TIMEZONE 必须是有效的 IANA 时区".into()))?;
-        let fetch_timeout_secs = parse_env("NEWS_FETCH_TIMEOUT_SECS", 300_u64)?;
+        let fetch_timeout_secs = parse_env("NEWS_FETCH_TIMEOUT_SECS", 1800_u64)?;
         if !(30..=1800).contains(&fetch_timeout_secs) {
             return Err(AppError::Config(
                 "NEWS_FETCH_TIMEOUT_SECS 必须在 30 到 1800 之间".into(),

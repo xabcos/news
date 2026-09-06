@@ -22,6 +22,7 @@ services:
       AI_DEFAULT_MODEL: ${AI_DEFAULT_MODEL:-grok-4.6}
       AI_INSIGHT_MODEL: ${AI_INSIGHT_MODEL:-gpt-6-astra}
       AI_INSIGHT_INTERVAL_MINUTES: ${AI_INSIGHT_INTERVAL_MINUTES:-120}
+      NEWS_FETCH_TIMEOUT_SECS: ${NEWS_FETCH_TIMEOUT_SECS:-1800}
       # Leave these empty to disable checkout in local/staging deployments.
       YPAY_BASE_URL: ${YPAY_BASE_URL:-}
       YPAY_TENANT_CODE: ${YPAY_TENANT_CODE:-news}

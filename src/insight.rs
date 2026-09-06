@@ -273,7 +273,7 @@ async fn execute(state: &AppState, window_start: DateTime<Utc>) -> Result<Comple
     let previous_text = serde_json::to_string(&previous)?;
     let body = json!({
         "model": state.config.ai_insight_model,
-        "reasoning": { "effort": "high" },
+        "reasoning": { "effort": "max" },
         "store": false,
         "instructions": instructions(),
         "input": format!(
