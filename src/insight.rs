@@ -379,7 +379,7 @@ async fn request(state: &AppState, body: Value) -> Result<Value> {
         let Some(seconds) = delays.next() else {
             return Err(AppError::Internal(failure.into()));
         };
-        tracing::warn!(%failure, seconds, "retrying AI insight request");
+        tracing::debug!(%failure, seconds, "retrying AI insight request");
         tokio::time::sleep(Duration::from_secs(*seconds)).await;
     }
 }

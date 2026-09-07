@@ -195,7 +195,7 @@ pub async fn fetch(state: &AppState, topic: &Topic, known: &[Known]) -> Result<F
         let Some(seconds) = delays.next() else {
             return Err(AppError::Internal(failure.into()));
         };
-        tracing::warn!(%failure, seconds, "retrying AI request");
+        tracing::debug!(%failure, seconds, "retrying AI request");
         tokio::time::sleep(Duration::from_secs(*seconds)).await;
     };
     parse_reply(reply)

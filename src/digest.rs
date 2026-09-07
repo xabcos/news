@@ -450,7 +450,7 @@ async fn redis_get(state: &AppState, topic: &str, day: NaiveDate) -> Option<Snap
     {
         Ok(value) => value.and_then(|json| serde_json::from_str(&json).ok()),
         Err(error) => {
-            tracing::warn!(%error, "redis read failed; falling back to PostgreSQL");
+            tracing::debug!(%error, "redis read failed; falling back to PostgreSQL");
             None
         }
     }
@@ -469,7 +469,7 @@ async fn redis_set(state: &AppState, topic: &str, day: NaiveDate, snapshot: &Sna
         .query_async::<()>(&mut redis)
         .await
     {
-        tracing::warn!(%error, "redis write failed; memory and PostgreSQL stay authoritative");
+        tracing::debug!(%error, "redis write failed; memory and PostgreSQL stay authoritative");
     }
 }
 

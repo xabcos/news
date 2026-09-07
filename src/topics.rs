@@ -344,13 +344,11 @@ pub fn next_run_with_min_interval(
     min_interval_minutes: i32,
 ) -> DateTime<Utc> {
     let local = |at: DateTime<Utc>| at.with_timezone(&tz).naive_local();
-    let interval = Duration::minutes(i64::from(topic.interval_minutes));
-    let delay = match topic.consecutive_failures {
-        0 => interval,
-        failures => interval
-            .min(Duration::minutes(15) * 2_i32.pow((failures.clamp(1, 7) - 1) as u32))
-            .max(Duration::minutes(i64::from(min_interval_minutes))),
-    };
+    let delay = Duration::minutes(effective_run_delay_minutes(
+        topic.interval_minutes,
+        topic.consecutive_failures,
+        min_interval_minutes,
+    ));
     let now = local(now);
     let mut candidate = last.map_or(now, |at| local(at) + delay).max(now);
     if today_runs >= i64::from(topic.daily_run_cap) {
@@ -372,6 +370,22 @@ pub fn next_run_with_min_interval(
         }
     }
     to_utc(tz, candidate)
+}
+
+/// Returns the delay admission should enforce after the last run. Failed runs
+/// retry with exponential backoff, while successful runs keep the configured
+/// cadence. The plan floor applies to both paths.
+pub(crate) fn effective_run_delay_minutes(
+    interval_minutes: i32,
+    consecutive_failures: i32,
+    min_interval_minutes: i32,
+) -> i64 {
+    let interval = i64::from(interval_minutes.max(min_interval_minutes));
+    if consecutive_failures <= 0 {
+        return interval;
+    }
+    let backoff = 15_i64 * 2_i64.pow((consecutive_failures.clamp(1, 7) - 1) as u32);
+    interval.min(backoff).max(i64::from(min_interval_minutes))
 }
 
 fn next_day(day: NaiveDate) -> NaiveDate {
@@ -1045,7 +1059,7 @@ fn map_db_error(error: sqlx::Error) -> AppError {
 
 #[cfg(test)]
 mod tests {
-    use super::{Topic, next_run};
+    use super::{Topic, effective_run_delay_minutes, next_run};
     use chrono::{DateTime, TimeZone, Utc};
     use chrono_tz::Asia::Shanghai;
 
@@ -1148,5 +1162,13 @@ mod tests {
             next_run(&topic(), Shanghai, at, Some(at), 24),
             local(2026, 9, 4, 6, 0)
         );
+    }
+
+    #[test]
+    fn admission_delay_matches_failure_backoff() {
+        assert_eq!(effective_run_delay_minutes(120, 0, 15), 120);
+        assert_eq!(effective_run_delay_minutes(120, 1, 15), 15);
+        assert_eq!(effective_run_delay_minutes(120, 3, 15), 60);
+        assert_eq!(effective_run_delay_minutes(60, 1, 120), 120);
     }
 }

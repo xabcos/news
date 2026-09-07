@@ -17,6 +17,7 @@ use tokio::{task::JoinSet, time::MissedTickBehavior};
 use uuid::Uuid;
 
 const TICK: Duration = Duration::from_secs(30);
+const TICK_ERROR_LOG_INTERVAL: Duration = Duration::from_secs(300);
 const MAINTENANCE_TICK: Duration = Duration::from_secs(60);
 const CLEANUP_EVERY_TICKS: u32 = 60;
 const KNOWN_LIMIT: i64 = 80;
@@ -50,10 +51,24 @@ async fn schedule_loop(state: AppState) {
     }
     let mut interval = tokio::time::interval(TICK);
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut last_tick_error: Option<(String, Instant)> = None;
     loop {
         interval.tick().await;
-        if let Err(error) = tick(&state).await {
-            tracing::warn!(%error, "scheduler tick failed");
+        match tick(&state).await {
+            Ok(()) => last_tick_error = None,
+            Err(error) => {
+                let message = error.to_string();
+                let should_log = match &last_tick_error {
+                    Some((previous, logged_at)) => {
+                        previous != &message || logged_at.elapsed() >= TICK_ERROR_LOG_INTERVAL
+                    }
+                    None => true,
+                };
+                if should_log {
+                    tracing::warn!(%error, "scheduler tick failed");
+                    last_tick_error = Some((message, Instant::now()));
+                }
+            }
         }
     }
 }
@@ -215,7 +230,7 @@ async fn tick(state: &AppState) -> Result<()> {
     for topic in due {
         // A manual run may be in flight; it reschedules the topic when it finishes.
         if let Err(error) = start(state, &topic, "schedule").await {
-            tracing::info!(%error, "scheduled run skipped");
+            tracing::debug!(%error, "scheduled run skipped");
             // Claiming clears next_run_at.  If admission rejected the run,
             // put the topic back on a future slot instead of silently stopping
             // its schedule.
@@ -319,7 +334,11 @@ async fn register_run(
             ));
         }
     }
-    let interval = i64::from(topic.interval_minutes.max(limits.min_interval_minutes));
+    let interval = topics::effective_run_delay_minutes(
+        topic.interval_minutes,
+        topic.consecutive_failures,
+        limits.min_interval_minutes,
+    );
     if let Some(last) = topic.last_run_at {
         let elapsed = (Utc::now() - last).num_minutes();
         if elapsed < interval {
@@ -385,7 +404,7 @@ async fn run(
             Ok(outcome) => outcome,
             Err(_) => Err(AppError::Internal("抓取超时".into())),
         };
-    let status = if outcome.is_ok() { "ok" } else { "failed" };
+    let failure = outcome.as_ref().err().map(ToString::to_string);
     match finish(
         &state,
         &topic.id,
@@ -396,12 +415,19 @@ async fn run(
     )
     .await
     {
-        Ok(()) => tracing::info!(
-            topic = %topic.id,
-            status,
-            elapsed_ms = clock.elapsed().as_millis() as u64,
-            "run finished"
-        ),
+        Ok(()) => match failure {
+            Some(error) => tracing::warn!(
+                topic = %topic.id,
+                %error,
+                elapsed_ms = clock.elapsed().as_millis() as u64,
+                "run failed"
+            ),
+            None => tracing::info!(
+                topic = %topic.id,
+                elapsed_ms = clock.elapsed().as_millis() as u64,
+                "run finished"
+            ),
+        },
         Err(error) => tracing::error!(topic = %topic.id, %error, "failed to record run"),
     }
     state.in_flight().remove(&topic.id);
