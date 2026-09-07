@@ -23,6 +23,9 @@ const GLOBAL_RATE_WINDOW_MAX: i64 = 120;
 const LOGIN_GLOBAL_LOCK_ID: i64 = 0x584e_4557_534c_4f43; // "XNEWSLOC"
 const CLEANUP_BATCH_SIZE: i64 = 500;
 const CLEANUP_MAX_BATCHES: usize = 20;
+/// Set beside the session cookie, but readable by the public page's script. It only decides
+/// which feed the page asks for first; that request is authorized by the session as usual.
+pub(crate) const ROLE_COOKIE_NAME: &str = "news_role";
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub(crate) struct User {
@@ -198,18 +201,20 @@ pub(crate) async fn consume_email_login(
     transaction.commit().await?;
 
     let mut response = Json(serde_json::json!({ "user": public_user(&user) })).into_response();
-    response.headers_mut().append(
-        header::SET_COOKIE,
-        HeaderValue::from_str(&session_cookie(&state, &session_token))
-            .map_err(|_| AppError::Internal("会话 Cookie 无效".into()))?,
-    );
+    for cookie in [
+        session_cookie(&state, &session_token),
+        role_cookie(&state, &user.role),
+    ] {
+        response.headers_mut().append(
+            header::SET_COOKIE,
+            HeaderValue::from_str(&cookie)
+                .map_err(|_| AppError::Internal("会话 Cookie 无效".into()))?,
+        );
+    }
     Ok(response)
 }
 
-pub(crate) async fn me(
-    State(state): State<AppState>,
-    user: User,
-) -> Result<Json<serde_json::Value>> {
+pub(crate) async fn me(State(state): State<AppState>, user: User) -> Result<Response> {
     let topic_count =
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM topics WHERE owner_user_id = $1")
             .bind(user.id)
@@ -232,7 +237,7 @@ pub(crate) async fn me(
     .bind(since)
     .fetch_one(&state.pool)
     .await?;
-    Ok(Json(serde_json::json!({
+    let mut response = Json(serde_json::json!({
         "user": public_user(&user),
         "usage": {
             "topic_count": topic_count,
@@ -240,7 +245,15 @@ pub(crate) async fn me(
             "reset_at": reset_at,
             "timezone": state.config.timezone.name(),
         },
-    })))
+    }))
+    .into_response();
+    // Sessions that predate the role cookie pick it up on their next workspace visit.
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&role_cookie(&state, &user.role))
+            .map_err(|_| AppError::Internal("会话 Cookie 无效".into()))?,
+    );
+    Ok(response)
 }
 
 fn public_user(user: &User) -> PublicUser<'_> {
@@ -274,11 +287,13 @@ pub(crate) async fn logout(State(state): State<AppState>, headers: HeaderMap) ->
             .await?;
     }
     let mut response = axum::http::StatusCode::NO_CONTENT.into_response();
-    response.headers_mut().append(
-        header::SET_COOKIE,
-        HeaderValue::from_str(&clear_cookie(&state))
-            .map_err(|_| AppError::Internal("会话 Cookie 无效".into()))?,
-    );
+    for cookie in [clear_cookie(&state), clear_role_cookie(&state)] {
+        response.headers_mut().append(
+            header::SET_COOKIE,
+            HeaderValue::from_str(&cookie)
+                .map_err(|_| AppError::Internal("会话 Cookie 无效".into()))?,
+        );
+    }
     Ok(response)
 }
 
@@ -587,23 +602,28 @@ fn read_session_token(headers: &HeaderMap, cookie_name: &str) -> Option<String> 
 }
 
 fn session_cookie(state: &AppState, token: &str) -> String {
-    let mut cookie = format!(
-        "{}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}",
-        state.config.session_cookie_name,
-        token,
-        state.config.session_ttl.as_secs()
-    );
-    if state.config.public_base_url.scheme() == "https" {
-        cookie.push_str("; Secure");
-    }
-    cookie
+    let ttl = state.config.session_ttl.as_secs();
+    cookie(state, &state.config.session_cookie_name, token, ttl, true)
 }
 
 fn clear_cookie(state: &AppState) -> String {
-    let mut cookie = format!(
-        "{}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
-        state.config.session_cookie_name
-    );
+    cookie(state, &state.config.session_cookie_name, "", 0, true)
+}
+
+fn role_cookie(state: &AppState, role: &str) -> String {
+    let ttl = state.config.session_ttl.as_secs();
+    cookie(state, ROLE_COOKIE_NAME, role, ttl, false)
+}
+
+fn clear_role_cookie(state: &AppState) -> String {
+    cookie(state, ROLE_COOKIE_NAME, "", 0, false)
+}
+
+fn cookie(state: &AppState, name: &str, value: &str, max_age: u64, http_only: bool) -> String {
+    let mut cookie = format!("{name}={value}; Path=/; SameSite=Lax; Max-Age={max_age}");
+    if http_only {
+        cookie.push_str("; HttpOnly");
+    }
     if state.config.public_base_url.scheme() == "https" {
         cookie.push_str("; Secure");
     }

@@ -666,6 +666,8 @@ async fn prune(state: &AppState, today: NaiveDate) -> Result<()> {
             first_error = Some(error);
         }
     }
+    // Batches commit one by one, so a failed pass may still have removed the newest row.
+    state.insight.invalidate();
     if state.config.retention_days > 0 {
         let keep_from = today - ChronoDuration::days(i64::from(state.config.retention_days));
         if let Err(error) = cleanup_items(state, keep_from).await {

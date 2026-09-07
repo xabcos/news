@@ -2,7 +2,17 @@
 
 const $ = (selector) => document.querySelector(selector);
 const REFRESH_MS = 5 * 60 * 1000;
-const PAGE_LIMIT = 128;
+// Items per topic per request. The first screen asks for one page; scrolling to the end of
+// a group silently fetches that group's next page.
+const PAGE_LIMIT = 32;
+// Delay before a failed page request is retried, still without any visible message.
+const PAGE_RETRY_MS = 8000;
+// Browsers with scroll anchoring keep the viewport still when cards are inserted above it;
+// elsewhere the scroll position is corrected by hand.
+const NATIVE_SCROLL_ANCHORING = typeof CSS !== "undefined" && CSS.supports?.("overflow-anchor", "auto") === true;
+// Set at login beside the HttpOnly session cookie. It only chooses which feed the page asks
+// for first; the server authorizes that request as usual.
+const ROLE_COOKIE = "news_role";
 // Keep the simple timeline bounded to the archive window exposed by the API.
 const DAYS_LIMIT = 366;
 const PRELOAD_MARGIN = "0px 0px 70% 0px";
@@ -83,6 +93,9 @@ const el = {
   backToTop: $("#backToTop"),
 };
 const t = () => TEXT[state.lang];
+// Sentinels at the end of groups with more items on the server, and the group each belongs to.
+const groupTargets = new WeakMap();
+let groupObserver = null;
 
 document.addEventListener("DOMContentLoaded", init);
 
@@ -111,10 +124,11 @@ async function init() {
   setupInfiniteScroll();
   setupTopicSwipe();
 
-  await resolveViewer();
-  await loadCatalog();
+  // Everything the first screen needs leaves in one round trip: the role cookie replaces the
+  // old `/api/me` probe, and the catalogue loads beside the digest instead of before it.
+  state.personal = viewerRole() === "user";
   renderTabs();
-  await load();
+  await Promise.all([loadCatalog(), load()]);
 }
 
 async function fetchJson(path) {
@@ -132,25 +146,27 @@ async function fetchJson(path) {
   return response.json();
 }
 
-// The public page is cacheable, but the selected account feed is always fetched with the
-// session cookie and never allowed to fall into a shared browser cache.
-async function resolveViewer() {
-  try {
-    const { user } = await fetchJson("/api/me");
-    state.personal = user.role === "user";
-  } catch (error) {
-    // A missing session is the normal anonymous path. Other failures should not make
-    // the public page unavailable; the public digest remains a useful fallback.
-    if (![401, 403].includes(error.status)) console.debug("viewer lookup failed", error);
-  }
+// The role cookie is the only hint about the session that the public page reads. Anonymous
+// readers therefore never touch a private endpoint, and every request they make is cacheable.
+function viewerRole() {
+  const prefix = `${ROLE_COOKIE}=`;
+  const entry = document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith(prefix));
+  return entry ? decodeURIComponent(entry.slice(prefix.length)) : "";
+}
+
+// The server clears the cookie on logout; this covers a session that expired on its own.
+function clearViewerRole() {
+  const secure = location.protocol === "https:" ? "; Secure" : "";
+  document.cookie = `${ROLE_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax${secure}`;
 }
 
 async function loadCatalog() {
   if (state.personal) return;
   try {
     state.topics = (await fetchJson("/topics")).topics;
+    renderTabs();
   } catch {
-    // The digest still loads; the tabs just stay empty.
+    // The digest still loads; the tabs just stay at ALL and AI.
   }
 }
 
@@ -176,6 +192,45 @@ function dayPath(day) {
   return `${state.personal ? "/api/me/feed" : "/digest"}?${params}`;
 }
 
+function pagePath(day, topic, after) {
+  const params = new URLSearchParams({ topic, day, limit: String(PAGE_LIMIT), after });
+  return `${state.personal ? "/api/me/feed" : "/digest"}?${params}`;
+}
+
+// The server's display order: pinned first, then newest published, newest collected, id.
+function displayOrder(a, b) {
+  const pairs = [
+    [a.pinned ? 1 : 0, b.pinned ? 1 : 0],
+    [a.published_at ? Date.parse(a.published_at) : -Infinity, b.published_at ? Date.parse(b.published_at) : -Infinity],
+    [Date.parse(a.first_seen_at), Date.parse(b.first_seen_at)],
+    [a.id, b.id],
+  ];
+  for (const [left, right] of pairs) {
+    if (left > right) return -1;
+    if (left < right) return 1;
+  }
+  return 0;
+}
+
+// A background refresh only fetches first pages. A group the reader has scrolled deeper into
+// keeps its extra pages and its cursor; the fresh head is merged in front of them.
+function mergeRefresh(current, fresh) {
+  const topics = (fresh.topics || []).map((group) => {
+    const known = (current.topics || []).find((entry) => entry.id === group.id);
+    if (!known || (known.items || []).length <= (group.items || []).length) return group;
+    const fresh = group.items || [];
+    const head = new Set(fresh.map((item) => item.id));
+    const items = [...fresh, ...known.items.filter((item) => !head.has(item.id))].sort(displayOrder);
+    return { ...group, items, next: known.next };
+  });
+  return { ...fresh, topics };
+}
+
+function clearDigest() {
+  groupObserver?.disconnect();
+  el.digest.replaceChildren();
+}
+
 async function load(silent = false) {
   if (state.topic === INSIGHT_ID) return loadInsight(silent);
   const epoch = ++state.epoch;
@@ -184,7 +239,7 @@ async function load(silent = false) {
     state.historyLoading = false;
     state.historyError = false;
     state.historyDone = false;
-    el.digest.replaceChildren();
+    clearDigest();
     updateHistoryLoader();
     setStatus("");
   }
@@ -207,8 +262,9 @@ async function load(silent = false) {
     if (epoch !== state.epoch) return;
     state.days = days.map((entry) => entry.day);
     if (state.personal) renderTabs();
-    // A background refresh only repaints when something actually changed.
     const current = state.timeline[0];
+    if (silent && current && digest.day === current.day) digest = mergeRefresh(current, digest);
+    // A background refresh only repaints when something actually changed.
     if (silent
       && digest.day === current?.day
       && JSON.stringify(digest.topics) === JSON.stringify(current?.topics)) {
@@ -233,6 +289,7 @@ async function load(silent = false) {
     // If a session expires while the page is open, switch back to the public feed
     // instead of leaving a private page permanently stuck on an auth error.
     if (state.personal && [401, 403].includes(error.status) && epoch === state.epoch) {
+      clearViewerRole();
       state.personal = false;
       state.topic = "";
       state.day = "";
@@ -271,7 +328,7 @@ async function loadInsight(silent = false) {
     state.historyLoading = false;
     state.historyError = false;
     state.historyDone = true;
-    el.digest.replaceChildren();
+    clearDigest();
     updateHistoryLoader();
     setStatus("");
   }
@@ -303,6 +360,13 @@ function updateHistoryBoundary() {
 
 async function loadOlder() {
   if (state.historyLoading || state.historyError || state.historyDone || !state.timeline.length) return;
+  // The day on screen is finished before the previous one appears: a group the reader
+  // scrolled past while it still had pages is completed first, in reading order.
+  const pending = el.digest.querySelector(".day-block:last-of-type .group-more");
+  if (pending) {
+    loadMoreItems(pending);
+    return;
+  }
   const day = nextTimelineDay();
   if (!day) {
     state.historyDone = true;
@@ -352,11 +416,80 @@ function setupInfiniteScroll() {
       { rootMargin: PRELOAD_MARGIN },
     );
     observer.observe(el.loadMore);
+    groupObserver = new window.IntersectionObserver(
+      (entries) => entries.forEach((entry) => entry.isIntersecting && loadMoreItems(entry.target)),
+      { rootMargin: PRELOAD_MARGIN },
+    );
     return;
   }
   window.addEventListener("scroll", () => {
     if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - window.innerHeight) loadOlder();
+    el.digest.querySelectorAll(".group-more").forEach((sentinel) => {
+      if (sentinel.getBoundingClientRect().top < window.innerHeight * 1.7) loadMoreItems(sentinel);
+    });
   }, { passive: true });
+}
+
+// An empty element after the last card of a group that has more items on the server.
+// Scrolling it into view fetches the next page; there is no button and no label.
+function groupSentinel(digest, group) {
+  const sentinel = document.createElement("div");
+  sentinel.className = "group-more";
+  sentinel.setAttribute("aria-hidden", "true");
+  groupTargets.set(sentinel, { digest, group, loading: false });
+  groupObserver?.observe(sentinel);
+  return sentinel;
+}
+
+// Re-observing reports the current intersection again, so a sentinel that merely moved
+// down (or one whose request failed) is re-checked without waiting for a scroll event.
+function reobserve(sentinel) {
+  groupObserver?.unobserve(sentinel);
+  groupObserver?.observe(sentinel);
+}
+
+async function loadMoreItems(sentinel) {
+  const target = groupTargets.get(sentinel);
+  if (!target || target.loading || !sentinel.isConnected || !target.group.next) return;
+  const { digest, group } = target;
+  if (!Array.isArray(group.items)) group.items = [];
+  const timeline = state.timeline;
+  target.loading = true;
+  try {
+    const payload = await fetchJson(pagePath(digest.day, group.id, group.next));
+    if (timeline !== state.timeline || !sentinel.isConnected) return;
+    const page = (state.personal ? payload.digest : payload)?.topics?.find((entry) => entry.id === group.id);
+    // The cursor already excludes everything on screen; ids only guard against a stale head.
+    const seen = new Set(group.items.map((item) => item.id));
+    const added = (page?.items || []).filter((item) => !seen.has(item.id));
+    group.items.push(...added);
+    group.total = page?.total ?? group.total;
+    group.next = page?.next || null;
+    insertBefore(sentinel, added.map(card));
+    if (group.next) {
+      target.loading = false;
+      reobserve(sentinel);
+    } else {
+      groupObserver?.unobserve(sentinel);
+      sentinel.remove();
+    }
+    window.setTimeout(maybeLoadOlder, 0);
+  } catch {
+    window.setTimeout(() => {
+      target.loading = false;
+      if (sentinel.isConnected) reobserve(sentinel);
+    }, PAGE_RETRY_MS);
+  }
+}
+
+// Cards can land above the viewport when the bottom loader completes a group the reader
+// already scrolled past; the page must not jump under them.
+function insertBefore(sentinel, nodes) {
+  if (!nodes.length) return;
+  const before = sentinel.getBoundingClientRect().top;
+  sentinel.before(...nodes);
+  if (NATIVE_SCROLL_ANCHORING || before >= 0) return;
+  window.scrollBy(0, sentinel.getBoundingClientRect().top - before);
 }
 
 // On a phone, a horizontal gesture over the feed moves between topics. Keep the
@@ -461,6 +594,8 @@ function renderTabs() {
 
 function render(preserveScroll = false, scrollTop = window.scrollY) {
   if (!state.timeline.length) return;
+  // Sentinels of the outgoing blocks must be dropped before the new blocks register theirs.
+  groupObserver?.disconnect();
   el.digest.replaceChildren(...state.timeline.map((digest, index) => {
     // Keep the latest block compact; dates remain visible on loaded history blocks.
     const showDayHeading = index > 0;
@@ -477,7 +612,7 @@ function render(preserveScroll = false, scrollTop = window.scrollY) {
 }
 
 function renderInsight(insight, preserveScroll = false, scrollTop = window.scrollY) {
-  el.digest.replaceChildren();
+  clearDigest();
   updateHistoryLoader();
   if (!insight) {
     const empty = document.createElement("div");
@@ -505,13 +640,15 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
     "insight-change",
     relativeTime(insight.generated_at),
   ));
+  // The server sends only the sources a briefing cites, keyed by their original index.
+  const sources = new Map((insight.sources || []).map((source) => [source.index, source]));
   for (const [label, items] of [
     [t().wealth, insight.wealth],
     [t().employment, insight.employment],
     [t().risks, insight.risks],
     [t().actions, insight.actions],
   ]) {
-    section.append(...renderInsightGroup(label, items || [], insight.sources || []));
+    section.append(...renderInsightGroup(label, items || [], sources));
   }
   el.digest.append(section);
   if (preserveScroll) {
@@ -590,7 +727,7 @@ function insightCard(item, sources) {
   article.append(itemHeading, summary);
   const seen = new Set();
   const links = (item.source_indexes || [])
-    .map((index) => sources[index])
+    .map((index) => sources.get(index))
     .filter((source) => source && !seen.has(source.index) && seen.add(source.index))
     .slice(0, 2);
   if (links.length) {
@@ -651,6 +788,7 @@ function renderGroups(digest) {
       section.append(heading);
     }
     section.append(...(group.items || []).map(card));
+    if (group.next) section.append(groupSentinel(digest, group));
     return section;
   });
 }

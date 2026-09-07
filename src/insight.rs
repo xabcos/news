@@ -1,4 +1,5 @@
 use crate::{
+    digest::Rendered,
     error::{AppError, Result},
     fetch::{NewsImage, Usage},
     state::AppState,
@@ -8,7 +9,14 @@ use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::FromRow;
-use std::time::Duration;
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc, PoisonError, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 use uuid::Uuid;
 
 const IN_FLIGHT_KEY: &str = "__ai_insight__";
@@ -127,6 +135,53 @@ struct Completed {
     payload: Value,
 }
 
+/// The `/insight` body, rendered once per published briefing instead of on every request.
+/// Publishing and pruning bump the generation under the same lock, so a request that read
+/// PostgreSQL before either landed cannot store its stale rendering afterwards.
+#[derive(Clone, Default)]
+pub struct InsightCache(Arc<InsightCacheInner>);
+
+#[derive(Default)]
+struct InsightCacheInner {
+    rendered: RwLock<Option<Arc<Rendered>>>,
+    generation: AtomicU64,
+}
+
+impl InsightCache {
+    fn get(&self) -> Option<Arc<Rendered>> {
+        self.0
+            .rendered
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn generation(&self) -> u64 {
+        self.0.generation.load(Ordering::Acquire)
+    }
+
+    fn store(&self, generation: u64, rendered: Arc<Rendered>) {
+        let mut slot = self
+            .0
+            .rendered
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        if self.0.generation.load(Ordering::Acquire) == generation {
+            *slot = Some(rendered);
+        }
+    }
+
+    pub(crate) fn invalidate(&self) {
+        let mut slot = self
+            .0
+            .rendered
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        self.0.generation.fetch_add(1, Ordering::AcqRel);
+        *slot = None;
+    }
+}
+
 /// Starts one public briefing when the two-hour slot is due. It shares the scheduler's
 /// semaphore with topic runs, while keeping its own in-flight key and history table.
 pub(crate) async fn tick(state: &AppState) -> Result<()> {
@@ -173,6 +228,23 @@ pub(crate) async fn tick(state: &AppState) -> Result<()> {
 }
 
 pub(crate) async fn latest(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
+    let rendered = match state.insight.get() {
+        Some(hit) => hit,
+        None => {
+            let generation = state.insight.generation();
+            let rendered = Arc::new(render_latest(&state).await?);
+            state.insight.store(generation, Arc::clone(&rendered));
+            rendered
+        }
+    };
+    Ok(crate::digest::conditional(
+        &headers,
+        &rendered,
+        "application/json",
+    ))
+}
+
+async fn render_latest(state: &AppState) -> Result<Rendered> {
     let row = sqlx::query_as::<_, InsightRow>(
         "SELECT started_at, finished_at, window_start, model, payload
          FROM ai_insights WHERE status = 'ok' ORDER BY finished_at DESC LIMIT 1",
@@ -186,24 +258,42 @@ pub(crate) async fn latest(State(state): State<AppState>, headers: HeaderMap) ->
                 .ok_or_else(|| AppError::Internal("AI 研判内容为空".into()))?;
             let stored = serde_json::from_value::<StoredInsight>(payload)
                 .map_err(|_| AppError::Internal("AI 研判内容无效".into()))?;
+            // The cover is resolved by position before the list is reduced to citations.
+            let cover = selected_cover(&stored.analysis, &stored.sources);
+            let sources = cited_sources(&stored.analysis, stored.sources);
             Some(InsightDocument {
                 generated_at: row.finished_at.unwrap_or(row.started_at),
                 window_start: row.window_start,
                 model: row.model,
-                cover: selected_cover(&stored.analysis, &stored.sources),
+                cover,
                 analysis: stored.analysis,
-                sources: stored.sources,
+                sources,
             })
         }
         None => None,
     };
-    let rendered =
-        crate::digest::Rendered::new(serde_json::to_string(&InsightResponse { insight })?);
-    Ok(crate::digest::conditional(
-        &headers,
-        &rendered,
-        "application/json",
-    ))
+    Ok(Rendered::new(serde_json::to_string(&InsightResponse {
+        insight,
+    })?))
+}
+
+/// Only the sources a briefing cites leave the server. Their original `index` values are
+/// kept so `source_indexes` still resolve; the full input set stays in PostgreSQL for the
+/// next run's cover rotation.
+fn cited_sources(analysis: &InsightAnalysis, sources: Vec<InsightSource>) -> Vec<InsightSource> {
+    let cited = analysis
+        .wealth
+        .iter()
+        .chain(&analysis.employment)
+        .chain(&analysis.risks)
+        .chain(&analysis.actions)
+        .flat_map(|signal| signal.source_indexes.iter().copied())
+        .chain(analysis.cover_source_index)
+        .collect::<HashSet<usize>>();
+    sources
+        .into_iter()
+        .filter(|source| cited.contains(&source.index))
+        .collect()
 }
 
 async fn run(
@@ -530,6 +620,7 @@ async fn finish(
             .bind(&done.payload)
             .execute(&state.pool)
             .await?;
+            state.insight.invalidate();
         }
         Err(error) => {
             sqlx::query(
@@ -547,4 +638,79 @@ async fn finish(
 
 fn clip(value: &str, max: usize) -> String {
     value.trim().chars().take(max).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{InsightAnalysis, InsightCache, InsightSignal, InsightSource, cited_sources};
+    use crate::digest::Rendered;
+    use chrono::Utc;
+    use std::sync::Arc;
+
+    fn signal(source_indexes: Vec<usize>) -> InsightSignal {
+        InsightSignal {
+            title: String::new(),
+            title_en: String::new(),
+            summary: String::new(),
+            summary_en: String::new(),
+            confidence: 3,
+            source_indexes,
+        }
+    }
+
+    fn source(index: usize) -> InsightSource {
+        InsightSource {
+            index,
+            topic_id: String::new(),
+            topic: String::new(),
+            topic_en: String::new(),
+            title: String::new(),
+            title_en: String::new(),
+            summary: String::new(),
+            summary_en: String::new(),
+            url: format!("https://example.com/{index}"),
+            source: String::new(),
+            tags: Vec::new(),
+            importance: 3,
+            first_seen_at: Utc::now(),
+            image: None,
+        }
+    }
+
+    #[test]
+    fn keeps_only_cited_sources_with_their_original_indexes() {
+        let analysis = InsightAnalysis {
+            headline: String::new(),
+            headline_en: String::new(),
+            overview: String::new(),
+            overview_en: String::new(),
+            changes: String::new(),
+            changes_en: String::new(),
+            cover_source_index: Some(7),
+            wealth: vec![signal(vec![2, 5])],
+            employment: vec![],
+            risks: vec![signal(vec![5]), signal(vec![9])],
+            actions: vec![signal(vec![])],
+        };
+        let kept = cited_sources(&analysis, (0..12).map(source).collect());
+        assert_eq!(
+            kept.iter().map(|source| source.index).collect::<Vec<_>>(),
+            vec![2, 5, 7, 9]
+        );
+        assert_eq!(kept[2].url, "https://example.com/7");
+    }
+
+    #[test]
+    fn cache_refuses_renderings_from_before_an_invalidation() {
+        let cache = InsightCache::default();
+        let generation = cache.generation();
+        cache.invalidate();
+        cache.store(generation, Arc::new(Rendered::new("{}".into())));
+        assert!(cache.get().is_none());
+        let generation = cache.generation();
+        cache.store(generation, Arc::new(Rendered::new("{}".into())));
+        assert!(cache.get().is_some());
+        cache.invalidate();
+        assert!(cache.get().is_none());
+    }
 }

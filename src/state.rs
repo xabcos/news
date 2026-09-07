@@ -2,6 +2,7 @@ use crate::{
     config::Config,
     digest::DigestCache,
     error::{AppError, Result},
+    insight::InsightCache,
 };
 use redis::aio::{ConnectionManager, ConnectionManagerConfig};
 use sqlx::{PgPool, postgres::PgPoolOptions};
@@ -28,6 +29,7 @@ pub struct AppState {
     pub(crate) http: reqwest::Client,
     pub(crate) config: Arc<Config>,
     pub(crate) digest: DigestCache,
+    pub(crate) insight: InsightCache,
     /// Topics with a fetch in flight; one run per topic at a time.
     in_flight: Arc<Mutex<HashSet<String>>>,
     /// One process-wide budget shared by scheduled and manual runs.
@@ -67,6 +69,7 @@ impl AppState {
             redis,
             http,
             digest: DigestCache::new(config.timezone),
+            insight: InsightCache::default(),
             config: Arc::new(config),
             in_flight: Arc::default(),
             run_slots: Arc::new(Semaphore::new(max_concurrent_runs)),

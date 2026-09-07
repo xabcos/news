@@ -9,20 +9,20 @@
 ## 公共 API
 
 ```text
-GET https://news.xairouter.com/digest?topic=ai&day=2026-09-03&limit=30
+GET https://news.xairouter.com/digest?topic=ai&day=2026-09-03&limit=30&after=<next>
 GET https://news.xairouter.com/insight
 GET https://news.xairouter.com/topics
 GET https://news.xairouter.com/days?topic=ai&limit=30
 GET https://news.xairouter.com/feed.xml?topic=ai
 ```
 
-- `topic` 省略时返回全部启用主题；`day` 省略时返回最近一个有内容的日期（响应里的 `day` 字段说明是哪一天）；`limit` 1–128，默认 30，按主题各自截断。
-- `/insight` 返回基于最近 24 小时 NEWS 内容的 `𝐀𝐈` 综合研判，默认每 2 小时更新一次，并读取最近 7 天内每天最后一份成功研判作为趋势分析上下文；有可靠来源时返回一张热点主图、图注和来源链接，优先避开最近 32 小时用过的配图，候选耗尽时使用最久未用的一张。
+- `topic` 省略时返回全部启用主题；`day` 省略时返回最近一个有内容的日期（响应里的 `day` 字段说明是哪一天）；`limit` 1–128，默认 30，每个主题各截一页。每个主题带 `next` 游标，把它作为 `after` 并指定同一个 `topic`、`day` 传回即可取下一页；`total` 始终是当天全部条数，读完时 `next` 为 `null`。游标按显示顺序（置顶、发布时间、收录时间、id）定位，两页之间新增、隐藏或置顶变化都不会漏掉或重复条目；`after` 无效或没有同时给 `topic` 时返回 400。
+- `/insight` 返回基于最近 24 小时 NEWS 内容的 `𝐀𝐈` 综合研判，默认每 2 小时更新一次，并读取最近 7 天内每天最后一份成功研判作为趋势分析上下文；有可靠来源时返回一张热点主图、图注和来源链接，优先避开最近 32 小时用过的配图，候选耗尽时使用最久未用的一张。响应中的 `sources` 只包含被正文引用的来源并保留原始 `index`，`source_indexes` 按它对应。
 - 每条包含 `title/summary`（中文）、`title_en/summary_en`、`url`、`source`、`published_at`、`first_seen_at`、`tags`、`importance`（1–5）、`pinned`。
 - 全部开放 CORS，带 `ETag` 与 `Cache-Control: public, max-age=60, stale-while-revalidate=300`，浏览器和 Cloudflare 都能直接复用；错误响应同样带 CORS 且 `no-store`。
 
 ```json
-{"day":"2026-09-03","timezone":"Asia/Shanghai","generated_at":"…","topics":[{"id":"ai","name":"AI 行业动态","name_en":"AI Industry","description":"…","latest_day":"2026-09-03","updated_at":"…","total":14,"items":[{"id":"…","title":"…","summary":"…","title_en":"…","summary_en":"…","url":"https://…","source":"Reuters","published_at":"…","first_seen_at":"…","tags":["OpenAI"],"importance":5,"pinned":false}]}]}
+{"day":"2026-09-03","timezone":"Asia/Shanghai","generated_at":"…","topics":[{"id":"ai","name":"AI 行业动态","name_en":"AI Industry","description":"…","latest_day":"2026-09-03","updated_at":"…","total":14,"next":null,"items":[{"id":"…","title":"…","summary":"…","title_en":"…","summary_en":"…","url":"https://…","source":"Reuters","published_at":"…","first_seen_at":"…","tags":["OpenAI"],"importance":5,"pinned":false}]}]}
 ```
 
 ## 工作方式
@@ -30,7 +30,8 @@ GET https://news.xairouter.com/feed.xml?topic=ai
 - **调度**：每个主题有间隔（分钟）、时间窗（整点）、星期和每日上限，全部按 `NEWS_TIMEZONE`（默认 Asia/Shanghai）解释。调度器每 30 秒认领到期主题并异步抓取，一次抓取通常 40–130 秒；失败按 15 分钟起指数退避，不超过正常间隔。
 - **增量**：每次把最近两天已收录的标题和链接交给模型，只要新增或有实质进展的条目；服务端再按规范化 URL 指纹和标题相似度去重。当天的摘要随时间累积，而不是每小时整页替换。
 - **时间显示**：API 同时保留来源发布时间 `published_at` 和 NEWS 收录时间 `first_seen_at`；页面卡片的相对时间以 `first_seen_at` 为准，避免来源只提供日期时被误显示成数小时前。
-- **三层数据**：读路径 内存 → Redis → PostgreSQL，逐级回填；写路径 PostgreSQL 事务提交 → Redis → 原子替换内存快照。启动时预热今天与昨天，第一次请求就命中内存。每天 00:00 淘汰前天的内存快照；Redis key 48 小时过期；新闻条目默认保留 128 天（可用 `NEWS_RETENTION_DAYS` 调整）。`REDIS_ADDR` 为空时自动降级为内存 + PostgreSQL。
+- **三层数据**：读路径 内存 → Redis → PostgreSQL，逐级回填；写路径 PostgreSQL 事务提交 → Redis → 原子替换内存快照。启动时预热今天与昨天，第一次请求就命中内存。每天 00:00 淘汰前天的内存快照；Redis key 48 小时过期；新闻条目默认保留 128 天（可用 `NEWS_RETENTION_DAYS` 调整）。`REDIS_ADDR` 为空时自动降级为内存 + PostgreSQL。全部主题的首页 `/digest` 按 `limit` 预渲染并连同 ETag 常驻内存，`/days` 与 `/insight` 的响应体同样常驻，写入、日切与清理时一起失效。
+- **首页加载**：首屏数据并行请求，只有一轮网络往返；登录状态由登录时写入的可读 cookie `news_role` 判断，匿名访客不会请求任何私有接口。打开根路径时 `index.html` 里的 `<link rel="preload">` 让 `/digest?limit=32`、`/days`、`/topics` 随 HTML 一起出发，不等 `app.js`；带 `topic`/`day` 的深链和已登录账户用不到这三份预加载，会多出三次很小的请求。每个主题首屏 32 条，组尾有一个空的哨兵元素，进入视口即用 `next` 游标静默续拉 32 条；当天所有主题读完才加载前一天，读者快速滑过的主题由底部加载器按顺序补齐，浏览器滚动锚定保证页面不跳动。后台 5 分钟刷新只取各主题首页，并与已加载的分页合并，不会收起内容。
 - **自动清理**：服务启动时和之后每小时分批清理数据；抓取运行记录保留 3 天，AI 研判历史保留 32 天，新闻条目按 `NEWS_RETENTION_DAYS` 保留，避免依赖外部定时任务。
 - **单实例**：内存快照只在本进程内失效，多实例部署会长期返回旧数据。
 - **成本**：每次抓取约 $0.06–0.10（`usage.cost_in_usd_ticks`，1 tick = 1e-10 USD）。工作台的管理员运行记录按次显示 tokens、搜索次数和成本，以及今日合计。
@@ -81,7 +82,7 @@ cargo run
 
 ```text
 GET    /api/me
-GET    /api/me/feed?topic=&day=&limit=
+GET    /api/me/feed?topic=&day=&limit=&after=
 GET    /api/me/status
 GET    /api/me/topics             POST   /api/me/topics
 PATCH  /api/me/topics/{id}        DELETE /api/me/topics/{id}
@@ -105,9 +106,11 @@ POST   /api/webhooks/payment
 
 个人主题的 `GET /api/me/topics/{id}/items` 在省略 `day` 时返回该主题最近有内容的一天；传入 `day=YYYY-MM-DD` 可查看指定日期。
 
-登录后首页使用 `GET /api/me/feed` 读取公共主题和当前账户启用的个人主题。响应包含 `topics`（主题卡片）、`days`（所选主题有内容的日期，最新优先）以及与公共 `/digest` 同形的 `digest`；`topic`、`day`、`limit` 的语义与公共接口一致。该响应按会话隔离并始终 `no-store`，不会进入公共 Redis 或内存缓存；个人条目仍只会在当前账户的响应中出现。
+登录后首页使用 `GET /api/me/feed` 读取公共主题和当前账户启用的个人主题。响应包含 `topics`（主题卡片）、`days`（所选主题有内容的日期，最新优先）以及与公共 `/digest` 同形的 `digest`；`topic`、`day`、`limit`、`after` 与 `next` 的语义与公共接口一致。该响应按会话隔离并始终 `no-store`，不会进入公共 Redis 或内存缓存；个人条目仍只会在当前账户的响应中出现。
 
 登录发送频率限制与 broadcast 相同：同一邮箱 60 秒内不重发，10 分钟内最多 3 次，全站 60 秒内最多 120 次。
+
+登录成功时除 HttpOnly 的会话 cookie 外，还会写入脚本可读的 `news_role`（值为 `user` 或 `admin`，有效期与会话相同）。它只用于首页决定先请求公共内容还是 `/api/me/feed`，服务端对该请求仍按会话鉴权；退出登录时两者一起清除，会话失效时首页也会自行清掉它。
 
 Pro 订单固定为 ¥99 / 31 天，通过 YPay 的 store-token 接口创建微信 Native 订单。YPay 租户使用 webhook fulfillment，回调地址为 `https://news.xairouter.com/api/webhooks/payment`，并将租户密钥与 `PAYMENT_WEBHOOK_SECRET` 保持一致；服务端只接受固定 Pro 金额，回调验签后延长 `users.pro_until`。
 
@@ -125,6 +128,30 @@ docker-compose up -d
 ```
 
 数据库会按顺序自动执行 `migrations/` 中的 migration；当前版本按全新部署设计，请使用空数据库，或重建 `postgres_data` volume 后再启动。
+
+### 反向代理与边缘缓存
+
+`deploy/nginx/news.xairouter.com.conf` 是宿主机 nginx 的站点配置：upstream 指向 `127.0.0.1:8793` 并保持长连接，`/api` 与 `/me` 直通不缓存，其余公共路径按服务返回的 `Cache-Control` 做源站微缓存（并发请求合并、过期后台刷新、容器重启或出错时继续提供最近一份）。安装：
+
+```bash
+nginx -V 2>&1 | grep -o -- '--conf-path=[^ ]*'                       # 确认主配置位置，下面以 /etc/nginx 为例
+sudo mkdir -p /var/cache/nginx /etc/nginx/conf.d && sudo chown ywgx /var/cache/nginx   # 缓存目录归 nginx worker 用户
+sudo cp deploy/nginx/news.xairouter.com.conf /etc/nginx/conf.d/
+grep -n 'conf.d/\*.conf' /etc/nginx/nginx.conf                       # 没有输出就在 http {} 块内加一行 include /etc/nginx/conf.d/*.conf;
+sudo nginx -t && sudo nginx -s reload
+sudo nginx -T | grep -n 'news.xairouter.com\|proxy_cache news_cache'  # 能看到 server_name 和 proxy_cache 行才算生效
+curl -sI https://news.xairouter.com/digest | grep -i x-cache-status   # 连续两次，第二次应为 HIT
+```
+
+主配置里如果已经有一个 `server_name news.xairouter.com` 的旧 server 块，需要删掉，否则 nginx 只保留先出现的那一个并告警 conflicting server name。
+
+Cloudflare 默认只缓存静态后缀，`/`、`/digest`、`/topics`、`/days`、`/insight` 每次都回源。要让边缘直接命中，在 Cloudflare 控制台为该域添加一条 Cache Rule，表达式：
+
+```text
+(http.host eq "news.xairouter.com" and not starts_with(http.request.uri.path, "/api") and not starts_with(http.request.uri.path, "/me"))
+```
+
+缓存资格选「Eligible for cache」，Edge TTL 选「Use cache-control header if present, bypass cache if not」，Browser TTL 选「Respect origin」。服务对错误响应和所有私有接口都返回 `no-store`，不会被误缓存；公共响应对所有访客相同，不依赖 cookie。
 
 CI 与 broadcast 相同：`quality-gate.yml` 执行 `make release-check`；`build-deploy.yml` 在 `main` push 后构建并推送 `rust`、`<date>-rust`、`<version>-rust` 标签，commit message 含 `prod` 或手动触发时部署生产；`manual-deploy-prod.yml` 直接部署当前镜像。
 

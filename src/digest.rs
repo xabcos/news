@@ -12,6 +12,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
@@ -32,7 +33,13 @@ use uuid::Uuid;
 const DEFAULT_LIMIT: usize = 30;
 const MAX_LIMIT: usize = 128;
 const MAX_DAYS: i64 = 366;
+const DEFAULT_DAYS_LIMIT: i64 = 30;
 const FEED_LIMIT: usize = 50;
+/// Pre-rendered `/digest` and `/days` bodies are kept per query shape. The bounds stop a
+/// scan over every `limit` value from turning the two maps into a memory sink.
+const HOT_VARIANTS: usize = 8;
+const DAYS_VARIANTS: usize = 16;
+const MAX_CURSOR_LEN: usize = 256;
 /// Today and yesterday live in memory and in Redis for two days; archive days only pass
 /// through Redis briefly.
 const HOT_TTL_SECS: u64 = 48 * 3600;
@@ -72,6 +79,74 @@ pub struct Snapshot {
     pub items: Vec<PublicItem>,
 }
 
+impl Snapshot {
+    /// Restores the display order that paging relies on. PostgreSQL already returns it;
+    /// a snapshot written to Redis by an older build may not break ties by id.
+    fn normalize(&mut self) {
+        self.items.sort_by(|a, b| Cursor::of(b).cmp(&Cursor::of(a)));
+    }
+}
+
+/// The display-order key of one item: `pinned DESC, published_at DESC NULLS LAST,
+/// first_seen_at DESC, id DESC`. Deriving `Ord` over the fields in this order and comparing
+/// descending yields exactly that order; `None` sorting before `Some` is what puts undated
+/// items last. A page starts strictly after a key, so items that appear, disappear or move
+/// between two requests never shift the page that follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Cursor {
+    #[serde(rename = "p")]
+    pinned: bool,
+    #[serde(rename = "t")]
+    published_at: Option<DateTime<Utc>>,
+    #[serde(rename = "s")]
+    first_seen_at: DateTime<Utc>,
+    #[serde(rename = "i")]
+    id: Uuid,
+}
+
+impl Cursor {
+    pub fn of(item: &PublicItem) -> Self {
+        Self {
+            pinned: item.pinned,
+            published_at: item.published_at,
+            first_seen_at: item.first_seen_at,
+            id: item.id,
+        }
+    }
+
+    /// The token handed out as `next` and accepted back as `after`.
+    pub fn encode(&self) -> String {
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(self).expect("cursor serialises"))
+    }
+
+    pub fn decode(token: &str) -> Result<Self> {
+        let invalid = || AppError::BadRequest("after 参数无效".into());
+        if token.is_empty() || token.len() > MAX_CURSOR_LEN {
+            return Err(invalid());
+        }
+        let bytes = URL_SAFE_NO_PAD.decode(token).map_err(|_| invalid())?;
+        serde_json::from_slice(&bytes).map_err(|_| invalid())
+    }
+}
+
+/// One page of a snapshot: the first `limit` items strictly after `after` in display order,
+/// and the cursor of the page that follows, if there is one.
+fn page(
+    items: &[PublicItem],
+    after: Option<Cursor>,
+    limit: usize,
+) -> (&[PublicItem], Option<String>) {
+    let start = after.map_or(0, |cursor| {
+        items.partition_point(|item| Cursor::of(item) >= cursor)
+    });
+    let end = start.saturating_add(limit).min(items.len());
+    let next = (end > start && end < items.len()).then(|| Cursor::of(&items[end - 1]).encode());
+    (&items[start..end], next)
+}
+
+/// `/days` cache key: the optional topic filter and the requested limit.
+type DaysKey = (Option<String>, i64);
+
 /// A response body with its validator, ready to serve.
 pub struct Rendered {
     pub body: Bytes,
@@ -98,8 +173,11 @@ struct Inner {
     days: RwLock<HashMap<(String, NaiveDate), Arc<Snapshot>>>,
     /// PostgreSQL's answer for topics with nothing in the last two days, until the next write.
     latest: RwLock<HashMap<String, Option<NaiveDate>>>,
-    /// The default `/digest` response, pre-rendered until the next write.
-    hot: RwLock<Option<Arc<Rendered>>>,
+    /// The first page of the all-topics `/digest`, pre-rendered per `limit` until the next
+    /// write. The public page and the API default ask for different limits.
+    hot: RwLock<HashMap<usize, Arc<Rendered>>>,
+    /// `/days` bodies per (topic, limit); the query behind them scans every visible item.
+    archive: RwLock<HashMap<DaysKey, Arc<Rendered>>>,
     /// Bumped by every write. A load that began before a write must not be stored after it.
     generation: AtomicU64,
     /// Serializes cache misses and explicit refreshes. Without this small
@@ -124,6 +202,7 @@ impl DigestCache {
             days: RwLock::default(),
             latest: RwLock::default(),
             hot: RwLock::default(),
+            archive: RwLock::default(),
             generation: AtomicU64::new(0),
             cache_write: tokio::sync::Mutex::new(()),
         }))
@@ -159,7 +238,7 @@ impl DigestCache {
         *write(&self.0.topics) = Arc::new(topics);
         write(&self.0.days).clear();
         write(&self.0.latest).clear();
-        *write(&self.0.hot) = None;
+        self.forget_rendered();
         // A reader may have started in the small window between the first
         // fence and the catalogue swap; fence that reader as well.
         self.0.generation.fetch_add(1, Ordering::AcqRel);
@@ -195,7 +274,10 @@ impl DigestCache {
         }
         let generation = self.0.generation.load(Ordering::Acquire);
         let snapshot = match redis_get(state, topic, day).await {
-            Some(snapshot) => snapshot,
+            Some(mut snapshot) => {
+                snapshot.normalize();
+                snapshot
+            }
             None => {
                 let snapshot = load(state, topic, day).await?;
                 // A write may have invalidated this read while it was in
@@ -244,7 +326,7 @@ impl DigestCache {
             write(&self.0.days).insert((topic.to_owned(), day), snapshot);
         }
         write(&self.0.latest).remove(topic);
-        *write(&self.0.hot) = None;
+        self.forget_rendered();
         Ok(())
     }
 
@@ -261,7 +343,7 @@ impl DigestCache {
         self.0.generation.fetch_add(1, Ordering::AcqRel);
         write(&self.0.days).retain(|(_, day), _| *day >= keep_from);
         write(&self.0.latest).clear();
-        *write(&self.0.hot) = None;
+        self.forget_rendered();
         let result = if let Some(mut redis) = state.redis.clone() {
             redis_delete_before(&mut redis, keep_from).await
         } else {
@@ -275,7 +357,7 @@ impl DigestCache {
         self.0.generation.fetch_add(1, Ordering::AcqRel);
         write(&self.0.days).retain(|(id, _), _| id != topic);
         write(&self.0.latest).remove(topic);
-        *write(&self.0.hot) = None;
+        self.forget_rendered();
         // A deleted topic may be recreated with the same id. Remove every
         // archive key as well as today's hot keys, otherwise stale items can
         // survive their normal Redis TTL.
@@ -293,7 +375,7 @@ impl DigestCache {
         let keep_from = self.yesterday();
         write(&self.0.days).retain(|(_, day), _| *day >= keep_from);
         write(&self.0.latest).clear();
-        *write(&self.0.hot) = None;
+        self.forget_rendered();
     }
 
     /// The most recent day with visible items for the topic.
@@ -327,6 +409,49 @@ impl DigestCache {
         }
     }
 
+    /// Drops every pre-rendered body. Runs under the same writes that invalidate snapshots.
+    fn forget_rendered(&self) {
+        write(&self.0.hot).clear();
+        write(&self.0.archive).clear();
+    }
+
+    /// The `/days` body: which days have visible items, newest first. PostgreSQL is asked
+    /// once per (topic, limit) between writes.
+    pub async fn days(
+        &self,
+        state: &AppState,
+        topic: Option<&str>,
+        limit: i64,
+    ) -> Result<Arc<Rendered>> {
+        let key = (topic.map(str::to_owned), limit);
+        if let Some(hit) = read(&self.0.archive).get(&key).cloned() {
+            return Ok(hit);
+        }
+        // Only catalogue topics are cached; an arbitrary id must not be able to fill the map.
+        let cacheable = topic.is_none_or(|id| self.topics().iter().any(|topic| topic.id == id));
+        let generation = self.0.generation.load(Ordering::Acquire);
+        let days = sqlx::query_as::<_, DayCount>(
+            "SELECT items.day, COUNT(*) AS count FROM items \
+             JOIN topics ON topics.id = items.topic_id \
+             WHERE ($1::text IS NULL OR items.topic_id = $1) AND topics.enabled AND topics.owner_user_id IS NULL AND NOT items.hidden \
+             GROUP BY items.day ORDER BY items.day DESC LIMIT $2",
+        )
+        .bind(topic)
+        .bind(limit)
+        .fetch_all(&state.pool)
+        .await?;
+        let rendered = Arc::new(Rendered::new(
+            json!({ "topic": topic, "days": days }).to_string(),
+        ));
+        if cacheable && self.0.generation.load(Ordering::Acquire) == generation {
+            let mut archive = write(&self.0.archive);
+            if archive.len() < DAYS_VARIANTS || archive.contains_key(&key) {
+                archive.insert(key, Arc::clone(&rendered));
+            }
+        }
+        Ok(rendered)
+    }
+
     fn selected(&self, topic: Option<&str>) -> Result<(Arc<Vec<TopicMeta>>, Vec<usize>)> {
         let topics = self.topics();
         let selected = match topic {
@@ -342,16 +467,19 @@ impl DigestCache {
     }
 
     /// The `/digest` body. Without a day, the most recent day that has content anywhere in
-    /// the selection is used, so a page never mixes days.
+    /// the selection is used, so a page never mixes days. `after` and `limit` select one
+    /// page of each topic's items; `total` always reports the whole day and `next` names
+    /// the page that follows.
     pub async fn render(
         &self,
         state: &AppState,
         topic: Option<&str>,
         day: Option<NaiveDate>,
         limit: usize,
+        after: Option<Cursor>,
     ) -> Result<Arc<Rendered>> {
-        let hot_path = topic.is_none() && day.is_none() && limit == DEFAULT_LIMIT;
-        if hot_path && let Some(hit) = read(&self.0.hot).clone() {
+        let hot_path = topic.is_none() && day.is_none() && after.is_none();
+        if hot_path && let Some(hit) = read(&self.0.hot).get(&limit).cloned() {
             return Ok(hit);
         }
         let generation = self.0.generation.load(Ordering::Acquire);
@@ -379,6 +507,7 @@ impl DigestCache {
                 .map(|((&index, latest_day), snapshot)| {
                     let topic = &topics[index];
                     let items = snapshot.as_ref().map_or(&[][..], |s| s.items.as_slice());
+                    let (page_items, next) = page(items, after, limit);
                     TopicDigest {
                         id: &topic.id,
                         name: &topic.name,
@@ -387,14 +516,18 @@ impl DigestCache {
                         latest_day: *latest_day,
                         updated_at: snapshot.as_ref().and_then(|s| s.updated_at),
                         total: items.len(),
-                        items: &items[..items.len().min(limit)],
+                        next,
+                        items: page_items,
                     }
                 })
                 .collect(),
         };
         let rendered = Arc::new(Rendered::new(serde_json::to_string(&body)?));
         if hot_path && self.0.generation.load(Ordering::Acquire) == generation {
-            *write(&self.0.hot) = Some(Arc::clone(&rendered));
+            let mut hot = write(&self.0.hot);
+            if hot.len() < HOT_VARIANTS || hot.contains_key(&limit) {
+                hot.insert(limit, Arc::clone(&rendered));
+            }
         }
         Ok(rendered)
     }
@@ -417,6 +550,7 @@ struct TopicDigest<'a> {
     latest_day: Option<NaiveDate>,
     updated_at: Option<DateTime<Utc>>,
     total: usize,
+    next: Option<String>,
     items: &'a [PublicItem],
 }
 
@@ -425,7 +559,7 @@ async fn load(state: &AppState, topic: &str, day: NaiveDate) -> Result<Snapshot>
         "SELECT items.id, items.title, items.summary, items.title_en, items.summary_en, items.url, items.source, items.published_at, items.first_seen_at, items.tags, items.importance, items.pinned \
          FROM items JOIN topics ON topics.id = items.topic_id \
          WHERE items.topic_id = $1 AND items.day = $2 AND topics.enabled AND topics.owner_user_id IS NULL AND NOT items.hidden \
-         ORDER BY pinned DESC, published_at DESC NULLS LAST, first_seen_at DESC",
+         ORDER BY items.pinned DESC, items.published_at DESC NULLS LAST, items.first_seen_at DESC, items.id DESC",
     )
     .bind(topic)
     .bind(day)
@@ -567,6 +701,18 @@ struct DigestQuery {
     topic: Option<String>,
     day: Option<NaiveDate>,
     limit: Option<usize>,
+    after: Option<String>,
+}
+
+/// `after` continues one topic's page sequence; without a topic there is nothing to continue.
+fn cursor_from(query: &DigestQuery) -> Result<Option<Cursor>> {
+    match &query.after {
+        None => Ok(None),
+        Some(_) if query.topic.is_none() => {
+            Err(AppError::BadRequest("after 需要同时指定 topic".into()))
+        }
+        Some(token) => Cursor::decode(token).map(Some),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -631,6 +777,7 @@ struct PersonalTopicDigest {
     latest_day: Option<NaiveDate>,
     updated_at: Option<DateTime<Utc>>,
     total: usize,
+    next: Option<String>,
     items: Vec<PublicItem>,
 }
 
@@ -640,9 +787,10 @@ async fn digest(
     headers: HeaderMap,
 ) -> Result<Response> {
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    let after = cursor_from(&query)?;
     let rendered = state
         .digest
-        .render(&state, query.topic.as_deref(), query.day, limit)
+        .render(&state, query.topic.as_deref(), query.day, limit, after)
         .await?;
     Ok(conditional(&headers, &rendered, "application/json"))
 }
@@ -672,17 +820,11 @@ async fn days(
     ApiQuery(query): ApiQuery<DaysQuery>,
     headers: HeaderMap,
 ) -> Result<Response> {
-    let days = sqlx::query_as::<_, DayCount>(
-        "SELECT items.day, COUNT(*) AS count FROM items \
-         JOIN topics ON topics.id = items.topic_id \
-         WHERE ($1::text IS NULL OR items.topic_id = $1) AND topics.enabled AND topics.owner_user_id IS NULL AND NOT items.hidden \
-         GROUP BY items.day ORDER BY items.day DESC LIMIT $2",
-    )
-    .bind(&query.topic)
-    .bind(query.limit.unwrap_or(30).clamp(1, MAX_DAYS))
-    .fetch_all(&state.pool)
-    .await?;
-    let rendered = Rendered::new(json!({ "topic": query.topic, "days": days }).to_string());
+    let limit = query.limit.unwrap_or(DEFAULT_DAYS_LIMIT).clamp(1, MAX_DAYS);
+    let rendered = state
+        .digest
+        .days(&state, query.topic.as_deref(), limit)
+        .await?;
     Ok(conditional(&headers, &rendered, "application/json"))
 }
 
@@ -703,6 +845,7 @@ async fn me_feed(
 ) -> Result<Response> {
     auth::require_personal(&user)?;
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    let after = cursor_from(&query)?;
     let cards = personal_topic_cards(&state, user.id).await?;
 
     // `/api/me/feed?topic=...` is a view over the public catalogue plus the caller's
@@ -734,13 +877,13 @@ async fn me_feed(
     let mut digest_topics = Vec::with_capacity(selected.len());
     for index in selected {
         let card = &cards[index];
-        let (items, total, updated_at) = match selected_day {
+        let ((items, next), total, updated_at) = match selected_day {
             Some(day) => (
-                personal_items(&state, user.id, &card.id, day, limit).await?,
+                personal_items(&state, user.id, &card.id, day, limit, after).await?,
                 stats.get(&card.id).map_or(0, |entry| entry.total),
                 stats.get(&card.id).and_then(|entry| entry.updated_at),
             ),
-            None => (Vec::new(), 0, None),
+            None => ((Vec::new(), None), 0, None),
         };
         digest_topics.push(PersonalTopicDigest {
             id: card.id.clone(),
@@ -750,6 +893,7 @@ async fn me_feed(
             latest_day: card.latest_day,
             updated_at,
             total: usize::try_from(total).unwrap_or(usize::MAX),
+            next,
             items,
         });
     }
@@ -860,8 +1004,13 @@ async fn personal_items(
     topic: &str,
     day: NaiveDate,
     limit: usize,
-) -> Result<Vec<PublicItem>> {
-    Ok(sqlx::query_as::<_, PublicItem>(
+    after: Option<Cursor>,
+) -> Result<(Vec<PublicItem>, Option<String>)> {
+    // One row beyond the page tells whether a `next` cursor is due. The row comparison is
+    // the SQL form of `Cursor`'s ordering; undated items compare as -infinity, as NULLS LAST
+    // does for the ORDER BY.
+    let fetch = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
+    let mut items = sqlx::query_as::<_, PublicItem>(
         r#"
         SELECT items.id,
                items.title,
@@ -882,18 +1031,31 @@ async fn personal_items(
           AND topics.enabled
           AND items.day = $3
           AND NOT items.hidden
+          AND ($5::boolean IS NULL OR
+               (items.pinned, COALESCE(items.published_at, '-infinity'::timestamptz), items.first_seen_at, items.id)
+               < ($5, COALESCE($6, '-infinity'::timestamptz), $7, $8))
         ORDER BY items.pinned DESC,
                  items.published_at DESC NULLS LAST,
-                 items.first_seen_at DESC
+                 items.first_seen_at DESC,
+                 items.id DESC
         LIMIT $4
         "#,
     )
     .bind(topic)
     .bind(user_id)
     .bind(day)
-    .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+    .bind(fetch)
+    .bind(after.map(|cursor| cursor.pinned))
+    .bind(after.and_then(|cursor| cursor.published_at))
+    .bind(after.map(|cursor| cursor.first_seen_at))
+    .bind(after.map(|cursor| cursor.id))
     .fetch_all(&state.pool)
-    .await?)
+    .await?;
+    let next = (items.len() > limit).then(|| {
+        items.truncate(limit);
+        Cursor::of(&items[limit - 1]).encode()
+    });
+    Ok((items, next))
 }
 
 /// Atom 1.0 over the last two days of the selection, newest collected first.
@@ -1022,8 +1184,98 @@ fn escape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Rendered, conditional, entity_tag, escape};
+    use super::{Cursor, PublicItem, Rendered, Snapshot, conditional, entity_tag, escape, page};
     use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use chrono::{Duration, TimeZone, Utc};
+    use uuid::Uuid;
+
+    /// Items are told apart by `importance`; `published_at` grows with `n`, so higher `n`
+    /// is newer and sorts first among unpinned items.
+    fn item(n: u8, pinned: bool) -> PublicItem {
+        let base = Utc
+            .with_ymd_and_hms(2026, 9, 7, 0, 0, 0)
+            .single()
+            .expect("valid");
+        PublicItem {
+            id: Uuid::from_u128(u128::from(n) + 1),
+            title: String::new(),
+            summary: String::new(),
+            title_en: String::new(),
+            summary_en: String::new(),
+            url: String::new(),
+            source: String::new(),
+            published_at: Some(base + Duration::minutes(i64::from(n))),
+            first_seen_at: base,
+            tags: Vec::new(),
+            importance: i16::from(n),
+            pinned,
+        }
+    }
+
+    fn marks(items: &[PublicItem]) -> Vec<i16> {
+        items.iter().map(|item| item.importance).collect()
+    }
+
+    #[test]
+    fn cursors_round_trip_and_reject_garbage() {
+        let cursor = Cursor::of(&item(3, true));
+        assert_eq!(
+            Cursor::decode(&cursor.encode()).expect("valid cursor"),
+            cursor
+        );
+        assert!(Cursor::decode("").is_err());
+        assert!(Cursor::decode("not base64!").is_err());
+        assert!(Cursor::decode(&URL_SAFE_NO_PAD.encode(br#"{"p":1}"#)).is_err());
+        assert!(Cursor::decode(&"a".repeat(257)).is_err());
+    }
+
+    #[test]
+    fn display_order_puts_pinned_first_and_undated_last() {
+        let mut undated = item(9, false);
+        undated.published_at = None;
+        let mut snapshot = Snapshot {
+            updated_at: None,
+            items: vec![item(1, false), undated, item(2, true), item(3, false)],
+        };
+        snapshot.normalize();
+        assert_eq!(marks(&snapshot.items), vec![2, 3, 1, 9]);
+    }
+
+    #[test]
+    fn pages_continue_after_a_key_even_when_the_snapshot_changed() {
+        let mut snapshot = Snapshot {
+            updated_at: None,
+            items: (0..7).map(|n| item(n, n % 5 == 0)).collect(),
+        };
+        snapshot.normalize();
+        // Pinned 5 and 0 lead; the rest run newest first.
+        assert_eq!(marks(&snapshot.items), vec![5, 0, 6, 4, 3, 2, 1]);
+
+        let (first, next) = page(&snapshot.items, None, 3);
+        assert_eq!(marks(first), vec![5, 0, 6]);
+        let cursor = Cursor::decode(next.as_deref().expect("more pages")).expect("valid");
+
+        let (second, next) = page(&snapshot.items, Some(cursor), 3);
+        assert_eq!(marks(second), vec![4, 3, 2]);
+        let last = Cursor::decode(next.as_deref().expect("one more page")).expect("valid");
+        let (third, next) = page(&snapshot.items, Some(last), 3);
+        assert_eq!(marks(third), vec![1]);
+        assert!(next.is_none());
+
+        // An item from the first page is hidden and a newer one arrives: an offset would
+        // now skip or repeat an item, the key does neither.
+        snapshot.items.retain(|entry| entry.importance != 0);
+        snapshot.items.push(item(8, false));
+        snapshot.normalize();
+        let (second_again, _) = page(&snapshot.items, Some(cursor), 3);
+        assert_eq!(marks(second_again), vec![4, 3, 2]);
+
+        // A key past everything yields an empty page and no cursor.
+        let (empty, next) = page(&snapshot.items, Some(Cursor::of(&item(1, false))), 3);
+        assert!(empty.is_empty());
+        assert!(next.is_none());
+    }
 
     #[test]
     fn revalidates_with_strong_weak_and_wildcard_tags() {
