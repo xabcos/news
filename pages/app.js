@@ -51,8 +51,10 @@ const TEXT = {
     empty: "这一天还没有内容", latest: "查看最近有内容的一天",
     space: "工作台", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
     backToTop: "回到顶部", insightEmpty: "𝐀𝐈 将在首次分析完成后显示。",
-    changes: "趋势分析", coverSource: "原文", wealth: "财富与商业", employment: "就业与技能",
-    risks: "风险预警", actions: "观察方向", confidence: (n) => `可信度 ${n}/5`, sources: "来源",
+    changes: "趋势分析", coverSource: "原文", wealth: "商业与机遇", employment: "就业与技能",
+    risks: "风险预警", actions: "观察方向", researchSources: "数据来源",
+    kind: "类型", horizon: "时间", beneficiaries: "受益者", entry: "切入方式", watch: "观察信号", risk: "主要风险",
+    confidence: (n) => `证据强度 ${n}/5`, sources: "来源",
     items: (n) => `${n} 条`,
   },
   en: {
@@ -61,8 +63,10 @@ const TEXT = {
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
     space: "Workspace", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
     backToTop: "Back to top", insightEmpty: "𝐀𝐈 will appear after its first analysis.",
-    changes: "Trend analysis", coverSource: "Source", wealth: "Wealth & business", employment: "Employment & skills",
-    risks: "Risk alerts", actions: "What to watch", confidence: (n) => `Confidence ${n}/5`, sources: "Sources",
+    changes: "Trend analysis", coverSource: "Source", wealth: "Business & opportunities", employment: "Employment & skills",
+    risks: "Risk alerts", actions: "What to watch", researchSources: "Data sources",
+    kind: "Type", horizon: "Horizon", beneficiaries: "Who may benefit", entry: "Entry path", watch: "Signals to watch", risk: "Main risk",
+    confidence: (n) => `Evidence ${n}/5`, sources: "Sources",
     items: (n) => `${n} ${n === 1 ? "item" : "items"}`,
   },
 };
@@ -626,21 +630,29 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
   overview.className = "insight-lead";
   overview.textContent = pick(insight, "overview");
   section.append(overview);
-  section.append(insightParagraph(
+  // The server sends only cited news sources, keyed by their original index.
+  const sources = new Map((insight.sources || []).map((source) => [source.index, source]));
+  const changes = insightParagraph(
     t().changes,
     pick(insight, "changes"),
     "insight-change",
     relativeTime(insight.generated_at),
-  ));
-  // The server sends only the sources a briefing cites, keyed by their original index.
-  const sources = new Map((insight.sources || []).map((source) => [source.index, source]));
-  for (const [label, items] of [
-    [t().wealth, insight.wealth],
-    [t().employment, insight.employment],
-    [t().risks, insight.risks],
-    [t().actions, insight.actions],
+  );
+  const changeSources = sourceList(
+    t().sources,
+    (insight.changes_source_indexes || []).map((index) => sources.get(index)).filter(Boolean),
+  );
+  if (changeSources) changes.append(changeSources);
+  section.append(changes);
+  const researchSources = sourceList(t().researchSources, insight.research_sources || []);
+  if (researchSources) section.append(researchSources);
+  for (const [label, items, opportunities] of [
+    [t().wealth, insight.wealth, true],
+    [t().employment, insight.employment, false],
+    [t().risks, insight.risks, false],
+    [t().actions, insight.actions, false],
   ]) {
-    section.append(...renderInsightGroup(label, items || [], sources));
+    section.append(...renderInsightGroup(label, items || [], sources, opportunities));
   }
   el.digest.append(section);
   if (preserveScroll) {
@@ -691,7 +703,7 @@ function insightParagraph(label, text, className = "insight-paragraph", metaText
   return block;
 }
 
-function renderInsightGroup(label, items, sources) {
+function renderInsightGroup(label, items, sources, opportunities = false) {
   if (!items.length) return [];
   const section = document.createElement("section");
   section.className = "group insight-group";
@@ -700,11 +712,11 @@ function renderInsightGroup(label, items, sources) {
   const title = document.createElement("h2");
   title.textContent = label;
   heading.append(title);
-  section.append(heading, ...items.map((item) => insightCard(item, sources)));
+  section.append(heading, ...items.map((item) => insightCard(item, sources, opportunities)));
   return [section];
 }
 
-function insightCard(item, sources) {
+function insightCard(item, sources, opportunity = false) {
   const article = document.createElement("article");
   article.className = "item insight-item";
   const itemHeading = document.createElement("div");
@@ -717,27 +729,71 @@ function insightCard(item, sources) {
   summary.className = "item-summary";
   summary.textContent = pick(item, "summary");
   article.append(itemHeading, summary);
+  if (opportunity) article.append(opportunityDetails(item));
   const seen = new Set();
   const links = (item.source_indexes || [])
     .map((index) => sources.get(index))
     .filter((source) => source && !seen.has(source.index) && seen.add(source.index))
     .slice(0, 2);
-  if (links.length) {
-    const sourceList = document.createElement("div");
-    sourceList.className = "insight-sources";
-    sourceList.append(span(t().sources, "muted small"));
-    sourceList.append(...links.map((source) => {
-      const link = document.createElement("a");
-      link.href = source.url;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      link.title = pick(source, "title");
-      link.textContent = `${source.source || hostOf(source.url)} ↗`;
-      return link;
-    }));
-    article.append(sourceList);
-  }
+  const sourceLinks = sourceList(t().sources, links);
+  if (sourceLinks) article.append(sourceLinks);
   return article;
+}
+
+function opportunityDetails(item) {
+  const fields = [
+    [t().kind, opportunityKind(item.kind)],
+    [t().horizon, opportunityHorizon(item.horizon)],
+    [t().beneficiaries, pick(item, "beneficiaries")],
+    [t().entry, pick(item, "entry")],
+    [t().watch, pick(item, "watch")],
+    [t().risk, pick(item, "risk")],
+  ].filter(([, value]) => value);
+  const details = document.createElement("div");
+  details.className = "insight-opportunity-details";
+  details.append(...fields.map(([label, value]) => {
+    const row = document.createElement("div");
+    row.className = "insight-opportunity-detail";
+    row.append(span(label, "insight-opportunity-label"), span(value, "insight-opportunity-value"));
+    return row;
+  }));
+  return details;
+}
+
+function sourceList(label, links) {
+  if (!links.length) return null;
+  const list = document.createElement("div");
+  list.className = "insight-sources";
+  list.append(span(label, "muted small"));
+  list.append(...links.map((source) => {
+    const link = document.createElement("a");
+    link.href = source.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.title = pick(source, "title");
+    link.textContent = `${source.source || hostOf(source.url)} ↗`;
+    return link;
+  }));
+  return list;
+}
+
+function opportunityKind(value) {
+  const labels = {
+    business: { zh: "商业机会", en: "Business" },
+    income: { zh: "收入机会", en: "Income" },
+    industry: { zh: "产业观察", en: "Industry" },
+    asset_watch: { zh: "资产观察", en: "Asset watch" },
+  };
+  return labels[value]?.[state.lang] || value || "";
+}
+
+function opportunityHorizon(value) {
+  const labels = {
+    "0-3m": { zh: "0–3个月", en: "0–3 months" },
+    "3-12m": { zh: "3–12个月", en: "3–12 months" },
+    "12m+": { zh: "12个月以上", en: "12+ months" },
+  };
+  return labels[value]?.[state.lang] || value || "";
 }
 
 function renderDayBlock(digest, showDayHeading = true) {
