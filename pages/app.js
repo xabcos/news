@@ -197,33 +197,21 @@ function pagePath(day, topic, after) {
   return `${state.personal ? "/api/me/feed" : "/digest"}?${params}`;
 }
 
-// The server's display order: pinned first, then newest published, newest collected, id.
-function displayOrder(a, b) {
-  const pairs = [
-    [a.pinned ? 1 : 0, b.pinned ? 1 : 0],
-    [a.published_at ? Date.parse(a.published_at) : -Infinity, b.published_at ? Date.parse(b.published_at) : -Infinity],
-    [Date.parse(a.first_seen_at), Date.parse(b.first_seen_at)],
-    [a.id, b.id],
-  ];
-  for (const [left, right] of pairs) {
-    if (left > right) return -1;
-    if (left < right) return 1;
-  }
-  return 0;
-}
-
-// A background refresh only fetches first pages. A group the reader has scrolled deeper into
-// keeps its extra pages and its cursor; the fresh head is merged in front of them.
-function mergeRefresh(current, fresh) {
-  const topics = (fresh.topics || []).map((group) => {
-    const known = (current.topics || []).find((entry) => entry.id === group.id);
-    if (!known || (known.items || []).length <= (group.items || []).length) return group;
-    const fresh = group.items || [];
-    const head = new Set(fresh.map((item) => item.id));
-    const items = [...fresh, ...known.items.filter((item) => !head.has(item.id))].sort(displayOrder);
-    return { ...group, items, next: known.next };
-  });
-  return { ...fresh, topics };
+// A background refresh re-reads the depth the reader has reached, page by page along the
+// fresh cursors, so the screen ends up exactly as the server orders it now: hidden items
+// go, newly pinned ones surface, and nothing already read is collapsed.
+async function refreshDepth(fresh, current) {
+  await Promise.all((fresh.topics || []).map(async (group) => {
+    const depth = (current.topics.find((entry) => entry.id === group.id)?.items || []).length;
+    while (group.next && group.items.length < depth) {
+      const payload = await fetchJson(pagePath(fresh.day, group.id, group.next));
+      const page = (state.personal ? payload.digest : payload).topics.find((entry) => entry.id === group.id);
+      if (!page) break;
+      group.items.push(...page.items);
+      group.next = page.next;
+      group.total = page.total;
+    }
+  }));
 }
 
 function clearDigest() {
@@ -260,10 +248,13 @@ async function load(silent = false) {
       days = archive.days;
     }
     if (epoch !== state.epoch) return;
+    const current = state.timeline[0];
+    if (silent && current && digest.day === current.day) {
+      await refreshDepth(digest, current);
+      if (epoch !== state.epoch) return;
+    }
     state.days = days.map((entry) => entry.day);
     if (state.personal) renderTabs();
-    const current = state.timeline[0];
-    if (silent && current && digest.day === current.day) digest = mergeRefresh(current, digest);
     // A background refresh only repaints when something actually changed.
     if (silent
       && digest.day === current?.day
