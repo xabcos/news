@@ -202,16 +202,30 @@ function pagePath(day, topic, after) {
 // go, newly pinned ones surface, and nothing already read is collapsed.
 async function refreshDepth(fresh, current) {
   await Promise.all((fresh.topics || []).map(async (group) => {
-    const depth = (current.topics.find((entry) => entry.id === group.id)?.items || []).length;
-    while (group.next && group.items.length < depth) {
+    // `shown` is the live list, so pages the reader pulls while this runs count as well.
+    // Reading stops once the fresh list reaches the last card on screen; if that card was
+    // hidden meanwhile, at most one extra page is read before giving up on it.
+    const shown = current.topics.find((entry) => entry.id === group.id)?.items || [];
+    const reached = () => group.items.length >= shown.length + PAGE_LIMIT
+      || group.items.some((item) => item.id === shown[shown.length - 1]?.id);
+    while (group.next && !reached()) {
       const payload = await fetchJson(pagePath(fresh.day, group.id, group.next));
       const page = (state.personal ? payload.digest : payload).topics.find((entry) => entry.id === group.id);
       if (!page) break;
-      group.items.push(...page.items);
-      group.next = page.next;
-      group.total = page.total;
+      appendPage(group, page);
     }
   }));
+}
+
+// Adds one page to a group and moves its cursor on. Ids are checked because an item
+// unpinned between two requests comes back once more further down.
+function appendPage(group, page) {
+  const seen = new Set(group.items.map((item) => item.id));
+  const added = page.items.filter((item) => !seen.has(item.id));
+  group.items.push(...added);
+  group.next = page.next || null;
+  group.total = page.total;
+  return added;
 }
 
 function clearDigest() {
@@ -450,12 +464,8 @@ async function loadMoreItems(sentinel) {
     const payload = await fetchJson(pagePath(digest.day, group.id, group.next));
     if (timeline !== state.timeline || !sentinel.isConnected) return;
     const page = (state.personal ? payload.digest : payload)?.topics?.find((entry) => entry.id === group.id);
-    // The cursor already excludes everything on screen; ids only guard against a stale head.
-    const seen = new Set(group.items.map((item) => item.id));
-    const added = (page?.items || []).filter((item) => !seen.has(item.id));
-    group.items.push(...added);
-    group.total = page?.total ?? group.total;
-    group.next = page?.next || null;
+    const added = page ? appendPage(group, page) : [];
+    if (!page) group.next = null;
     insertBefore(sentinel, added.map(card));
     if (group.next) {
       target.loading = false;
