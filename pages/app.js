@@ -4,7 +4,7 @@ const $ = (selector) => document.querySelector(selector);
 const REFRESH_MS = 5 * 60 * 1000;
 // Items per topic per request. The first screen asks for one page; scrolling to the end of
 // a group silently fetches that group's next page.
-const PAGE_LIMIT = 32;
+const PAGE_LIMIT = 12;
 // Delay before a failed page request is retried, still without any visible message.
 const PAGE_RETRY_MS = 8000;
 // Browsers with scroll anchoring keep the viewport still when cards are inserted above it;
@@ -197,24 +197,16 @@ function pagePath(day, topic, after) {
   return `${state.personal ? "/api/me/feed" : "/digest"}?${params}`;
 }
 
-// A background refresh re-reads the depth the reader has reached, page by page along the
-// fresh cursors, so the screen ends up exactly as the server orders it now: hidden items
-// go, newly pinned ones surface, and nothing already read is collapsed.
-async function refreshDepth(fresh, current) {
-  await Promise.all((fresh.topics || []).map(async (group) => {
-    // `shown` is the live list, so pages the reader pulls while this runs count as well.
-    // Reading stops once the fresh list reaches the last card on screen; if that card was
-    // hidden meanwhile, at most one extra page is read before giving up on it.
-    const shown = current.topics.find((entry) => entry.id === group.id)?.items || [];
-    const reached = () => group.items.length >= shown.length + PAGE_LIMIT
-      || group.items.some((item) => item.id === shown[shown.length - 1]?.id);
-    while (group.next && !reached()) {
-      const payload = await fetchJson(pagePath(fresh.day, group.id, group.next));
-      const page = (state.personal ? payload.digest : payload).topics.find((entry) => entry.id === group.id);
-      if (!page) break;
-      appendPage(group, page);
-    }
-  }));
+// A background refresh trusts the server's feed revision. An unchanged group keeps its
+// already loaded pages; a changed group starts a fresh page sequence and sheds stale cards.
+function refreshGroups(fresh, current) {
+  const known = new Map((current.topics || []).map((group) => [group.id, group]));
+  const topics = (fresh.topics || []).map((group) => {
+    const previous = known.get(group.id);
+    if (!previous || previous.revision !== group.revision) return group;
+    return { ...group, items: previous.items, next: previous.next };
+  });
+  return { ...fresh, topics };
 }
 
 // Adds one page to a group and moves its cursor on. Ids are checked because an item
@@ -264,8 +256,7 @@ async function load(silent = false) {
     if (epoch !== state.epoch) return;
     const current = state.timeline[0];
     if (silent && current && digest.day === current.day) {
-      await refreshDepth(digest, current);
-      if (epoch !== state.epoch) return;
+      digest = refreshGroups(digest, current);
     }
     state.days = days.map((entry) => entry.day);
     if (state.personal) renderTabs();

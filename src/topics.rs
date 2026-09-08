@@ -807,6 +807,7 @@ async fn update_item(
     ApiJson(request): ApiJson<UpdateItem>,
     scope: TopicScope,
 ) -> Result<Json<Item>> {
+    let mut transaction = state.pool.begin().await?;
     let item = sqlx::query_as::<_, Item>(&format!(
         "UPDATE items SET hidden = COALESCE($2, hidden), pinned = COALESCE($3, pinned) \
          WHERE id = $1 AND EXISTS (SELECT 1 FROM topics WHERE topics.id = items.topic_id AND (($4 AND topics.owner_user_id IS NULL) OR (NOT $4 AND topics.owner_user_id = $5))) RETURNING {ITEM_COLUMNS}"
@@ -816,9 +817,16 @@ async fn update_item(
     .bind(request.pinned)
     .bind(scope.is_public())
     .bind(user.id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *transaction)
     .await?
     .ok_or_else(|| AppError::NotFound("条目不存在".into()))?;
+    if request.hidden.is_some() || request.pinned.is_some() {
+        sqlx::query("UPDATE topics SET feed_revision = feed_revision + 1 WHERE id = $1")
+            .bind(&item.topic_id)
+            .execute(&mut *transaction)
+            .await?;
+    }
+    transaction.commit().await?;
     if scope.is_public() {
         state
             .digest
@@ -834,15 +842,21 @@ async fn delete_item(
     Path(id): Path<Uuid>,
     scope: TopicScope,
 ) -> Result<Response> {
+    let mut transaction = state.pool.begin().await?;
     let (topic_id, day) = sqlx::query_as::<_, (String, NaiveDate)>(
         "DELETE FROM items WHERE id = $1 AND EXISTS (SELECT 1 FROM topics WHERE topics.id = items.topic_id AND (($2 AND topics.owner_user_id IS NULL) OR (NOT $2 AND topics.owner_user_id = $3))) RETURNING topic_id, day",
     )
     .bind(id)
     .bind(scope.is_public())
     .bind(user.id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *transaction)
     .await?
     .ok_or_else(|| AppError::NotFound("条目不存在".into()))?;
+    sqlx::query("UPDATE topics SET feed_revision = feed_revision + 1 WHERE id = $1")
+        .bind(&topic_id)
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
     if scope.is_public() {
         state.digest.refresh(&state, &topic_id, day).await?;
     }

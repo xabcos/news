@@ -16,13 +16,14 @@ GET https://news.xairouter.com/days?topic=ai&limit=30
 GET https://news.xairouter.com/feed.xml?topic=ai
 ```
 
-- `topic` 省略时返回全部启用主题；`day` 省略时返回最近一个有内容的日期（响应里的 `day` 字段说明是哪一天）；`limit` 1–128，默认 30，每个主题各截一页。每个主题带 `next` 游标，把它作为 `after` 并指定同一个 `topic`、`day` 传回即可取下一页；`total` 始终是当天全部条数，读完时 `next` 为 `null`。游标按显示顺序（置顶、发布时间、收录时间、id）定位，两页之间新增或隐藏的条目不会被跳过或重复；翻页期间的置顶变化属于重新排序，被置顶的条目会在页面下一次刷新时出现在顶部，取消置顶的条目可能再次出现，调用方按 `id` 去重即可。`after` 无效或没有同时给 `topic` 时返回 400。
+- `topic` 省略时返回全部启用主题；`day` 省略时返回最近一个有内容的日期（响应里的 `day` 字段说明是哪一天）；`limit` 1–128，默认 32，每个主题各截一页。每个主题带 `next` 游标，把它作为 `after` 并指定同一个 `topic`、`day` 传回即可取下一页；`total` 始终是当天全部条数，读完时 `next` 为 `null`。游标按显示顺序（置顶、发布时间、收录时间、id）定位，两页之间新增或隐藏的条目不会被跳过或重复；翻页期间的置顶变化属于重新排序，被置顶的条目会在页面下一次刷新时出现在顶部，取消置顶的条目可能再次出现，调用方按 `id` 去重即可。`after` 无效或没有同时给 `topic` 时返回 400。
 - `/insight` 返回基于最近 24 小时 NEWS 内容的 `𝐀𝐈` 综合研判，默认每 2 小时更新一次，并读取最近 7 天内每天最后一份成功研判作为趋势分析上下文；有可靠来源时返回一张热点主图、图注和来源链接，优先避开最近 32 小时用过的配图，候选耗尽时使用最久未用的一张。响应中的 `sources` 只包含被正文引用的来源并保留原始 `index`，`source_indexes` 按它对应。
 - 每条包含 `title/summary`（中文）、`title_en/summary_en`、`url`、`source`、`published_at`、`first_seen_at`、`tags`、`importance`（1–5）、`pinned`。
+- 每个主题带 `revision`，供首页判断后台刷新是否需要重置该主题的分页。
 - 全部开放 CORS，带 `ETag` 与 `Cache-Control: public, max-age=60, stale-while-revalidate=300`，浏览器和 Cloudflare 都能直接复用；错误响应同样带 CORS 且 `no-store`。
 
 ```json
-{"day":"2026-09-03","timezone":"Asia/Shanghai","generated_at":"…","topics":[{"id":"ai","name":"AI 行业动态","name_en":"AI Industry","description":"…","latest_day":"2026-09-03","updated_at":"…","total":14,"next":null,"items":[{"id":"…","title":"…","summary":"…","title_en":"…","summary_en":"…","url":"https://…","source":"Reuters","published_at":"…","first_seen_at":"…","tags":["OpenAI"],"importance":5,"pinned":false}]}]}
+{"day":"2026-09-03","timezone":"Asia/Shanghai","generated_at":"…","topics":[{"id":"ai","name":"AI 行业动态","name_en":"AI Industry","description":"…","latest_day":"2026-09-03","updated_at":"…","revision":7,"total":14,"next":null,"items":[{"id":"…","title":"…","summary":"…","title_en":"…","summary_en":"…","url":"https://…","source":"Reuters","published_at":"…","first_seen_at":"…","tags":["OpenAI"],"importance":5,"pinned":false}]}]}
 ```
 
 ## 工作方式
@@ -31,7 +32,7 @@ GET https://news.xairouter.com/feed.xml?topic=ai
 - **增量**：每次把最近两天已收录的标题和链接交给模型，只要新增或有实质进展的条目；服务端再按规范化 URL 指纹和标题相似度去重。当天的摘要随时间累积，而不是每小时整页替换。
 - **时间显示**：API 同时保留来源发布时间 `published_at` 和 NEWS 收录时间 `first_seen_at`；页面卡片的相对时间以 `first_seen_at` 为准，避免来源只提供日期时被误显示成数小时前。
 - **三层数据**：读路径 内存 → Redis → PostgreSQL，逐级回填；写路径 PostgreSQL 事务提交 → Redis → 原子替换内存快照。启动时预热今天与昨天，第一次请求就命中内存。每天 00:00 淘汰前天的内存快照；Redis key 48 小时过期；新闻条目默认保留 128 天（可用 `NEWS_RETENTION_DAYS` 调整）。`REDIS_ADDR` 为空时自动降级为内存 + PostgreSQL。全部主题的首页 `/digest` 按 `limit` 预渲染并连同 ETag 常驻内存，`/days` 与 `/insight` 的响应体同样常驻，写入、日切与清理时一起失效。
-- **首页加载**：首屏数据并行请求，只有一轮网络往返；登录状态由登录时写入的可读 cookie `news_role` 判断，匿名访客不会请求任何私有接口。打开根路径时 `index.html` 里的 `<link rel="preload">` 让 `/digest?limit=32`、`/days`、`/topics` 随 HTML 一起出发，不等 `app.js`；带 `topic`/`day` 的深链和已登录账户用不到这三份预加载，会多出三次很小的请求。每个主题首屏 32 条，组尾有一个空的哨兵元素，进入视口即用 `next` 游标静默续拉 32 条；当天所有主题读完才加载前一天，读者快速滑过的主题由底部加载器按顺序补齐，浏览器滚动锚定保证页面不跳动。后台 5 分钟刷新沿新游标重新读到读者手里的最后一条为止，隐藏的条目随之消失、新置顶的浮到顶部，已读范围保持在页面上；那最后一条若恰好被隐藏，最多多读一页后停止。
+- **首页加载**：首屏数据并行请求，只有一轮网络往返；登录状态由登录时写入的可读 cookie `news_role` 判断，匿名访客不会请求任何私有接口。打开根路径时 `index.html` 里的 `<link rel="preload">` 让 `/digest?limit=12`、`/days`、`/topics` 随 HTML 一起出发，不等 `app.js`；带 `topic`/`day` 的深链和已登录账户用不到这三份预加载，会多出三次很小的请求。每个主题首屏 12 条，组尾有一个空的哨兵元素，进入视口即用 `next` 游标静默续拉 12 条；当天所有主题读完才加载前一天，读者快速滑过的主题由底部加载器按顺序补齐，浏览器滚动锚定保证页面不跳动。后台 5 分钟刷新按主题版本决定是否保留已加载内容；版本变化时从新首屏重新开始，隐藏条目随之消失、新置顶的浮到顶部。
 - **自动清理**：服务启动时和之后每小时分批清理数据；抓取运行记录保留 3 天，AI 研判历史保留 32 天，新闻条目按 `NEWS_RETENTION_DAYS` 保留，避免依赖外部定时任务。
 - **单实例**：内存快照只在本进程内失效，多实例部署会长期返回旧数据。
 - **成本**：每次抓取约 $0.06–0.10（`usage.cost_in_usd_ticks`，1 tick = 1e-10 USD）。工作台的管理员运行记录按次显示 tokens、搜索次数和成本，以及今日合计。

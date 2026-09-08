@@ -511,6 +511,12 @@ async fn execute(state: &AppState, topic: &Topic, run_id: Uuid) -> Result<Comple
         .await?;
         new += 1;
     }
+    if new > 0 {
+        sqlx::query("UPDATE topics SET feed_revision = feed_revision + 1 WHERE id = $1")
+            .bind(&topic.id)
+            .execute(&mut *tx)
+            .await?;
+    }
     tx.commit().await?;
     Ok(Completed {
         response_id: fetched.response_id,

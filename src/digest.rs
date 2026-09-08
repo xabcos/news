@@ -30,7 +30,8 @@ use std::{
 use tower_http::compression::CompressionLayer;
 use uuid::Uuid;
 
-const DEFAULT_LIMIT: usize = 30;
+// API default; the homepage passes its smaller first-page limit explicitly.
+const DEFAULT_LIMIT: usize = 32;
 const MAX_LIMIT: usize = 128;
 const MAX_DAYS: i64 = 366;
 const DEFAULT_DAYS_LIMIT: i64 = 30;
@@ -76,6 +77,9 @@ pub struct PublicItem {
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Snapshot {
     pub updated_at: Option<DateTime<Utc>>,
+    /// Changes whenever the topic's visible feed changes. Older Redis snapshots decode as 0.
+    #[serde(default)]
+    pub revision: i64,
     pub items: Vec<PublicItem>,
 }
 
@@ -90,8 +94,8 @@ impl Snapshot {
 /// The display-order key of one item: `pinned DESC, published_at DESC NULLS LAST,
 /// first_seen_at DESC, id DESC`. Deriving `Ord` over the fields in this order and comparing
 /// descending yields exactly that order; `None` sorting before `Some` is what puts undated
-/// items last. A page starts strictly after a key, so items that appear, disappear or move
-/// between two requests never shift the page that follows.
+/// items last. A page starts strictly after a key, so the cursor remains unambiguous while
+/// these sort keys stay stable; callers should refresh and de-duplicate when the feed changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Cursor {
     #[serde(rename = "p")]
@@ -515,6 +519,7 @@ impl DigestCache {
                         description: &topic.description,
                         latest_day: *latest_day,
                         updated_at: snapshot.as_ref().and_then(|s| s.updated_at),
+                        revision: snapshot.as_ref().map_or(0, |s| s.revision),
                         total: items.len(),
                         next,
                         items: page_items,
@@ -549,6 +554,7 @@ struct TopicDigest<'a> {
     description: &'a str,
     latest_day: Option<NaiveDate>,
     updated_at: Option<DateTime<Utc>>,
+    revision: i64,
     total: usize,
     next: Option<String>,
     items: &'a [PublicItem],
@@ -565,8 +571,13 @@ async fn load(state: &AppState, topic: &str, day: NaiveDate) -> Result<Snapshot>
     .bind(day)
     .fetch_all(&state.pool)
     .await?;
+    let revision = sqlx::query_scalar::<_, i64>("SELECT feed_revision FROM topics WHERE id = $1")
+        .bind(topic)
+        .fetch_one(&state.pool)
+        .await?;
     Ok(Snapshot {
         updated_at: items.iter().map(|item| item.first_seen_at).max(),
+        revision,
         items,
     })
 }
@@ -744,6 +755,7 @@ struct PersonalTopicCard {
     latest_day: Option<NaiveDate>,
     today_count: i64,
     updated_at: Option<DateTime<Utc>>,
+    revision: i64,
 }
 
 #[derive(Debug, FromRow)]
@@ -776,6 +788,7 @@ struct PersonalTopicDigest {
     description: String,
     latest_day: Option<NaiveDate>,
     updated_at: Option<DateTime<Utc>>,
+    revision: i64,
     total: usize,
     next: Option<String>,
     items: Vec<PublicItem>,
@@ -892,6 +905,7 @@ async fn me_feed(
             description: card.description.clone(),
             latest_day: card.latest_day,
             updated_at,
+            revision: card.revision,
             total: usize::try_from(total).unwrap_or(usize::MAX),
             next,
             items,
@@ -925,7 +939,8 @@ async fn personal_topic_cards(state: &AppState, user_id: i64) -> Result<Vec<Pers
             topics.description,
             MAX(items.day) AS latest_day,
             COUNT(items.id) FILTER (WHERE items.day = $2) AS today_count,
-            MAX(items.first_seen_at) FILTER (WHERE items.day = $2) AS updated_at
+            MAX(items.first_seen_at) FILTER (WHERE items.day = $2) AS updated_at,
+            topics.feed_revision AS revision
         FROM topics
         LEFT JOIN items
           ON items.topic_id = topics.id
@@ -933,7 +948,7 @@ async fn personal_topic_cards(state: &AppState, user_id: i64) -> Result<Vec<Pers
         WHERE topics.enabled
           AND (topics.owner_user_id IS NULL OR topics.owner_user_id = $1)
         GROUP BY topics.id, topics.name, topics.name_en, topics.description,
-                 topics.owner_user_id, topics.sort_weight, topics.created_at
+                 topics.owner_user_id, topics.sort_weight, topics.created_at, topics.feed_revision
         ORDER BY topics.owner_user_id NULLS FIRST,
                  topics.sort_weight, topics.created_at, topics.id
         "#,
@@ -1236,6 +1251,7 @@ mod tests {
         undated.published_at = None;
         let mut snapshot = Snapshot {
             updated_at: None,
+            revision: 0,
             items: vec![item(1, false), undated, item(2, true), item(3, false)],
         };
         snapshot.normalize();
@@ -1246,6 +1262,7 @@ mod tests {
     fn pages_continue_after_a_key_even_when_the_snapshot_changed() {
         let mut snapshot = Snapshot {
             updated_at: None,
+            revision: 0,
             items: (0..7).map(|n| item(n, n % 5 == 0)).collect(),
         };
         snapshot.normalize();
