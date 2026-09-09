@@ -61,7 +61,7 @@ const TEXT = {
     locale: "en", lang: "中文", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", today: "Today", top: "Top",
     fresh: "NEW", failed: "Failed to load", retry: "Retry",
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
-    space: "Workspace", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
+    space: "𝑾𝒐𝒓𝒌𝒔𝒑𝒂𝒄𝒆", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
     backToTop: "Back to top", insightEmpty: "𝐀𝐈 will appear after its first analysis.",
     changes: "Trend analysis", coverSource: "Source", wealth: "Business & opportunities", employment: "Employment & skills",
     risks: "Risk alerts", actions: "What to watch", researchSources: "Data sources",
