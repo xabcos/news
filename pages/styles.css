@@ -252,6 +252,7 @@ p { margin-top: 0; }
 .insight-sources { display: flex; flex-wrap: wrap; align-items: center; gap: .55rem; margin-top: .55rem; font-size: .75rem; }
 .insight-sources a { color: var(--primary-strong); text-decoration: none; }
 .insight-sources a:hover { text-decoration: underline; text-underline-offset: .15em; }
+.insight-citation { color: var(--primary-strong); text-decoration: underline; text-underline-offset: .15em; overflow-wrap: anywhere; }
 
 @media (max-width: 768px) {
   .digest { touch-action: pan-y pinch-zoom; }

@@ -628,7 +628,7 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
   if (insight.cover?.url) section.append(insightCover(insight.cover));
   const overview = document.createElement("p");
   overview.className = "insight-lead";
-  overview.textContent = pick(insight, "overview");
+  overview.append(insightText(pick(insight, "overview")));
   section.append(overview);
   // The server sends only cited news sources, keyed by their original index.
   const sources = new Map((insight.sources || []).map((source) => [source.index, source]));
@@ -698,7 +698,7 @@ function insightParagraph(label, text, className = "insight-paragraph", metaText
   heading.append(title);
   if (metaText) heading.append(span(metaText, `${className}-meta muted small`));
   const body = document.createElement("p");
-  body.textContent = text;
+  body.append(insightText(text));
   block.append(heading, body);
   return block;
 }
@@ -727,14 +727,13 @@ function insightCard(item, sources, opportunity = false) {
   itemHeading.append(title, span(t().confidence(item.confidence), "muted small"));
   const summary = document.createElement("p");
   summary.className = "item-summary";
-  summary.textContent = pick(item, "summary");
+  summary.append(insightText(pick(item, "summary")));
   article.append(itemHeading, summary);
   if (opportunity) article.append(opportunityDetails(item));
   const seen = new Set();
   const links = (item.source_indexes || [])
     .map((index) => sources.get(index))
-    .filter((source) => source && !seen.has(source.index) && seen.add(source.index))
-    .slice(0, 2);
+    .filter((source) => source && !seen.has(source.index) && seen.add(source.index));
   const sourceLinks = sourceList(t().sources, links);
   if (sourceLinks) article.append(sourceLinks);
   return article;
@@ -760,20 +759,51 @@ function opportunityDetails(item) {
   return details;
 }
 
-function sourceList(label, links) {
-  if (!links.length) return null;
-  const list = document.createElement("div");
-  list.className = "insight-sources";
-  list.append(span(label, "muted small"));
-  list.append(...links.map((source) => {
+function sourceLink(url, label, title = "") {
+  try {
+    const parsed = new URL(url);
+    if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) return null;
     const link = document.createElement("a");
-    link.href = source.url;
+    link.href = parsed.href;
     link.target = "_blank";
     link.rel = "noopener noreferrer";
-    link.title = pick(source, "title");
-    link.textContent = `${source.source || hostOf(source.url)} ↗`;
+    link.title = title;
+    link.textContent = label;
     return link;
-  }));
+  } catch {
+    return null;
+  }
+}
+
+// Some Responses providers put citations in the JSON text as Markdown, including
+// already stored briefings. Preserve those references without interpreting HTML.
+function insightText(text) {
+  const fragment = document.createDocumentFragment();
+  const value = text || "";
+  const citation = /\[([^\]\n]+)\]\((https?:\/\/(?:[^\s()]+|\([^\s()]*\))+)\)/gu;
+  let offset = 0;
+  for (const match of value.matchAll(citation)) {
+    const link = sourceLink(match[2], match[1]);
+    if (!link) continue;
+    link.className = "insight-citation";
+    fragment.append(value.slice(offset, match.index), link);
+    offset = match.index + match[0].length;
+  }
+  fragment.append(value.slice(offset));
+  return fragment;
+}
+
+function sourceList(label, links) {
+  const seen = new Set();
+  const anchors = links.map((source) => sourceLink(
+    source.url,
+    `${source.source || hostOf(source.url)} ↗`,
+    pick(source, "title"),
+  )).filter((link) => link && !seen.has(link.href) && seen.add(link.href));
+  if (!anchors.length) return null;
+  const list = document.createElement("div");
+  list.className = "insight-sources";
+  list.append(span(label, "muted small"), ...anchors);
   return list;
 }
 
