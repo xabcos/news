@@ -48,7 +48,7 @@ pub(crate) struct PlanLimits {
 
 pub(crate) const FREE_LIMITS: PlanLimits = PlanLimits {
     max_topics: 1,
-    min_interval_minutes: 120,
+    min_interval_minutes: 240,
     daily_run_cap: 12,
 };
 pub(crate) const PRO_LIMITS: PlanLimits = PlanLimits {

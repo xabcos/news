@@ -183,7 +183,7 @@ CREATE TABLE plans (
 
 INSERT INTO plans (code, name, price_fen, duration_days, description, sort_weight)
 VALUES
-    ('free', 'Free', 0, 0, '最多 1 个主题，最短 120 分钟抓取间隔', 10),
+    ('free', 'Free', 0, 0, '最多 1 个主题，最短 240 分钟抓取间隔', 10),
     ('pro', 'Pro', 9900, 31, '最多 8 个主题，最短 60 分钟抓取间隔', 20);
 
 CREATE TABLE orders (
