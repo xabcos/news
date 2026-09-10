@@ -184,13 +184,13 @@ pub async fn fetch(state: &AppState, topic: &Topic, known: &[Known]) -> Result<F
             Ok(response)
                 if response.status().as_u16() == 429 || response.status().is_server_error() =>
             {
-                format!("AI 接口返回 {}", response.status())
+                response.status().to_string()
             }
             Ok(response) => {
                 let status = response.status();
                 let text = response.text().await.unwrap_or_default();
                 return Err(AppError::Internal(
-                    format!("AI 接口返回 {status}: {}", clip(&text, MAX_ERROR)).into(),
+                    format!("{status}: {}", clip(&text, MAX_ERROR)).into(),
                 ));
             }
             Err(error) => error.to_string(),
