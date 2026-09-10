@@ -1,0 +1,2 @@
+ALTER TABLE items
+    ADD COLUMN tags_en TEXT[] NOT NULL DEFAULT '{}';

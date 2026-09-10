@@ -68,6 +68,8 @@ pub struct PublicItem {
     pub published_at: Option<DateTime<Utc>>,
     pub first_seen_at: DateTime<Utc>,
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub tags_en: Vec<String>,
     pub importance: i16,
     pub pinned: bool,
 }
@@ -562,7 +564,7 @@ struct TopicDigest<'a> {
 
 async fn load(state: &AppState, topic: &str, day: NaiveDate) -> Result<Snapshot> {
     let items = sqlx::query_as::<_, PublicItem>(
-        "SELECT items.id, items.title, items.summary, items.title_en, items.summary_en, items.url, items.source, items.published_at, items.first_seen_at, items.tags, items.importance, items.pinned \
+        "SELECT items.id, items.title, items.summary, items.title_en, items.summary_en, items.url, items.source, items.published_at, items.first_seen_at, items.tags, items.tags_en, items.importance, items.pinned \
          FROM items JOIN topics ON topics.id = items.topic_id \
          WHERE items.topic_id = $1 AND items.day = $2 AND topics.enabled AND topics.owner_user_id IS NULL AND NOT items.hidden \
          ORDER BY items.pinned DESC, items.published_at DESC NULLS LAST, items.first_seen_at DESC, items.id DESC",
@@ -1037,6 +1039,7 @@ async fn personal_items(
                items.published_at,
                items.first_seen_at,
                items.tags,
+               items.tags_en,
                items.importance,
                items.pinned
         FROM items
@@ -1223,6 +1226,7 @@ mod tests {
             published_at: Some(base + Duration::minutes(i64::from(n))),
             first_seen_at: base,
             tags: Vec::new(),
+            tags_en: Vec::new(),
             importance: i16::from(n),
             pinned,
         }

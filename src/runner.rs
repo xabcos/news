@@ -490,8 +490,8 @@ async fn execute(state: &AppState, topic: &Topic, run_id: Uuid) -> Result<Comple
         }
         titles.push(title);
         sqlx::query(
-            "INSERT INTO items (id, topic_id, day, fingerprint, title, summary, title_en, summary_en, url, source, published_at, tags, importance, first_run_id) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT DO NOTHING",
+            "INSERT INTO items (id, topic_id, day, fingerprint, title, summary, title_en, summary_en, url, source, published_at, tags, tags_en, importance, first_run_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) ON CONFLICT DO NOTHING",
         )
         .bind(Uuid::new_v4())
         .bind(&topic.id)
@@ -505,6 +505,7 @@ async fn execute(state: &AppState, topic: &Topic, run_id: Uuid) -> Result<Comple
         .bind(&item.source)
         .bind(item.published_at)
         .bind(&item.tags)
+        .bind(&item.tags_en)
         .bind(item.importance)
         .bind(run_id)
         .execute(&mut *tx)

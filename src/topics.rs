@@ -118,6 +118,7 @@ struct Item {
     source: String,
     published_at: Option<DateTime<Utc>>,
     tags: Vec<String>,
+    tags_en: Vec<String>,
     importance: i16,
     first_seen_at: DateTime<Utc>,
     last_seen_at: DateTime<Utc>,
@@ -126,7 +127,7 @@ struct Item {
     pinned: bool,
 }
 
-const ITEM_COLUMNS: &str = "id, topic_id, day, title, summary, title_en, summary_en, url, source, published_at, tags, importance, first_seen_at, last_seen_at, seen_count, hidden, pinned";
+const ITEM_COLUMNS: &str = "id, topic_id, day, title, summary, title_en, summary_en, url, source, published_at, tags, tags_en, importance, first_seen_at, last_seen_at, seen_count, hidden, pinned";
 
 /// Every editable column, all optional: a PATCH body, or the settings part of a create.
 #[derive(Debug, Default, Deserialize)]

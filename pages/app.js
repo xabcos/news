@@ -925,11 +925,12 @@ function card(item) {
   summary.textContent = pick(item, "summary");
 
   article.append(meta, title, summary);
-  if (item.tags.length) {
-    const tags = document.createElement("div");
-    tags.className = "item-tags";
-    tags.append(...item.tags.map((tag) => span(tag, "tag")));
-    article.append(tags);
+  const tags = state.lang === "en" && item.tags_en?.length ? item.tags_en : item.tags;
+  if (tags.length) {
+    const tagList = document.createElement("div");
+    tagList.className = "item-tags";
+    tagList.append(...tags.map((tag) => span(tag, "tag")));
+    article.append(tagList);
   }
   return article;
 }
