@@ -74,15 +74,6 @@ p { margin-top: 0; }
 }
 .brand h1 { margin: 0; font: inherit; }
 .brand-logo { width: 1.75rem; height: 1.35rem; }
-.brand-tag {
-  padding: .1rem .45rem;
-  border-radius: 999px;
-  color: var(--primary-strong);
-  background: var(--primary-soft);
-  font-size: .68rem;
-  font-weight: 700;
-  letter-spacing: .06em;
-}
 .brand-hero { font-size: clamp(2.2rem, 7vw, 3.2rem); gap: .9rem; }
 .brand-hero .brand-logo { width: 3.4rem; height: 2.6rem; }
 

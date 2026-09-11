@@ -165,7 +165,6 @@ async function enterApp(data) {
   $("#appView").classList.remove("hidden");
   $("#accountEmail").textContent = s.user.email;
   $("#workspaceTitle").textContent = s.admin ? "公共主题" : "我的主题";
-  $("#adminBadge").classList.toggle("hidden", !s.admin);
   $("#accountButton").classList.toggle("hidden", s.admin);
   $("#dateTools").classList.toggle("hidden", !s.admin);
   $("#runsPanel").classList.toggle("hidden", !s.admin);
@@ -227,7 +226,7 @@ function message(id, text) {
 function renderTopics(s) {
   $("#statusLine").textContent = s.admin
     ? `${s.users?.active_7d ?? 0}/${s.users?.registered ?? 0} · 今日 ${s.today.runs} 次 · ${cost(s.today.cost_ticks)}`
-    : `主题 ${s.topics.length} / ${s.user.limits.max_topics} · 今日运行 ${s.today.runs} / ${s.user.limits.daily_run_cap}`;
+    : `今日运行 ${s.today.runs} / ${s.user.limits.daily_run_cap}`;
   $("#newTopicButton").disabled = !s.admin && s.topics.length >= s.user.limits.max_topics;
   message("topicsMessage", s.topics.length ? "" : "还没有主题，创建一个你关心的方向。");
   $("#topicList").replaceChildren(...s.topics.map((topic) => {
