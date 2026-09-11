@@ -146,6 +146,7 @@ async function enterApp(data) {
     controller: new AbortController(), topics: [], running: new Set(), selected: null,
     itemsVersion: 0, runsVersion: 0, refreshVersion: 0, timer: null,
     timezone: data.usage.timezone, today: { runs: data.usage.runs_today, cost_ticks: 0 },
+    users: null,
   };
   session = s;
   s.base = s.admin ? "/api/admin" : "/api/me";
@@ -193,6 +194,7 @@ async function refresh(s) {
     s.running = new Set(status.running);
     s.timezone = status.timezone;
     s.today = status.today;
+    s.users = status.users || null;
     if (account) { s.user = account.user; s.usage = account.usage; s.account.update(); }
     if (!selected) {
       await selectTopic(s, topics[0]?.id);
@@ -224,7 +226,7 @@ function message(id, text) {
 
 function renderTopics(s) {
   $("#statusLine").textContent = s.admin
-    ? `${s.topics.length} 个公共主题 · 今日 ${s.today.runs} 次 · ${cost(s.today.cost_ticks)}`
+    ? `${s.users?.active_7d ?? 0}/${s.users?.registered ?? 0} · 今日 ${s.today.runs} 次 · ${cost(s.today.cost_ticks)}`
     : `主题 ${s.topics.length} / ${s.user.limits.max_topics} · 今日运行 ${s.today.runs} / ${s.user.limits.daily_run_cap}`;
   $("#newTopicButton").disabled = !s.admin && s.topics.length >= s.user.limits.max_topics;
   message("topicsMessage", s.topics.length ? "" : "还没有主题，创建一个你关心的方向。");

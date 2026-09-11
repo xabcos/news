@@ -167,8 +167,8 @@ pub(crate) async fn consume_email_login(
 
     let user = sqlx::query_as::<_, User>(
         r#"
-        INSERT INTO users (email, role)
-        VALUES ($1, $2)
+        INSERT INTO users (email, role, last_login_at)
+        VALUES ($1, $2, NOW())
         ON CONFLICT (email) DO UPDATE SET
             role = CASE
                 WHEN users.role = 'admin' OR EXCLUDED.role = 'admin' THEN 'admin'
@@ -191,6 +191,13 @@ pub(crate) async fn consume_email_login(
         transaction.commit().await?;
         return Err(AppError::Forbidden("当前账户不可用".into()));
     }
+
+    // Only a login that is allowed to create a session counts as activity.  Keep this
+    // separate from the upsert so a disabled account's spent link does not refresh it.
+    sqlx::query("UPDATE users SET last_login_at = NOW() WHERE id = $1")
+        .bind(user.id)
+        .execute(&mut *transaction)
+        .await?;
 
     sqlx::query("INSERT INTO sessions (user_id, token_hash, expires_at) VALUES ($1, $2, $3)")
         .bind(user.id)

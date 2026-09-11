@@ -105,6 +105,9 @@ GET    /api/orders/{out_trade_no}/qr.svg
 POST   /api/webhooks/payment
 ```
 
+管理员状态接口还返回 `users.active_7d` 和 `users.registered`；工作台将它们以
+`近 7 天活跃用户/注册用户` 的比例显示在状态行中。注册总数用 migration 执行时的当前用户数初始化，之后由数据库事务内维护的计数器提供；近 7 天活跃数只使用成功登录后写入的最后登录时间，不重建历史登录记录。
+
 个人主题的 `GET /api/me/topics/{id}/items` 在省略 `day` 时返回该主题最近有内容的一天；传入 `day=YYYY-MM-DD` 可查看指定日期。
 
 登录后首页使用 `GET /api/me/feed` 读取公共主题和当前账户启用的个人主题。响应包含 `topics`（主题卡片）、`days`（所选主题有内容的日期，最新优先）以及与公共 `/digest` 同形的 `digest`；`topic`、`day`、`limit`、`after` 与 `next` 的语义与公共接口一致。该响应按会话隔离并始终 `no-store`，不会进入公共 Redis 或内存缓存；个人条目仍只会在当前账户的响应中出现。

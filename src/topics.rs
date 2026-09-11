@@ -447,12 +447,27 @@ async fn status(
         .fetch_one(&state.pool)
         .await?
     };
-    Ok(Json(json!({
+    let mut response = json!({
         "running": running,
         "today": { "runs": runs, "cost_ticks": cost_ticks },
         "timezone": state.config.timezone.name(),
         "now": Utc::now(),
-    })))
+    });
+    if scope.is_public() {
+        // The total is an O(1) counter maintained by a database trigger.  The weekly
+        // range uses the partial last-login index and is refreshed with the existing
+        // admin status poll, so the browser does not need another request.
+        let (registered, active_7d) = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT registered_count, (SELECT COUNT(*) FROM users WHERE status AND last_login_at >= NOW() - INTERVAL '7 days') FROM user_metrics WHERE id = TRUE",
+        )
+        .fetch_one(&state.pool)
+        .await?;
+        response["users"] = json!({
+            "active_7d": active_7d,
+            "registered": registered,
+        });
+    }
+    Ok(Json(response))
 }
 
 async fn list_topics(
