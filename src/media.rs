@@ -75,16 +75,16 @@ pub(crate) async fn mirror_image(state: &AppState, mut image: NewsImage) -> Opti
     {
         Ok(response) if response.status().is_success() => response,
         Ok(response) => {
-            tracing::warn!(status = %response.status(), url = %origin, "news image download failed");
+            tracing::debug!(status = %response.status(), url = %origin, "news image download failed");
             return None;
         }
         Err(error) => {
-            tracing::warn!(%error, url = %origin, "news image download failed");
+            tracing::debug!(%error, url = %origin, "news image download failed");
             return None;
         }
     };
     if !is_public_https_url(response.url()) {
-        tracing::warn!(url = %origin, "news image redirected to an insecure URL");
+        tracing::debug!(url = %origin, "news image redirected to an insecure URL");
         return None;
     }
 
@@ -94,32 +94,32 @@ pub(crate) async fn mirror_image(state: &AppState, mut image: NewsImage) -> Opti
         .and_then(|value| value.to_str().ok())
         .and_then(normalize_content_type);
     let Some(content_type) = content_type else {
-        tracing::warn!(url = %origin, "news image has an unsupported content type");
+        tracing::debug!(url = %origin, "news image has an unsupported content type");
         return None;
     };
     if response
         .content_length()
         .is_some_and(|size| size > state.config.image_max_bytes)
     {
-        tracing::warn!(url = %origin, "news image exceeds configured size limit");
+        tracing::debug!(url = %origin, "news image exceeds configured size limit");
         return None;
     }
     let mut bytes = Vec::new();
     while let Some(chunk) = match response.chunk().await {
         Ok(chunk) => chunk,
         Err(error) => {
-            tracing::warn!(%error, url = %origin, "reading news image failed");
+            tracing::debug!(%error, url = %origin, "reading news image failed");
             return None;
         }
     } {
         if bytes.len().saturating_add(chunk.len()) as u64 > state.config.image_max_bytes {
-            tracing::warn!(url = %origin, "news image exceeds configured size limit");
+            tracing::debug!(url = %origin, "news image exceeds configured size limit");
             return None;
         }
         bytes.extend_from_slice(&chunk);
     }
     if bytes.is_empty() {
-        tracing::warn!(url = %origin, "news image is empty");
+        tracing::debug!(url = %origin, "news image is empty");
         return None;
     }
 
@@ -131,7 +131,7 @@ pub(crate) async fn mirror_image(state: &AppState, mut image: NewsImage) -> Opti
     {
         Ok(part) => part,
         Err(error) => {
-            tracing::warn!(%error, "could not build tmpfile multipart image");
+            tracing::debug!(%error, "could not build tmpfile multipart image");
             return None;
         }
     };
@@ -147,27 +147,27 @@ pub(crate) async fn mirror_image(state: &AppState, mut image: NewsImage) -> Opti
     let response = match request.send().await {
         Ok(response) if response.status().is_success() => response,
         Ok(response) => {
-            tracing::warn!(status = %response.status(), url = %origin, "tmpfile image upload failed");
+            tracing::debug!(status = %response.status(), url = %origin, "tmpfile image upload failed");
             return None;
         }
         Err(error) => {
-            tracing::warn!(%error, url = %origin, "tmpfile image upload failed");
+            tracing::debug!(%error, url = %origin, "tmpfile image upload failed");
             return None;
         }
     };
     let uploaded = match response.json::<UploadResponse>().await {
         Ok(uploaded) => uploaded,
         Err(error) => {
-            tracing::warn!(%error, url = %origin, "tmpfile returned an invalid image response");
+            tracing::debug!(%error, url = %origin, "tmpfile returned an invalid image response");
             return None;
         }
     };
     if uploaded.expires_at <= Utc::now() {
-        tracing::warn!(url = %origin, "tmpfile returned an expired image link");
+        tracing::debug!(url = %origin, "tmpfile returned an expired image link");
         return None;
     }
     let Ok(mut direct_url) = Url::parse(&uploaded.direct_link) else {
-        tracing::warn!(url = %origin, "tmpfile returned an invalid direct link");
+        tracing::debug!(url = %origin, "tmpfile returned an invalid direct link");
         return None;
     };
     // Older tmpfile deployments may derive the link from an HTTP forwarded header even
@@ -180,7 +180,7 @@ pub(crate) async fn mirror_image(state: &AppState, mut image: NewsImage) -> Opti
         let _ = direct_url.set_scheme("https");
     }
     if !is_public_https_url(&direct_url) || !same_origin(&direct_url, base_url) {
-        tracing::warn!(url = %origin, "tmpfile returned a non-HTTPS direct link");
+        tracing::debug!(url = %origin, "tmpfile returned a non-HTTPS direct link");
         return None;
     }
     image.origin_url = Some(origin);
