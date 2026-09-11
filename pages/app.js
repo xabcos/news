@@ -576,6 +576,9 @@ function applyLang() {
 }
 
 function renderTabs() {
+  // The visual feed gets a wider desktop canvas while every other topic keeps the
+  // narrow reading measure. This class also updates when navigating between tabs.
+  document.body.classList.toggle("p-topic", state.topic === "p");
   const tabs = [
     { id: "", label: t().all },
     { id: INSIGHT_ID, label: t().insight },
