@@ -175,7 +175,7 @@ pub(crate) async fn mirror_image(state: &AppState, mut image: NewsImage) -> Opti
     // accept a different host or an insecure URL from the upstream response.
     if direct_url.scheme() == "http"
         && base_url.scheme() == "https"
-        && same_authority(&direct_url, base_url)
+        && same_http_to_https_authority(&direct_url, base_url)
     {
         let _ = direct_url.set_scheme("https");
     }
@@ -236,6 +236,16 @@ fn same_origin(left: &Url, right: &Url) -> bool {
 fn same_authority(left: &Url, right: &Url) -> bool {
     left.host_str() == right.host_str()
         && left.port_or_known_default() == right.port_or_known_default()
+}
+
+/// A tmpfile response can be built from an HTTP forwarded host even when the public
+/// endpoint is HTTPS. The default ports differ before the scheme upgrade, so compare
+/// each URL against its own default port here and let `same_origin` re-check after the
+/// upgrade.
+fn same_http_to_https_authority(left: &Url, right: &Url) -> bool {
+    left.host_str() == right.host_str()
+        && left.port_or_known_default() == Some(80)
+        && right.port_or_known_default() == Some(443)
 }
 
 fn normalize_content_type(value: &str) -> Option<&'static str> {
@@ -405,4 +415,30 @@ pub async fn startup_sync(state: &AppState) -> Result<()> {
         state.insight.invalidate();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::same_http_to_https_authority;
+    use url::Url;
+
+    #[test]
+    fn accepts_tmpfile_http_link_for_https_origin() {
+        let direct = Url::parse("http://dl.xabclabs.com/files/token").unwrap();
+        let base = Url::parse("https://dl.xabclabs.com").unwrap();
+        assert!(same_http_to_https_authority(&direct, &base));
+    }
+
+    #[test]
+    fn rejects_different_host_or_non_default_port() {
+        let base = Url::parse("https://dl.xabclabs.com").unwrap();
+        assert!(!same_http_to_https_authority(
+            &Url::parse("http://other.example/files/token").unwrap(),
+            &base,
+        ));
+        assert!(!same_http_to_https_authority(
+            &Url::parse("http://dl.xabclabs.com:8080/files/token").unwrap(),
+            &base,
+        ));
+    }
 }
