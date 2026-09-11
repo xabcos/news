@@ -86,6 +86,8 @@ pub struct Candidate {
     pub tags_en: Vec<String>,
     #[serde(default)]
     pub importance: i64,
+    #[serde(default)]
+    pub(crate) image: Option<NewsImage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,20 +104,21 @@ pub(crate) struct NewsImage {
     pub caption: String,
     pub caption_en: String,
     pub credit: String,
+    /// The original source image is kept so a temporary tmpfile URL can be renewed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_url: Option<String>,
+    /// tmpfile returns this expiry timestamp; it is internal metadata for refreshes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 impl NewsImage {
     pub(crate) fn validated(mut self) -> Option<Self> {
         for value in [&mut self.url, &mut self.source_url] {
-            let url = Url::parse(value.trim()).ok()?;
-            if url.scheme() != "https"
-                || !matches!(url.host(), Some(Host::Domain(host)) if host.contains('.') && !host.ends_with(".local") && !host.ends_with(".localhost"))
-                || !url.username().is_empty()
-                || url.password().is_some()
-            {
-                return None;
-            }
-            *value = url.to_string();
+            normalize_image_url(value)?;
+        }
+        if let Some(origin_url) = &mut self.origin_url {
+            normalize_image_url(origin_url)?;
         }
         self.caption = clip(&self.caption, 160);
         self.caption_en = clip(&self.caption_en, 300);
@@ -132,6 +135,19 @@ impl NewsImage {
             _ => false,
         }
     }
+}
+
+fn normalize_image_url(value: &mut String) -> Option<()> {
+    let url = Url::parse(value.trim()).ok()?;
+    if url.scheme() != "https"
+        || !matches!(url.host(), Some(Host::Domain(host)) if host.contains('.') && !host.ends_with(".local") && !host.ends_with(".localhost"))
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return None;
+    }
+    *value = url.to_string();
+    Some(())
 }
 
 pub struct Fetched {
@@ -156,6 +172,7 @@ pub struct NewItem {
     pub tags: Vec<String>,
     pub tags_en: Vec<String>,
     pub importance: i16,
+    pub(crate) image: Option<NewsImage>,
 }
 
 /// Asks the model for fresh stories on the topic. Transient upstream failures (429, 5xx,
@@ -206,7 +223,7 @@ pub async fn fetch(state: &AppState, topic: &Topic, known: &[Known]) -> Result<F
 
 fn request_body(topic: &Topic, now: DateTime<Tz>, known: &[Known]) -> Value {
     let mut web_search = json!({ "type": "web_search" });
-    if topic.owner_user_id.is_none() && topic.id == IMAGE_TOPIC_ID {
+    if topic.owner_user_id.is_none() && matches!(topic.id.as_str(), IMAGE_TOPIC_ID | "p") {
         web_search["enable_image_search"] = json!(true);
         web_search["enable_image_understanding"] = json!(true);
     }
@@ -241,7 +258,9 @@ fn request_body(topic: &Topic, now: DateTime<Tz>, known: &[Known]) -> Value {
 }
 
 fn instructions(topic: &Topic) -> String {
-    let cover = if topic.owner_user_id.is_none() && topic.id == IMAGE_TOPIC_ID {
+    let cover = if topic.owner_user_id.is_none() && topic.id == "p" {
+        "每条 items 最多选一张与该条新闻直接相关的真实照片，写入 image；只使用搜索/浏览结果中实际出现、可直接加载的 HTTPS 图片地址。image.source_url 必须复制对应 items 的文章/帖子 URL；caption/caption_en 只用一句话说明已核实的画面与事件，credit 保留摄影者或发布机构/账号。排除商标占位、广告、拼图、AI 生成图和血腥画面，找不到合适照片就把 image 设为 null；没有图片的新闻不要返回。cover 返回 null。"
+    } else if topic.owner_user_id.is_none() && topic.id == IMAGE_TOPIC_ID {
         "cover 最多选一张与本次 items 中重要热点直接相关的真实照片，可来自新闻原文或 X 帖子。只使用搜索/浏览结果中实际出现、可直接加载的 HTTPS 图片地址；优先官方、媒体发布且有近期报道或互动证据的照片，不臆造图片链接、热度数字、全球排名或摄影师。source_url 必须复制对应 items 的文章/帖子 URL；caption/caption_en 只用一句话说明已核实的画面与事件，credit 保留摄影者或发布机构/账号。排除商标占位、广告、拼图、AI 生成图和血腥画面，旧图须明确其背景；找不到合适照片就返回 null，不凑图。不为每条新闻找图。"
     } else {
         "cover 返回 null。"
@@ -294,7 +313,18 @@ fn schema() -> Value {
                 "published_at": { "type": ["string", "null"] },
                 "tags": { "type": "array", "items": { "type": "string" } },
                 "tags_en": { "type": "array", "items": { "type": "string" } },
-                "importance": { "type": "integer" }
+                "importance": { "type": "integer" },
+                "image": {
+                    "type": ["object", "null"], "additionalProperties": false,
+                    "required": ["url", "source_url", "caption", "caption_en", "credit"],
+                    "properties": {
+                        "url": { "type": "string" },
+                        "source_url": { "type": "string" },
+                        "caption": { "type": "string" },
+                        "caption_en": { "type": "string" },
+                        "credit": { "type": "string" }
+                    }
+                }
             }
         } } }
     })
@@ -363,6 +393,10 @@ pub fn validate(candidate: Candidate, cutoff: DateTime<Utc>) -> Option<NewItem> 
     if published_at.is_some_and(|at| at < cutoff) {
         return None;
     }
+    let image = candidate
+        .image
+        .and_then(NewsImage::validated)
+        .filter(|image| image.belongs_to(url.as_str()));
     Some(NewItem {
         fingerprint: Sha256::digest(canonical_url(&url).as_bytes()).to_vec(),
         title,
@@ -375,6 +409,7 @@ pub fn validate(candidate: Candidate, cutoff: DateTime<Utc>) -> Option<NewItem> 
         tags: clean_tags(&candidate.tags),
         tags_en: clean_tags(&candidate.tags_en),
         importance: candidate.importance.clamp(1, 5) as i16,
+        image,
     })
 }
 
@@ -490,6 +525,7 @@ mod tests {
             tags: vec!["a".into(), "a".into(), "".into(), "b".into()],
             tags_en: vec!["alpha".into(), "alpha".into(), "".into(), "beta".into()],
             importance: 9,
+            image: None,
         }
     }
 
@@ -562,6 +598,8 @@ mod tests {
             caption: "A verified photo".into(),
             caption_en: "A verified photo".into(),
             credit: "News Desk".into(),
+            origin_url: None,
+            expires_at: None,
         };
         let image = image.validated().expect("valid sourced image");
         assert!(image.belongs_to("https://news.example.com/story?id=7&utm_source=x"));

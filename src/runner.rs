@@ -2,7 +2,7 @@ use crate::{
     auth::{self, PlanLimits},
     error::{AppError, Result},
     fetch::{self, Known},
-    insight,
+    insight, media,
     state::AppState,
     topics::{self, Topic},
 };
@@ -456,7 +456,11 @@ async fn execute(state: &AppState, topic: &Topic, run_id: Uuid) -> Result<Comple
     .bind(KNOWN_LIMIT)
     .fetch_all(&state.pool)
     .await?;
-    let fetched = fetch::fetch(state, topic, &known).await?;
+    let mut fetched = fetch::fetch(state, topic, &known).await?;
+    // Existing 𝐗 runs carry a single cover in their payload. Mirror it before the
+    // payload is persisted so the insight pipeline never needs to load a source image
+    // directly from a browser.
+    media::mirror_payload_cover(state, &mut fetched.payload).await;
 
     let cutoff = Utc::now() - ChronoDuration::hours(i64::from(topic.lookback_hours) + 12);
     let mut fingerprints = known
@@ -469,29 +473,43 @@ async fn execute(state: &AppState, topic: &Topic, run_id: Uuid) -> Result<Comple
         .collect::<Vec<_>>();
     let returned = fetched.candidates.len() as i32;
     let (mut new, mut dup, mut dropped) = (0, 0, 0);
-    let mut tx = state.pool.begin().await?;
+    let mut items = Vec::new();
+    let mut duplicate_fingerprints = Vec::new();
     for candidate in fetched.candidates {
-        let Some(item) = fetch::validate(candidate, cutoff) else {
+        let Some(mut item) = fetch::validate(candidate, cutoff) else {
             dropped += 1;
             continue;
         };
+        if topic.id == "p" && item.image.is_none() {
+            dropped += 1;
+            continue;
+        }
         let title = fetch::normalize_title(&item.title);
         if !fingerprints.insert(item.fingerprint.clone()) || fetch::similar_title(&titles, &title) {
             dup += 1;
-            sqlx::query(
-                "UPDATE items SET last_seen_at = NOW(), seen_count = seen_count + 1 WHERE topic_id = $1 AND day >= $2 AND fingerprint = $3",
-            )
-            .bind(&topic.id)
-            .bind(yesterday)
-            .bind(&item.fingerprint)
-            .execute(&mut *tx)
-            .await?;
+            duplicate_fingerprints.push(item.fingerprint);
             continue;
         }
         titles.push(title);
+        let mut image = item.image.take();
+        if let Some(candidate_image) = image.take() {
+            image = media::mirror_image(state, candidate_image).await;
+        }
+        if topic.id == "p" && image.is_none() {
+            dropped += 1;
+            continue;
+        }
+        item.image = image;
+        items.push(item);
+    }
+
+    // Keep network I/O outside the write transaction. A slow image source must not hold a
+    // database connection while the rest of the batch is waiting for tmpfile.
+    let mut tx = state.pool.begin().await?;
+    for item in items {
         sqlx::query(
-            "INSERT INTO items (id, topic_id, day, fingerprint, title, summary, title_en, summary_en, url, source, published_at, tags, tags_en, importance, first_run_id) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) ON CONFLICT DO NOTHING",
+            "INSERT INTO items (id, topic_id, day, fingerprint, title, summary, title_en, summary_en, url, source, published_at, tags, tags_en, importance, first_run_id, image) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) ON CONFLICT DO NOTHING",
         )
         .bind(Uuid::new_v4())
         .bind(&topic.id)
@@ -508,9 +526,22 @@ async fn execute(state: &AppState, topic: &Topic, run_id: Uuid) -> Result<Comple
         .bind(&item.tags_en)
         .bind(item.importance)
         .bind(run_id)
+        .bind(item.image.map(serde_json::to_value).transpose()?)
         .execute(&mut *tx)
         .await?;
         new += 1;
+    }
+    // Apply duplicate sightings after inserts so a repeated story in this same response
+    // updates the row that was just inserted, matching the previous per-item ordering.
+    for fingerprint in duplicate_fingerprints {
+        sqlx::query(
+            "UPDATE items SET last_seen_at = NOW(), seen_count = seen_count + 1 WHERE topic_id = $1 AND day >= $2 AND fingerprint = $3",
+        )
+        .bind(&topic.id)
+        .bind(yesterday)
+        .bind(fingerprint)
+        .execute(&mut *tx)
+        .await?;
     }
     if new > 0 {
         sqlx::query("UPDATE topics SET feed_revision = feed_revision + 1 WHERE id = $1")
@@ -649,6 +680,9 @@ async fn maintenance_loop(state: AppState) {
         }
         if ticks >= CLEANUP_EVERY_TICKS {
             ticks = 0;
+            if let Err(error) = media::startup_sync(&state).await {
+                tracing::warn!(%error, "scheduled image refresh failed");
+            }
             if let Err(error) = prune(&state, today).await {
                 tracing::warn!(%error, "scheduled data pruning failed");
             }

@@ -72,6 +72,8 @@ pub struct PublicItem {
     pub tags_en: Vec<String>,
     pub importance: i16,
     pub pinned: bool,
+    #[serde(default)]
+    pub image: Option<serde_json::Value>,
 }
 
 /// One topic on one day: the visible items in display order. This is the unit that moves
@@ -563,8 +565,8 @@ struct TopicDigest<'a> {
 }
 
 async fn load(state: &AppState, topic: &str, day: NaiveDate) -> Result<Snapshot> {
-    let items = sqlx::query_as::<_, PublicItem>(
-        "SELECT items.id, items.title, items.summary, items.title_en, items.summary_en, items.url, items.source, items.published_at, items.first_seen_at, items.tags, items.tags_en, items.importance, items.pinned \
+    let mut items = sqlx::query_as::<_, PublicItem>(
+        "SELECT items.id, items.title, items.summary, items.title_en, items.summary_en, items.url, items.source, items.published_at, items.first_seen_at, items.tags, items.tags_en, items.importance, items.pinned, items.image \
          FROM items JOIN topics ON topics.id = items.topic_id \
          WHERE items.topic_id = $1 AND items.day = $2 AND topics.enabled AND topics.owner_user_id IS NULL AND NOT items.hidden \
          ORDER BY items.pinned DESC, items.published_at DESC NULLS LAST, items.first_seen_at DESC, items.id DESC",
@@ -573,6 +575,9 @@ async fn load(state: &AppState, topic: &str, day: NaiveDate) -> Result<Snapshot>
     .bind(day)
     .fetch_all(&state.pool)
     .await?;
+    for item in &mut items {
+        item.image = public_image(item.image.take());
+    }
     let revision = sqlx::query_scalar::<_, i64>("SELECT feed_revision FROM topics WHERE id = $1")
         .bind(topic)
         .fetch_one(&state.pool)
@@ -1041,7 +1046,8 @@ async fn personal_items(
                items.tags,
                items.tags_en,
                items.importance,
-               items.pinned
+               items.pinned,
+               items.image
         FROM items
         JOIN topics ON topics.id = items.topic_id
         WHERE items.topic_id = $1
@@ -1069,11 +1075,26 @@ async fn personal_items(
     .bind(after.map(|cursor| cursor.id))
     .fetch_all(&state.pool)
     .await?;
+    for item in &mut items {
+        item.image = public_image(item.image.take());
+    }
     let next = (items.len() > limit).then(|| {
         items.truncate(limit);
         Cursor::of(&items[limit - 1]).encode()
     });
     Ok((items, next))
+}
+
+/// Keep renewal metadata server-side. The public contract needs only the temporary display
+/// link and the editorial fields; `origin_url` and `expires_at` remain in PostgreSQL so the
+/// media refresher can renew them.
+fn public_image(value: Option<serde_json::Value>) -> Option<serde_json::Value> {
+    let serde_json::Value::Object(mut object) = value? else {
+        return None;
+    };
+    object.remove("origin_url");
+    object.remove("expires_at");
+    Some(serde_json::Value::Object(object))
 }
 
 /// Atom 1.0 over the last two days of the selection, newest collected first.
@@ -1229,6 +1250,7 @@ mod tests {
             tags_en: Vec::new(),
             importance: i16::from(n),
             pinned,
+            image: None,
         }
     }
 

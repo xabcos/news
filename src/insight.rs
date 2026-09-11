@@ -2,6 +2,7 @@ use crate::{
     digest::Rendered,
     error::{AppError, Result},
     fetch::{NewsImage, Usage},
+    media,
     state::AppState,
 };
 use axum::{extract::State, http::HeaderMap, response::Response};
@@ -301,8 +302,14 @@ async fn render_latest(state: &AppState) -> Result<Rendered> {
                 research_sources,
             } = stored;
             // The cover is resolved by position before the list is reduced to citations.
-            let cover = selected_cover(&analysis, &sources);
-            let sources = cited_sources(&analysis, sources);
+            let cover = selected_cover(&analysis, &sources).map(public_image);
+            let sources = cited_sources(&analysis, sources)
+                .into_iter()
+                .map(|mut source| {
+                    source.image = source.image.map(public_image);
+                    source
+                })
+                .collect();
             Some(InsightDocument {
                 generated_at: row.finished_at.unwrap_or(row.started_at),
                 window_start: row.window_start,
@@ -365,7 +372,7 @@ async fn execute(state: &AppState, window_start: DateTime<Utc>) -> Result<Comple
         "SELECT topics.id AS topic_id, topics.name AS topic, topics.name_en AS topic_en,
                 items.title, items.title_en, items.summary, items.summary_en, items.url,
                 items.source, items.tags, items.importance, items.first_seen_at,
-                runs.payload->'cover' AS cover
+                COALESCE(NULLIF(runs.payload->'cover', 'null'::jsonb), items.image) AS cover
          FROM items JOIN topics ON topics.id = items.topic_id
          LEFT JOIN runs ON runs.id = items.first_run_id
          WHERE topics.enabled AND topics.owner_user_id IS NULL
@@ -377,7 +384,7 @@ async fn execute(state: &AppState, window_start: DateTime<Utc>) -> Result<Comple
     .bind(SOURCE_LIMIT)
     .fetch_all(&state.pool)
     .await?;
-    let sources = rows
+    let mut sources = rows
         .into_iter()
         .enumerate()
         .map(|(index, row)| {
@@ -404,6 +411,13 @@ async fn execute(state: &AppState, window_start: DateTime<Utc>) -> Result<Comple
             }
         })
         .collect::<Vec<_>>();
+    // A legacy run may still contain a source URL from before tmpfile mirroring was
+    // introduced. Refresh only those images; current runs already carry tmpfile links.
+    for source in &mut sources {
+        if let Some(image) = source.image.take() {
+            source.image = media::mirror_image(state, image).await;
+        }
+    }
     let history_rows = sqlx::query_as::<_, InsightHistoryRow>(
         "SELECT DISTINCT ON ((finished_at AT TIME ZONE $1)::date)
                 (finished_at AT TIME ZONE $1)::date AS day,
@@ -603,6 +617,12 @@ fn selected_cover(analysis: &InsightAnalysis, sources: &[InsightSource]) -> Opti
         .cover_source_index
         .and_then(|index| sources.get(index))
         .and_then(|source| source.image.clone())
+}
+
+fn public_image(mut image: NewsImage) -> NewsImage {
+    image.origin_url = None;
+    image.expires_at = None;
+    image
 }
 
 fn ensure_distinct_cover(

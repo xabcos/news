@@ -854,6 +854,7 @@ function renderGroups(digest) {
   return visible.map((group) => {
     const section = document.createElement("section");
     section.className = "group";
+    section.classList.toggle("image-news-group", group.id === "p");
     if (!single) {
       const heading = document.createElement("div");
       heading.className = "group-title";
@@ -865,10 +866,38 @@ function renderGroups(digest) {
       heading.append(title, count);
       section.append(heading);
     }
-    section.append(...(group.items || []).map(card));
+    section.append(...(group.items || []).map((item) => group.id === "p" ? imageNewsCard(item) : card(item)));
     if (group.next) section.append(groupSentinel(digest, group));
     return section;
   });
+}
+
+function imageNewsCard(item) {
+  const article = card(item);
+  article.classList.add("image-news-card");
+  const image = item.image?.url;
+  if (!image) return article;
+  const link = document.createElement("a");
+  link.className = "image-news-media";
+  link.href = item.url;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  const element = document.createElement("img");
+  element.src = image;
+  element.alt = pick(item.image, "caption") || pick(item, "title");
+  element.loading = "lazy";
+  element.decoding = "async";
+  element.referrerPolicy = "no-referrer";
+  element.addEventListener("error", () => link.remove(), { once: true });
+  link.append(element);
+  article.prepend(link);
+  const caption = pick(item.image, "caption");
+  if (caption) {
+    const credit = item.image.credit ? ` · ${item.image.credit}` : "";
+    const note = span(`${caption}${credit}`, "image-news-caption");
+    article.insertBefore(note, article.querySelector(".item-meta"));
+  }
+  return article;
 }
 
 function totalItems(digest) {

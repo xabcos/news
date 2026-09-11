@@ -18,12 +18,12 @@ GET https://news.xairouter.com/feed.xml?topic=ai
 
 - `topic` 省略时返回全部启用主题；`day` 省略时返回最近一个有内容的日期（响应里的 `day` 字段说明是哪一天）；`limit` 1–128，默认 32，每个主题各截一页。每个主题带 `next` 游标，把它作为 `after` 并指定同一个 `topic`、`day` 传回即可取下一页；`total` 始终是当天全部条数，读完时 `next` 为 `null`。游标按显示顺序（置顶、发布时间、收录时间、id）定位，两页之间新增或隐藏的条目不会被跳过或重复；翻页期间的置顶变化属于重新排序，被置顶的条目会在页面下一次刷新时出现在顶部，取消置顶的条目可能再次出现，调用方按 `id` 去重即可。`after` 无效或没有同时给 `topic` 时返回 400。
 - `/insight` 返回基于最近 24 小时 NEWS 内容的 `𝐀𝐈` 综合研判，默认每 2 小时更新一次，并读取最近 7 天内每天最后一份成功研判作为趋势分析上下文；资料不足时会按需调用网页搜索补充公开数据，并在 `research_sources` 返回实际使用的检索来源。研判生成商业与机遇、就业与技能、风险预警和观察方向；有可靠来源时返回一张热点主图、图注和来源链接，优先避开最近 32 小时用过的配图，候选耗尽时使用最久未用的一张。响应中的 `sources` 只包含被正文引用的新闻并保留原始 `index`，`source_indexes` 按它对应。
-- 每条包含 `title/summary`（中文）、`title_en/summary_en`、`url`、`source`、`published_at`、`first_seen_at`、`tags/tags_en`、`importance`（1–5）、`pinned`。历史条目的 `tags_en` 可能为空。
+- 每条包含 `title/summary`（中文）、`title_en/summary_en`、`url`、`source`、`published_at`、`first_seen_at`、`tags/tags_en`、`importance`（1–5）、`pinned`；图片新闻条目另带 `image`（tmpfile 图片地址、图注、来源文章与署名）。历史条目的 `tags_en` 可能为空。
 - 每个主题带 `revision`，供首页判断后台刷新是否需要重置该主题的分页。
 - 全部开放 CORS，带 `ETag` 与 `Cache-Control: public, max-age=60, stale-while-revalidate=300`，浏览器和 Cloudflare 都能直接复用；错误响应同样带 CORS 且 `no-store`。
 
 ```json
-{"day":"2026-09-03","timezone":"Asia/Shanghai","generated_at":"…","topics":[{"id":"ai","name":"AI 行业动态","name_en":"AI Industry","description":"…","latest_day":"2026-09-03","updated_at":"…","revision":7,"total":14,"next":null,"items":[{"id":"…","title":"…","summary":"…","title_en":"…","summary_en":"…","url":"https://…","source":"Reuters","published_at":"…","first_seen_at":"…","tags":["OpenAI"],"tags_en":["OpenAI"],"importance":5,"pinned":false}]}]}
+{"day":"2026-09-03","timezone":"Asia/Shanghai","generated_at":"…","topics":[{"id":"ai","name":"AI 行业动态","name_en":"AI Industry","description":"…","latest_day":"2026-09-03","updated_at":"…","revision":7,"total":14,"next":null,"items":[{"id":"…","title":"…","summary":"…","title_en":"…","summary_en":"…","url":"https://…","source":"Reuters","published_at":"…","first_seen_at":"…","tags":["OpenAI"],"tags_en":["OpenAI"],"importance":5,"pinned":false,"image":null}]}]}
 ```
 
 ## 工作方式
@@ -37,9 +37,11 @@ GET https://news.xairouter.com/feed.xml?topic=ai
 - **单实例**：内存快照只在本进程内失效，多实例部署会长期返回旧数据。
 - **成本**：每次抓取约 $0.06–0.10（`usage.cost_in_usd_ticks`，1 tick = 1e-10 USD）。工作台的管理员运行记录按次显示 tokens、搜索次数和成本，以及今日合计。
 - **个人主题**：登录后首页保留公共主题，并追加当前账户启用的个人主题；`/me/` 负责管理个人主题。个人主题不会进入公共 digest；管理员主题仍是公共内容源。
+- **公共主题管理**：管理员在同一个 `/me/` 工作台编辑公共主题；打开 `𝐏` 后可直接修改“关注方向”（`brief`），也可调整名称、公开说明、抓取间隔、时间窗、模型、条数和启停状态。保存后会重新排程并刷新公共目录，主题 ID `p` 保持图片新闻行为。
 - **个人排程**：个人主题默认每天 06:00–24:00 运行，用户只需设置抓取间隔；Free/Pro 的最短间隔分别为 120/60 分钟。
 - **访问统计**：公共首页通过同源 `stats.js` 向 Stats 发送匿名页面访问；查询参数、锚点、主题切换和无限下拉不会重复计数。统计失败不影响页面使用，工作台不接入统计。
 - **页面广播**：公共首页复用 Broadcast 的 `feed_news?mode=sequence`；没有有效消息时通知条自动隐藏。
+- **图片新闻**：公共主题 `p`（显示为 `𝐏`）紧跟 `𝐗`，按两列响应式图片卡片展示全球热点。采集到的 HTTPS 图片由 NEWS 服务端上传到 `TMPFILE_BASE_URL/upload`，页面只加载返回的 `direct_link`；启动时会重新同步最近一周的图片和已有主图，旧图片失效时卡片自动退回文字内容。tmpfile 默认有效期为 36 小时，生产环境建议按需要将其 `FILE_EXPIRATION` 调整到 32 天。
 
 ## 本地运行
 
@@ -68,6 +70,8 @@ cargo run
 | `NEWS_FETCH_TIMEOUT_SECS` / `NEWS_MAX_CONCURRENT_RUNS` | `1800` / `2` | 新闻抓取、综合研判与 AI Agent 共用超时，默认为 30 分钟 |
 | `AI_INSIGHT_MODEL` / `AI_INSIGHT_INTERVAL_MINUTES` | `gpt-6-astra` / `120` | 综合研判模型与更新间隔 |
 | `NEWS_RETENTION_DAYS` | `128` | 新闻条目保留天数，超过期限自动清理 |
+| `TMPFILE_BASE_URL` / `TMPFILE_API_KEY` | 空 / 空 | 服务端图片转存接口与 Bearer 密钥；API key 只存在 NEWS 服务端 |
+| `NEWS_IMAGE_MAX_BYTES` / `NEWS_IMAGE_TIMEOUT_SECS` | `8388608` / `30` | 单张新闻图片大小与抓取超时 |
 | `REDIS_ADDR` / `REDIS_PASS` / `REDIS_DB` | 空 / 空 / `1` | 邮件队列与缓存 |
 | `SESSION_COOKIE_NAME` / `SESSION_TTL_DAYS` / `EMAIL_LOGIN_LINK_TTL_MINUTES` | `news_session` / `30` / `30` | |
 | `EMAIL_STREAM_PRIORITY` / `EMAIL_OID` / `EMAIL_REPLY_TO` | `important` / `0` / 空 | 与 `~/xabcos/mail` 的契约一致 |
@@ -126,7 +130,7 @@ Pro 订单固定为 ¥99 / 31 天，通过 YPay 的 store-token 接口创建微�
 
 ```bash
 cd /home/ywgx/1/news
-printf 'NEWS_ADMIN_EMAILS=admin@example.com\nAI_API_KEY=…\nEMAIL_PASS=…\nYPAY_BASE_URL=…\nYPAY_TENANT_CODE=news\nYPAY_STORE_API_KEY=…\nPAYMENT_WEBHOOK_SECRET=…\n' > .env && chmod 0600 .env
+printf 'NEWS_ADMIN_EMAILS=admin@example.com\nAI_API_KEY=…\nEMAIL_PASS=…\nTMPFILE_BASE_URL=https://dl.xabclabs.com\nTMPFILE_API_KEY=…\nYPAY_BASE_URL=…\nYPAY_TENANT_CODE=news\nYPAY_STORE_API_KEY=…\nPAYMENT_WEBHOOK_SECRET=…\n' > .env && chmod 0600 .env
 docker-compose config >/dev/null
 docker-compose up -d
 ```

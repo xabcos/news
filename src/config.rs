@@ -41,6 +41,10 @@ pub struct Config {
     pub(crate) max_concurrent_runs: usize,
     pub(crate) scheduler_enabled: bool,
     pub(crate) retention_days: u32,
+    pub(crate) tmpfile_base_url: Option<Url>,
+    pub(crate) tmpfile_api_key: Option<String>,
+    pub(crate) image_max_bytes: u64,
+    pub(crate) image_timeout: Duration,
 }
 
 impl Config {
@@ -170,6 +174,29 @@ impl Config {
             ));
         }
 
+        let tmpfile_base_url = optional_env("TMPFILE_BASE_URL")
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| parse_http_url("TMPFILE_BASE_URL", &value))
+            .transpose()?;
+        let tmpfile_api_key = optional_env("TMPFILE_API_KEY").filter(|value| !value.is_empty());
+        if tmpfile_base_url.is_none() && tmpfile_api_key.is_some() {
+            return Err(AppError::Config(
+                "配置 TMPFILE_API_KEY 时必须同时配置 TMPFILE_BASE_URL".into(),
+            ));
+        }
+        let image_max_bytes = parse_env("NEWS_IMAGE_MAX_BYTES", 8_u64 * 1024 * 1024)?;
+        if !(64 * 1024..=64 * 1024 * 1024).contains(&image_max_bytes) {
+            return Err(AppError::Config(
+                "NEWS_IMAGE_MAX_BYTES 必须在 65536 到 67108864 之间".into(),
+            ));
+        }
+        let image_timeout_secs = parse_env("NEWS_IMAGE_TIMEOUT_SECS", 30_u64)?;
+        if !(5..=180).contains(&image_timeout_secs) {
+            return Err(AppError::Config(
+                "NEWS_IMAGE_TIMEOUT_SECS 必须在 5 到 180 秒之间".into(),
+            ));
+        }
+
         Ok(Self {
             bind_addr,
             database_url,
@@ -203,6 +230,10 @@ impl Config {
             max_concurrent_runs,
             scheduler_enabled,
             retention_days: parse_env("NEWS_RETENTION_DAYS", 128_u32)?,
+            tmpfile_base_url,
+            tmpfile_api_key,
+            image_max_bytes,
+            image_timeout: Duration::from_secs(image_timeout_secs),
         })
     }
 }
