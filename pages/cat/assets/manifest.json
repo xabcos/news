@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "style": "original-warm-hand-painted-travel-cat",
+  "style": "original-warm-hand-drawn-watercolor-travel-cat",
   "layers": {
     "room": {
       "home_awake": "room/room-day.webp",
@@ -9,7 +9,7 @@
     },
     "character": {
       "base_idle": "character/cat-base.webp",
-      "status": "realistic-raster-coat-map-with-svg-identity-fallback",
+      "status": "hand-drawn-raster-coat-map-with-svg-identity-fallback",
       "identity_fields": [
         "coat",
         "eye_color",
@@ -38,5 +38,5 @@
     }
   },
   "fallback": "css-prototype",
-  "notes": "The four immutable coat variants use matching transparent realistic illustrations. Eye color, marking and initial accessories remain driven by the locked server identity and are shown in the identity metadata; the deterministic SVG remains the fallback when a raster asset cannot load."
+  "notes": "The four immutable coat variants use matching transparent hand-drawn watercolor illustrations. Eye color, marking and initial accessories remain driven by the locked server identity and are shown in the identity metadata; the deterministic SVG remains the fallback when a raster asset cannot load."
 }
