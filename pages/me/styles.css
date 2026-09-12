@@ -70,7 +70,7 @@ fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
 #itemsDay { width: auto; max-width: 10rem; padding: .3rem .5rem; font-size: .8rem; }
 .form-message { color: var(--danger); font-size: .85rem; }
 
-.dialog-card { width: min(36rem, calc(100% - 2rem)); max-height: calc(100dvh - 2rem); padding: 1.5rem; border: 1px solid var(--line); border-radius: var(--radius-xl); color: var(--text); background: var(--surface-solid); box-shadow: var(--shadow); }
+.dialog-card { width: min(36rem, calc(100% - 2rem)); max-height: calc(100dvh - 2rem); overflow-y: auto; overscroll-behavior: contain; padding: 1.5rem; border: 1px solid var(--line); border-radius: var(--radius-xl); color: var(--text); background: var(--surface-solid); box-shadow: var(--shadow); }
 .topic-dialog { width: min(40rem, calc(100% - 2rem)); }
 .confirm-dialog { width: min(28rem, calc(100% - 2rem)); }
 .dialog-card::backdrop { background: rgba(10, 12, 20, .45); backdrop-filter: blur(2px); }

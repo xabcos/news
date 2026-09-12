@@ -89,7 +89,6 @@ impl AppState {
             in_flight: Arc::default(),
             run_slots: Arc::new(Semaphore::new(max_concurrent_runs)),
         };
-        state.digest.warm(&state).await?;
         Ok(state)
     }
 

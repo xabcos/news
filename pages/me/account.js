@@ -22,6 +22,12 @@ export function createAccount(session, onChanged) {
   }, { signal: session.controller.signal });
   $("#refreshOrdersButton").addEventListener("click", () => withBusy($("#refreshOrdersButton"), null, loadOrders), { signal: session.controller.signal });
   dialog.addEventListener("close", stopPayment, { signal: session.controller.signal });
+  document.addEventListener("visibilitychange", () => {
+    clearTimeout(paymentTimer);
+    if (document.visibilityState === "visible" && active && dialog.open && currentOrder) {
+      schedulePayment(paymentVersion);
+    }
+  }, { signal: session.controller.signal });
 
   function update() {
     if (!active) return;
@@ -178,14 +184,13 @@ export function createAccount(session, onChanged) {
 
   function schedulePayment(version) {
     clearTimeout(paymentTimer);
-    if (!active || !dialog.open || version !== paymentVersion) return;
+    if (!active || !dialog.open || document.visibilityState !== "visible" || version !== paymentVersion) return;
     if (Date.now() - paymentStarted >= 10 * 60 * 1000) {
       if ($("#paymentStatus")) $("#paymentStatus").textContent = "自动查询已暂停，可手动检查支付结果";
       return;
     }
     paymentTimer = setTimeout(() => {
       if (document.visibilityState === "visible") void checkPayment(version).catch(reportError);
-      else schedulePayment(version);
     }, 5000);
   }
 

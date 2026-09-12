@@ -262,6 +262,7 @@ p { margin-top: 0; }
 
 .day-block {
   content-visibility: auto;
+  contain-intrinsic-size: auto 28rem;
 }
 .day-divider, .group-title {
   display: flex;

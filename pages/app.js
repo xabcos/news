@@ -7,6 +7,7 @@ const REFRESH_MS = 5 * 60 * 1000;
 const PAGE_LIMIT = 12;
 // Delay before a failed page request is retried, still without any visible message.
 const PAGE_RETRY_MS = 8000;
+const FETCH_TIMEOUT_MS = 20_000;
 // Browsers with scroll anchoring keep the viewport still when cards are inserted above it;
 // elsewhere the scroll position is corrected by hand.
 const NATIVE_SCROLL_ANCHORING = typeof CSS !== "undefined" && CSS.supports?.("overflow-anchor", "auto") === true;
@@ -100,6 +101,7 @@ const t = () => TEXT[state.lang];
 // Sentinels at the end of groups with more items on the server, and the group each belongs to.
 const groupTargets = new WeakMap();
 let groupObserver = null;
+let activeLoadController = null;
 
 document.addEventListener("DOMContentLoaded", init);
 
@@ -135,19 +137,49 @@ async function init() {
   await Promise.all([loadCatalog(), load()]);
 }
 
-async function fetchJson(path) {
+async function fetchJson(path, { signal } = {}) {
   const privatePath = path === "/api/me" || path.startsWith("/api/me/");
-  const response = await fetch(path, {
-    credentials: "same-origin",
-    cache: privatePath ? "no-store" : "default",
-    headers: { Accept: "application/json" },
-  });
-  if (!response.ok) {
-    const error = new Error(`HTTP ${response.status}`);
-    error.status = response.status;
-    throw error;
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, FETCH_TIMEOUT_MS);
+  const abort = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener("abort", abort, { once: true });
   }
-  return response.json();
+  try {
+    const response = await fetch(path, {
+      credentials: "same-origin",
+      cache: privatePath ? "no-store" : "default",
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const error = new Error(`HTTP ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
+    return response.json();
+  } catch (error) {
+    if (timedOut) {
+      const timeout = new Error("Request timed out");
+      timeout.name = "TimeoutError";
+      throw timeout;
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+    signal?.removeEventListener("abort", abort);
+  }
+}
+
+function startLoad() {
+  activeLoadController?.abort();
+  activeLoadController = new AbortController();
+  return activeLoadController;
 }
 
 // The role cookie is the only hint about the session that the public page reads. Anonymous
@@ -213,6 +245,24 @@ function refreshGroups(fresh, current) {
   return { ...fresh, topics };
 }
 
+function digestGroupsChanged(next, previous) {
+  const groups = next || [];
+  const oldGroups = previous || [];
+  if (groups.length !== oldGroups.length) return true;
+  return groups.some((group, index) => {
+    const old = oldGroups[index];
+    if (!old
+      || group.id !== old.id
+      || group.revision !== old.revision
+      || group.total !== old.total
+      || group.next !== old.next) return true;
+    if (group.revision != null) return false;
+    const items = group.items || [];
+    const oldItems = old.items || [];
+    return items.length !== oldItems.length || items.some((item, itemIndex) => item.id !== oldItems[itemIndex]?.id);
+  });
+}
+
 // Adds one page to a group and moves its cursor on. Ids are checked because an item
 // unpinned between two requests comes back once more further down.
 function appendPage(group, page) {
@@ -231,6 +281,8 @@ function clearDigest() {
 
 async function load(silent = false) {
   if (state.topic === INSIGHT_ID) return loadInsight(silent);
+  const controller = startLoad();
+  const { signal } = controller;
   const epoch = ++state.epoch;
   if (!silent) {
     state.timeline = [];
@@ -245,14 +297,14 @@ async function load(silent = false) {
     let digest;
     let days;
     if (state.personal) {
-      const payload = await fetchJson(`/api/me/feed${search({ limit: PAGE_LIMIT })}`);
+      const payload = await fetchJson(`/api/me/feed${search({ limit: PAGE_LIMIT })}`, { signal });
       digest = payload.digest;
       days = payload.days;
       if (epoch === state.epoch) state.topics = payload.topics;
     } else {
       const [data, archive] = await Promise.all([
-        fetchJson(`/digest${search({ limit: PAGE_LIMIT })}`),
-        fetchJson(catalogPath()),
+        fetchJson(`/digest${search({ limit: PAGE_LIMIT })}`, { signal }),
+        fetchJson(catalogPath(), { signal }),
       ]);
       digest = data;
       days = archive.days;
@@ -267,7 +319,7 @@ async function load(silent = false) {
     // A background refresh only repaints when something actually changed.
     if (silent
       && digest.day === current?.day
-      && JSON.stringify(digest.topics) === JSON.stringify(current?.topics)) {
+      && !digestGroupsChanged(digest.topics, current?.topics)) {
       updateHistoryBoundary();
       setStatus("");
       updateHistoryLoader();
@@ -284,8 +336,9 @@ async function load(silent = false) {
     state.historyError = false;
     updateHistoryBoundary();
     setStatus("");
-    render(silent);
+    render(silent, window.scrollY, { latestOnly: silent && current?.day === digest.day });
   } catch (error) {
+    if (error.name === "AbortError") return;
     // If a session expires while the page is open, switch back to the public feed
     // instead of leaving a private page permanently stuck on an auth error.
     if (state.personal && [401, 403].includes(error.status) && epoch === state.epoch) {
@@ -317,6 +370,8 @@ async function load(silent = false) {
 }
 
 async function loadInsight(silent = false) {
+  const controller = startLoad();
+  const { signal } = controller;
   const epoch = ++state.epoch;
   if (state.day) {
     state.day = "";
@@ -333,15 +388,25 @@ async function loadInsight(silent = false) {
     setStatus("");
   }
   try {
-    const payload = await fetchJson("/insight");
+    const payload = await fetchJson("/insight", { signal });
     if (epoch !== state.epoch) return;
+    if (silent
+      && payload.insight?.generated_at
+      && payload.insight.generated_at === state.insight?.generated_at) {
+      state.historyLoading = false;
+      state.historyError = false;
+      state.historyDone = true;
+      setStatus("");
+      return;
+    }
     state.insight = payload.insight;
     state.historyLoading = false;
     state.historyError = false;
     state.historyDone = true;
     setStatus("");
     renderInsight(state.insight, silent);
-  } catch {
+  } catch (error) {
+    if (error.name === "AbortError") return;
     if (epoch === state.epoch && !silent) setStatus(t().failed, true);
   }
 }
@@ -382,7 +447,7 @@ async function loadOlder() {
   state.historyError = false;
   updateHistoryLoader();
   try {
-    const payload = await fetchJson(dayPath(day));
+    const payload = await fetchJson(dayPath(day), { signal: activeLoadController?.signal });
     if (timeline !== state.timeline) return;
     const digest = personal ? payload.digest : payload;
     if (!digest?.day || state.timeline.some((entry) => entry.day === digest.day)) {
@@ -392,7 +457,8 @@ async function loadOlder() {
     state.timeline.push(digest);
     el.digest.append(renderDayBlock(digest, true));
     updateHistoryBoundary();
-  } catch {
+  } catch (error) {
+    if (error.name === "AbortError") return;
     if (timeline === state.timeline) state.historyError = true;
   } finally {
     if (timeline === state.timeline) {
@@ -456,7 +522,7 @@ async function loadMoreItems(sentinel) {
   const timeline = state.timeline;
   target.loading = true;
   try {
-    const payload = await fetchJson(pagePath(digest.day, group.id, group.next));
+    const payload = await fetchJson(pagePath(digest.day, group.id, group.next), { signal: activeLoadController?.signal });
     if (timeline !== state.timeline || !sentinel.isConnected) return;
     const page = (state.personal ? payload.digest : payload)?.topics?.find((entry) => entry.id === group.id);
     const added = page ? appendPage(group, page) : [];
@@ -470,7 +536,11 @@ async function loadMoreItems(sentinel) {
       sentinel.remove();
     }
     window.setTimeout(maybeLoadOlder, 0);
-  } catch {
+  } catch (error) {
+    if (error.name === "AbortError") {
+      target.loading = false;
+      return;
+    }
     window.setTimeout(() => {
       target.loading = false;
       if (sentinel.isConnected) reobserve(sentinel);
@@ -591,8 +661,18 @@ function renderTabs() {
   }));
 }
 
-function render(preserveScroll = false, scrollTop = window.scrollY) {
+function render(preserveScroll = false, scrollTop = window.scrollY, { latestOnly = false } = {}) {
   if (!state.timeline.length) return;
+  if (latestOnly && el.digest.firstElementChild) {
+    groupObserver?.disconnect();
+    el.digest.firstElementChild.replaceWith(renderDayBlock(state.timeline[0], false));
+    updateHistoryLoader();
+    window.setTimeout(maybeLoadOlder, 0);
+    if (preserveScroll) {
+      window.requestAnimationFrame(() => { document.scrollingElement.scrollTop = scrollTop; });
+    }
+    return;
+  }
   // Sentinels of the outgoing blocks must be dropped before the new blocks register theirs.
   groupObserver?.disconnect();
   el.digest.replaceChildren(...state.timeline.map((digest, index) => {
@@ -676,6 +756,7 @@ function insightCover(cover) {
   image.src = cover.url;
   image.alt = pick(cover, "caption");
   image.loading = "eager";
+  image.fetchPriority = "high";
   image.decoding = "async";
   image.referrerPolicy = "no-referrer";
   image.addEventListener("error", () => figure.remove(), { once: true });
@@ -889,6 +970,7 @@ function imageNewsCard(item) {
   element.src = image;
   element.alt = pick(item.image, "caption") || pick(item, "title");
   element.loading = "lazy";
+  element.fetchPriority = "low";
   element.decoding = "async";
   element.referrerPolicy = "no-referrer";
   element.addEventListener("error", () => link.remove(), { once: true });
@@ -1006,6 +1088,19 @@ function setupScrollControls() {
 
 const name = (topic) => (state.lang === "en" && topic.name_en) || topic.name;
 const pick = (item, field) => (state.lang === "en" && item[`${field}_en`]) || item[field];
+const formatterCache = new Map();
+
+function formatter(kind, locale, options) {
+  const key = `${kind}:${locale}:${JSON.stringify(options)}`;
+  let value = formatterCache.get(key);
+  if (!value) {
+    value = kind === "relative"
+      ? new Intl.RelativeTimeFormat(locale, options)
+      : new Intl.DateTimeFormat(locale, options);
+    formatterCache.set(key, value);
+  }
+  return value;
+}
 
 function button(label, onClick, className) {
   const node = document.createElement("button");
@@ -1032,12 +1127,12 @@ function hostOf(url) {
 }
 
 function todayIn(timeZone) {
-  return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+  return formatter("date", "en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 }
 
 function formatDay(day, timeZone) {
   const [year, month, date] = day.split("-").map(Number);
-  const label = new Intl.DateTimeFormat(t().locale, {
+  const label = formatter("date", t().locale, {
     year: year === new Date().getFullYear() ? undefined : "numeric",
     month: "long",
     day: "numeric",
@@ -1050,9 +1145,9 @@ function relativeTime(iso) {
   const timestamp = Date.parse(iso);
   if (!Number.isFinite(timestamp)) return "";
   const minutes = Math.round((timestamp - Date.now()) / 60000);
-  const format = new Intl.RelativeTimeFormat(t().locale, { numeric: "auto" });
+  const format = formatter("relative", t().locale, { numeric: "auto" });
   if (Math.abs(minutes) < 60) return format.format(minutes, "minute");
   if (Math.abs(minutes) < 60 * 24) return format.format(Math.round(minutes / 60), "hour");
   if (Math.abs(minutes) < 60 * 24 * 7) return format.format(Math.round(minutes / 1440), "day");
-  return new Intl.DateTimeFormat(t().locale, { month: "short", day: "numeric" }).format(new Date(iso));
+  return formatter("date", t().locale, { month: "short", day: "numeric" }).format(new Date(iso));
 }

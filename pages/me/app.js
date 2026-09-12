@@ -75,6 +75,12 @@ function bindEvents() {
     await navigator.clipboard.writeText(`${location.origin}/digest?topic=${encodeURIComponent(session.editing.id)}`);
     toast("公共地址已复制");
   }));
+  document.addEventListener("visibilitychange", () => {
+    const s = session;
+    if (!s) return;
+    clearTimeout(s.timer);
+    if (document.visibilityState === "visible" && !s.refreshing) void refresh(s).catch(reportError);
+  });
 }
 
 function buildScheduleInputs() {
@@ -144,7 +150,7 @@ async function enterApp(data) {
   const s = {
     user: data.user, usage: data.usage, admin: data.user.role === "admin",
     controller: new AbortController(), topics: [], running: new Set(), selected: null,
-    itemsVersion: 0, runsVersion: 0, refreshVersion: 0, timer: null,
+    itemsVersion: 0, runsVersion: 0, refreshVersion: 0, timer: null, refreshing: false,
     timezone: data.usage.timezone, today: { runs: data.usage.runs_today, cost_ticks: 0 },
     users: null,
   };
@@ -178,6 +184,8 @@ async function enterApp(data) {
 
 async function refresh(s) {
   if (!s || session !== s) return;
+  if (s.refreshing) return;
+  s.refreshing = true;
   clearTimeout(s.timer);
   const version = ++s.refreshVersion;
   try {
@@ -204,15 +212,17 @@ async function refresh(s) {
     }
     if (s.admin && $("#runsPanel").open) await loadRuns(s);
   } finally {
+    s.refreshing = false;
     if (session === s && version === s.refreshVersion) scheduleRefresh(s);
   }
 }
 
 function scheduleRefresh(s) {
   clearTimeout(s.timer);
+  if (document.visibilityState !== "visible") return;
   s.timer = setTimeout(async () => {
     if (session !== s) return;
-    if (document.visibilityState !== "visible") return scheduleRefresh(s);
+    if (document.visibilityState !== "visible") return;
     try { await refresh(s); } catch { /* The next scheduled refresh retries. */ }
   }, s.running.size ? 5000 : 60000);
 }

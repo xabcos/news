@@ -216,6 +216,17 @@ pub async fn serve(state: AppState) -> Result<()> {
         })?;
     tracing::info!(%bind_addr, "news listening");
 
+    // Populate the digest cache after the listener is ready so a cold cache never delays
+    // startup. Requests arriving during warm-up simply fill the same cache on demand.
+    let warmup = tokio::spawn({
+        let state = state.clone();
+        async move {
+            if let Err(error) = state.digest.warm(&state).await {
+                tracing::warn!(%error, "digest cache warm-up failed; continuing with on-demand loading");
+            }
+        }
+    });
+
     let (shutdown_sender, shutdown_receiver) = tokio::sync::watch::channel(false);
     let mut graceful_shutdown = shutdown_receiver.clone();
     let mut shutdown_deadline = shutdown_receiver;
@@ -245,6 +256,8 @@ pub async fn serve(state: AppState) -> Result<()> {
         }
     };
     signal_task.abort();
+    warmup.abort();
+    let _ = warmup.await;
     result
 }
 
