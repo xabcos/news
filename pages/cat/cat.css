@@ -38,7 +38,7 @@ a { text-decoration: none; }
 .cat-inbox-button { position: relative; }
 .cat-inbox-button b { position: absolute; top: -.1rem; right: -.15rem; min-width: 1rem; height: 1rem; padding: 0 .2rem; border-radius: 999px; color: #fff; background: var(--cat-accent); font-size: .58rem; line-height: 1rem; }
 
-.cat-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(18rem, 24rem); align-items: center; gap: clamp(1.25rem, 4vw, 4rem); max-width: 1180px; width: 100%; height: clamp(28rem, calc(100svh - 10.5rem), 42rem); min-height: 0; margin: 0 auto clamp(1.5rem, 3vw, 2.5rem); }
+.cat-layout { display: grid; grid-template-columns: minmax(0, 1fr); align-items: center; gap: clamp(1.25rem, 4vw, 4rem); max-width: 1180px; width: 100%; height: clamp(28rem, calc(100svh - 10.5rem), 42rem); min-height: 0; margin: 0 auto clamp(1.5rem, 3vw, 2.5rem); }
 .cat-stage { position: relative; height: 100%; min-height: 0; overflow: hidden; border: 1px solid rgba(112,83,61,.13); border-radius: 2rem; background: linear-gradient(180deg, #bdd4d3 0%, #dbe3d6 46%, #d8b99b 46%, #caa685 100%); box-shadow: var(--cat-shadow); isolation: isolate; }
 .cat-stage--art { background-image: url("/cat/assets/room/room-day.webp"); background-size: cover; background-position: center; }
 .cat-stage--art .cat-stage__sky, .cat-stage--art .cat-room { display: none; }
