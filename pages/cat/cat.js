@@ -10,14 +10,20 @@
  *   generation can replace one boundary without changing the other two.
  */
 
-const DEMO_LETTER = {
+const EMPTY_LETTER = {
   newsItemId: null,
-  title: "京都的春风捎来一封信",
-  summary: "猫咪从窗台上抬起头，听见了一个适合出发的季节。把小围巾放进行李箱，它会带一张照片回来。",
-  source: "旅行灵感 · NEWS 图片新闻",
+  title: "猫咪正在整理今天的世界",
+  summary: "等猫咪把第一封真实来信带回来。",
+  source: "旅行猫咪 · 正在准备",
   image: null,
   url: "#",
 };
+const REALISTIC_CATS = Object.freeze({
+  orange_white: "/cat/assets/character/cat-realistic-orange-white.webp",
+  cream_tabby: "/cat/assets/character/cat-realistic-cream-tabby.webp",
+  silver_tabby: "/cat/assets/character/cat-realistic-silver-tabby.webp",
+  black_white: "/cat/assets/character/cat-realistic-black-white.webp",
+});
 const NEWS_TIMEOUT_MS = 6000;
 
 const NewsBridge = Object.freeze({
@@ -45,18 +51,18 @@ const NewsBridge = Object.freeze({
           const imageWeight = Number(Boolean(right.image)) - Number(Boolean(left.image));
           return imageWeight || (right.importance || 0) - (left.importance || 0);
         })[0];
-      if (!item) return DEMO_LETTER;
+      if (!item) return EMPTY_LETTER;
       return {
         newsItemId: item.id || null,
-        title: item.title || DEMO_LETTER.title,
-        summary: item.summary || DEMO_LETTER.summary,
+        title: item.title || EMPTY_LETTER.title,
+        summary: item.summary || EMPTY_LETTER.summary,
         source: [item.source, item.topicName, "NEWS"].filter(Boolean).join(" · "),
         image: item.image?.url || null,
         url: item.url || "#",
       };
     } catch {
       // The game shell remains useful while NEWS is cold or unavailable.
-      return DEMO_LETTER;
+      return EMPTY_LETTER;
     } finally {
       window.clearTimeout(timeout);
     }
@@ -67,8 +73,10 @@ const CatScene = (() => {
   const elements = {
     stage: document.querySelector(".cat-stage"),
     companion: document.querySelector("#catCompanion"),
+    realisticImage: document.querySelector("#catRealisticImage"),
     thought: document.querySelector("#catThought"),
     caption: document.querySelector("#catSceneCaption"),
+    identityMeta: document.querySelector("#catIdentityMeta"),
     letterTitle: document.querySelector("#letterTitle"),
     letterSummary: document.querySelector("#letterSummary"),
     letterSource: document.querySelector("#letterSource"),
@@ -78,9 +86,9 @@ const CatScene = (() => {
   let toastTimer;
 
   function setLetter(letter) {
-    elements.letterTitle.textContent = letter.title;
-    elements.letterSummary.textContent = letter.summary;
-    elements.letterSource.textContent = letter.source;
+    elements.letterTitle.textContent = letter.title || EMPTY_LETTER.title;
+    elements.letterSummary.textContent = letter.summary || EMPTY_LETTER.summary;
+    elements.letterSource.textContent = letter.source || EMPTY_LETTER.source;
     const image = elements.letterPhoto.querySelector("img");
     image.onerror = () => {
       elements.letterPhoto.hidden = true;
@@ -123,6 +131,17 @@ const CatScene = (() => {
     const accent = (accessories || []).find((item) => item.id && item.id !== "sage_scarf");
     if (accent) elements.companion.dataset.accent = accent.id;
     else delete elements.companion.dataset.accent;
+    const realisticSource = REALISTIC_CATS[identity.coat];
+    if (realisticSource && elements.realisticImage) {
+      elements.realisticImage.onerror = () => {
+        elements.companion.classList.remove("has-realistic-art");
+        elements.realisticImage.removeAttribute("src");
+      };
+      elements.realisticImage.src = realisticSource;
+      elements.companion.classList.add("has-realistic-art");
+    } else {
+      elements.companion.classList.remove("has-realistic-art");
+    }
     const coatNames = { orange_white: "橘白", cream_tabby: "奶油虎斑", silver_tabby: "银灰虎斑", black_white: "黑白" };
     const eyeNames = { amber: "琥珀色眼睛", green: "绿色眼睛", blue: "蓝色眼睛", hazel: "榛色眼睛" };
     const markingNames = { star: "星形额纹", stripe: "条纹额纹", cloud: "云朵额纹", heart: "心形额纹" };
@@ -131,6 +150,11 @@ const CatScene = (() => {
       eyeNames[identity.eye_color] || "独特眼睛",
       markingNames[identity.marking] || "特别印记",
     ].join("、");
+    const accessoryLabel = (accessories || []).map((item) => item.name).filter(Boolean).join("、");
+    if (elements.identityMeta) {
+      elements.identityMeta.textContent = `身份已锁定 · ${identityLabel}${accessoryLabel ? ` · ${accessoryLabel}` : ""}`;
+      elements.identityMeta.hidden = false;
+    }
     if (identity.signature) elements.companion.dataset.identitySignature = identity.signature;
     elements.companion.setAttribute("data-identity-label", identityLabel);
     elements.companion.setAttribute("aria-description", identityLabel);
@@ -186,7 +210,7 @@ const CatShell = (() => {
   const atlasPanel = document.querySelector("#catAtlasPanel");
   const journalGrid = document.querySelector("#catJournalGrid");
   const atlasGrid = document.querySelector("#catAtlasGrid");
-  let currentLetter = DEMO_LETTER;
+  let currentLetter = EMPTY_LETTER;
   let catState = null;
   let homeState = null;
   let authState = "unknown";

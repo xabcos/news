@@ -48,7 +48,8 @@
           <span class="cat-rug"></span>
           <span class="cat-suitcase"><i></i><b></b></span>
         </div>
-        <div class="cat-companion" id="catCompanion" role="img" aria-label="一只在窗边休息的橘白猫咪">
+        <div class="cat-companion has-realistic-art" id="catCompanion" role="img" aria-label="一只在窗边休息的橘白猫咪">
+          <img class="cat-realistic-image" id="catRealisticImage" src="/cat/assets/character/cat-realistic-orange-white.webp" alt="" aria-hidden="true" loading="eager">
           <svg class="cat-body-svg" viewBox="0 0 260 260" fill="none" aria-hidden="true">
             <ellipse class="cat-shadow" cx="130" cy="229" rx="62" ry="10" />
             <path class="cat-tail" d="M181 191c40 6 57-19 42-43-8-13-23-14-33-4" />
@@ -79,6 +80,7 @@
         <div class="cat-stage__caption">
           <span class="cat-weather-dot"></span>
           <span id="catSceneCaption">午后的窗边 · 适合整理行囊</span>
+          <span class="cat-identity-meta" id="catIdentityMeta" hidden></span>
         </div>
       </section>
 
@@ -87,15 +89,15 @@
         <div class="cat-letter__heading">
           <div>
             <p class="cat-eyebrow">今日世界来信</p>
-            <h1 id="letterTitle">京都的春风捎来一封信</h1>
+            <h1 id="letterTitle">猫咪正在整理今天的世界</h1>
           </div>
           <span class="cat-letter__pin" aria-hidden="true">✦</span>
         </div>
         <div class="cat-letter__photo" id="letterPhoto" hidden>
           <img alt="" loading="lazy">
         </div>
-        <p class="cat-letter__summary" id="letterSummary">猫咪从窗台上抬起头，听见了一个适合出发的季节。</p>
-        <div class="cat-letter__source" id="letterSource">旅行灵感 · NEWS 图片新闻</div>
+        <p class="cat-letter__summary" id="letterSummary">等猫咪把第一封真实来信带回来。</p>
+        <div class="cat-letter__source" id="letterSource">旅行猫咪 · 正在准备</div>
         <div class="cat-letter__actions">
           <button class="cat-button cat-button--primary" id="readButton" type="button">打开这封来信</button>
           <button class="cat-button cat-button--quiet" id="guideButton" type="button">查看猫咪领读</button>
@@ -156,6 +158,6 @@
       <button class="cat-button cat-button--primary" id="dialogPrimary" type="button">知道了</button>
     </div>
   </dialog>
-  <script src="/cat/cat.js?v=3" defer></script>
+  <script src="/cat/cat.js?v=4" defer></script>
 </body>
 </html>

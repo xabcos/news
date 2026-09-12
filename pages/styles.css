@@ -164,12 +164,11 @@ p { margin-top: 0; }
 .cat-portal {
   position: relative;
   display: inline-flex;
-  min-width: 2rem;
-  height: 2rem;
+  min-width: auto;
+  min-height: 2rem;
   align-items: center;
   justify-content: center;
-  gap: .25rem;
-  padding: 0 .4rem;
+  padding: .2rem .45rem;
   color: var(--primary-strong);
   border-radius: 999px;
   text-decoration: none;
@@ -178,20 +177,7 @@ p { margin-top: 0; }
 .cat-portal:hover,
 .cat-portal:focus-visible { color: var(--primary); background: var(--primary-soft); }
 .cat-portal:active { transform: translateY(1px); }
-.cat-portal__icon {
-  width: 1.55rem;
-  height: 1.55rem;
-  overflow: visible;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
 .cat-portal__label { font-size: .76rem; font-weight: 650; white-space: nowrap; }
-.cat-portal__ear { transform-origin: 50% 50%; }
-.cat-portal__tail { transform-origin: 36px 34px; }
-.cat-portal__icon { animation: cat-portal-breathe 5.5s ease-in-out infinite; }
-.cat-portal__tail { animation: cat-portal-tail 5.5s ease-in-out infinite; }
 .cat-portal__badge {
   position: absolute;
   top: .15rem;
@@ -209,34 +195,11 @@ p { margin-top: 0; }
   opacity: 1;
   transform: scale(1);
 }
-.cat-portal.has-news .cat-portal__icon { animation: cat-portal-arrival 1.1s ease-out 1; }
-@keyframes cat-portal-breathe {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-1px); }
-}
-@keyframes cat-portal-tail {
-  0%, 74%, 100% { transform: rotate(0); }
-  82% { transform: rotate(7deg); }
-  90% { transform: rotate(-4deg); }
-}
-@keyframes cat-portal-arrival {
-  0% { transform: translateY(0) rotate(0); }
-  35% { transform: translateY(-4px) rotate(-4deg); }
-  70% { transform: translateY(1px) rotate(3deg); }
-  100% { transform: translateY(0) rotate(0); }
-}
 
 @media (max-width: 420px) {
-  .cat-portal { min-width: 1.85rem; height: 1.85rem; padding: 0 .25rem; }
-  .cat-portal__icon { width: 1.4rem; height: 1.4rem; }
+  .cat-portal { min-height: 1.85rem; padding: .15rem .25rem; }
   .cat-portal__label { font-size: .7rem; }
   .tools .space-link { padding-right: .45rem; padding-left: .45rem; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .cat-portal__icon,
-  .cat-portal__tail,
-  .cat-portal.has-news .cat-portal__icon { animation: none; }
 }
 
 .public .shell { max-width: 46rem; margin: 0 auto; padding: .75rem 1.25rem 3rem; }

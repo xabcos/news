@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "style": "original-warm-hand-painted-travel-cat",
   "layers": {
     "room": {
@@ -9,8 +9,14 @@
     },
     "character": {
       "base_idle": "character/cat-base.webp",
-      "status": "identity-layered-svg-fallback",
-      "identity_fields": ["coat", "eye_color", "marking", "initial_accessories"],
+      "status": "realistic-raster-coat-map-with-svg-identity-fallback",
+      "identity_fields": [
+        "coat",
+        "eye_color",
+        "marking",
+        "initial_accessories"
+      ],
+      "visual_identity": ["coat", "identity_meta"],
       "selectors": {
         "coat": "data-coat",
         "eye_color": "data-eye",
@@ -22,9 +28,15 @@
         "stripe": "inline-svg:.cat-marking--stripe",
         "cloud": "inline-svg:.cat-marking--cloud",
         "heart": "inline-svg:.cat-marking--heart"
+      },
+      "realistic_coats": {
+        "orange_white": "character/cat-realistic-orange-white.webp",
+        "cream_tabby": "character/cat-realistic-cream-tabby.webp",
+        "silver_tabby": "character/cat-realistic-silver-tabby.webp",
+        "black_white": "character/cat-realistic-black-white.webp"
       }
     }
   },
   "fallback": "css-prototype",
-  "notes": "Room assets are layered independently from the identity-locked cat rig. Identity layers are derived from the immutable server identity and keep the SVG rig as an accessible, deterministic fallback until raster coat and pose layers are available."
+  "notes": "The four immutable coat variants use matching transparent realistic illustrations. Eye color, marking and initial accessories remain driven by the locked server identity and are shown in the identity metadata; the deterministic SVG remains the fallback when a raster asset cannot load."
 }
