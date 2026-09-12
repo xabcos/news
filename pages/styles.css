@@ -164,10 +164,12 @@ p { margin-top: 0; }
 .cat-portal {
   position: relative;
   display: inline-flex;
-  width: 2rem;
+  min-width: 2rem;
   height: 2rem;
   align-items: center;
   justify-content: center;
+  gap: .25rem;
+  padding: 0 .4rem;
   color: var(--primary-strong);
   border-radius: 999px;
   text-decoration: none;
@@ -185,6 +187,7 @@ p { margin-top: 0; }
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+.cat-portal__label { font-size: .76rem; font-weight: 650; white-space: nowrap; }
 .cat-portal__ear { transform-origin: 50% 50%; }
 .cat-portal__tail { transform-origin: 36px 34px; }
 .cat-portal__icon { animation: cat-portal-breathe 5.5s ease-in-out infinite; }
@@ -224,8 +227,9 @@ p { margin-top: 0; }
 }
 
 @media (max-width: 420px) {
-  .cat-portal { width: 1.85rem; height: 1.85rem; }
+  .cat-portal { min-width: 1.85rem; height: 1.85rem; padding: 0 .25rem; }
   .cat-portal__icon { width: 1.4rem; height: 1.4rem; }
+  .cat-portal__label { font-size: .7rem; }
   .tools .space-link { padding-right: .45rem; padding-left: .45rem; }
 }
 
