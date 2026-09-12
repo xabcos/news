@@ -1,17 +1,15 @@
 //! Server-side travel image generation for Travel Cat.
 //!
 //! NEWS remains the source of facts and source photographs. This module turns one
-//! stored story and one adopted identity into a generated postcard on demand. The primary GPT Image 2.5
+//! stored story and one adopted identity into a generated postcard during travel settlement. The primary GPT Image 2.5
 //! provider is followed by the ZAI Router Grok image provider, then a sourced NEWS
 //! photograph or a small SVG card keeps the trip usable when both providers fail.
 
 use crate::{
-    auth::User,
-    error::{ApiJson, AppError, Result},
+    error::{AppError, Result},
     media,
     state::AppState,
 };
-use axum::{Json, extract::State};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{DateTime, Utc};
 use reqwest::multipart::{Form, Part};
@@ -101,19 +99,6 @@ struct PublishedAsset {
     expires_at: Option<DateTime<Utc>>,
 }
 
-/// Generates one postcard from a stored public NEWS item. The route is deliberately
-/// account-scoped and consumes one shared run slot so a burst of clicks cannot starve
-/// scheduled NEWS collection.
-pub(crate) async fn generate(
-    State(state): State<AppState>,
-    user: User,
-    ApiJson(request): ApiJson<GenerateRequest>,
-) -> Result<Json<GenerateResponse>> {
-    Ok(Json(
-        generate_for_owner(&state, user.id, &request, true, false).await?,
-    ))
-}
-
 /// Generates and publishes one shared postcard for an adopted cat. The owner id is
 /// explicit so the trip settlement worker can use the same path without fabricating an
 /// HTTP extractor.
@@ -121,7 +106,6 @@ pub(crate) async fn generate_for_owner(
     state: &AppState,
     owner_user_id: i64,
     request: &GenerateRequest,
-    enforce_rate_limit: bool,
     force_refresh: bool,
 ) -> Result<GenerateResponse> {
     let _permit = state
@@ -165,22 +149,8 @@ pub(crate) async fn generate_for_owner(
             cache_transaction.commit().await?;
             return Ok(cached_response(&item, cached));
         }
-    if enforce_rate_limit {
-        let prefix = format!("cat:{}:news:%", cat.id);
-        let recent = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM cat_postcards WHERE source_key LIKE $1 AND created_at >= NOW() - INTERVAL '10 minutes'",
-        )
-        .bind(prefix)
-        .fetch_one(&mut *cache_transaction)
-        .await?;
-        if recent >= 6 {
-            return Err(AppError::TooManyRequests(
-                "最近生成的旅行图片较多，请稍后再试".into(),
-            ));
-        }
-    }
     // Release the database connection before the provider and tmpfile calls. The
-    // advisory lock above only protects the short cache/rate-limit check; the final
+    // advisory lock above only protects the short cache check; the final
     // write below rechecks the cache so a concurrent request cannot overwrite it.
     cache_transaction.commit().await?;
     let prompt = travel_prompt(&item, &purpose, &cat.identity, &cat.initial_accessories);
@@ -312,7 +282,7 @@ pub(crate) async fn refresh_expiring(state: &AppState) -> Result<()> {
             quality: Some("medium".into()),
             purpose: Some("旅迹墙照片续期".into()),
         };
-        if let Err(error) = generate_for_owner(state, owner_id, &request, false, true).await {
+        if let Err(error) = generate_for_owner(state, owner_id, &request, true).await {
             tracing::debug!(%error, %news_item_id, "cat postcard refresh deferred");
         }
     }

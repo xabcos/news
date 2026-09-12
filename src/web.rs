@@ -1,6 +1,4 @@
-use crate::{
-    auth, cat, cat_guide, cat_image, digest, error::Result, payment, state::AppState, topics,
-};
+use crate::{auth, cat, cat_guide, digest, error::Result, payment, state::AppState, topics};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Request, State},
@@ -35,7 +33,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/api/cat/name", patch(cat::rename))
         .route("/api/cat/reading", post(cat::reading))
         .route("/api/cat/guide", get(cat_guide::today))
-        .route("/api/cat/trips", get(cat::list_trips).post(cat::depart))
+        .route("/api/cat/trips", get(cat::list_trips))
         .route("/api/cat/trips/{trip_id}/read", post(cat::read_trip))
         .route("/api/cat/journal", get(cat::journal))
         .route("/api/cat/inbox", get(cat::inbox))
@@ -43,7 +41,6 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/api/cat/album", get(cat::album))
         .route("/api/cat/atlas", get(cat::atlas))
         .route("/api/cat/encounters", get(cat::encounters))
-        .route("/api/cat/images", post(cat_image::generate))
         .route("/api/plans", get(payment::list_plans))
         .route(
             "/api/orders",

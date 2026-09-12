@@ -178,7 +178,7 @@ PostgreSQL 事务写入 items + runs
 
 ### 数据与接口边界
 
-旅行猫咪的核心表包括 `cats`、`cat_growth_events`、`cat_accessory_unlocks`、`cat_memories`、`cat_reading_daily`、`cat_personality_snapshots`、`cat_world_briefs`、`cat_trips`、`cat_postcards`、`cat_encounters` 和 `cat_encounter_members`。`cats.owner_user_id` 第一阶段唯一；身份快照和初始配饰由领养接口写入，名字通过单独接口修改。成长、照料、阅读、旅行和相遇都写入幂等事件，性格与领读是可重算、可版本化的投影，避免刷新或重复请求重复成长。
+旅行猫咪的核心表包括 `cats`、`cat_growth_events`、`cat_accessory_unlocks`、`cat_memories`、`cat_reading_daily`、`cat_personality_snapshots`、`cat_world_briefs`、`cat_trips`、`cat_postcards`、`cat_encounters` 和 `cat_encounter_members`。`cats.owner_user_id` 第一阶段唯一；身份快照和初始配饰由领养接口写入，名字通过单独接口修改。成长、阅读、旅行和相遇都写入幂等事件，性格与领读是可重算、可版本化的投影，避免刷新或重复请求重复成长。
 
 当前 M0–M4 接口如下：
 
@@ -187,9 +187,7 @@ GET  /api/cat/state
 POST /api/cat/adoption/preview
 POST /api/cat/adoption/confirm
 PATCH /api/cat/name
-POST /api/cat/actions
 POST /api/cat/reading
-POST /api/cat/trips
 GET  /api/cat/trips
 POST /api/cat/trips/{trip_id}/read
 GET  /api/cat/album
@@ -202,7 +200,7 @@ GET  /api/cat/guide
 
 ### 实施顺序
 
-先完成领养确认和不可变身份，再接入猫窝状态与成长事件；之后把现有 `/api/cat/images` 改为异步旅程结算，再接入阅读记忆、成长配饰、相册和图鉴查询；最后扩展多人合影、来访和分享页。每个阶段都必须保留旧身份快照可读取，并允许新增成长规则而不修改历史数据。
+先完成领养确认和不可变身份，再接入猫窝状态与成长事件；之后由维护循环在旅程结算时生成照片，再接入阅读记忆、成长配饰、相册和图鉴查询；最后扩展多人合影、来访和分享页。每个阶段都必须保留旧身份快照可读取，并允许新增成长规则而不修改历史数据。
 
 ## 9. 配置与部署
 

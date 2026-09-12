@@ -368,7 +368,7 @@ async fn profile(pool: &PgPool, cat_id: Uuid) -> Result<Profile> {
     .fetch_all(pool)
     .await?;
     let counts = sqlx::query_as::<_, (String, i64)>(
-        "SELECT event_type, COUNT(*)::bigint FROM cat_growth_events WHERE cat_id = $1 GROUP BY event_type",
+        "SELECT event_type, COUNT(*)::bigint FROM cat_growth_events WHERE cat_id = $1 AND event_type NOT LIKE 'care_%' GROUP BY event_type",
     )
     .bind(cat_id)
     .fetch_all(pool)

@@ -45,14 +45,6 @@ pub(crate) struct ReadingRequest {
     signal: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct DepartRequest {
-    news_item_id: Uuid,
-    #[serde(default)]
-    pack: Vec<String>,
-}
-
 #[derive(Debug, FromRow)]
 struct DraftRow {
     id: Uuid,
@@ -130,19 +122,6 @@ struct AutoNews {
     location: Option<Value>,
     image: Option<Value>,
     importance: i16,
-}
-
-#[derive(Debug, FromRow)]
-struct TripNews {
-    id: Uuid,
-    title: String,
-    summary: String,
-    url: String,
-    source: String,
-    tags: Vec<String>,
-    image: Option<Value>,
-    tone: String,
-    location: Option<Value>,
 }
 
 #[derive(Debug, FromRow)]
@@ -612,109 +591,6 @@ pub(crate) async fn rename(
     .await?
     .ok_or_else(|| AppError::Conflict("请先领养一只猫咪".into()))?;
     Ok(Json(cat_view(&state.pool, cat).await?))
-}
-
-pub(crate) async fn depart(
-    State(state): State<AppState>,
-    user: User,
-    ApiJson(request): ApiJson<DepartRequest>,
-) -> Result<Json<Value>> {
-    let pack = validate_pack(request.pack)?;
-    let news = sqlx::query_as::<_, TripNews>(
-        "SELECT items.id, items.title, items.summary, items.url, items.source, items.tags, items.image, items.tone, items.location FROM items JOIN topics ON topics.id = items.topic_id WHERE items.id = $1 AND items.hidden = FALSE AND (topics.owner_user_id IS NULL OR topics.owner_user_id = $2)",
-    )
-    .bind(request.news_item_id)
-    .bind(user.id)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("旅行新闻不存在或已下线".into()))?;
-
-    let mut transaction = state.pool.begin().await?;
-    let cat_id =
-        sqlx::query_scalar::<_, Uuid>("SELECT id FROM cats WHERE owner_user_id = $1 FOR UPDATE")
-            .bind(user.id)
-            .fetch_optional(&mut *transaction)
-            .await?
-            .ok_or_else(|| AppError::Conflict("请先领养一只猫咪".into()))?;
-    let active = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM cat_trips WHERE cat_id = $1 AND status IN ('away', 'settling', 'returned_unread') FOR UPDATE",
-    )
-    .bind(cat_id)
-    .fetch_optional(&mut *transaction)
-    .await?;
-    if active.is_some() {
-        return Err(AppError::Conflict("猫咪已经在旅途中或正在等你读信".into()));
-    }
-
-    let day = state.digest.today();
-    let news_snapshot = json!({
-        "id": news.id,
-        "title": news.title,
-        "summary": news.summary,
-        "url": news.url,
-        "source": news.source,
-        "tags": news.tags,
-        "image": news.image,
-        "tone": news.tone,
-        "location": news.location,
-    });
-    let trip = sqlx::query_as::<_, TripRow>(
-        r#"
-        INSERT INTO cat_trips (id, cat_id, news_item_id, day, status, pack, tone, location, returns_at, origin, news_snapshot)
-        VALUES ($1, $2, $3, $4, 'away', $5, $6, $7, NOW() + INTERVAL '2 hours', 'manual', $8)
-        RETURNING id, cat_id, news_item_id, day, status, pack, departed_at, returns_at,
-                  tone, location, settled_at, read_at, postcard_id, diary, souvenir, error,
-                  origin, attempts, news_snapshot, note
-        "#,
-    )
-    .bind(Uuid::new_v4())
-    .bind(cat_id)
-    .bind(request.news_item_id)
-    .bind(day)
-    .bind(&pack)
-    .bind(&news.tone)
-    .bind(&news.location)
-    .bind(&news_snapshot)
-    .fetch_one(&mut *transaction)
-    .await?;
-
-    let encounter_id = sqlx::query_scalar::<_, Uuid>(
-        r#"
-        INSERT INTO cat_encounters (id, world_key, day, news_item_id)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (world_key, day) DO UPDATE SET
-            news_item_id = COALESCE(cat_encounters.news_item_id, EXCLUDED.news_item_id)
-        RETURNING id
-        "#,
-    )
-    .bind(Uuid::new_v4())
-    .bind(format!("item:{}", request.news_item_id))
-    .bind(day)
-    .bind(request.news_item_id)
-    .fetch_one(&mut *transaction)
-    .await?;
-    sqlx::query(
-        "INSERT INTO cat_encounter_members (encounter_id, cat_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-    )
-    .bind(encounter_id)
-    .bind(cat_id)
-    .execute(&mut *transaction)
-    .await?;
-    transaction.commit().await?;
-    record_message(
-        &state.pool,
-        cat_id,
-        "travel",
-        &format!("travel:{}:departed", trip.id),
-        Some(trip.id),
-        json!({ "title": "猫咪出发了", "text": "它自己整理好行囊，去看看今天的世界。", "trip_id": trip.id }),
-    )
-    .await?;
-
-    Ok(Json(json!({
-        "trip": trip_view(&state.pool, trip).await?,
-        "encounter_id": encounter_id,
-    })))
 }
 
 pub(crate) async fn list_trips(State(state): State<AppState>, user: User) -> Result<Json<Value>> {
@@ -1337,9 +1213,7 @@ async fn settle_one(state: &AppState, trip_id: Uuid) -> Result<()> {
                 quality: Some("medium".into()),
                 purpose: Some("回家纪念".into()),
             };
-            match crate::cat_image::generate_for_owner(state, owner_id, &request, false, false)
-                .await
-            {
+            match crate::cat_image::generate_for_owner(state, owner_id, &request, false).await {
                 Ok(_) => {
                     postcard_id = Some(
                         sqlx::query_scalar::<_, Uuid>(
@@ -1533,7 +1407,8 @@ async fn growth_progress(pool: &PgPool, cat_id: Uuid) -> Result<i64> {
             (SELECT COUNT(*)::bigint
              FROM cat_growth_events
              WHERE cat_id = $1
-               AND event_type NOT IN ('accessory_unlocked', 'reading_opened'))
+               AND event_type NOT IN ('accessory_unlocked', 'reading_opened')
+               AND event_type NOT LIKE 'care_%')
           + (SELECT COUNT(DISTINCT (payload ->> 'day') || ':' || (payload ->> 'news_item_id'))::bigint
              FROM cat_growth_events
              WHERE cat_id = $1
@@ -1625,7 +1500,7 @@ async fn load_encounters(pool: &PgPool, cat_id: Uuid) -> Result<Vec<Value>> {
 async fn cat_view(pool: &PgPool, cat: CatRow) -> Result<Value> {
     sync_accessory_unlocks(pool, cat.id).await?;
     let counts = sqlx::query_as::<_, GrowthCount>(
-        "SELECT event_type, COUNT(*)::bigint AS count FROM cat_growth_events WHERE cat_id = $1 GROUP BY event_type ORDER BY event_type",
+        "SELECT event_type, COUNT(*)::bigint AS count FROM cat_growth_events WHERE cat_id = $1 AND event_type NOT LIKE 'care_%' GROUP BY event_type ORDER BY event_type",
     )
     .bind(cat.id)
     .fetch_all(pool)
@@ -1675,26 +1550,6 @@ async fn cat_view(pool: &PgPool, cat: CatRow) -> Result<Value> {
         "current_trip": current_trip,
         "encounters": encounters,
     }))
-}
-
-fn validate_pack(pack: Vec<String>) -> Result<Vec<String>> {
-    if pack.len() > 3 {
-        return Err(AppError::BadRequest("一次最多准备三件行囊物品".into()));
-    }
-    let mut result = Vec::with_capacity(pack.len());
-    for item in pack {
-        let item = item.trim();
-        if !matches!(
-            item,
-            "food" | "water" | "toy" | "camera" | "notebook" | "map"
-        ) {
-            return Err(AppError::BadRequest("行囊物品不在可用清单中".into()));
-        }
-        if !result.iter().any(|existing| existing == item) {
-            result.push(item.to_owned());
-        }
-    }
-    Ok(result)
 }
 
 async fn trip_view(pool: &PgPool, trip: TripRow) -> Result<Value> {
