@@ -8,7 +8,7 @@
   <meta name="referrer" content="no-referrer">
   <title>旅行猫咪 · 𝑪𝒂𝒕</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
-  <link rel="stylesheet" href="/cat/cat.css?v=4">
+  <link rel="stylesheet" href="/cat/cat.css?v=5">
 </head>
 <body class="cat-page">
   <main class="cat-shell" id="catApp">
@@ -84,42 +84,21 @@
         </div>
       </section>
 
-      <aside class="cat-letter" id="catLetter" aria-label="今日世界来信">
-        <div class="cat-letter__stamp">WORLD LETTER · 01</div>
-        <div class="cat-letter__heading">
-          <div>
-            <p class="cat-eyebrow">今日世界来信</p>
-            <h1 id="letterTitle">猫咪正在整理今天的世界</h1>
-          </div>
-          <span class="cat-letter__pin" aria-hidden="true">✦</span>
-        </div>
-        <div class="cat-letter__photo" id="letterPhoto" hidden>
-          <img alt="" loading="lazy">
-        </div>
-        <p class="cat-letter__summary" id="letterSummary">等猫咪把第一封真实来信带回来。</p>
-        <div class="cat-letter__source" id="letterSource">旅行猫咪 · 正在准备</div>
-        <div class="cat-letter__actions">
-          <button class="cat-button cat-button--primary" id="readButton" type="button">打开这封来信</button>
-          <button class="cat-button cat-button--quiet" id="guideButton" type="button">查看猫咪领读</button>
-        </div>
-      </aside>
     </section>
 
-    <section class="cat-today-panel" id="catTodayPanel" aria-label="今日猫咪生活">
+    <section class="cat-today-panel" id="catTodayPanel" aria-label="猫咪近况">
       <div class="cat-panel-heading">
-        <div><p class="cat-eyebrow">TODAY · 猫咪正在生活</p><h2 id="catPresenceTitle">猫咪正在窗边休息</h2></div>
-        <span class="cat-panel-meta" id="catPresenceMeta">会自己读新闻，也会自己出门</span>
+        <div><p class="cat-eyebrow">CAT LIFE · 猫咪近况</p><h2 id="catPresenceTitle">猫咪正在窗边休息</h2></div>
+        <span class="cat-panel-meta" id="catPresenceMeta">它会自己生活，也会自己出发</span>
       </div>
       <div class="cat-message-preview" id="catMessagePreview"></div>
-      <div class="cat-guide-content" id="catGuideContent" hidden></div>
     </section>
 
     <section class="cat-content-panel" id="catJournalPanel" hidden aria-labelledby="journalHeading">
-      <div class="cat-panel-heading"><div><p class="cat-eyebrow">MEMORY · 旅迹墙</p><h2 id="journalHeading">猫咪日志</h2></div><span class="cat-panel-meta">来信、照片、领读与成长</span></div>
+      <div class="cat-panel-heading"><div><p class="cat-eyebrow">MEMORY · 旅迹墙</p><h2 id="journalHeading">猫咪旅迹</h2></div><span class="cat-panel-meta">照片、旅程与成长记录</span></div>
       <div class="cat-filter-row" role="toolbar" aria-label="日志筛选">
         <button class="cat-filter is-active" type="button" data-journal-filter="all" aria-pressed="true">全部</button>
         <button class="cat-filter" type="button" data-journal-filter="postcard" aria-pressed="false">照片</button>
-        <button class="cat-filter" type="button" data-journal-filter="guide" aria-pressed="false">领读</button>
         <button class="cat-filter" type="button" data-journal-filter="travel" aria-pressed="false">旅程</button>
         <button class="cat-filter" type="button" data-journal-filter="growth" aria-pressed="false">成长</button>
       </div>
@@ -152,6 +131,6 @@
       <button class="cat-button cat-button--primary" id="dialogPrimary" type="button">知道了</button>
     </div>
   </dialog>
-  <script src="/cat/cat.js?v=4" defer></script>
+  <script src="/cat/cat.js?v=5" defer></script>
 </body>
 </html>

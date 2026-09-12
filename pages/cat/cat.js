@@ -3,70 +3,16 @@
 /*
  * Travel Cat's first page deliberately keeps three boundaries visible:
  *
- * - NewsBridge reads the existing public NEWS feed and converts it into a small,
- *   game-friendly letter. It never owns news data.
  * - CatScene owns only presentation and local interaction feedback.
  * - CatShell wires the two together. Future account state, trip jobs and image
  *   generation can replace one boundary without changing the other two.
  */
 
-const EMPTY_LETTER = {
-  newsItemId: null,
-  title: "猫咪正在整理今天的世界",
-  summary: "等猫咪把第一封真实来信带回来。",
-  source: "旅行猫咪 · 正在准备",
-  image: null,
-  url: "#",
-};
 const REALISTIC_CATS = Object.freeze({
   orange_white: "/cat/assets/character/cat-realistic-orange-white.webp",
   cream_tabby: "/cat/assets/character/cat-realistic-cream-tabby.webp",
   silver_tabby: "/cat/assets/character/cat-realistic-silver-tabby.webp",
   black_white: "/cat/assets/character/cat-realistic-black-white.webp",
-});
-const NEWS_TIMEOUT_MS = 6000;
-
-const NewsBridge = Object.freeze({
-  async todayLetter() {
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), NEWS_TIMEOUT_MS);
-    try {
-      // Read the public digest as a source catalogue. The future TravelEvent
-      // service will apply the same selection server-side and return a stable
-      // event DTO; this prototype keeps the bridge deliberately read-only.
-      const response = await fetch("/digest?limit=30", {
-        credentials: "same-origin",
-        headers: { Accept: "application/json" },
-        signal: controller.signal,
-      });
-      if (!response.ok) throw new Error(`NEWS ${response.status}`);
-      const payload = await response.json();
-      const candidates = payload.topics?.flatMap((topic) => (topic.items || []).map((item) => ({
-        ...item,
-        topicName: topic.name,
-      }))) || [];
-      const item = candidates
-        .filter((candidate) => candidate.title && candidate.summary)
-        .sort((left, right) => {
-          const imageWeight = Number(Boolean(right.image)) - Number(Boolean(left.image));
-          return imageWeight || (right.importance || 0) - (left.importance || 0);
-        })[0];
-      if (!item) return EMPTY_LETTER;
-      return {
-        newsItemId: item.id || null,
-        title: item.title || EMPTY_LETTER.title,
-        summary: item.summary || EMPTY_LETTER.summary,
-        source: [item.source, item.topicName, "NEWS"].filter(Boolean).join(" · "),
-        image: item.image?.url || null,
-        url: item.url || "#",
-      };
-    } catch {
-      // The game shell remains useful while NEWS is cold or unavailable.
-      return EMPTY_LETTER;
-    } finally {
-      window.clearTimeout(timeout);
-    }
-  },
 });
 
 const CatScene = (() => {
@@ -77,10 +23,6 @@ const CatScene = (() => {
     thought: document.querySelector("#catThought"),
     caption: document.querySelector("#catSceneCaption"),
     identityMeta: document.querySelector("#catIdentityMeta"),
-    letterTitle: document.querySelector("#letterTitle"),
-    letterSummary: document.querySelector("#letterSummary"),
-    letterSource: document.querySelector("#letterSource"),
-    letterPhoto: document.querySelector("#letterPhoto"),
     toast: document.querySelector("#catToast"),
   };
   let toastTimer;
@@ -94,26 +36,6 @@ const CatScene = (() => {
   // Bind this before any account state is loaded so the anonymous preview
   // also falls back to the deterministic SVG when the raster cannot load.
   if (elements.realisticImage) elements.realisticImage.onerror = clearRealisticArt;
-
-  function setLetter(letter) {
-    elements.letterTitle.textContent = letter.title || EMPTY_LETTER.title;
-    elements.letterSummary.textContent = letter.summary || EMPTY_LETTER.summary;
-    elements.letterSource.textContent = letter.source || EMPTY_LETTER.source;
-    const image = elements.letterPhoto.querySelector("img");
-    image.onerror = () => {
-      elements.letterPhoto.hidden = true;
-      image.removeAttribute("src");
-    };
-    if (letter.image) {
-      image.src = letter.image;
-      image.alt = letter.title;
-      elements.letterPhoto.hidden = false;
-    } else {
-      image.removeAttribute("src");
-      elements.letterPhoto.hidden = true;
-    }
-    elements.letterSource.dataset.url = letter.url;
-  }
 
   function showToast(message) {
     window.clearTimeout(toastTimer);
@@ -180,15 +102,15 @@ const CatScene = (() => {
       away: "猫咪正在旅途中",
       returning_soon: "猫咪快要回来了",
       returned_unread: "猫咪带着旅程来信回来了",
-      vigil: "猫咪在灯下安静地读报",
+      vigil: "猫咪在灯下安静地休息",
     };
     const captions = {
-      home_awake: "在家 · 正在整理今天的世界",
+      home_awake: "在家 · 安静地生活",
       home_sleeping: "睡着了 · 房间替它守着夜",
       away: "在路上 · 房间里留着一张便条",
       returning_soon: "快回来了 · 门口的灯已经亮起",
       returned_unread: "回来了 · 有一封信和一个包裹",
-      vigil: "今晚在家 · 点一盏灯陪世界安静下来",
+      vigil: "今晚在家 · 点一盏灯陪自己安静下来",
     };
     elements.caption.textContent = captions[presence] || captions.home_awake;
     elements.thought.textContent = labels[presence] || labels.home_awake;
@@ -203,7 +125,7 @@ const CatScene = (() => {
     elements.companion.classList.remove("is-identity-pending");
   }
 
-  return Object.freeze({ setLetter, setIdentity, setPresence, react, showToast, revealPreview });
+  return Object.freeze({ setIdentity, setPresence, react, showToast, revealPreview });
 })();
 
 const CatShell = (() => {
@@ -214,17 +136,14 @@ const CatShell = (() => {
   const dialogNameField = document.querySelector("#dialogNameField");
   const dialogName = document.querySelector("#dialogName");
   const dialogPrimary = document.querySelector("#dialogPrimary");
-  const catPortal = document.querySelector(".cat-portal");
   const catName = document.querySelector("#catName");
   const unreadCount = document.querySelector("#catUnreadCount");
   const messagePreview = document.querySelector("#catMessagePreview");
-  const guideContent = document.querySelector("#catGuideContent");
   const todayPanel = document.querySelector("#catTodayPanel");
   const journalPanel = document.querySelector("#catJournalPanel");
   const atlasPanel = document.querySelector("#catAtlasPanel");
   const journalGrid = document.querySelector("#catJournalGrid");
   const atlasGrid = document.querySelector("#catAtlasGrid");
-  let currentLetter = EMPTY_LETTER;
   let catState = null;
   let homeState = null;
   let authState = "unknown";
@@ -326,13 +245,17 @@ const CatShell = (() => {
 
   function renderMessages(messages) {
     if (!messages.length) {
-      messagePreview.innerHTML = '<div class="cat-empty">猫咪还在整理第一封信。它会自己把世界带回来。</div>';
+      messagePreview.innerHTML = '<div class="cat-empty">猫咪正在慢慢生活，第一段旅迹还在路上。</div>';
       return;
     }
     messagePreview.innerHTML = messages.map((message) => {
       const view = messageView(message);
       const unread = message.read_at ? "" : " is-unread";
+      const photo = view.payload.postcard_url
+        ? `<div class="cat-message-card__photo"><img src="${escapeHtml(view.payload.postcard_url)}" alt="${escapeHtml(view.title)}" loading="lazy"></div>`
+        : "";
       return `<article class="cat-message-card${unread}" data-message-id="${escapeHtml(message.id)}" role="button" tabindex="0">
+        ${photo}
         <div class="cat-message-card__kind">${escapeHtml(view.labels[message.kind] || "猫咪记录")}</div>
         <h3>${escapeHtml(view.title)}</h3>
         <p>${escapeHtml(view.text)}</p>
@@ -351,7 +274,8 @@ const CatShell = (() => {
   }
 
   function renderJournal(items, filter = "all") {
-    const visible = filter === "all" ? items : items.filter((item) => item.kind === filter);
+    const visibleItems = items.filter((item) => item.kind !== "guide");
+    const visible = filter === "all" ? visibleItems : visibleItems.filter((item) => item.kind === filter);
     if (!visible.length) {
       journalGrid.innerHTML = '<div class="cat-empty">这一类日志还没有记录。猫咪正在慢慢生活。</div>';
       return;
@@ -359,10 +283,9 @@ const CatShell = (() => {
     journalGrid.innerHTML = visible.map((message) => {
       const view = messageView(message);
       const photo = view.payload.postcard_url ? `<div class="cat-journal-card__photo"><img src="${escapeHtml(view.payload.postcard_url)}" alt="${escapeHtml(view.title)}" loading="lazy"></div>` : "";
-      const guide = message.kind === "guide" ? `<p>${escapeHtml(view.payload.personality_phrase || view.payload.reflection || "猫咪认真看完了今天的世界。")}</p>` : "";
       return `<article class="cat-journal-card ${message.kind === "postcard" ? "cat-journal-card--postcard" : ""}">
         ${photo}<div class="cat-journal-card__kind">${escapeHtml(view.labels[message.kind] || "猫咪记录")}</div>
-        <h3>${escapeHtml(view.title)}</h3><p>${escapeHtml(view.text)}</p>${guide}
+        <h3>${escapeHtml(view.title)}</h3><p>${escapeHtml(view.text)}</p>
         <time datetime="${escapeHtml(message.created_at)}">${escapeHtml(formatDate(message.created_at))}</time>
       </article>`;
     }).join("");
@@ -482,104 +405,13 @@ const CatShell = (() => {
     try {
       homeState = await api("/api/cat/home");
       applyCatState({ ...homeState, adopted: true });
-      renderMessages(homeState.messages || []);
-      await loadLetter();
+      renderMessages((homeState.messages || []).filter((message) => message.kind !== "guide"));
     } catch (error) {
       CatScene.showToast(error.message || "猫窝状态暂时无法读取");
     }
   }
 
-  async function loadLetter() {
-    currentLetter = await NewsBridge.todayLetter();
-    const trip = catState?.cat?.current_trip;
-    if (trip?.news_snapshot) {
-      const snapshot = trip.news_snapshot;
-      currentLetter = {
-        newsItemId: snapshot.id || trip.news_item_id,
-        title: trip.status === "returned_unread" ? "猫咪从旅途中寄回一封信" : "猫咪正在路上",
-        summary: trip.status === "returned_unread" ? (trip.diary?.zh || "猫咪回来了，把一段世界带到你的猫窝。") : (trip.note?.zh || "猫咪自己整理好行囊，正在把这条消息看得更近一些。"),
-        source: [snapshot.source, "猫咪旅迹"].filter(Boolean).join(" · "),
-        image: trip.postcard_url || snapshot.image?.url || null,
-        url: snapshot.url || "#",
-      };
-    } else if (trip?.postcard_url) {
-      currentLetter = { ...currentLetter, image: trip.postcard_url, source: `${currentLetter.source} · 旅行猫咪明信片` };
-    }
-    CatScene.setLetter(currentLetter);
-    if (currentLetter.image || currentLetter.url !== "#") catPortal?.classList.add("has-news");
-  }
-
-  function guideText(data) {
-    const cards = (data.items || []).map((item, index) => {
-      const title = item.title || `第 ${index + 1} 条新闻`;
-      const culture = item.culture_context ? `网络语境：${item.culture_context}\n` : "";
-      return `${index + 1}. ${title}\n事实：${item.fact || item.summary || "猫咪正在整理事实。"}\n猫咪的看法：${item.opinion || "我还在认真想这件事。"}\n继续了解：${item.guidance || "可以先看看来源，再和我一起观察后续。"}\n${culture}${item.playful_line || "尾巴同意先把证据放整齐。"}`;
-    });
-    return [data.opening, ...cards, data.personality_phrase, data.reflection].filter(Boolean).join("\n\n");
-  }
-
-  async function showGuide() {
-    if (authState !== "authenticated" || !catState?.adopted) {
-      await showAdoptionPreview(catState?.draft);
-      return;
-    }
-    const button = document.querySelector("#guideButton");
-    if (button) {
-      button.disabled = true;
-      button.textContent = "猫咪正在整理…";
-    }
-    try {
-      let data = await api("/api/cat/guide");
-      for (let attempt = 0; data.status === "generating" && attempt < 20; attempt += 1) {
-        await new Promise((resolve) => window.setTimeout(resolve, (data.retry_after_seconds || 3) * 1000));
-        data = await api("/api/cat/guide");
-      }
-      if (data.status === "generating") {
-        throw new Error("猫咪还在整理，稍后再点一次领读就好了。");
-      }
-      guideContent.textContent = guideText(data);
-      guideContent.hidden = false;
-      todayPanel.hidden = false;
-      CatScene.react(data.personality_phrase || "我挑了三件今天值得知道的事。", "先听事实，再听我的一点想法。 ");
-    } catch (error) {
-      openDialog("领读还在准备", error.message || "猫咪正在把今天的世界整理成一封小信。", "猫咪今日领读");
-    } finally {
-      if (button) {
-        button.disabled = false;
-        button.textContent = "听猫咪领读";
-      }
-    }
-  }
-
   function bind() {
-    document.querySelector("#readButton")?.addEventListener("click", async () => {
-      if (currentLetter.url && currentLetter.url !== "#") {
-        window.open(currentLetter.url, "_blank", "noopener,noreferrer");
-      } else {
-        openDialog("来信还在路上", "等新闻图片准备好，小满会把完整来源放在这里。", "NEWS");
-      }
-      if (currentLetter.newsItemId && authState === "authenticated") {
-        try {
-          const data = await api("/api/cat/reading", {
-            method: "POST",
-            body: JSON.stringify({ news_item_id: currentLetter.newsItemId, signal: "open" }),
-          });
-          if (data.cat) applyCatState({ ...catState, cat: data.cat });
-        } catch (error) {
-          CatScene.showToast(error.message || "阅读记录暂时没有保存");
-        }
-      }
-      const trip = catState?.cat?.current_trip;
-      if (trip?.id && trip.status === "returned_unread" && authState === "authenticated") {
-        try {
-          const data = await api(`/api/cat/trips/${trip.id}/read`, { method: "POST" });
-          applyCatState({ ...catState, cat: data });
-        } catch (error) {
-          CatScene.showToast(error.message || "来信已打开，但阅读状态暂时没有保存");
-        }
-      }
-    });
-    document.querySelector("#guideButton")?.addEventListener("click", showGuide);
     document.querySelector("#catSettings")?.addEventListener("click", () => {
       if (!catState?.adopted) {
         showAdoptionPreview(catState?.draft);
@@ -659,8 +491,8 @@ const CatShell = (() => {
 
   async function init() {
     bind();
+    renderMessages([]);
     await loadCatState();
-    if (authState !== "authenticated" || !catState?.adopted) await loadLetter();
     window.setInterval(() => {
       if (document.visibilityState === "visible" && authState === "authenticated" && catState?.adopted) loadHome();
     }, 60_000);
