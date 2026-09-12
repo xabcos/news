@@ -7,7 +7,7 @@ services:
       NEWS_ADMIN_EMAILS: ${NEWS_ADMIN_EMAILS:-you@example.com}
       EMAIL_LOGIN_DEV_LINKS: "true"
       REDIS_ADDR: ""
-      TMPFILE_BASE_URL: ${TMPFILE_BASE_URL:-}
-      TMPFILE_API_KEY: ${TMPFILE_API_KEY:-}
+      TMPFILE_BASE_URL: ${TMPFILE_BASE_URL}
+      TMPFILE_API_KEY: ${TMPFILE_API_KEY}
   news-mail:
     profiles: [mail]

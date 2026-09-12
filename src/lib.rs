@@ -1,6 +1,9 @@
 #![forbid(unsafe_code)]
 
 pub mod auth;
+pub mod cat;
+pub mod cat_guide;
+pub mod cat_image;
 pub mod config;
 pub mod digest;
 pub mod email;

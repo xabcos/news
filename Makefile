@@ -26,7 +26,7 @@ audit:
 	cargo audit --ignore RUSTSEC-2023-0071
 
 js-check:
-	@for file in pages/*.js pages/me/*.js; do node --check "$$file" || exit; done
+	@for file in pages/*.js pages/me/*.js pages/cat/*.js; do node --check "$$file" || exit; done
 
 compose-check:
 	docker compose config >/dev/null

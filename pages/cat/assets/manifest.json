@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "style": "original-warm-hand-painted-travel-cat",
+  "layers": {
+    "room": {
+      "home_awake": "room/room-day.webp",
+      "home_sleeping": "room/room-night.webp",
+      "rain": "room/room-rain.webp"
+    },
+    "character": {
+      "base_idle": "character/cat-base.webp",
+      "status": "identity-layered-svg-fallback",
+      "identity_fields": ["coat", "eye_color", "marking", "initial_accessories"],
+      "selectors": {
+        "coat": "data-coat",
+        "eye_color": "data-eye",
+        "marking": "data-marking",
+        "initial_accessories": "data-accent"
+      },
+      "markings": {
+        "star": "inline-svg:.cat-marking--star",
+        "stripe": "inline-svg:.cat-marking--stripe",
+        "cloud": "inline-svg:.cat-marking--cloud",
+        "heart": "inline-svg:.cat-marking--heart"
+      }
+    }
+  },
+  "fallback": "css-prototype",
+  "notes": "Room assets are layered independently from the identity-locked cat rig. Identity layers are derived from the immutable server identity and keep the SVG rig as an accessible, deterministic fallback until raster coat and pose layers are available."
+}

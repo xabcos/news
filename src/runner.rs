@@ -508,8 +508,8 @@ async fn execute(state: &AppState, topic: &Topic, run_id: Uuid) -> Result<Comple
     let mut tx = state.pool.begin().await?;
     for item in items {
         sqlx::query(
-            "INSERT INTO items (id, topic_id, day, fingerprint, title, summary, title_en, summary_en, url, source, published_at, tags, tags_en, importance, first_run_id, image) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) ON CONFLICT DO NOTHING",
+            "INSERT INTO items (id, topic_id, day, fingerprint, title, summary, title_en, summary_en, url, source, published_at, tags, tags_en, importance, first_run_id, image, tone, location) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) ON CONFLICT DO NOTHING",
         )
         .bind(Uuid::new_v4())
         .bind(&topic.id)
@@ -527,6 +527,8 @@ async fn execute(state: &AppState, topic: &Topic, run_id: Uuid) -> Result<Comple
         .bind(item.importance)
         .bind(run_id)
         .bind(item.image.map(serde_json::to_value).transpose()?)
+        .bind(&item.tone)
+        .bind(item.location.as_ref().map(serde_json::to_value).transpose()?)
         .execute(&mut *tx)
         .await?;
         new += 1;
@@ -670,8 +672,20 @@ async fn maintenance_loop(state: AppState) {
     if let Err(error) = prune(&state, day).await {
         tracing::warn!(%error, "initial data pruning failed");
     }
+    if let Err(error) = crate::cat::settle_due(&state).await {
+        tracing::warn!(%error, "initial travel cat settlement failed");
+    }
+    if let Err(error) = crate::cat::autonomous_tick(&state).await {
+        tracing::warn!(%error, "initial autonomous cat tick failed");
+    }
     loop {
         interval.tick().await;
+        if let Err(error) = crate::cat::settle_due(&state).await {
+            tracing::warn!(%error, "travel cat settlement failed");
+        }
+        if let Err(error) = crate::cat::autonomous_tick(&state).await {
+            tracing::warn!(%error, "autonomous cat tick failed");
+        }
         ticks += 1;
         let today = state.digest.today();
         if today != day {
@@ -682,6 +696,9 @@ async fn maintenance_loop(state: AppState) {
             ticks = 0;
             if let Err(error) = media::startup_sync(&state).await {
                 tracing::warn!(%error, "scheduled image refresh failed");
+            }
+            if let Err(error) = crate::cat_image::refresh_expiring(&state).await {
+                tracing::warn!(%error, "scheduled cat postcard refresh failed");
             }
             if let Err(error) = prune(&state, today).await {
                 tracing::warn!(%error, "scheduled data pruning failed");

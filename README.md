@@ -48,7 +48,7 @@ GET https://news.xairouter.com/feed.xml?topic=ai
 需要 Rust 1.94+ 与 PostgreSQL；Redis 仅用于生产邮件队列和跨重启缓存，本地可不配。
 
 ```bash
-cp .env.example .env   # 填写 DATABASE_URL、NEWS_ADMIN_EMAILS、AI_API_KEY
+cp .env.example .env   # 填写 DATABASE_URL、NEWS_ADMIN_EMAILS、AI_API_KEY、TMPFILE_*
 cargo run
 ```
 
@@ -65,12 +65,15 @@ cargo run
 | `NEWS_ADMIN_EMAILS` | – | 管理员邮箱，逗号分隔；其他有效邮箱自动使用 Free |
 | `AI_API_KEY` | – | 调用模型的密钥，只存在于环境变量 |
 | `AI_BASE_URL` / `AI_DEFAULT_MODEL` | `https://api.zairouter.com` / `grok-4.6` | 新闻抓取接口与默认模型 |
+| `CAT_IMAGE_FLARE_MODEL` / `CAT_IMAGE_SUNBURST_MODEL` | `gpt-image-2.5-flare` / `gpt-image-2.5-sunburst` | 旅行猫咪日常图片与重要图片模型 |
+| `CAT_IMAGE_FALLBACK_MODEL` | `grok-imagine-image-quality` | GPT 图片生成失败时的备用模型 |
+| `CAT_IMAGE_GENERATION_TIMEOUT_SECS` | `120` | 单次旅行图片生成总超时 |
 | `NEWS_TIMEZONE` | `Asia/Shanghai` | 天边界与时间窗 |
 | `NEWS_SCHEDULER_ENABLED` | `true` | `false` 时只提供页面与 API |
 | `NEWS_FETCH_TIMEOUT_SECS` / `NEWS_MAX_CONCURRENT_RUNS` | `1800` / `2` | 新闻抓取、综合研判与 AI Agent 共用超时，默认为 30 分钟 |
 | `AI_INSIGHT_MODEL` / `AI_INSIGHT_INTERVAL_MINUTES` | `gpt-6-astra` / `120` | 综合研判模型与更新间隔 |
 | `NEWS_RETENTION_DAYS` | `128` | 新闻条目保留天数，超过期限自动清理 |
-| `TMPFILE_BASE_URL` / `TMPFILE_API_KEY` | 空 / 空 | 服务端图片转存接口与 Bearer 密钥；API key 只存在 NEWS 服务端 |
+| `TMPFILE_BASE_URL` / `TMPFILE_API_KEY` | 必填 | 服务端图片转存接口与 Bearer 密钥；API key 只存在 NEWS 服务端 |
 | `NEWS_IMAGE_MAX_BYTES` / `NEWS_IMAGE_TIMEOUT_SECS` | `8388608` / `30` | 单张新闻图片大小与抓取超时 |
 | `REDIS_ADDR` / `REDIS_PASS` / `REDIS_DB` | 空 / 空 / `1` | 邮件队列与缓存 |
 | `SESSION_COOKIE_NAME` / `SESSION_TTL_DAYS` / `EMAIL_LOGIN_LINK_TTL_MINUTES` | `news_session` / `30` / `30` | |
@@ -107,7 +110,24 @@ GET    /api/plans                 GET    /api/orders
 POST   /api/orders                GET    /api/orders/{out_trade_no}
 GET    /api/orders/{out_trade_no}/qr.svg
 POST   /api/webhooks/payment
+
+GET    /api/cat/state             # 登录后读取领养、身份和成长状态
+POST   /api/cat/adoption/preview  # 生成服务端保存的领养身份预览
+POST   /api/cat/adoption/confirm  # 确认领养并永久固定身份与初始配饰
+PATCH  /api/cat/name              # 修改猫咪名字，不改变身份
+POST   /api/cat/actions            # 记录每日喂食、喝水或玩具动作
+POST   /api/cat/reading            # 记录阅读新闻并形成猫咪记忆
+GET    /api/cat/trips              # 读取旅程历史
+POST   /api/cat/trips              # 准备行囊并异步出发
+POST   /api/cat/trips/{trip_id}/read # 打开归来的来信
+GET    /api/cat/album              # 读取已收藏的旅行明信片
+GET    /api/cat/atlas              # 读取成长配饰和世界记忆
+GET    /api/cat/encounters         # 读取多猫相遇记录
+GET    /api/cat/guide              # 获取猫咪今日领读、观点与继续了解建议
+POST   /api/cat/images             # 登录后按新闻条目生成一张旅行猫咪图片
 ```
+
+旅行猫咪图片接口接受 `news_item_id`、`quality`（`low`/`medium`/`high`/`xhigh`/`max`/`auto`）和可选的 `purpose`。服务端从 NEWS 条目组装提示词，优先调用 GPT Image 2.5，失败后切换 Grok Image；两个提供商都失败时使用 NEWS 原图或模板明信片。所有结果都上传到必填的 `TMPFILE_BASE_URL`，浏览器只接收媒体服务返回的 HTTPS 地址。
 
 管理员状态接口还返回 `users.active_7d` 和 `users.registered`；工作台将它们以
 `近 7 天活跃用户/注册用户` 的比例显示在状态行中。注册总数用 migration 执行时的当前用户数初始化，之后由数据库事务内维护的计数器提供；近 7 天活跃数只使用成功登录后写入的最后登录时间，不重建历史登录记录。
@@ -130,7 +150,7 @@ Pro 订单固定为 ¥99 / 31 天，通过 YPay 的 store-token 接口创建微�
 
 ```bash
 cd /home/ywgx/1/news
-printf 'NEWS_ADMIN_EMAILS=admin@example.com\nAI_API_KEY=…\nEMAIL_PASS=…\nTMPFILE_BASE_URL=https://dl.xabclabs.com\nTMPFILE_API_KEY=…\nYPAY_BASE_URL=…\nYPAY_TENANT_CODE=news\nYPAY_STORE_API_KEY=…\nPAYMENT_WEBHOOK_SECRET=…\n' > .env && chmod 0600 .env
+printf 'NEWS_ADMIN_EMAILS=admin@example.com\nAI_API_KEY=…\nEMAIL_PASS=…\nTMPFILE_BASE_URL=https://dl.xabcnews.com\nTMPFILE_API_KEY=…\nYPAY_BASE_URL=…\nYPAY_TENANT_CODE=news\nYPAY_STORE_API_KEY=…\nPAYMENT_WEBHOOK_SECRET=…\n' > .env && chmod 0600 .env
 docker-compose config >/dev/null
 docker-compose up -d
 ```

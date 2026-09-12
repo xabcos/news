@@ -1,6 +1,6 @@
 # NEWS 设计说明
 
-> 最后更新：2026-09-07
+> 最后更新：2026-09-12
 
 NEWS 是一个单实例、轻量的 AI 新闻聚合服务。它把「公共新闻」和「个人主题」放在同一个进程里，但只保留一层清晰的账户边界：所有账户使用 `/me/` 工作台，按角色管理个人或公共主题。没有团队、组织、邀请或多级角色；公共接口保持开放，账户摘要接口按会话隔离。
 
@@ -163,7 +163,48 @@ PostgreSQL 事务写入 items + runs
 
 `pages/styles.css` 提供全站基础样式和新闻首页样式，`pages/me/styles.css` 集中管理工作台布局与控件，沿用既有颜色和排版，并支持手机与深色模式。旧管理员页面已删除，不保留跳转入口。
 
-## 8. 配置与部署
+## 8. 旅行猫咪
+
+旅行猫咪是 NEWS 之上的成长型多人世界。NEWS 提供每天变化的新闻、地点和图片素材；猫咪服务负责领养、身份、成长、旅程、相册和共同世界中的相遇。
+
+### 产品不变量
+
+- 第一阶段每个账户拥有一只主猫；匿名访客的 guest cat 只保存在浏览器本地。后期家庭模式另行扩展，不改变主猫的身份归属。
+- 领养确认前可以预览身份和初始配饰。确认事务写入唯一身份快照、身份指纹和初始配饰；确认后这些字段不能更新、替换或重新生成。
+- 猫咪名字可以随时修改，名字不参与身份指纹。成长配饰、动作和能力只能追加解锁，初始配饰永远保留。
+- 成长以追加式 `cat_growth_events` 为事实记录。阶段、性格和解锁规则可以持续增加版本，但不能改写既有身份或历史事件。
+- 社交是默认世界状态，不提供拒绝、屏蔽或暂停入口。一次相遇可以包含任意数量的猫；不使用双猫专用字段，也不要求先加好友或逐次同意。
+- 第一版社交内容由固定短语和系统动作组成。名字、外观标记和共同旅程可以展示，但不暴露邮箱、账户 ID 或个人主题内容。
+
+### 数据与接口边界
+
+旅行猫咪的核心表包括 `cats`、`cat_growth_events`、`cat_accessory_unlocks`、`cat_memories`、`cat_reading_daily`、`cat_personality_snapshots`、`cat_world_briefs`、`cat_trips`、`cat_postcards`、`cat_encounters` 和 `cat_encounter_members`。`cats.owner_user_id` 第一阶段唯一；身份快照和初始配饰由领养接口写入，名字通过单独接口修改。成长、照料、阅读、旅行和相遇都写入幂等事件，性格与领读是可重算、可版本化的投影，避免刷新或重复请求重复成长。
+
+当前 M0–M4 接口如下：
+
+```text
+GET  /api/cat/state
+POST /api/cat/adoption/preview
+POST /api/cat/adoption/confirm
+PATCH /api/cat/name
+POST /api/cat/actions
+POST /api/cat/reading
+POST /api/cat/trips
+GET  /api/cat/trips
+POST /api/cat/trips/{trip_id}/read
+GET  /api/cat/album
+GET  /api/cat/atlas
+GET  /api/cat/encounters
+GET  /api/cat/guide
+```
+
+`/api/cat/state` 是猫页面的主要水合入口，返回领养状态、固定身份、当前名字、成长阶段、已解锁内容、当前旅程和未读相遇。`/api/cat/guide` 按猫咪的可重算性格投影选择“重要 / 兴趣 / 探索”三条新闻，返回事实、猫咪观点、继续了解建议和独立的 X 语境；首次生成是异步的，接口先返回 `202 generating`，前端再读取按猫咪和服务时区日期缓存的结果。事实引用 NEWS 条目，X 热梗不能成为事实依据。旅行图片生成属于旅程归来结算，不属于按钮点击的同步请求。普通明信片按猫咪身份和新闻条目复用，多人合影按相遇共享，并统一上传到已经固化的 `TMPFILE_BASE_URL`；`TMPFILE_BASE_URL` 与 `TMPFILE_API_KEY` 始终视为必填基础设施。
+
+### 实施顺序
+
+先完成领养确认和不可变身份，再接入猫窝状态与成长事件；之后把现有 `/api/cat/images` 改为异步旅程结算，再接入阅读记忆、成长配饰、相册和图鉴查询；最后扩展多人合影、来访和分享页。每个阶段都必须保留旧身份快照可读取，并允许新增成长规则而不修改历史数据。
+
+## 9. 配置与部署
 
 必须配置：
 
@@ -176,6 +217,8 @@ AI_DEFAULT_MODEL=grok-4.6
 AI_INSIGHT_MODEL=gpt-6-astra
 AI_INSIGHT_INTERVAL_MINUTES=120
 NEWS_FETCH_TIMEOUT_SECS=1800
+TMPFILE_BASE_URL             # 已固化的媒体服务地址
+TMPFILE_API_KEY              # 已固化的媒体服务密钥
 ```
 
 生产登录邮件仍通过 `~/xabcos/mail` 的 Redis 契约发送。支付启用时再配置：

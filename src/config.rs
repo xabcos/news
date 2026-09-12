@@ -35,6 +35,10 @@ pub struct Config {
     pub(crate) ai_api_key: String,
     pub(crate) ai_default_model: String,
     pub(crate) ai_insight_model: String,
+    pub(crate) cat_image_flare_model: String,
+    pub(crate) cat_image_sunburst_model: String,
+    pub(crate) cat_image_fallback_model: String,
+    pub(crate) cat_image_generation_timeout: Duration,
     pub(crate) ai_insight_interval_minutes: u64,
     pub(crate) timezone: Tz,
     pub(crate) fetch_timeout: Duration,
@@ -158,6 +162,13 @@ impl Config {
                 "AI_INSIGHT_INTERVAL_MINUTES 必须在 30 到 1440 分钟之间".into(),
             ));
         }
+        let cat_image_generation_timeout_secs =
+            parse_env("CAT_IMAGE_GENERATION_TIMEOUT_SECS", 120_u64)?;
+        if !(15..=300).contains(&cat_image_generation_timeout_secs) {
+            return Err(AppError::Config(
+                "CAT_IMAGE_GENERATION_TIMEOUT_SECS 必须在 15 到 300 秒之间".into(),
+            ));
+        }
         let timezone = env_value("NEWS_TIMEZONE", "Asia/Shanghai")
             .parse::<Tz>()
             .map_err(|_| AppError::Config("NEWS_TIMEZONE 必须是有效的 IANA 时区".into()))?;
@@ -174,16 +185,12 @@ impl Config {
             ));
         }
 
-        let tmpfile_base_url = optional_env("TMPFILE_BASE_URL")
-            .filter(|value| !value.trim().is_empty())
-            .map(|value| parse_http_url("TMPFILE_BASE_URL", &value))
-            .transpose()?;
-        let tmpfile_api_key = optional_env("TMPFILE_API_KEY").filter(|value| !value.is_empty());
-        if tmpfile_base_url.is_none() && tmpfile_api_key.is_some() {
-            return Err(AppError::Config(
-                "配置 TMPFILE_API_KEY 时必须同时配置 TMPFILE_BASE_URL".into(),
-            ));
-        }
+        // NEWS always serves media through tmpfile so browser-visible assets stay stable.
+        let tmpfile_base_url = Some(parse_http_url(
+            "TMPFILE_BASE_URL",
+            &required_env("TMPFILE_BASE_URL")?,
+        )?);
+        let tmpfile_api_key = Some(required_env("TMPFILE_API_KEY")?);
         let image_max_bytes = parse_env("NEWS_IMAGE_MAX_BYTES", 8_u64 * 1024 * 1024)?;
         if !(64 * 1024..=64 * 1024 * 1024).contains(&image_max_bytes) {
             return Err(AppError::Config(
@@ -224,6 +231,16 @@ impl Config {
             ai_api_key,
             ai_default_model: env_value("AI_DEFAULT_MODEL", "grok-4.6"),
             ai_insight_model: env_value("AI_INSIGHT_MODEL", "gpt-6-astra"),
+            cat_image_flare_model: env_value("CAT_IMAGE_FLARE_MODEL", "gpt-image-2.5-flare"),
+            cat_image_sunburst_model: env_value(
+                "CAT_IMAGE_SUNBURST_MODEL",
+                "gpt-image-2.5-sunburst",
+            ),
+            cat_image_fallback_model: env_value(
+                "CAT_IMAGE_FALLBACK_MODEL",
+                "grok-imagine-image-quality",
+            ),
+            cat_image_generation_timeout: Duration::from_secs(cat_image_generation_timeout_secs),
             ai_insight_interval_minutes,
             timezone,
             fetch_timeout: Duration::from_secs(fetch_timeout_secs),
