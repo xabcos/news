@@ -85,6 +85,15 @@ const CatScene = (() => {
   };
   let toastTimer;
 
+  function clearRealisticArt() {
+    elements.companion.classList.remove("has-realistic-art");
+    elements.realisticImage?.removeAttribute("src");
+  }
+
+  // Bind this before any account state is loaded so the anonymous preview
+  // also falls back to the deterministic SVG when the raster cannot load.
+  if (elements.realisticImage) elements.realisticImage.onerror = clearRealisticArt;
+
   function setLetter(letter) {
     elements.letterTitle.textContent = letter.title || EMPTY_LETTER.title;
     elements.letterSummary.textContent = letter.summary || EMPTY_LETTER.summary;
@@ -133,10 +142,7 @@ const CatScene = (() => {
     else delete elements.companion.dataset.accent;
     const realisticSource = REALISTIC_CATS[identity.coat];
     if (realisticSource && elements.realisticImage) {
-      elements.realisticImage.onerror = () => {
-        elements.companion.classList.remove("has-realistic-art");
-        elements.realisticImage.removeAttribute("src");
-      };
+      elements.realisticImage.onerror = clearRealisticArt;
       elements.realisticImage.src = realisticSource;
       elements.companion.classList.add("has-realistic-art");
     } else {
