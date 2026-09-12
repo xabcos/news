@@ -39,12 +39,6 @@ pub(crate) struct RenameRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ActionRequest {
-    action: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct ReadingRequest {
     news_item_id: Uuid,
     #[serde(default = "default_reading_signal")]
@@ -618,61 +612,6 @@ pub(crate) async fn rename(
     .await?
     .ok_or_else(|| AppError::Conflict("请先领养一只猫咪".into()))?;
     Ok(Json(cat_view(&state.pool, cat).await?))
-}
-
-pub(crate) async fn action(
-    State(state): State<AppState>,
-    user: User,
-    ApiJson(request): ApiJson<ActionRequest>,
-) -> Result<Json<Value>> {
-    let (event_type, label) = match request.action.trim() {
-        "feed" => ("care_feed", "喂食"),
-        "water" => ("care_water", "喝水"),
-        "toy" => ("care_toy", "玩具"),
-        _ => {
-            return Err(AppError::BadRequest(
-                "action 必须是 feed、water 或 toy".into(),
-            ));
-        }
-    };
-    let date = state.digest.today();
-    let mut transaction = state.pool.begin().await?;
-    let cat_id = sqlx::query_scalar::<_, Uuid>("SELECT id FROM cats WHERE owner_user_id = $1")
-        .bind(user.id)
-        .fetch_optional(&mut *transaction)
-        .await?
-        .ok_or_else(|| AppError::Conflict("请先领养一只猫咪".into()))?;
-    let inserted = sqlx::query_scalar::<_, Uuid>(
-        r#"
-        INSERT INTO cat_growth_events (id, cat_id, event_type, source_key, payload)
-        VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (cat_id, event_type, source_key) DO NOTHING
-        RETURNING id
-        "#,
-    )
-    .bind(Uuid::new_v4())
-    .bind(cat_id)
-    .bind(event_type)
-    .bind(date.to_string())
-    .bind(json!({ "action": request.action.trim(), "day": date }))
-    .fetch_optional(&mut *transaction)
-    .await?
-    .is_some();
-    sqlx::query("UPDATE cats SET last_seen_at = NOW() WHERE id = $1")
-        .bind(cat_id)
-        .execute(&mut *transaction)
-        .await?;
-    transaction.commit().await?;
-
-    let cat = load_cat(&state.pool, user.id)
-        .await?
-        .ok_or_else(|| AppError::Internal("猫咪状态不存在".into()))?;
-    Ok(Json(json!({
-        "action": request.action.trim(),
-        "label": label,
-        "applied": inserted,
-        "cat": cat_view(&state.pool, cat).await?,
-    })))
 }
 
 pub(crate) async fn depart(

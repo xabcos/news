@@ -33,7 +33,6 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/api/cat/adoption/preview", post(cat::preview))
         .route("/api/cat/adoption/confirm", post(cat::confirm))
         .route("/api/cat/name", patch(cat::rename))
-        .route("/api/cat/actions", post(cat::action))
         .route("/api/cat/reading", post(cat::reading))
         .route("/api/cat/guide", get(cat_guide::today))
         .route("/api/cat/trips", get(cat::list_trips).post(cat::depart))

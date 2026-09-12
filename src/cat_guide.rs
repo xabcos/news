@@ -432,7 +432,6 @@ async fn profile(pool: &PgPool, cat_id: Uuid) -> Result<Profile> {
     for (event_type, count) in counts {
         let boost = (count as f64 / 80.0).min(0.08);
         match event_type.as_str() {
-            "care_feed" | "care_water" | "care_toy" => bump(&mut traits, "gentleness", boost),
             "trip_read" => {
                 bump(&mut traits, "curiosity", boost);
                 bump(&mut traits, "courage", boost * 0.7);

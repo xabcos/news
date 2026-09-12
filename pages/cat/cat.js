@@ -489,34 +489,6 @@ const CatShell = (() => {
     }
   }
 
-  async function onAction(action) {
-    if (action !== "travel" && catState?.adopted && authState === "authenticated") {
-      const messages = {
-        feed: ["吃了一口猫粮，尾巴变得更有精神了。", "今天的猫粮有一点旅行的味道。"],
-        water: ["喝了一碗亮晶晶的水。", "喝饱了，出发前还要检查围巾。"],
-        toy: ["小铃铛在脚边滚了一圈。", "这个玩具要带上，万一遇见一只友好的猫呢？"],
-      };
-      try {
-        const data = await api("/api/cat/actions", { method: "POST", body: JSON.stringify({ action }) });
-        applyCatState({ ...catState, cat: data.cat });
-        const [message, thought] = messages[action] || messages.toy;
-        CatScene.react(data.applied ? message : "今天已经做过这件事了。", thought);
-      } catch (error) {
-        CatScene.showToast(error.message || "动作暂时没有记录");
-      }
-      return;
-    }
-    if (!catState?.adopted) {
-      await showAdoptionPreview(catState?.draft);
-      return;
-    }
-    const messages = {
-      travel: ["先整理好行囊，下一步就可以出发了。", "世界这么大，今天去哪里看看？"],
-    };
-    const [message, thought] = messages[action] || messages.travel;
-    CatScene.react(message, thought);
-  }
-
   async function loadLetter() {
     currentLetter = await NewsBridge.todayLetter();
     const trip = catState?.cat?.current_trip;
@@ -580,9 +552,6 @@ const CatShell = (() => {
   }
 
   function bind() {
-    document.querySelectorAll("[data-action]").forEach((button) => {
-      button.addEventListener("click", () => onAction(button.dataset.action));
-    });
     document.querySelector("#readButton")?.addEventListener("click", async () => {
       if (currentLetter.url && currentLetter.url !== "#") {
         window.open(currentLetter.url, "_blank", "noopener,noreferrer");

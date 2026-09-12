@@ -159,12 +159,6 @@ a { text-decoration: none; }
 .cat-button--quiet { border: 1px solid var(--cat-line); color: var(--cat-muted); background: transparent; }
 .cat-button--quiet:hover { border-color: rgba(184,103,77,.45); color: var(--cat-accent-dark); }
 
-.cat-command-bar { display: flex; max-width: 1180px; width: 100%; align-items: center; justify-content: center; gap: .65rem; margin: 1rem auto .6rem; }
-.cat-command { display: inline-flex; min-width: 5.5rem; height: 2.8rem; align-items: center; justify-content: center; gap: .4rem; padding: .4rem .75rem; border: 1px solid var(--cat-line); border-radius: .75rem; color: var(--cat-muted); background: rgba(255,252,247,.55); font-size: .78rem; }
-.cat-command:hover { border-color: rgba(184,103,77,.45); color: var(--cat-accent-dark); background: #fffaf3; }
-.cat-command__icon { color: var(--cat-accent); font-size: 1.05rem; }
-.cat-command--travel { color: #fff9f1; border-color: var(--cat-accent); background: var(--cat-accent); }
-.cat-command--travel:hover { color: #fff9f1; background: var(--cat-accent-dark); }
 .cat-bottom-nav { display: flex; max-width: 32rem; width: 100%; align-items: center; justify-content: space-around; margin: 0 auto; padding: .35rem .4rem; border: 1px solid var(--cat-line); border-radius: 1rem; background: rgba(255,252,247,.72); }
 .cat-nav-item { display: inline-flex; min-width: 4.2rem; flex-direction: column; align-items: center; gap: .05rem; padding: .38rem .7rem; border-radius: .75rem; color: var(--cat-muted); font-size: 1rem; }
 .cat-nav-item small { font-size: .66rem; }
@@ -225,8 +219,6 @@ a { text-decoration: none; }
   .cat-letter__summary { display: -webkit-box; overflow: hidden; margin: .65rem 0 .45rem; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
   .cat-letter__actions { grid-template-columns: 1fr auto; align-items: center; margin-top: .8rem; }
   .cat-letter__actions .cat-button--quiet { min-height: 2.65rem; padding-right: .7rem; padding-left: .7rem; }
-  .cat-command-bar { gap: .4rem; margin-top: .75rem; }
-  .cat-command { min-width: 0; flex: 1; padding-right: .3rem; padding-left: .3rem; }
   .cat-bottom-nav { margin-top: .15rem; }
   .cat-message-preview, .cat-journal-grid, .cat-atlas-grid { grid-template-columns: 1fr; }
   .cat-journal-card--postcard { grid-column: auto; }
@@ -241,8 +233,6 @@ a { text-decoration: none; }
   .cat-companion { right: 16%; width: min(60%, 16rem); }
   .cat-thought { right: -1.4rem; max-width: 10rem; padding: .5rem .65rem; font-size: .68rem; }
   .cat-letter { margin-top: -1.7rem; }
-  .cat-command__icon { display: none; }
-  .cat-command { height: 2.55rem; font-size: .72rem; }
   .cat-nav-item { min-width: 3.8rem; padding-right: .45rem; padding-left: .45rem; }
 }
 
