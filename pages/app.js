@@ -527,7 +527,7 @@ async function loadMoreItems(sentinel) {
     const page = (state.personal ? payload.digest : payload)?.topics?.find((entry) => entry.id === group.id);
     const added = page ? appendPage(group, page) : [];
     if (!page) group.next = null;
-    insertBefore(sentinel, added.map(card));
+    insertBefore(sentinel, added.map((item) => renderGroupItem(group, item)));
     if (group.next) {
       target.loading = false;
       reobserve(sentinel);
@@ -953,10 +953,14 @@ function renderGroups(digest) {
       heading.append(title, count);
       section.append(heading);
     }
-    section.append(...(group.items || []).map((item) => group.id === "p" ? imageNewsCard(item) : card(item)));
+    section.append(...(group.items || []).map((item) => renderGroupItem(group, item)));
     if (group.next) section.append(groupSentinel(digest, group));
     return section;
   });
+}
+
+function renderGroupItem(group, item) {
+  return group.id === "p" ? imageNewsCard(item) : card(item);
 }
 
 function imageNewsCard(item) {
