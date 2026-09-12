@@ -243,6 +243,12 @@ const CatShell = (() => {
     return { labels, title, text, payload };
   }
 
+  function bindPhotoFallback(container) {
+    container.querySelectorAll("[data-photo-frame] img").forEach((image) => {
+      image.addEventListener("error", () => image.closest("[data-photo-frame]")?.remove(), { once: true });
+    });
+  }
+
   function renderMessages(messages) {
     if (!messages.length) {
       messagePreview.innerHTML = '<div class="cat-empty">猫咪正在慢慢生活，第一段旅迹还在路上。</div>';
@@ -252,7 +258,7 @@ const CatShell = (() => {
       const view = messageView(message);
       const unread = message.read_at ? "" : " is-unread";
       const photo = view.payload.postcard_url
-        ? `<div class="cat-message-card__photo"><img src="${escapeHtml(view.payload.postcard_url)}" alt="${escapeHtml(view.title)}" loading="lazy"></div>`
+        ? `<div class="cat-message-card__photo" data-photo-frame><img src="${escapeHtml(view.payload.postcard_url)}" alt="${escapeHtml(view.title)}" loading="lazy"></div>`
         : "";
       return `<article class="cat-message-card${unread}" data-message-id="${escapeHtml(message.id)}" role="button" tabindex="0">
         ${photo}
@@ -262,6 +268,7 @@ const CatShell = (() => {
         <time datetime="${escapeHtml(message.created_at)}">${escapeHtml(formatDate(message.created_at))}</time>
       </article>`;
     }).join("");
+    bindPhotoFallback(messagePreview);
     messagePreview.querySelectorAll("[data-message-id]").forEach((card) => {
       card.addEventListener("click", () => readMessage(card.dataset.messageId));
       card.addEventListener("keydown", (event) => {
@@ -282,13 +289,14 @@ const CatShell = (() => {
     }
     journalGrid.innerHTML = visible.map((message) => {
       const view = messageView(message);
-      const photo = view.payload.postcard_url ? `<div class="cat-journal-card__photo"><img src="${escapeHtml(view.payload.postcard_url)}" alt="${escapeHtml(view.title)}" loading="lazy"></div>` : "";
+      const photo = view.payload.postcard_url ? `<div class="cat-journal-card__photo" data-photo-frame><img src="${escapeHtml(view.payload.postcard_url)}" alt="${escapeHtml(view.title)}" loading="lazy"></div>` : "";
       return `<article class="cat-journal-card ${message.kind === "postcard" ? "cat-journal-card--postcard" : ""}">
         ${photo}<div class="cat-journal-card__kind">${escapeHtml(view.labels[message.kind] || "猫咪记录")}</div>
         <h3>${escapeHtml(view.title)}</h3><p>${escapeHtml(view.text)}</p>
         <time datetime="${escapeHtml(message.created_at)}">${escapeHtml(formatDate(message.created_at))}</time>
       </article>`;
     }).join("");
+    bindPhotoFallback(journalGrid);
   }
 
   function renderAtlas(data) {
@@ -428,7 +436,7 @@ const CatShell = (() => {
       }
       try {
         const data = await api("/api/cat/inbox");
-        renderMessages(data.items || []);
+        renderMessages((data.items || []).filter((message) => message.kind !== "guide"));
         todayPanel.hidden = false;
         messagePreview.scrollIntoView({ behavior: "smooth", block: "center" });
       } catch (error) {
