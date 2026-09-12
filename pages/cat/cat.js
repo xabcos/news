@@ -87,6 +87,7 @@ const CatScene = (() => {
 
   function clearRealisticArt() {
     elements.companion.classList.remove("has-realistic-art");
+    elements.companion.classList.remove("is-identity-pending");
     elements.realisticImage?.removeAttribute("src");
   }
 
@@ -142,11 +143,14 @@ const CatScene = (() => {
     else delete elements.companion.dataset.accent;
     const realisticSource = REALISTIC_CATS[identity.coat];
     if (realisticSource && elements.realisticImage) {
+      elements.companion.classList.add("is-identity-pending");
       elements.realisticImage.onerror = clearRealisticArt;
+      elements.realisticImage.onload = () => elements.companion.classList.remove("is-identity-pending");
       elements.realisticImage.src = realisticSource;
       elements.companion.classList.add("has-realistic-art");
     } else {
       elements.companion.classList.remove("has-realistic-art");
+      elements.companion.classList.remove("is-identity-pending");
     }
     const coatNames = { orange_white: "橘白", cream_tabby: "奶油虎斑", silver_tabby: "银灰虎斑", black_white: "黑白" };
     const eyeNames = { amber: "琥珀色眼睛", green: "绿色眼睛", blue: "蓝色眼睛", hazel: "榛色眼睛" };
@@ -195,7 +199,11 @@ const CatScene = (() => {
     if (trip?.note?.zh && (presence === "away" || presence === "returning_soon")) elements.thought.textContent = trip.note.zh;
   }
 
-  return Object.freeze({ setLetter, setIdentity, setPresence, react, showToast });
+  function revealPreview() {
+    elements.companion.classList.remove("is-identity-pending");
+  }
+
+  return Object.freeze({ setLetter, setIdentity, setPresence, react, showToast, revealPreview });
 })();
 
 const CatShell = (() => {
@@ -452,13 +460,18 @@ const CatShell = (() => {
       const data = await api("/api/cat/state");
       authState = "authenticated";
       applyCatState(data);
-      if (!data.adopted) await showAdoptionPreview(data.draft);
+      if (!data.adopted) {
+        await showAdoptionPreview(data.draft);
+        CatScene.revealPreview();
+      }
       else await loadHome();
     } catch (error) {
       if (error.status === 401 || error.status === 403) {
         authState = "anonymous";
         catState = { adopted: false, cat: null, draft: null };
+        CatScene.revealPreview();
       } else {
+        CatScene.revealPreview();
         CatScene.showToast(error.message || "猫咪状态暂时无法读取");
       }
     }
