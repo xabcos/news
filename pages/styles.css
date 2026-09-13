@@ -403,6 +403,17 @@ p { margin-top: 0; }
   align-items: flex-start;
   gap: .9rem;
 }
+.public.p-topic .digest {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: flex-start;
+  gap: .9rem;
+}
+.public.p-topic .day-block,
+.public.p-topic .image-news-group { display: contents; }
+.public.p-topic .day-divider,
+.public.p-topic .group-title { display: none; }
+.public.p-topic .group-more { grid-column: 1 / -1; }
 .image-news-group > .group-title { grid-column: 1 / -1; }
 .image-news-group > .group-more { grid-column: 1 / -1; }
 .image-news-card {
@@ -457,17 +468,18 @@ p { margin-top: 0; }
 
 @media (max-width: 560px) {
   .image-news-group { grid-template-columns: 1fr; }
+  .public.p-topic .digest { grid-template-columns: 1fr; }
 }
 
 @media (min-width: 1100px) {
-  .public.p-topic .image-news-group {
+  .public.p-topic .digest {
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: clamp(.9rem, 1.6vw, 1.5rem);
   }
 }
 
 @media (min-width: 1500px) {
-  .public.p-topic .image-news-group { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .public.p-topic .digest { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 
 /* ---------- dark, motion, responsive ---------- */
