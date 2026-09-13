@@ -246,11 +246,15 @@ pub(crate) async fn state(State(state): State<AppState>, user: User) -> Result<J
         Some(cat_id) => unread_messages(&state.pool, cat_id).await?,
         None => 0,
     };
+    let presence = cat
+        .as_ref()
+        .map(|cat_value| presence_for_cat(cat_value, state.config.timezone));
     let draft = draft.map(draft_view);
     Ok(Json(json!({
         "adopted": cat.is_some(),
         "draft": draft,
         "cat": cat,
+        "presence": presence,
         "unread_count": unread_count,
     })))
 }
