@@ -303,14 +303,7 @@ const CatShell = (() => {
     catState = nextState;
     const name = nextState.cat?.name;
     if (name) catName.textContent = name;
-    if (typeof nextState.unread_count === "number") {
-      unreadCount.textContent = String(nextState.unread_count);
-      unreadCount.hidden = nextState.unread_count < 1;
-      const inbox = document.querySelector("#catInbox");
-      inbox?.setAttribute("aria-label", nextState.unread_count
-        ? `猫咪信箱，有 ${nextState.unread_count} 条未读消息`
-        : "打开猫咪信箱");
-    }
+    if (typeof nextState.unread_count === "number") updateUnreadCount(nextState.unread_count);
     if (nextState.cat) {
       CatScene.setIdentity(nextState.cat.identity, nextState.cat.initial_accessories);
       const presence = Object.prototype.hasOwnProperty.call(nextState, "presence")
@@ -320,6 +313,16 @@ const CatShell = (() => {
       CatScene.setPresence(presence, trip);
       CatScene.setScene(nextState.scene || nextState.cat.scene || trip?.scene, presence, trip);
     }
+  }
+
+  function updateUnreadCount(value) {
+    const count = Math.max(0, Number(value) || 0);
+    unreadCount.textContent = String(count);
+    unreadCount.hidden = count < 1;
+    const inbox = document.querySelector("#catInbox");
+    inbox?.setAttribute("aria-label", count
+      ? `猫咪信箱，有 ${count} 条未读消息`
+      : "打开猫咪信箱");
   }
 
   function derivePresence(cat) {
@@ -439,13 +442,18 @@ const CatShell = (() => {
   }
 
   async function readMessage(messageId) {
+    const card = document.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
+    card?.setAttribute("aria-busy", "true");
     try {
       const data = await api(`/api/cat/inbox/${messageId}/read`, { method: "POST" });
-      unreadCount.textContent = String(data.unread_count || 0);
-      unreadCount.hidden = !data.unread_count;
-      document.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`)?.classList.remove("is-unread");
+      updateUnreadCount(data.unread_count);
+      card?.classList.remove("is-unread");
+      card?.setAttribute("aria-label", "已读信件");
+      CatScene.showToast("这封信已经收好了。");
     } catch (error) {
       CatScene.showToast(error.message || "信件状态暂时没有保存");
+    } finally {
+      card?.removeAttribute("aria-busy");
     }
   }
 
@@ -554,7 +562,12 @@ const CatShell = (() => {
       }
       try {
         const data = await api("/api/cat/inbox");
-        renderMessages((data.items || []).filter((message) => message.kind !== "guide"));
+        updateUnreadCount(data.unread_count);
+        // The inbox is the place where every unread message can be opened. The
+        // home preview intentionally hides guide cards, but filtering guides
+        // here would leave their badge permanently unread and make the card
+        // impossible to reach.
+        renderMessages(data.items || []);
         todayPanel.hidden = false;
         messagePreview.scrollIntoView({ behavior: "smooth", block: "center" });
       } catch (error) {

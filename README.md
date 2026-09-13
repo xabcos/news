@@ -67,14 +67,15 @@ cargo run
 | `AI_BASE_URL` / `AI_DEFAULT_MODEL` | `https://api.zairouter.com` / `grok-4.6` | 新闻抓取接口与默认模型 |
 | `CAT_IMAGE_FLARE_MODEL` / `CAT_IMAGE_SUNBURST_MODEL` | `gpt-image-2.5-flare` / `gpt-image-2.5-sunburst` | 旅行猫咪日常图片与重要图片模型 |
 | `CAT_IMAGE_FALLBACK_MODEL` | `grok-imagine-image-quality` | GPT 图片生成失败时的备用模型 |
-| `CAT_IMAGE_GENERATION_TIMEOUT_SECS` | `120` | 单次旅行图片生成总超时 |
+| `CAT_IMAGE_GENERATION_TIMEOUT_SECS` | `900` | 单次旅行图片生成总超时 |
+| `AI_RESPONSES_TIMEOUT_SECS` | `900` | 新闻领读、旅行叙事等 Responses 请求超时 |
 | `NEWS_TIMEZONE` | `Asia/Shanghai` | 天边界与时间窗 |
 | `NEWS_SCHEDULER_ENABLED` | `true` | `false` 时只提供页面与 API |
 | `NEWS_FETCH_TIMEOUT_SECS` / `NEWS_MAX_CONCURRENT_RUNS` | `1800` / `2` | 新闻抓取、综合研判与 AI Agent 共用超时，默认为 30 分钟 |
 | `AI_INSIGHT_MODEL` / `AI_INSIGHT_INTERVAL_MINUTES` | `gpt-6-astra` / `120` | 综合研判模型与更新间隔 |
 | `NEWS_RETENTION_DAYS` | `128` | 新闻条目保留天数，超过期限自动清理 |
 | `TMPFILE_BASE_URL` / `TMPFILE_API_KEY` | 必填 | 服务端图片转存接口与 Bearer 密钥；API key 只存在 NEWS 服务端 |
-| `NEWS_IMAGE_MAX_BYTES` / `NEWS_IMAGE_TIMEOUT_SECS` | `8388608` / `30` | 单张新闻图片大小与抓取超时 |
+| `NEWS_IMAGE_MAX_BYTES` / `NEWS_IMAGE_TIMEOUT_SECS` | `8388608` / `300` | 单张新闻图片大小与抓取超时 |
 | `REDIS_ADDR` / `REDIS_PASS` / `REDIS_DB` | 空 / 空 / `1` | 邮件队列与缓存 |
 | `SESSION_COOKIE_NAME` / `SESSION_TTL_DAYS` / `EMAIL_LOGIN_LINK_TTL_MINUTES` | `news_session` / `30` / `30` | |
 | `EMAIL_STREAM_PRIORITY` / `EMAIL_OID` / `EMAIL_REPLY_TO` | `important` / `0` / 空 | 与 `~/xabcos/mail` 的契约一致 |

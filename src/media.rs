@@ -17,7 +17,7 @@ use url::Url;
 use uuid::Uuid;
 
 const RENEW_BEFORE_SECS: i64 = 6 * 3600;
-const MAX_SYNC_SECS: u64 = 90;
+const MAX_SYNC_SECS: u64 = 300;
 
 #[derive(Debug, Deserialize)]
 struct UploadResponse {
