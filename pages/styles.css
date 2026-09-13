@@ -301,7 +301,12 @@ p { margin-top: 0; }
 .insight-citation { color: var(--primary-strong); text-decoration: underline; text-underline-offset: .15em; overflow-wrap: anywhere; }
 
 @media (max-width: 768px) {
-  .digest { touch-action: pan-y pinch-zoom; }
+  .public .digest { touch-action: pan-y pinch-zoom; }
+  .public .shell.is-loading {
+    touch-action: pan-y pinch-zoom;
+    min-height: calc(100vh - 2.6rem);
+    min-height: calc(100dvh - 2.6rem);
+  }
 }
 
 .day-block {

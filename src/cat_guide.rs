@@ -16,9 +16,10 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -85,6 +86,41 @@ struct GuideDraft {
     reflection_en: String,
     personality_phrase: String,
     personality_phrase_en: String,
+    #[serde(default)]
+    scene: SceneDirector,
+}
+
+/// A small, durable projection of the cat's current activity.  It is generated
+/// together with the daily guide and stored in the existing world-brief JSONB,
+/// so opening the home page never needs to call the model.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SceneDirector {
+    action: String,
+    emotion: String,
+    bubble: String,
+    prop: String,
+}
+
+impl Default for SceneDirector {
+    fn default() -> Self {
+        Self {
+            action: "observe".into(),
+            emotion: "好奇".into(),
+            bubble: "让我先看看今天的世界。".into(),
+            prop: "小笔记本".into(),
+        }
+    }
+}
+
+impl SceneDirector {
+    fn bounded(mut self) -> Self {
+        self.action = clip(&self.action, 80);
+        self.emotion = clip(&self.emotion, 32);
+        self.bubble = clip(&self.bubble, 140);
+        self.prop = clip(&self.prop, 40);
+        self
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -306,7 +342,9 @@ async fn generate(
             "今天还没有可供猫咪领读的新闻，请稍后再试".into(),
         ));
     }
-    let (draft, x_sources, x_search_calls) = request_guide(state, day, &profile, &selected).await?;
+    let creative_memory = recent_creative_memory(&state.pool, cat_id).await?;
+    let (draft, x_sources, x_search_calls) =
+        request_guide(state, cat_id, day, &profile, &selected, &creative_memory).await?;
     let cards = normalize_cards(draft.items, &selected);
     let reflection = json!({
         "zh": clip(&draft.reflection, 800),
@@ -355,6 +393,7 @@ async fn generate(
         "reflection_en": clip(&draft.reflection_en, 800),
         "personality_phrase": clip(&draft.personality_phrase, 240),
         "personality_phrase_en": clip(&draft.personality_phrase_en, 240),
+        "scene": serde_json::to_value(draft.scene.bounded()).unwrap_or_else(|_| json!({})),
         "culture_sources": x_sources,
     });
     Ok((payload, selected, snapshot_id, x_search_calls))
@@ -556,11 +595,62 @@ fn interest_score(item: &GuideNews, keys: &HashSet<String>) -> f64 {
     score
 }
 
+/// Returns a compact creative memory for the scene director.  It deliberately
+/// reads the existing JSONB projections instead of introducing another table:
+/// factual memories remain authoritative while the model gets enough context
+/// to avoid repeating the same prop, pose, or surprise.
+pub(crate) async fn recent_creative_memory(pool: &PgPool, cat_id: Uuid) -> Result<Value> {
+    let scenes = sqlx::query_scalar::<_, Option<Value>>(
+        "SELECT payload->'scene' FROM cat_world_briefs WHERE cat_id = $1 AND status = 'ok' AND payload ? 'scene' ORDER BY day DESC LIMIT 6",
+    )
+    .bind(cat_id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    let trips = sqlx::query_scalar::<_, Option<Value>>(
+        "SELECT souvenir->'narrative' FROM cat_trips WHERE cat_id = $1 AND souvenir ? 'narrative' ORDER BY COALESCE(settled_at, returns_at) DESC LIMIT 6",
+    )
+    .bind(cat_id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .flatten()
+    .map(|value| {
+        json!({
+            "mood": value.get("mood"),
+            "surprise": value.get("surprise"),
+            "souvenir": value.get("souvenir"),
+            "scene_hint": value.get("scene_hint"),
+        })
+    })
+    .collect::<Vec<_>>();
+    Ok(json!({ "daily_scenes": scenes, "travel_moments": trips }))
+}
+
+fn creative_seed(cat_id: Uuid, day: NaiveDate) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(cat_id.as_bytes());
+    hasher.update(day.to_string().as_bytes());
+    // A six-hour bucket gives retries a little room to surprise without
+    // making every request produce a different scene.
+    hasher.update((Utc::now().hour() / 6).to_string().as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 async fn request_guide(
     state: &AppState,
+    cat_id: Uuid,
     day: NaiveDate,
     profile: &Profile,
     selected: &[SelectedNews],
+    creative_memory: &Value,
 ) -> Result<(GuideDraft, Vec<String>, i32)> {
     let model = &state.config.ai_default_model;
     let tools = if model.starts_with("grok") {
@@ -594,9 +684,11 @@ async fn request_guide(
         "tool_choice": "auto",
         "instructions": instructions(),
         "input": format!(
-            "日期：{}\n性格投影：{}\n候选新闻：{}",
+            "日期：{}\nCREATIVE_SEED：{}\n性格投影：{}\n最近场景与纪念物（只用于避免重复，不是事实）：{}\n候选新闻：{}",
             day,
+            creative_seed(cat_id, day),
             serde_json::to_string(profile).unwrap_or_default(),
+            serde_json::to_string(creative_memory).unwrap_or_default(),
             serde_json::to_string(&stories).unwrap_or_default(),
         ),
         "text": { "format": {
@@ -617,7 +709,7 @@ async fn request_guide(
     Ok((draft, x_sources, x_calls))
 }
 
-async fn responses_request(state: &AppState, body: &Value) -> Result<Value> {
+pub(crate) async fn responses_request(state: &AppState, body: &Value) -> Result<Value> {
     let url = format!(
         "{}/v1/responses",
         state.config.ai_base_url.as_str().trim_end_matches('/')
@@ -747,7 +839,8 @@ fn instructions() -> &'static str {
 3. 新闻候选固定分为 important、interest、explore 三条，不能把三条都写成同一种主题。explore 必须帮助主人走出兴趣回音壁。
 4. 如果可用，可以调用一次 x_search 了解当天公开 X.com 语境中的热梗或表达方式。X 内容只能写入 culture_context，用作比喻、语境或轻微俏皮表达；绝不能作为 fact、source_indexes 或 guidance 的事实依据。不要引用私人账号、攻击性内容、歧视性内容或未经核实的传闻。没有合适热梗就留空。
 5. 性格投影是长期倾向，不是本次新闻的临时情绪。性格语气固定为 warmth 0.90、rationality 0.90、playfulness 0.35。要让主人感觉猫咪在逐渐形成自己的判断，但不要突然改变性格。
-6. 中文自然，英文独立润色。严格只输出 JSON，不输出 Markdown 或解释。
+6. 另外生成 scene，描述猫咪此刻正在做什么。action 必须从 observe、packing、reading、wandering、stretching、sleeping、daydreaming 中选择一个，emotion 是短情绪词，bubble 是猫咪可能说的一句短话，prop 是一个可见的小道具。scene 必须和当天内容有关但不能编造新闻事实；每次可以换一个自然的小动作，避免固定套话。输入中的最近场景与纪念物是“去重提示”，不要机械重复其中的姿势、道具、情绪或句式；CREATIVE_SEED 只用于稳定地产生当天的微小差异。
+7. 中文自然，英文独立润色。严格只输出 JSON，不输出 Markdown 或解释。
 "#
 }
 
@@ -768,12 +861,22 @@ fn schema() -> Value {
     });
     json!({
         "type": "object", "additionalProperties": false,
-        "required": ["opening", "opening_en", "items", "reflection", "reflection_en", "personality_phrase", "personality_phrase_en"],
+        "required": ["opening", "opening_en", "items", "reflection", "reflection_en", "personality_phrase", "personality_phrase_en", "scene"],
         "properties": {
             "opening": { "type": "string" }, "opening_en": { "type": "string" },
             "items": { "type": "array", "minItems": 1, "maxItems": 3, "items": card },
             "reflection": { "type": "string" }, "reflection_en": { "type": "string" },
-            "personality_phrase": { "type": "string" }, "personality_phrase_en": { "type": "string" }
+            "personality_phrase": { "type": "string" }, "personality_phrase_en": { "type": "string" },
+            "scene": {
+                "type": "object", "additionalProperties": false,
+                "required": ["action", "emotion", "bubble", "prop"],
+                "properties": {
+                    "action": { "type": "string", "enum": ["observe", "packing", "reading", "wandering", "stretching", "sleeping", "daydreaming"] },
+                    "emotion": { "type": "string", "maxLength": 32 },
+                    "bubble": { "type": "string", "maxLength": 140 },
+                    "prop": { "type": "string", "maxLength": 40 }
+                }
+            }
         }
     })
 }

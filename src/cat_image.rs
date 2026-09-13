@@ -30,6 +30,10 @@ pub(crate) struct GenerateRequest {
     pub(crate) quality: Option<String>,
     #[serde(default)]
     pub(crate) purpose: Option<String>,
+    /// Internal, server-generated creative direction. It is never accepted from
+    /// an untrusted client and is bounded again before entering the prompt.
+    #[serde(default)]
+    pub(crate) creative_direction: Option<String>,
 }
 
 #[derive(Debug, FromRow)]
@@ -153,7 +157,13 @@ pub(crate) async fn generate_for_owner(
     // advisory lock above only protects the short cache check; the final
     // write below rechecks the cache so a concurrent request cannot overwrite it.
     cache_transaction.commit().await?;
-    let prompt = travel_prompt(&item, &purpose, &cat.identity, &cat.initial_accessories);
+    let prompt = travel_prompt(
+        &item,
+        &purpose,
+        &cat.identity,
+        &cat.initial_accessories,
+        request.creative_direction.as_deref(),
+    );
     let idempotency_key = format!("travel-cat:{source_key}");
     let preferred_model = if matches!(quality, "high" | "xhigh" | "max") {
         state.config.cat_image_sunburst_model.clone()
@@ -281,6 +291,7 @@ pub(crate) async fn refresh_expiring(state: &AppState) -> Result<()> {
             news_item_id,
             quality: Some("medium".into()),
             purpose: Some("旅迹墙照片续期".into()),
+            creative_direction: None,
         };
         if let Err(error) = generate_for_owner(state, owner_id, &request, true).await {
             tracing::debug!(%error, %news_item_id, "cat postcard refresh deferred");
@@ -318,7 +329,13 @@ fn quality(value: &Option<String>) -> Result<&str> {
     }
 }
 
-fn travel_prompt(item: &NewsRow, purpose: &str, identity: &Value, accessories: &Value) -> String {
+fn travel_prompt(
+    item: &NewsRow,
+    purpose: &str,
+    identity: &Value,
+    accessories: &Value,
+    creative_direction: Option<&str>,
+) -> String {
     let identity_description = identity_description(identity, accessories);
     let location = item
         .location
@@ -326,8 +343,12 @@ fn travel_prompt(item: &NewsRow, purpose: &str, identity: &Value, accessories: &
         .and_then(|value| value.get("name"))
         .and_then(Value::as_str)
         .unwrap_or("a place suggested by the story");
+    let direction = creative_direction
+        .map(sanitize_fragment)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "Choose a fresh, plausible activity and one small visual surprise that fits the cat's personality and the story tone.".into());
     format!(
-        "Create a warm, original travel postcard for the player's adopted cat. Purpose: {purpose}. Preserve this exact adopted identity across scenes: {identity_description}. Do not change the coat, eye color, marking, scarf, or initial accessories. The story tone is {} and the main setting is {}. Use the news facts only as inspiration for the setting, season, atmosphere, and cultural detail. Do not depict real people, logos, brands, political propaganda, graphic events, or copyrighted characters. Make the image feel safe, curious, gentle, and suitable for a family mobile game. Do not put text, letters, captions, logos, or watermarks inside the image. Editorial reference title: \"{}\". Editorial reference summary: \"{}\". Source publication: \"{}\". Use a clean 1:1 composition with room for a postcard caption.",
+        "Create a warm, original travel postcard for the player's adopted cat. Purpose: {purpose}. Preserve this exact adopted identity across scenes: {identity_description}. Do not change the coat, eye color, marking, scarf, or initial accessories. The story tone is {} and the main setting is {}. Use the news facts only as inspiration for the setting, season, atmosphere, and cultural detail. Creative direction from the cat's private travel journal (a suggestion, not a fact): {direction}. Make this postcard distinct from previous trips by choosing a natural variation in activity, light, camera distance, and one small surprising detail. Do not depict real people, logos, brands, political propaganda, graphic events, or copyrighted characters. Make the image feel safe, curious, gentle, and suitable for a family mobile game. Do not put text, letters, captions, logos, or watermarks inside the image. Editorial reference title: \"{}\". Editorial reference summary: \"{}\". Source publication: \"{}\". Use a clean 1:1 composition with room for a postcard caption.",
         item.tone,
         sanitize_fragment(location),
         sanitize_fragment(&item.title),
@@ -436,13 +457,17 @@ async fn call_provider(
             message: error.to_string(),
         })?;
         let status = response.status();
-        let bytes = read_limited(response, MAX_IMAGE_BYTES * 2, provider).await?;
         if !status.is_success() {
+            let model = body
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
             return Err(ProviderFailure {
                 provider,
-                message: format!("upstream status {}", status.as_u16()),
+                message: format!("upstream status {} (model {model})", status.as_u16()),
             });
         }
+        let bytes = read_limited(response, MAX_IMAGE_BYTES * 2, provider).await?;
         serde_json::from_slice::<Value>(&bytes).map_err(|error| ProviderFailure {
             provider,
             message: format!("invalid upstream JSON: {error}"),
@@ -597,18 +622,50 @@ async fn upload_tmpfile(
         .config
         .tmpfile_api_key
         .as_deref()
-        .filter(|key| !key.is_empty())?;
+        .filter(|key| !key.is_empty());
+    let Some(key) = key else {
+        tracing::warn!("travel image tmpfile upload skipped: API key is missing");
+        return None;
+    };
     request = request.bearer_auth(key);
-    let response = request.send().await.ok()?;
-    if !response.status().is_success() {
+    let response = match request.send().await {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::warn!(error = %error, "travel image tmpfile upload request failed");
+            return None;
+        }
+    };
+    let status = response.status();
+    if !status.is_success() {
+        tracing::warn!(
+            status = status.as_u16(),
+            "travel image tmpfile upload rejected"
+        );
         return None;
     }
-    let uploaded = response.json::<TmpfileUpload>().await.ok()?;
-    let direct = url::Url::parse(&uploaded.direct_link).ok()?;
+    let uploaded = match response.json::<TmpfileUpload>().await {
+        Ok(uploaded) => uploaded,
+        Err(error) => {
+            tracing::warn!(error = %error, "travel image tmpfile response was invalid");
+            return None;
+        }
+    };
+    let direct = match url::Url::parse(&uploaded.direct_link) {
+        Ok(direct) => direct,
+        Err(error) => {
+            tracing::warn!(error = %error, "travel image tmpfile returned an invalid direct link");
+            return None;
+        }
+    };
     if !media::is_public_https_url(&direct)
         || direct.host_str() != base_url.host_str()
         || direct.port_or_known_default() != base_url.port_or_known_default()
     {
+        tracing::warn!(
+            expected_host = base_url.host_str().unwrap_or(""),
+            actual_host = direct.host_str().unwrap_or(""),
+            "travel image tmpfile direct link failed origin validation"
+        );
         return None;
     }
     Some(PublishedAsset {

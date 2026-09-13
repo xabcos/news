@@ -94,7 +94,7 @@ storage.setItem("news.lastVisit", String(Date.now()));
 
 const el = {
   topbar: $("#topbar"), tabs: $("#tabs"), lang: $("#langToggle"), me: $("#meLink"), catPortal: $("#catPortal"),
-  status: $("#status"), digest: $("#digest"), loadMore: $("#loadMore"),
+  shell: $(".shell"), status: $("#status"), digest: $("#digest"), loadMore: $("#loadMore"),
   backToTop: $("#backToTop"),
 };
 const t = () => TEXT[state.lang];
@@ -277,6 +277,7 @@ function appendPage(group, page) {
 function clearDigest() {
   groupObserver?.disconnect();
   el.digest.replaceChildren();
+  el.shell.classList.add("is-loading");
 }
 
 async function load(silent = false) {
@@ -558,18 +559,32 @@ function insertBefore(sentinel, nodes) {
   window.scrollBy(0, sentinel.getBoundingClientRect().top - before);
 }
 
-// On a phone, a horizontal gesture over the feed moves between topics. Keep the
-// tab strip's native horizontal scrolling and article links untouched.
+// On a phone, a horizontal gesture over the feed moves between topics. The tab
+// strip stays native, while article links can still be tapped normally.
 function setupTopicSwipe() {
   if (typeof window.PointerEvent !== "function" || typeof window.matchMedia !== "function") return;
   const mobile = window.matchMedia(MOBILE_QUERY);
   let gesture = null;
+  let suppressClickUntil = 0;
 
   const reset = () => { gesture = null; };
-  const isInteractive = (target) => Boolean(target?.closest?.("a, button, input, textarea, select, [contenteditable]"));
+  const isControl = (target) => Boolean(target?.closest?.("button, input, textarea, select, [contenteditable]"));
+  const isFeed = (target) => Boolean(target?.closest?.("#digest"));
 
-  el.digest.addEventListener("pointerdown", (event) => {
-    if (!event.isPrimary || event.pointerType !== "touch" || !mobile.matches || isInteractive(event.target)) {
+  // A swipe replaces the feed before its synthetic click can fire. Clear that
+  // one-shot guard on any later pointerdown, including a tap on the top bar.
+  document.addEventListener("pointerdown", (event) => {
+    if (event.isPrimary) suppressClickUntil = 0;
+  }, true);
+
+  el.shell.addEventListener("pointerdown", (event) => {
+    const inFeed = isFeed(event.target);
+    const outsideLink = !inFeed && event.target?.closest?.("a");
+    // Keep the stable shell as a gesture surface while a new topic is loading
+    // and the digest has temporarily been cleared. Links outside the feed and
+    // explicit controls keep their normal interaction semantics.
+    if (!event.isPrimary || event.pointerType !== "touch" || !mobile.matches
+      || isControl(event.target) || outsideLink || (!inFeed && el.digest.childElementCount)) {
       reset();
       return;
     }
@@ -583,30 +598,35 @@ function setupTopicSwipe() {
     const dx = event.clientX - x;
     const dy = event.clientY - y;
     if (Math.abs(dx) < SWIPE_MIN_DISTANCE || Math.abs(dx) <= Math.abs(dy) * SWIPE_AXIS_RATIO) return;
-    changeTopic(dx < 0 ? 1 : -1);
+    // A horizontal gesture can begin on an article link, especially on the image
+    // feed where the card's image covers most of the surface. Keep that gesture
+    // from also activating the link's synthetic click.
+    if (changeTopic(dx < 0 ? 1 : -1)) suppressClickUntil = performance.now() + 500;
   }, { passive: true });
   window.addEventListener("pointercancel", (event) => {
     if (gesture?.id === event.pointerId) reset();
   }, { passive: true });
+  document.addEventListener("click", (event) => {
+    if (!suppressClickUntil || performance.now() > suppressClickUntil || event.detail === 0) return;
+    suppressClickUntil = 0;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
 }
 
 function changeTopic(direction) {
   const topicIds = ["", INSIGHT_ID, ...state.topics.map((topic) => topic.id)];
-  if (topicIds.length <= 1) return;
+  if (topicIds.length <= 1) return false;
   const current = topicIds.indexOf(state.topic);
-  const next = ((current < 0 ? 0 : current) + direction + topicIds.length) % topicIds.length;
+  // A deep link can be rendered before the async catalogue arrives. Wait for
+  // that catalogue instead of treating the unknown topic as ALL.
+  if (current < 0) return false;
+  const next = (current + direction + topicIds.length) % topicIds.length;
 
   el.topbar.classList.remove("is-hidden");
   document.scrollingElement.scrollTop = 0;
   navigate({ topic: topicIds[next], day: "" });
-  window.requestAnimationFrame(() => {
-    const active = el.tabs.querySelector('[aria-current="true"]');
-    active?.scrollIntoView?.({
-      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
-      block: "nearest",
-      inline: "center",
-    });
-  });
+  return true;
 }
 
 function updateHistoryLoader() {
@@ -662,10 +682,27 @@ function renderTabs() {
     if (id === state.topic) tab.setAttribute("aria-current", "true");
     return tab;
   }));
+  // Deep links, browser back/forward, and the async catalogue load can all select
+  // a tab that is initially outside the strip's horizontal viewport.
+  window.requestAnimationFrame(() => scrollActiveTab());
+}
+
+function scrollActiveTab() {
+  const active = el.tabs.querySelector('[aria-current="true"]');
+  if (!active?.scrollIntoView) return;
+  const tabsRect = el.tabs.getBoundingClientRect();
+  const activeRect = active.getBoundingClientRect();
+  if (activeRect.left >= tabsRect.left && activeRect.right <= tabsRect.right) return;
+  active.scrollIntoView({
+    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+    block: "nearest",
+    inline: "center",
+  });
 }
 
 function render(preserveScroll = false, scrollTop = window.scrollY, { latestOnly = false } = {}) {
   if (!state.timeline.length) return;
+  el.shell.classList.remove("is-loading");
   if (latestOnly && el.digest.firstElementChild) {
     groupObserver?.disconnect();
     el.digest.firstElementChild.replaceWith(renderDayBlock(state.timeline[0], false));
@@ -701,6 +738,7 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
     empty.className = "empty muted";
     empty.textContent = t().insightEmpty;
     el.digest.append(empty);
+    el.shell.classList.remove("is-loading");
     return;
   }
   const section = document.createElement("section");
@@ -741,6 +779,7 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
     section.append(...renderInsightGroup(label, items || [], sources, opportunities));
   }
   el.digest.append(section);
+  el.shell.classList.remove("is-loading");
   if (preserveScroll) {
     window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
       document.scrollingElement.scrollTop = scrollTop;

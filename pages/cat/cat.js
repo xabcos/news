@@ -26,6 +26,26 @@ const CatScene = (() => {
     toast: document.querySelector("#catToast"),
   };
   let toastTimer;
+  let idleTimer;
+  let idleActionTimer;
+  let lastPresence;
+  let lastPresenceNote = "";
+  let lastSceneSignature;
+  let lastIdentityKey;
+  const IDLE_ACTIONS = ["blink", "look", "tail", "stretch"];
+  const ACTIVITY_GLYPHS = Object.freeze({
+    observe: "⌁", packing: "⌂", reading: "✉", wandering: "↝", stretching: "⌒",
+    sleeping: "☾", daydreaming: "·",
+  });
+  const PROP_GLYPHS = Object.freeze({ scarf: "▰", satchel: "▱", suitcase: "▣", letter: "✉", telescope: "◌" });
+
+  const sceneOverlay = document.createElement("span");
+  sceneOverlay.className = "cat-scene-overlay";
+  sceneOverlay.setAttribute("aria-hidden", "true");
+  const motionOverlay = document.createElement("span");
+  motionOverlay.className = "cat-scene-motion";
+  motionOverlay.setAttribute("aria-hidden", "true");
+  elements.companion?.append(sceneOverlay, motionOverlay);
 
   function clearRealisticArt() {
     elements.companion.classList.remove("has-realistic-art");
@@ -52,8 +72,93 @@ const CatScene = (() => {
     showToast(message);
   }
 
+  function setIdleAction(action) {
+    if (!elements.companion) return;
+    IDLE_ACTIONS.forEach((name) => elements.companion.classList.remove(`is-idle-${name}`));
+    if (!action || elements.companion.dataset.presence === "away") return;
+    elements.companion.classList.add(`is-idle-${action}`);
+    window.clearTimeout(idleActionTimer);
+    idleActionTimer = window.setTimeout(() => {
+      elements.companion.classList.remove(`is-idle-${action}`);
+    }, action === "stretch" ? 1500 : 850);
+  }
+
+  function scheduleIdle() {
+    window.clearTimeout(idleTimer);
+    idleTimer = window.setTimeout(() => {
+      if (document.visibilityState === "visible") {
+        const presence = elements.companion.dataset.presence;
+        if (presence !== "home_sleeping" && presence !== "away") {
+          setIdleAction(IDLE_ACTIONS[Math.floor(Math.random() * IDLE_ACTIONS.length)]);
+        }
+      }
+      scheduleIdle();
+    }, 5200 + Math.random() * 7200);
+  }
+
+  function normalizeScene(scene, trip) {
+    const narrative = trip?.souvenir?.narrative || trip?.narrative;
+    const source = scene && typeof scene === "object" ? scene : {};
+    const value = (key) => typeof source[key] === "string" ? source[key].trim() : "";
+    return {
+      activity: value("activity") || value("action") || value("pose") || value("animation"),
+      mood: value("mood") || value("emotion"),
+      prop: value("prop") || value("object") || value("accessory"),
+      thought: value("thought") || value("bubble") || value("bubble_zh") || value("scene_hint") || narrative?.scene_hint || "",
+      caption: value("caption") || value("caption_zh") || value("description"),
+      weather: value("weather"),
+    };
+  }
+
+  function setScene(scene, presence, trip) {
+    const normalized = normalizeScene(scene, trip);
+    const sceneSignature = JSON.stringify(normalized);
+    if (sceneSignature === lastSceneSignature) return;
+    lastSceneSignature = sceneSignature;
+    const canonical = (value, aliases) => {
+      const raw = value.toLowerCase().replaceAll(" ", "_");
+      return aliases[raw] || raw;
+    };
+    const activity = canonical(normalized.activity, {
+      "观察": "observe", "观察远方": "observe", "看风景": "observe", "整理行囊": "packing",
+      "收拾行李": "packing", "读信": "reading", "阅读": "reading", "散步": "wandering",
+      "伸懒腰": "stretching", "睡觉": "sleeping", "打盹": "sleeping", "发呆": "daydreaming",
+    });
+    const mood = canonical(normalized.mood, {
+      "平静": "calm", "好奇": "curious", "开心": "happy", "雀跃": "happy", "困倦": "sleepy",
+      "思念": "wistful", "惊讶": "surprised", "专注": "focused", "调皮": "playful",
+    });
+    const prop = canonical(normalized.prop, { "围巾": "scarf", "挎包": "satchel", "行李箱": "suitcase", "信": "letter", "望远镜": "telescope" });
+    ["activity", "mood", "prop", "weather"].forEach((key) => {
+      const value = key === "activity" ? activity : key === "mood" ? mood : key === "prop" ? prop : normalized.weather;
+      if (value) {
+        elements.stage.dataset[key] = value;
+        elements.companion.dataset[key] = value;
+      } else {
+        delete elements.stage.dataset[key];
+        delete elements.companion.dataset[key];
+      }
+    });
+    sceneOverlay.textContent = PROP_GLYPHS[prop] || "";
+    motionOverlay.textContent = ACTIVITY_GLYPHS[activity] || "";
+    sceneOverlay.hidden = !PROP_GLYPHS[prop];
+    motionOverlay.hidden = !ACTIVITY_GLYPHS[activity];
+    if (normalized.caption) elements.caption.textContent = normalized.caption;
+    if (normalized.thought && presence !== "home_sleeping") elements.thought.textContent = normalized.thought;
+    if (activity || mood || prop) {
+      const details = [normalized.activity, normalized.mood, normalized.prop].filter(Boolean).join(" · ");
+      elements.companion.setAttribute("data-scene-label", details);
+      const presenceLabel = elements.stage.getAttribute("aria-label") || "猫咪正在生活";
+      elements.stage.setAttribute("aria-label", `${presenceLabel}；${details}`);
+      elements.companion.setAttribute("aria-description", details);
+    } else {
+      elements.companion.removeAttribute("data-scene-label");
+    }
+  }
+
   function setIdentity(identity, accessories) {
     if (!identity) return;
+    const identityKey = JSON.stringify([identity.coat, identity.eye_color, identity.marking, identity.signature, (accessories || []).map((item) => item.id)]);
     ["coat", "eye_color", "marking"].forEach((key) => {
       const value = identity[key];
       const datasetKey = key === "eye_color" ? "eye" : key;
@@ -64,6 +169,8 @@ const CatScene = (() => {
     if (accent) elements.companion.dataset.accent = accent.id;
     else delete elements.companion.dataset.accent;
     const realisticSource = REALISTIC_CATS[identity.coat];
+    if (identityKey === lastIdentityKey) return;
+    lastIdentityKey = identityKey;
     if (realisticSource && elements.realisticImage) {
       elements.companion.classList.add("is-identity-pending");
       elements.realisticImage.onerror = clearRealisticArt;
@@ -94,8 +201,11 @@ const CatScene = (() => {
   }
 
   function setPresence(presence, trip) {
-    elements.stage.dataset.presence = presence || "home_awake";
-    elements.companion.dataset.presence = presence || "home_awake";
+    const nextPresence = presence || "home_awake";
+    const note = trip?.note?.zh || "";
+    const changed = nextPresence !== lastPresence || note !== lastPresenceNote;
+    elements.stage.dataset.presence = nextPresence;
+    elements.companion.dataset.presence = nextPresence;
     const labels = {
       home_awake: "猫咪正在窗边休息",
       home_sleeping: "猫咪已经睡着了",
@@ -112,20 +222,26 @@ const CatScene = (() => {
       returned_unread: "回来了 · 有一封信和一个包裹",
       vigil: "今晚在家 · 点一盏灯陪自己安静下来",
     };
-    elements.caption.textContent = captions[presence] || captions.home_awake;
-    elements.thought.textContent = labels[presence] || labels.home_awake;
-    const presenceLabel = labels[presence] || labels.home_awake;
+    if (changed) {
+      elements.caption.textContent = captions[nextPresence] || captions.home_awake;
+      elements.thought.textContent = labels[nextPresence] || labels.home_awake;
+    }
+    const presenceLabel = labels[nextPresence] || labels.home_awake;
     const identityLabel = elements.companion.dataset.identityLabel;
     elements.companion.setAttribute("aria-label", identityLabel ? `${presenceLabel}；${identityLabel}` : presenceLabel);
-    elements.stage.setAttribute("aria-label", labels[presence] || labels.home_awake);
-    if (trip?.note?.zh && (presence === "away" || presence === "returning_soon")) elements.thought.textContent = trip.note.zh;
+    elements.stage.setAttribute("aria-label", labels[nextPresence] || labels.home_awake);
+    if (note && (nextPresence === "away" || nextPresence === "returning_soon") && changed) elements.thought.textContent = note;
+    if (changed) scheduleIdle();
+    lastPresence = nextPresence;
+    lastPresenceNote = note;
   }
 
   function revealPreview() {
     elements.companion.classList.remove("is-identity-pending");
   }
 
-  return Object.freeze({ setIdentity, setPresence, react, showToast, revealPreview });
+  scheduleIdle();
+  return Object.freeze({ setIdentity, setPresence, setScene, react, showToast, revealPreview });
 })();
 
 const CatShell = (() => {
@@ -200,7 +316,9 @@ const CatShell = (() => {
       const presence = Object.prototype.hasOwnProperty.call(nextState, "presence")
         ? nextState.presence
         : derivePresence(nextState.cat);
-      CatScene.setPresence(presence, nextState.cat.current_trip);
+      const trip = nextState.cat.current_trip;
+      CatScene.setPresence(presence, trip);
+      CatScene.setScene(nextState.scene || nextState.cat.scene || trip?.scene, presence, trip);
     }
   }
 
