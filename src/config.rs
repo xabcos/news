@@ -35,6 +35,7 @@ pub struct Config {
     pub(crate) ai_api_key: String,
     pub(crate) ai_default_model: String,
     pub(crate) ai_insight_model: String,
+    pub(crate) ai_response_timeout: Duration,
     pub(crate) cat_image_flare_model: String,
     pub(crate) cat_image_sunburst_model: String,
     pub(crate) cat_image_fallback_model: String,
@@ -162,11 +163,17 @@ impl Config {
                 "AI_INSIGHT_INTERVAL_MINUTES 必须在 30 到 1440 分钟之间".into(),
             ));
         }
+        let ai_response_timeout_secs = parse_env("AI_RESPONSES_TIMEOUT_SECS", 900_u64)?;
+        if !(120..=1800).contains(&ai_response_timeout_secs) {
+            return Err(AppError::Config(
+                "AI_RESPONSES_TIMEOUT_SECS 必须在 120 到 1800 秒之间".into(),
+            ));
+        }
         let cat_image_generation_timeout_secs =
             parse_env("CAT_IMAGE_GENERATION_TIMEOUT_SECS", 120_u64)?;
-        if !(15..=300).contains(&cat_image_generation_timeout_secs) {
+        if !(15..=900).contains(&cat_image_generation_timeout_secs) {
             return Err(AppError::Config(
-                "CAT_IMAGE_GENERATION_TIMEOUT_SECS 必须在 15 到 300 秒之间".into(),
+                "CAT_IMAGE_GENERATION_TIMEOUT_SECS 必须在 15 到 900 秒之间".into(),
             ));
         }
         let timezone = env_value("NEWS_TIMEZONE", "Asia/Shanghai")
@@ -231,6 +238,7 @@ impl Config {
             ai_api_key,
             ai_default_model: env_value("AI_DEFAULT_MODEL", "grok-4.6"),
             ai_insight_model: env_value("AI_INSIGHT_MODEL", "gpt-6-astra"),
+            ai_response_timeout: Duration::from_secs(ai_response_timeout_secs),
             cat_image_flare_model: env_value("CAT_IMAGE_FLARE_MODEL", "gpt-image-2.5-flare"),
             cat_image_sunburst_model: env_value(
                 "CAT_IMAGE_SUNBURST_MODEL",

@@ -717,7 +717,7 @@ pub(crate) async fn responses_request(state: &AppState, body: &Value) -> Result<
     let mut last_error = None;
     for attempt in 0..3 {
         let response = tokio::time::timeout(
-            Duration::from_secs(120),
+            state.config.ai_response_timeout,
             state
                 .http
                 .post(&url)
