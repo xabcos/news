@@ -209,17 +209,17 @@ const CatScene = (() => {
     lastPhotoUrl = nextUrl;
     const token = ++photoLoadToken;
     if (!nextUrl || !elements.latestPhoto) {
-      elements.companion.classList.remove("has-latest-photo");
+      elements.stage.classList.remove("has-latest-photo");
       return;
     }
     const preload = new Image();
     preload.onload = () => {
       if (token !== photoLoadToken) return;
       elements.latestPhoto.src = nextUrl;
-      elements.companion.classList.add("has-latest-photo");
+      elements.stage.classList.add("has-latest-photo");
     };
     preload.onerror = () => {
-      if (token === photoLoadToken) elements.companion.classList.remove("has-latest-photo");
+      if (token === photoLoadToken) elements.stage.classList.remove("has-latest-photo");
     };
     preload.src = nextUrl;
   }
