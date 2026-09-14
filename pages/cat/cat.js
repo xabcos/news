@@ -35,7 +35,13 @@ const CatScene = (() => {
   let lastSceneSignature;
   let lastIdentityKey;
   let lastPhotoUrl = "";
+  let displayedPhotoUrl = "";
   let photoLoadToken = 0;
+  let photoCarouselUrls = [];
+  let photoCarouselIndex = 0;
+  let photoCarouselSignature = "";
+  let photoCarouselTimer;
+  let photoSwapTimer;
   const IDLE_ACTIONS = ["blink", "look", "tail", "stretch"];
   const ACTIVITY_GLYPHS = Object.freeze({
     observe: "⌁", packing: "⌂", reading: "✉", wandering: "↝", stretching: "⌒",
@@ -231,17 +237,32 @@ const CatScene = (() => {
     delete document.documentElement.dataset.catPhotoPending;
   }
 
+  function stopPhotoCarousel() {
+    window.clearInterval(photoCarouselTimer);
+    window.clearTimeout(photoSwapTimer);
+    photoCarouselTimer = undefined;
+    photoSwapTimer = undefined;
+    photoCarouselUrls = [];
+    photoCarouselIndex = 0;
+    photoCarouselSignature = "";
+  }
+
   function setLatestPhoto(url, catId) {
     const nextUrl = typeof url === "string" ? url.trim() : "";
     if (!nextUrl || !elements.latestPhoto) {
       lastPhotoUrl = "";
+      displayedPhotoUrl = "";
       photoLoadToken += 1;
+      window.clearTimeout(photoSwapTimer);
+      photoSwapTimer = undefined;
+      elements.stage.classList.remove("is-photo-transitioning");
       elements.stage.classList.remove("has-latest-photo");
       settlePhotoPending();
       rememberPhoto(catId, "");
       return;
     }
     if (nextUrl === lastPhotoUrl) return;
+    const previousDisplayedUrl = displayedPhotoUrl;
     lastPhotoUrl = nextUrl;
     const token = ++photoLoadToken;
     // While the cat is still hidden on first paint, keep it hidden until the photo
@@ -254,19 +275,70 @@ const CatScene = (() => {
     const preload = new Image();
     preload.onload = () => {
       if (token !== photoLoadToken) return;
-      elements.latestPhoto.src = nextUrl;
-      if (elements.latestPhotoBackdrop) elements.latestPhotoBackdrop.src = nextUrl;
-      elements.stage.classList.add("has-latest-photo");
-      settlePhotoPending();
-      rememberPhoto(catId, nextUrl);
+      const applyPhoto = () => {
+        if (token !== photoLoadToken) return;
+        elements.latestPhoto.src = nextUrl;
+        if (elements.latestPhotoBackdrop) elements.latestPhotoBackdrop.src = nextUrl;
+        displayedPhotoUrl = nextUrl;
+        elements.stage.classList.add("has-latest-photo");
+        elements.stage.classList.remove("is-photo-transitioning");
+        settlePhotoPending();
+        rememberPhoto(catId, nextUrl);
+      };
+      if (previousDisplayedUrl && previousDisplayedUrl !== nextUrl && elements.stage.classList.contains("has-latest-photo")) {
+        elements.stage.classList.add("is-photo-transitioning");
+        window.clearTimeout(photoSwapTimer);
+        photoSwapTimer = window.setTimeout(applyPhoto, 350);
+      } else {
+        applyPhoto();
+      }
     };
     preload.onerror = () => {
       if (token !== photoLoadToken) return;
+      window.clearTimeout(photoSwapTimer);
+      photoSwapTimer = undefined;
+      elements.stage.classList.remove("is-photo-transitioning");
+      const failedIndex = photoCarouselUrls.indexOf(nextUrl);
+      if (failedIndex !== -1) {
+        photoCarouselUrls.splice(failedIndex, 1);
+        photoCarouselSignature = photoCarouselUrls.join("\n");
+        if (photoCarouselUrls.length) {
+          photoCarouselIndex %= photoCarouselUrls.length;
+          setLatestPhoto(photoCarouselUrls[photoCarouselIndex], catId);
+          return;
+        }
+        stopPhotoCarousel();
+      }
       elements.stage.classList.remove("has-latest-photo");
       settlePhotoPending();
       rememberPhoto(catId, "");
     };
     preload.src = nextUrl;
+  }
+
+  function setLatestPhotos(urls, catId) {
+    const normalized = [...new Set((Array.isArray(urls) ? urls : [])
+      .filter((url) => typeof url === "string")
+      .map((url) => url.trim())
+      .filter(Boolean))];
+    if (!normalized.length) {
+      stopPhotoCarousel();
+      setLatestPhoto("", catId);
+      return;
+    }
+    const signature = normalized.join("\n");
+    if (signature === photoCarouselSignature) return;
+    stopPhotoCarousel();
+    photoCarouselUrls = normalized;
+    photoCarouselSignature = signature;
+    setLatestPhoto(photoCarouselUrls[0], catId);
+    if (photoCarouselUrls.length > 1) {
+      photoCarouselTimer = window.setInterval(() => {
+        if (document.visibilityState !== "visible" || photoCarouselUrls.length < 2) return;
+        photoCarouselIndex = (photoCarouselIndex + 1) % photoCarouselUrls.length;
+        setLatestPhoto(photoCarouselUrls[photoCarouselIndex], catId);
+      }, 5000);
+    }
   }
 
   function setPresence(presence, trip) {
@@ -304,12 +376,13 @@ const CatScene = (() => {
   }
 
   function revealPreview() {
+    stopPhotoCarousel();
     setLatestPhoto("");
     elements.companion.classList.remove("is-identity-pending");
   }
 
   scheduleIdle();
-  return Object.freeze({ setIdentity, setLatestPhoto, rememberedPhotoFor, setPresence, setScene, react, showToast, revealPreview });
+  return Object.freeze({ setIdentity, setLatestPhoto, setLatestPhotos, rememberedPhotoFor, setPresence, setScene, react, showToast, revealPreview });
 })();
 
 const CatShell = (() => {
@@ -374,13 +447,14 @@ const CatShell = (() => {
       const scene = nextState.scene || nextState.cat.scene || trip?.scene;
       CatScene.setScene(scene, presence, trip);
       const hasMessages = Array.isArray(nextState.messages);
-      const latestPhoto = (nextState.messages || []).find((message) => message.payload?.postcard_url)?.payload?.postcard_url
-        || scene?.photo_url
-        || trip?.postcard_url
-        // /api/cat/state carries no messages; until /api/cat/home answers, fall back to
-        // the photo this browser last showed for this same cat.
-        || (hasMessages ? "" : CatScene.rememberedPhotoFor(catId));
-      CatScene.setLatestPhoto(latestPhoto, catId);
+      const photoUrls = (nextState.messages || [])
+        .map((message) => message.payload?.postcard_url)
+        .filter(Boolean);
+      photoUrls.push(scene?.photo_url, trip?.postcard_url);
+      // /api/cat/state carries no messages; until /api/cat/home answers, fall back to
+      // the photo this browser last showed for this same cat.
+      if (!hasMessages) photoUrls.push(CatScene.rememberedPhotoFor(catId));
+      CatScene.setLatestPhotos(photoUrls, catId);
     }
   }
 
