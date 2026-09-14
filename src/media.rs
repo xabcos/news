@@ -18,6 +18,10 @@ use uuid::Uuid;
 
 const RENEW_BEFORE_SECS: i64 = 6 * 3600;
 const MAX_SYNC_SECS: u64 = 300;
+// Tiny square thumbnails are commonly used by publishers for "image unavailable"
+// placeholders. They are not useful as visual-news cards even when they return 200.
+const MIN_IMAGE_BYTES: usize = 4096;
+const MIN_IMAGE_DIMENSION: u32 = 320;
 
 #[derive(Debug, Deserialize)]
 struct UploadResponse {
@@ -122,6 +126,10 @@ pub(crate) async fn mirror_image(state: &AppState, mut image: NewsImage) -> Opti
         tracing::debug!(url = %origin, "news image is empty");
         return None;
     }
+    if !image_is_usable(&bytes) {
+        tracing::debug!(url = %origin, size = bytes.len(), "news image is too small or likely a placeholder");
+        return None;
+    }
 
     let extension = extension_for(content_type);
     let filename = format!("news-{}.{}", Uuid::new_v4(), extension);
@@ -187,6 +195,83 @@ pub(crate) async fn mirror_image(state: &AppState, mut image: NewsImage) -> Opti
     image.url = direct_url.to_string();
     image.expires_at = Some(uploaded.expires_at);
     Some(image)
+}
+
+fn image_is_usable(bytes: &[u8]) -> bool {
+    bytes.len() >= MIN_IMAGE_BYTES
+        && !image_dimensions(bytes).is_some_and(|(width, height)| {
+            width < MIN_IMAGE_DIMENSION || height < MIN_IMAGE_DIMENSION
+        })
+}
+
+/// Reads dimensions from the formats accepted above without decoding or trusting image
+/// metadata. Unknown formats are allowed through; the byte-size guard still rejects the
+/// tiny placeholder class this protects against.
+fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() >= 24 {
+        return Some((
+            u32::from_be_bytes(bytes[16..20].try_into().ok()?),
+            u32::from_be_bytes(bytes[20..24].try_into().ok()?),
+        ));
+    }
+    if (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")) && bytes.len() >= 10 {
+        return Some((
+            u16::from_le_bytes(bytes[6..8].try_into().ok()?) as u32,
+            u16::from_le_bytes(bytes[8..10].try_into().ok()?) as u32,
+        ));
+    }
+    if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        let chunk = bytes.get(12..16)?;
+        if chunk == b"VP8X" && bytes.len() >= 30 {
+            let width = 1 + u32::from_le_bytes([bytes[24], bytes[25], bytes[26], 0]);
+            let height = 1 + u32::from_le_bytes([bytes[27], bytes[28], bytes[29], 0]);
+            return Some((width, height));
+        }
+        if chunk == b"VP8 " {
+            let start = bytes
+                .windows(3)
+                .position(|window| window == b"\x9d\x01\x2a")?;
+            let start = start + 3;
+            if bytes.len() >= start + 4 {
+                let width = u16::from_le_bytes(bytes[start..start + 2].try_into().ok()?) & 0x3fff;
+                let height =
+                    u16::from_le_bytes(bytes[start + 2..start + 4].try_into().ok()?) & 0x3fff;
+                return Some((u32::from(width), u32::from(height)));
+            }
+        }
+    }
+    if bytes.starts_with(b"\xff\xd8") {
+        let mut index = 2;
+        while index + 9 < bytes.len() {
+            if bytes[index] != 0xff {
+                index += 1;
+                continue;
+            }
+            while index < bytes.len() && bytes[index] == 0xff {
+                index += 1;
+            }
+            let marker = *bytes.get(index)?;
+            index += 1;
+            if marker == 0xd8 || marker == 0xd9 || (0xd0..=0xd7).contains(&marker) {
+                continue;
+            }
+            let length = u16::from_be_bytes(bytes.get(index..index + 2)?.try_into().ok()?) as usize;
+            if length < 2 || index + length > bytes.len() {
+                return None;
+            }
+            if (0xc0..=0xc3).contains(&marker)
+                || (0xc5..=0xc7).contains(&marker)
+                || (0xc9..=0xcb).contains(&marker)
+                || (0xcd..=0xcf).contains(&marker)
+            {
+                let height = u16::from_be_bytes(bytes.get(index + 3..index + 5)?.try_into().ok()?);
+                let width = u16::from_be_bytes(bytes.get(index + 5..index + 7)?.try_into().ok()?);
+                return Some((u32::from(width), u32::from(height)));
+            }
+            index += length;
+        }
+    }
+    None
 }
 
 pub(crate) fn is_public_https_url(url: &Url) -> bool {
@@ -419,7 +504,7 @@ pub async fn startup_sync(state: &AppState) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::same_http_to_https_authority;
+    use super::{image_dimensions, image_is_usable, same_http_to_https_authority};
     use url::Url;
 
     #[test]
@@ -440,5 +525,21 @@ mod tests {
             &Url::parse("http://dl.xabclabs.com:8080/files/token").unwrap(),
             &base,
         ));
+    }
+
+    #[test]
+    fn rejects_tiny_placeholder_dimensions() {
+        let mut png = vec![0; 4096];
+        png[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        png[19] = 220;
+        png[23] = 220;
+        assert_eq!(image_dimensions(&png), Some((220, 220)));
+        assert!(!image_is_usable(&png));
+        png[18] = 2;
+        png[19] = 128;
+        png[22] = 2;
+        png[23] = 128;
+        assert_eq!(image_dimensions(&png), Some((640, 640)));
+        assert!(image_is_usable(&png));
     }
 }

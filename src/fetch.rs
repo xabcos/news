@@ -278,7 +278,7 @@ fn request_body(topic: &Topic, now: DateTime<Tz>, known: &[Known]) -> Value {
 
 fn instructions(topic: &Topic) -> String {
     let cover = if topic.owner_user_id.is_none() && topic.id == "p" {
-        "每条 items 最多选一张与该条新闻直接相关的真实照片，写入 image；只使用搜索/浏览结果中实际出现、可直接加载的 HTTPS 图片地址。image.source_url 必须复制对应 items 的文章/帖子 URL；caption/caption_en 只用一句话说明已核实的画面与事件，credit 保留摄影者或发布机构/账号。排除商标占位、广告、拼图、AI 生成图和血腥画面，找不到合适照片就把 image 设为 null；没有图片的新闻不要返回。cover 返回 null。"
+        "每条 items 最多选一张与该条内容直接相关的图片，写入 image。内容可来自三类：全球热点新闻现场、x.com 上有明确热度或传播证据的公开热帖、以及正在被广泛分享的公开美图/热图（自然风光、城市、动物、文化、人物写真、美女和时尚街拍等）。三类内容都必须有可核实的事件或画面背景；美图/热图要说明拍摄地点、时间或传播背景，不要把普通图库图包装成热点。允许使用合适的 AI 生成图，但必须在 caption/credit 中明确标注 AI generated，不能把生成图写成现场照片。人物和美女图片必须来自公开来源，排除私密、露骨、偷拍或未成年人性化内容。只使用搜索/浏览结果中实际出现、可直接加载的 HTTPS 图片地址。image.source_url 必须复制对应 items 的文章或 X 帖子 URL；caption/caption_en 只用一句话说明已核实的画面与事件，credit 保留摄影者或发布机构/账号。排除 Image not available、logo、默认缩略图、广告、拼图和血腥画面；找不到合适照片就把 image 设为 null；没有可靠图片的内容不要返回。cover 返回 null。"
     } else if topic.owner_user_id.is_none() && topic.id == IMAGE_TOPIC_ID {
         "cover 最多选一张与本次 items 中重要热点直接相关的真实照片，可来自新闻原文或 X 帖子。只使用搜索/浏览结果中实际出现、可直接加载的 HTTPS 图片地址；优先官方、媒体发布且有近期报道或互动证据的照片，不臆造图片链接、热度数字、全球排名或摄影师。source_url 必须复制对应 items 的文章/帖子 URL；caption/caption_en 只用一句话说明已核实的画面与事件，credit 保留摄影者或发布机构/账号。排除商标占位、广告、拼图、AI 生成图和血腥画面，旧图须明确其背景；找不到合适照片就返回 null，不凑图。不为每条新闻找图。"
     } else {
