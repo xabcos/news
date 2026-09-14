@@ -13,7 +13,7 @@ services:
     environment:
       TZ: Asia/Shanghai
       DATABASE_URL: postgres://postgres:io@news-postgres:5432/news?sslmode=disable
-      PUBLIC_BASE_URL: https://news.xairouter.com/
+      PUBLIC_BASE_URL: https://xabcnews.com
       NEWS_ADMIN_EMAILS: ${NEWS_ADMIN_EMAILS:-ywgx@xabcloud.com,ywgx@xairouter.com}
       NEWS_TIMEZONE: Asia/Shanghai
       NEWS_RETENTION_DAYS: ${NEWS_RETENTION_DAYS:-128}

@@ -114,7 +114,7 @@ YPay 租户后台应配置：
 ```text
 auth_mode         = store_token
 fulfillment_mode  = webhook
-fulfillment_url   = https://news.xairouter.com/api/webhooks/payment
+fulfillment_url   = https://xabcnews.com/api/webhooks/payment
 ```
 
 `fulfillment_secret` 与 NEWS 的 `PAYMENT_WEBHOOK_SECRET` 相同。NEWS 启动时要求 `YPAY_BASE_URL`、`YPAY_STORE_API_KEY`、`PAYMENT_WEBHOOK_SECRET` 三项要么全部配置、要么全部为空；支付未配置时普通账户仍可正常使用 Free。
@@ -227,7 +227,7 @@ YPAY_PAY_METHOD=native
 PAYMENT_WEBHOOK_SECRET
 ```
 
-宿主机 nginx 使用 `deploy/nginx/news.xairouter.com.conf`：`/api` 与 `/me` 直通，其余公共路径按服务的 `Cache-Control` 做源站微缓存。该文件必须被主配置的 `http {}` 块 include 才会生效，安装与 `nginx -T` 验证步骤和 Cloudflare 侧的 Cache Rule 见 README「反向代理与边缘缓存」。
+宿主机 nginx 使用 `deploy/nginx/xabcnews.com.conf`：`/api` 与 `/me` 直通，其余公共路径按服务的 `Cache-Control` 做源站微缓存。该文件必须被主配置的 `http {}` 块 include 才会生效，安装与 `nginx -T` 验证步骤和 Cloudflare 侧的 Cache Rule 见 README「反向代理与边缘缓存」。
 
 启动会自动执行 migrations。当前项目按全新部署设计，不保留旧白名单变量或旧订单结构的兼容分支。发布前运行：
 

@@ -2,18 +2,18 @@
 
 一个轻量的新闻聚合服务。NEWS 按主题调用 `grok-4.6`（Responses API，`web_search` + `x_search`）检索最新报道，按天写入 PostgreSQL，热数据放 Redis 和进程内存，对外提供无鉴权的公共 JSON API、Atom 源和一个简洁的聚合页；登录用户还可读取包含公共与个人主题的个性化摘要。每个有效邮箱都可以登录统一工作台 `/me/`；普通账户管理个人主题，管理员管理公共主题。
 
-生产地址：`https://news.xairouter.com`，工作台 `/me/`。设计说明见 [`DESIGN.md`](DESIGN.md)。
+生产地址：`https://xabcnews.com`，工作台 `/me/`。设计说明见 [`DESIGN.md`](DESIGN.md)。
 
 套餐只有两档：`free` 最多 1 个主题、最短 240 分钟；`pro` 最多 8 个主题、最短 60 分钟，微信支付 ¥99 开通 31 天（每日运行上限分别为 12 次和 48 次）。
 
 ## 公共 API
 
 ```text
-GET https://news.xairouter.com/digest?topic=ai&day=2026-09-03&limit=30&after=<next>
-GET https://news.xairouter.com/insight
-GET https://news.xairouter.com/topics
-GET https://news.xairouter.com/days?topic=ai&limit=30
-GET https://news.xairouter.com/feed.xml?topic=ai
+GET https://xabcnews.com/digest?topic=ai&day=2026-09-03&limit=30&after=<next>
+GET https://xabcnews.com/insight
+GET https://xabcnews.com/topics
+GET https://xabcnews.com/days?topic=ai&limit=30
+GET https://xabcnews.com/feed.xml?topic=ai
 ```
 
 - `topic` 省略时返回全部启用主题；`day` 省略时返回最近一个有内容的日期（响应里的 `day` 字段说明是哪一天）；`limit` 1–128，默认 32，每个主题各截一页。每个主题带 `next` 游标，把它作为 `after` 并指定同一个 `topic`、`day` 传回即可取下一页；`total` 始终是当天全部条数，读完时 `next` 为 `null`。游标按显示顺序（置顶、发布时间、收录时间、id）定位，两页之间新增或隐藏的条目不会被跳过或重复；翻页期间的置顶变化属于重新排序，被置顶的条目会在页面下一次刷新时出现在顶部，取消置顶的条目可能再次出现，调用方按 `id` 去重即可。`after` 无效或没有同时给 `topic` 时返回 400。
@@ -136,13 +136,13 @@ GET    /api/cat/guide              # 手动获取旧版猫咪领读（自动生�
 
 登录成功时除 HttpOnly 的会话 cookie 外，还会写入脚本可读的 `news_role`（值为 `user` 或 `admin`，有效期与会话相同）。它只用于首页决定先请求公共内容还是 `/api/me/feed`，服务端对该请求仍按会话鉴权；退出登录时两者一起清除，会话失效时首页也会自行清掉它。
 
-Pro 订单固定为 ¥99 / 31 天，通过 YPay 的 store-token 接口创建微信 Native 订单。YPay 租户使用 webhook fulfillment，回调地址为 `https://news.xairouter.com/api/webhooks/payment`，并将租户密钥与 `PAYMENT_WEBHOOK_SECRET` 保持一致；服务端只接受固定 Pro 金额，回调验签后延长 `users.pro_until`。
+Pro 订单固定为 ¥99 / 31 天，通过 YPay 的 store-token 接口创建微信 Native 订单。YPay 租户使用 webhook fulfillment，回调地址为 `https://xabcnews.com/api/webhooks/payment`，并将租户密钥与 `PAYMENT_WEBHOOK_SECRET` 保持一致；服务端只接受固定 Pro 金额，回调验签后延长 `users.pro_until`。
 
 `/api/plans` 返回套餐列表和 `checkout_enabled`；未配置完整 YPay 三项时，个人页会保留套餐说明但不显示可点击的升级按钮。
 
 ## 部署
 
-服务监听容器内 `8788`，`docker-compose.yml` 只绑定宿主机 `127.0.0.1:8793`；把 `news.xairouter.com` 的反向代理 upstream 指向它。`.env`（`0600`）提供 `NEWS_ADMIN_EMAILS`、`AI_API_KEY`、SMTP `EMAIL_PASS` 以及启用支付所需的 YPay 三项配置。YPay 侧需先创建与 `YPAY_TENANT_CODE` 对应的 NEWS 租户，并把 webhook fulfillment URL 指向上面的回调地址：
+服务监听容器内 `8788`，`docker-compose.yml` 只绑定宿主机 `127.0.0.1:8793`；把 `xabcnews.com` 的反向代理 upstream 指向它。`.env`（`0600`）提供 `NEWS_ADMIN_EMAILS`、`AI_API_KEY`、SMTP `EMAIL_PASS` 以及启用支付所需的 YPay 三项配置。YPay 侧需先创建与 `YPAY_TENANT_CODE` 对应的 NEWS 租户，并把 webhook fulfillment URL 指向上面的回调地址：
 
 ```bash
 cd /home/ywgx/1/news
@@ -155,24 +155,24 @@ docker-compose up -d
 
 ### 反向代理与边缘缓存
 
-`deploy/nginx/news.xairouter.com.conf` 是宿主机 nginx 的站点配置：upstream 指向 `127.0.0.1:8793` 并保持长连接，`/api` 与 `/me` 直通不缓存，其余公共路径按服务返回的 `Cache-Control` 做源站微缓存（并发请求合并、过期后台刷新、容器重启或出错时继续提供最近一份）。安装：
+`deploy/nginx/xabcnews.com.conf` 是宿主机 nginx 的站点配置：upstream 指向 `127.0.0.1:8793` 并保持长连接，`/api` 与 `/me` 直通不缓存，其余公共路径按服务返回的 `Cache-Control` 做源站微缓存（并发请求合并、过期后台刷新、容器重启或出错时继续提供最近一份）。安装：
 
 ```bash
 nginx -V 2>&1 | grep -o -- '--conf-path=[^ ]*'                       # 确认主配置位置，下面以 /etc/nginx 为例
 sudo mkdir -p /var/cache/nginx /etc/nginx/conf.d && sudo chown ywgx /var/cache/nginx   # 缓存目录归 nginx worker 用户
-sudo cp deploy/nginx/news.xairouter.com.conf /etc/nginx/conf.d/
+sudo cp deploy/nginx/xabcnews.com.conf /etc/nginx/conf.d/
 grep -n 'conf.d/\*.conf' /etc/nginx/nginx.conf                       # 没有输出就在 http {} 块内加一行 include /etc/nginx/conf.d/*.conf;
 sudo nginx -t && sudo nginx -s reload
-sudo nginx -T | grep -n 'news.xairouter.com\|proxy_cache news_cache'  # 能看到 server_name 和 proxy_cache 行才算生效
-curl -sI https://news.xairouter.com/digest | grep -i x-cache-status   # 连续两次，第二次应为 HIT
+sudo nginx -T | grep -n 'xabcnews.com\|proxy_cache news_cache'  # 能看到 server_name 和 proxy_cache 行才算生效
+curl -sI https://xabcnews.com/digest | grep -i x-cache-status   # 连续两次，第二次应为 HIT
 ```
 
-主配置里如果已经有一个 `server_name news.xairouter.com` 的旧 server 块，需要删掉，否则 nginx 只保留先出现的那一个并告警 conflicting server name。
+主配置里如果已经有一个 `server_name xabcnews.com` 的旧 server 块，需要删掉，否则 nginx 只保留先出现的那一个并告警 conflicting server name。
 
 Cloudflare 默认只缓存静态后缀，`/`、`/digest`、`/topics`、`/days`、`/insight` 每次都回源。要让边缘直接命中，在 Cloudflare 控制台为该域添加一条 Cache Rule，表达式：
 
 ```text
-(http.host eq "news.xairouter.com" and not starts_with(http.request.uri.path, "/api") and not starts_with(http.request.uri.path, "/me"))
+(http.host eq "xabcnews.com" and not starts_with(http.request.uri.path, "/api") and not starts_with(http.request.uri.path, "/me"))
 ```
 
 缓存资格选「Eligible for cache」，Edge TTL 选「Use cache-control header if present, bypass cache if not」，Browser TTL 选「Respect origin」。服务对错误响应和所有私有接口都返回 `no-store`，不会被误缓存；公共响应对所有访客相同，不依赖 cookie。

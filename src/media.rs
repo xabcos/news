@@ -68,7 +68,7 @@ pub(crate) async fn mirror_image(state: &AppState, mut image: NewsImage) -> Opti
     let mut response = match state
         .image_http
         .get(&origin)
-        .header(header::USER_AGENT, "news.xairouter.com image mirror")
+        .header(header::USER_AGENT, "xabcnews.com image mirror")
         .header(
             header::ACCEPT,
             "image/avif,image/webp,image/jpeg,image/png,image/gif",
