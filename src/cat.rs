@@ -1388,8 +1388,8 @@ async fn settle_one(state: &AppState, trip_id: Uuid) -> Result<()> {
             "location": location,
         }),
         None => json!({
-            "zh": format!("我去了{location}，在那里转了一圈才想起要回家。今天没能好好写信，先把这句话留给你，其他的等我下次说给你听。"),
-            "en": format!("I went to {location} and lost track of time before heading home. I could not write a full letter today, but I will tell you more next time."),
+            "zh": format!("我去了{location}，在那里转了一圈才想起要回家。今天没拍到满意的照片，下次再把更好的风景带给你。"),
+            "en": format!("I went to {location} and lost track of time before heading home. I did not get the photo I wanted today, so I will bring you a better view next time."),
             "fact": title,
             "source_url": source_url,
             "location": location,
