@@ -39,6 +39,10 @@ pub(crate) struct GenerateRequest {
     /// the trip's canonical postcard.
     #[serde(default)]
     pub(crate) scene_key: Option<String>,
+    /// Internal. `Some(true)` puts the cat's companion in the frame, `Some(false)`
+    /// keeps people out of it, `None` leaves the choice to the image model.
+    #[serde(default)]
+    pub(crate) companion: Option<bool>,
 }
 
 #[derive(Debug, FromRow)]
@@ -174,6 +178,7 @@ pub(crate) async fn generate_for_owner(
         &cat.initial_accessories,
         request.creative_direction.as_deref(),
         request.scene_key.is_some(),
+        request.companion,
     );
     let idempotency_key = format!("travel-cat:{source_key}");
     let preferred_model = if matches!(quality, "high" | "xhigh" | "max") {
@@ -305,17 +310,21 @@ pub(crate) async fn refresh_expiring(state: &AppState) -> Result<()> {
             purpose: Some("旅迹墙照片续期".into()),
             creative_direction: None,
             scene_key: None,
+            companion: None,
         };
         if let Err(error) = generate_for_owner(state, owner_id, &request, true).await {
             tracing::debug!(%error, %news_item_id, "cat postcard refresh deferred");
         }
     }
-    let scenes = sqlx::query_as::<_, (i64, Uuid, String)>(
-        r#"SELECT c.owner_user_id, p.news_item_id, p.source_key
+    let scenes = sqlx::query_as::<_, (i64, Uuid, String, Option<bool>)>(
+        r#"SELECT c.owner_user_id, p.news_item_id, p.source_key,
+                  (m.payload->>'with_companion')::boolean
            FROM cat_postcards p
            JOIN cats c ON c.id = split_part(p.source_key, ':', 2)::uuid
            JOIN items i ON i.id = p.news_item_id
            JOIN topics t ON t.id = i.topic_id
+           LEFT JOIN cat_messages m
+             ON m.cat_id = c.id AND m.payload->>'scene_key' = split_part(p.source_key, ':', 4)
            WHERE p.source_key LIKE 'cat:%:scene:%'
              AND p.expires_at > NOW()
              AND p.expires_at <= NOW() + INTERVAL '6 hours'
@@ -326,7 +335,7 @@ pub(crate) async fn refresh_expiring(state: &AppState) -> Result<()> {
     )
     .fetch_all(&state.pool)
     .await?;
-    for (owner_id, news_item_id, source_key) in scenes {
+    for (owner_id, news_item_id, source_key, companion) in scenes {
         let scene_key = source_key
             .split_once(":scene:")
             .map(|(_, key)| key.to_owned());
@@ -336,6 +345,7 @@ pub(crate) async fn refresh_expiring(state: &AppState) -> Result<()> {
             purpose: Some("四小时动态照片续期".into()),
             creative_direction: Some("保持生活主题，但改变光线、动作和镜头细节。".into()),
             scene_key,
+            companion,
         };
         if let Err(error) = generate_for_owner(state, owner_id, &request, true).await {
             tracing::debug!(%error, %news_item_id, "cat scene photo refresh deferred");
@@ -380,6 +390,7 @@ fn travel_prompt(
     accessories: &Value,
     creative_direction: Option<&str>,
     is_scene: bool,
+    companion: Option<bool>,
 ) -> String {
     let identity_description = identity_description(identity, accessories);
     let location = item
@@ -397,8 +408,17 @@ fn travel_prompt(
     } else {
         "Create a warm, original travel postcard for the player's adopted cat."
     };
+    let companion_direction = match companion {
+        Some(true) => {
+            "The cat's travel companion, a radiant, youthful, beautiful young woman, is in this scene with the cat in a natural, non-sexual public setting; do not depict a specific real person. Show her as a complete full-length figure from head to feet, fully inside the frame with the cat beside her; step the camera back to a wider shot rather than cropping her body at the edges or cutting to a close-up."
+        }
+        Some(false) => "No people appear in this image; the cat is on its own.",
+        None => {
+            "A radiant, youthful, beautiful young woman may appear as the cat's travel companion in a natural, non-sexual public scene; do not depict a specific real person. Whenever she appears, show her as a complete full-length figure from head to feet, fully inside the frame with the cat beside her; step the camera back to a wider shot rather than cropping her body at the edges or cutting to a close-up."
+        }
+    };
     format!(
-        "{scene_prefix} Purpose: {purpose}. Preserve this exact adopted identity across scenes: {identity_description}. Do not change the coat, eye color, marking, scarf, or initial accessories. The story tone is {} and the main setting is {}. Use the news facts only as inspiration for the setting, season, atmosphere, and cultural detail. Creative direction from the cat's private travel journal (a suggestion, not a fact): {direction}. Make this image distinct from previous updates by choosing a natural variation in activity, light, camera distance, and one small surprising detail. A friendly adult woman may appear as the cat's travel companion in a natural, non-sexual public scene; do not depict a specific real person. Do not depict logos, brands, political propaganda, graphic events, or copyrighted characters. Make the image feel safe, curious, gentle, and suitable for a family mobile game. Do not put text, letters, captions, logos, or watermarks inside the image. Editorial reference title: \"{}\". Editorial reference summary: \"{}\". Source publication: \"{}\". Use a clean 1:1 composition with room for a postcard caption.",
+        "{scene_prefix} Purpose: {purpose}. Preserve this exact adopted identity across scenes: {identity_description}. Do not change the coat, eye color, marking, scarf, or initial accessories. The story tone is {} and the main setting is {}. Use the news facts only as inspiration for the setting, season, atmosphere, and cultural detail. Creative direction from the cat's private travel journal (a suggestion, not a fact): {direction}. Make this image distinct from previous updates by choosing a natural variation in activity, light, camera distance, and one small surprising detail. {companion_direction} Do not depict logos, brands, political propaganda, graphic events, or copyrighted characters. Make the image feel safe, curious, gentle, and suitable for a family mobile game. Do not put text, letters, captions, logos, or watermarks inside the image. Editorial reference title: \"{}\". Editorial reference summary: \"{}\". Source publication: \"{}\". Use a clean 1:1 composition with room for a postcard caption.",
         item.tone,
         sanitize_fragment(location),
         sanitize_fragment(&item.title),

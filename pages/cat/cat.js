@@ -21,6 +21,7 @@ const CatScene = (() => {
     companion: document.querySelector("#catCompanion"),
     realisticImage: document.querySelector("#catRealisticImage"),
     latestPhoto: document.querySelector("#catLatestPhoto"),
+    latestPhotoBackdrop: document.querySelector("#catLatestPhotoBackdrop"),
     thought: document.querySelector("#catThought"),
     caption: document.querySelector("#catSceneCaption"),
     identityMeta: document.querySelector("#catIdentityMeta"),
@@ -203,23 +204,67 @@ const CatScene = (() => {
     elements.companion.setAttribute("aria-label", `一只${identityLabel}的旅行猫咪`);
   }
 
-  function setLatestPhoto(url) {
+  const PHOTO_STORAGE_KEY = "cat:latestPhoto";
+
+  function rememberPhoto(catId, url) {
+    try {
+      if (catId && url) window.localStorage.setItem(PHOTO_STORAGE_KEY, JSON.stringify({ cat: catId, url }));
+      else window.localStorage.removeItem(PHOTO_STORAGE_KEY);
+    } catch (_) {
+      // Without storage the page still works; it only loses the first-paint hint.
+    }
+  }
+
+  // Only reused for the cat the API has just confirmed, so switching accounts in one
+  // browser never shows the previous account's cat.
+  function rememberedPhotoFor(catId) {
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(PHOTO_STORAGE_KEY) || "null");
+      return stored && catId && stored.cat === catId && typeof stored.url === "string" ? stored.url : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function settlePhotoPending() {
+    elements.stage.classList.remove("is-photo-pending");
+    delete document.documentElement.dataset.catPhotoPending;
+  }
+
+  function setLatestPhoto(url, catId) {
     const nextUrl = typeof url === "string" ? url.trim() : "";
+    if (!nextUrl || !elements.latestPhoto) {
+      lastPhotoUrl = "";
+      photoLoadToken += 1;
+      elements.stage.classList.remove("has-latest-photo");
+      settlePhotoPending();
+      rememberPhoto(catId, "");
+      return;
+    }
     if (nextUrl === lastPhotoUrl) return;
     lastPhotoUrl = nextUrl;
     const token = ++photoLoadToken;
-    if (!nextUrl || !elements.latestPhoto) {
-      elements.stage.classList.remove("has-latest-photo");
-      return;
+    // While the cat is still hidden on first paint, keep it hidden until the photo
+    // has loaded; a cat that is already visible is cross-faded once the photo arrives.
+    const companionHidden = elements.companion.classList.contains("is-identity-pending")
+      || Boolean(document.documentElement.dataset.catPhotoPending);
+    if (companionHidden && !elements.stage.classList.contains("has-latest-photo")) {
+      elements.stage.classList.add("is-photo-pending");
     }
     const preload = new Image();
     preload.onload = () => {
       if (token !== photoLoadToken) return;
       elements.latestPhoto.src = nextUrl;
+      if (elements.latestPhotoBackdrop) elements.latestPhotoBackdrop.src = nextUrl;
       elements.stage.classList.add("has-latest-photo");
+      settlePhotoPending();
+      rememberPhoto(catId, nextUrl);
     };
     preload.onerror = () => {
-      if (token === photoLoadToken) elements.stage.classList.remove("has-latest-photo");
+      if (token !== photoLoadToken) return;
+      elements.stage.classList.remove("has-latest-photo");
+      settlePhotoPending();
+      rememberPhoto(catId, "");
     };
     preload.src = nextUrl;
   }
@@ -259,11 +304,12 @@ const CatScene = (() => {
   }
 
   function revealPreview() {
+    setLatestPhoto("");
     elements.companion.classList.remove("is-identity-pending");
   }
 
   scheduleIdle();
-  return Object.freeze({ setIdentity, setLatestPhoto, setPresence, setScene, react, showToast, revealPreview });
+  return Object.freeze({ setIdentity, setLatestPhoto, rememberedPhotoFor, setPresence, setScene, react, showToast, revealPreview });
 })();
 
 const CatShell = (() => {
@@ -324,10 +370,17 @@ const CatShell = (() => {
         : derivePresence(nextState.cat);
       const trip = nextState.cat.current_trip;
       CatScene.setPresence(presence, trip);
-      CatScene.setScene(nextState.scene || nextState.cat.scene || trip?.scene, presence, trip);
+      const catId = nextState.cat.id;
+      const scene = nextState.scene || nextState.cat.scene || trip?.scene;
+      CatScene.setScene(scene, presence, trip);
+      const hasMessages = Array.isArray(nextState.messages);
       const latestPhoto = (nextState.messages || []).find((message) => message.payload?.postcard_url)?.payload?.postcard_url
-        || trip?.postcard_url;
-      CatScene.setLatestPhoto(latestPhoto);
+        || scene?.photo_url
+        || trip?.postcard_url
+        // /api/cat/state carries no messages; until /api/cat/home answers, fall back to
+        // the photo this browser last showed for this same cat.
+        || (hasMessages ? "" : CatScene.rememberedPhotoFor(catId));
+      CatScene.setLatestPhoto(latestPhoto, catId);
     }
   }
 
