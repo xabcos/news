@@ -288,7 +288,7 @@ pub(crate) async fn record_message(
 
 async fn load_messages(pool: &PgPool, cat_id: Uuid, limit: i64) -> Result<Vec<Value>> {
     let rows = sqlx::query_as::<_, MessageRow>(
-        "SELECT id, kind, entity_id, payload, created_at, read_at FROM cat_messages WHERE cat_id = $1 ORDER BY created_at DESC LIMIT $2",
+        "SELECT id, kind, entity_id, payload, created_at, read_at FROM cat_messages WHERE cat_id = $1 AND kind <> 'guide' ORDER BY created_at DESC LIMIT $2",
     )
     .bind(cat_id)
     .bind(limit)
