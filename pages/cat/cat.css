@@ -82,6 +82,9 @@ html[data-cat-initial-presence="home_sleeping"] .cat-stage--art:not([data-presen
 .cat-realistic-image { position: absolute; inset: 0; display: none; width: 100%; height: 100%; object-fit: contain; object-position: center bottom; filter: drop-shadow(0 .45rem .45rem rgba(49, 39, 32, .16)); }
 .cat-companion.has-realistic-art .cat-realistic-image { display: block; }
 .cat-companion.has-realistic-art .cat-body-svg { display: none; }
+.cat-latest-photo { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; object-fit: cover; object-position: center; opacity: 0; filter: drop-shadow(0 .45rem .45rem rgba(49, 39, 32, .16)); transition: opacity .35s ease; }
+.cat-companion.has-latest-photo .cat-latest-photo { opacity: 1; }
+.cat-companion.has-latest-photo .cat-realistic-image { opacity: 0; }
 .cat-scene-overlay, .cat-scene-motion { position: absolute; z-index: 2; display: grid; width: 1.8rem; height: 1.8rem; place-items: center; border: 1px solid rgba(118,83,62,.16); border-radius: 50%; color: var(--cat-accent-dark); background: rgba(255,252,247,.82); box-shadow: 0 .35rem .8rem rgba(84,57,39,.12); font-size: .9rem; line-height: 1; pointer-events: none; }
 .cat-scene-overlay { right: 3%; bottom: 22%; }
 .cat-scene-motion { top: 8%; left: 4%; color: var(--cat-green); opacity: .82; }

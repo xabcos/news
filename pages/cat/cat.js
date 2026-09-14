@@ -20,6 +20,7 @@ const CatScene = (() => {
     stage: document.querySelector(".cat-stage"),
     companion: document.querySelector("#catCompanion"),
     realisticImage: document.querySelector("#catRealisticImage"),
+    latestPhoto: document.querySelector("#catLatestPhoto"),
     thought: document.querySelector("#catThought"),
     caption: document.querySelector("#catSceneCaption"),
     identityMeta: document.querySelector("#catIdentityMeta"),
@@ -32,6 +33,8 @@ const CatScene = (() => {
   let lastPresenceNote = "";
   let lastSceneSignature;
   let lastIdentityKey;
+  let lastPhotoUrl = "";
+  let photoLoadToken = 0;
   const IDLE_ACTIONS = ["blink", "look", "tail", "stretch"];
   const ACTIVITY_GLYPHS = Object.freeze({
     observe: "⌁", packing: "⌂", reading: "✉", wandering: "↝", stretching: "⌒",
@@ -200,6 +203,27 @@ const CatScene = (() => {
     elements.companion.setAttribute("aria-label", `一只${identityLabel}的旅行猫咪`);
   }
 
+  function setLatestPhoto(url) {
+    const nextUrl = typeof url === "string" ? url.trim() : "";
+    if (nextUrl === lastPhotoUrl) return;
+    lastPhotoUrl = nextUrl;
+    const token = ++photoLoadToken;
+    if (!nextUrl || !elements.latestPhoto) {
+      elements.companion.classList.remove("has-latest-photo");
+      return;
+    }
+    const preload = new Image();
+    preload.onload = () => {
+      if (token !== photoLoadToken) return;
+      elements.latestPhoto.src = nextUrl;
+      elements.companion.classList.add("has-latest-photo");
+    };
+    preload.onerror = () => {
+      if (token === photoLoadToken) elements.companion.classList.remove("has-latest-photo");
+    };
+    preload.src = nextUrl;
+  }
+
   function setPresence(presence, trip) {
     const nextPresence = presence || "home_awake";
     const note = trip?.note?.zh || "";
@@ -239,7 +263,7 @@ const CatScene = (() => {
   }
 
   scheduleIdle();
-  return Object.freeze({ setIdentity, setPresence, setScene, react, showToast, revealPreview });
+  return Object.freeze({ setIdentity, setLatestPhoto, setPresence, setScene, react, showToast, revealPreview });
 })();
 
 const CatShell = (() => {
@@ -301,6 +325,9 @@ const CatShell = (() => {
       const trip = nextState.cat.current_trip;
       CatScene.setPresence(presence, trip);
       CatScene.setScene(nextState.scene || nextState.cat.scene || trip?.scene, presence, trip);
+      const latestPhoto = (nextState.messages || []).find((message) => message.payload?.postcard_url)?.payload?.postcard_url
+        || trip?.postcard_url;
+      CatScene.setLatestPhoto(latestPhoto);
     }
   }
 

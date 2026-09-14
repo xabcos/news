@@ -855,7 +855,8 @@ async fn auto_scene(state: &AppState, cat_id: Uuid) -> Result<()> {
     .await?
     .ok_or_else(|| AppError::ServiceUnavailable("暂时没有可供猫咪出发的图片新闻".into()))?;
     let bucket = Utc::now().timestamp().div_euclid(4 * 3600);
-    let direction = scene_direction(cat_id, bucket, in_trip);
+    let activity = scene_activity(cat_id, bucket, in_trip).to_owned();
+    let direction = scene_direction(&activity);
     let location = sqlx::query_scalar::<_, Option<String>>(
         "SELECT location->>'name' FROM items WHERE id = $1",
     )
@@ -885,7 +886,7 @@ async fn auto_scene(state: &AppState, cat_id: Uuid) -> Result<()> {
         None,
         json!({
             "title": "猫咪动态",
-            "text": direction,
+            "text": activity,
             "scene_key": bucket,
             "activity": "wandering",
             "mood": "curious",
@@ -904,7 +905,7 @@ async fn auto_scene(state: &AppState, cat_id: Uuid) -> Result<()> {
     .bind(json!({ "scene_key": bucket, "news_item_id": source_id }))
     .execute(&state.pool)
     .await?;
-    let mut memories = vec![("scene", bucket.to_string(), direction.clone())];
+    let mut memories = vec![("scene", bucket.to_string(), activity)];
     if let Some(location) = location.filter(|value| !value.trim().is_empty()) {
         memories.push(("place", location.clone(), location));
     }
@@ -930,22 +931,22 @@ async fn owner_for_cat(state: &AppState, cat_id: Uuid) -> Result<i64> {
         .ok_or_else(|| AppError::Conflict("猫咪不存在".into()))
 }
 
-fn scene_direction(cat_id: Uuid, bucket: i64, in_trip: bool) -> String {
+fn scene_activity(cat_id: Uuid, bucket: i64, in_trip: bool) -> &'static str {
     const HOME_ACTIVITIES: [&str; 7] = [
-        "在院子里追一片飘动的叶子",
-        "在后院的草丛里探险，鼻尖沾着露水",
-        "夏夜在花园里轻轻追逐萤火虫",
-        "趴在窗边看雨滴滑过玻璃",
-        "把旅行纪念物带回院子，认真检查每一个细节",
-        "在夜色中的露台看远处灯火",
-        "蜷在背包旁打一个满足的盹",
+        "我在院子里追一片飘动的叶子",
+        "我钻进后院的草丛探险，鼻尖还沾着露水",
+        "夏夜里，我在花园轻轻追逐萤火虫",
+        "我趴在窗边看雨滴滑过玻璃",
+        "我把旅行纪念物带回院子，认真检查每一个细节",
+        "我在夜色中的露台看远处灯火",
+        "我蜷在背包旁打一个满足的盹",
     ];
     const TRAVEL_ACTIVITIES: [&str; 5] = [
-        "在阳光下和一位友善的成年女性旅伴散步合影",
-        "在街角小店外和一位成年女性旅伴分享风景",
-        "在旅途地点的市场里观察色彩鲜亮的小摊",
-        "在海边或湖边听浪，和一位成年女性旅伴留下合照",
-        "在林间小路上发现一朵小花",
+        "我在阳光下和一位友善的成年女性旅伴散步合影",
+        "我在街角小店外和一位成年女性旅伴分享风景",
+        "我在旅途地点的市场里观察色彩鲜亮的小摊",
+        "我在海边或湖边听浪，和一位成年女性旅伴留下合照",
+        "我在林间小路上发现一朵小花",
     ];
     let activities = if in_trip {
         &TRAVEL_ACTIVITIES[..]
@@ -953,9 +954,12 @@ fn scene_direction(cat_id: Uuid, bucket: i64, in_trip: bool) -> String {
         &HOME_ACTIVITIES[..]
     };
     let index = (cat_id.as_u128().wrapping_add(bucket as u128) % activities.len() as u128) as usize;
+    activities[index]
+}
+
+fn scene_direction(activity: &str) -> String {
     format!(
-        "猫咪此刻的动态：{}。画面要自然、温暖、有生活感，体现这次与之前不同。成年女性只作为公开旅行中的友善同行者，穿着日常服装，合照自然得体，不要性感摆拍，不要表现为真实特定人物。",
-        activities[index]
+        "把这段猫咪第一人称动态拍成自然、温暖、有生活感的照片：{activity}。体现这次与之前不同。成年女性只作为公开旅行中的友善同行者，穿着日常服装，合照自然得体，不要性感摆拍，不要表现为真实特定人物。"
     )
 }
 
@@ -1384,8 +1388,8 @@ async fn settle_one(state: &AppState, trip_id: Uuid) -> Result<()> {
             "location": location,
         }),
         None => json!({
-            "zh": format!("我去了{location}，看见了《{title}》背后的世界。事实先放在桌上：这是一条来自 NEWS 的记录，我们可以沿着来源继续了解。"),
-            "en": format!("I visited {location} and brought back a closer look at {title}. The fact comes from a NEWS source, so we can keep following the story."),
+            "zh": format!("我去了{location}，在那里转了一圈才想起要回家。今天没能好好写信，先把这句话留给你，其他的等我下次说给你听。"),
+            "en": format!("I went to {location} and lost track of time before heading home. I could not write a full letter today, but I will tell you more next time."),
             "fact": title,
             "source_url": source_url,
             "location": location,
