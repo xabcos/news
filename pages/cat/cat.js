@@ -211,15 +211,13 @@ const CatScene = (() => {
       home_sleeping: "猫咪已经睡着了",
       away: "猫咪正在旅途中",
       returning_soon: "猫咪快要回来了",
-      returned_unread: "猫咪带着旅程来信回来了",
       vigil: "猫咪在灯下安静地休息",
     };
     const captions = {
       home_awake: "在家 · 安静地生活",
       home_sleeping: "睡着了 · 房间替它守着夜",
-      away: "在路上 · 房间里留着一张便条",
+      away: "在路上 · 正在收集新的照片",
       returning_soon: "快回来了 · 门口的灯已经亮起",
-      returned_unread: "回来了 · 有一封信和一个包裹",
       vigil: "今晚在家 · 点一盏灯陪自己安静下来",
     };
     if (changed) {
@@ -249,11 +247,7 @@ const CatShell = (() => {
   const dialogEyebrow = document.querySelector("#dialogEyebrow");
   const dialogTitle = document.querySelector("#dialogTitle");
   const dialogBody = document.querySelector("#dialogBody");
-  const dialogNameField = document.querySelector("#dialogNameField");
-  const dialogName = document.querySelector("#dialogName");
   const dialogPrimary = document.querySelector("#dialogPrimary");
-  const catName = document.querySelector("#catName");
-  const unreadCount = document.querySelector("#catUnreadCount");
   const messagePreview = document.querySelector("#catMessagePreview");
   const todayPanel = document.querySelector("#catTodayPanel");
   const journalPanel = document.querySelector("#catJournalPanel");
@@ -287,8 +281,7 @@ const CatShell = (() => {
     dialogEyebrow.textContent = eyebrow;
     dialogTitle.textContent = title;
     dialogBody.textContent = body;
-    dialogNameField.hidden = mode !== "rename" && mode !== "adopt";
-    dialogPrimary.textContent = mode === "rename" ? "保存名字" : mode === "adopt" ? "确认领养" : "知道了";
+    dialogPrimary.textContent = mode === "adopt" ? "确认领养" : "知道了";
     if (typeof dialog.showModal === "function" && !dialog.open) dialog.showModal();
     else CatScene.showToast(body);
   }
@@ -296,14 +289,10 @@ const CatShell = (() => {
   function closeDialog() {
     if (dialog.open) dialog.close();
     dialogMode = "info";
-    dialogNameField.hidden = true;
   }
 
   function applyCatState(nextState) {
     catState = nextState;
-    const name = nextState.cat?.name;
-    if (name) catName.textContent = name;
-    if (typeof nextState.unread_count === "number") updateUnreadCount(nextState.unread_count);
     if (nextState.cat) {
       CatScene.setIdentity(nextState.cat.identity, nextState.cat.initial_accessories);
       const presence = Object.prototype.hasOwnProperty.call(nextState, "presence")
@@ -315,19 +304,8 @@ const CatShell = (() => {
     }
   }
 
-  function updateUnreadCount(value) {
-    const count = Math.max(0, Number(value) || 0);
-    unreadCount.textContent = String(count);
-    unreadCount.hidden = count < 1;
-    const inbox = document.querySelector("#catInbox");
-    inbox?.setAttribute("aria-label", count
-      ? `猫咪信箱，有 ${count} 条未读消息`
-      : "打开猫咪信箱");
-  }
-
   function derivePresence(cat) {
     const status = cat?.current_trip?.status;
-    if (status === "returned_unread") return "returned_unread";
     if (status === "away" || status === "settling") return "away";
     const hour = new Date().getHours();
     return hour < 6 || hour >= 23 ? "home_sleeping" : "home_awake";
@@ -338,7 +316,7 @@ const CatShell = (() => {
     const accessories = (preview.initial_accessories || []).map((item) => item.name).join("、");
     const coatNames = { orange_white: "橘白", cream_tabby: "奶油虎斑", silver_tabby: "银灰虎斑", black_white: "黑白" };
     const eyeNames = { amber: "琥珀色", green: "绿色", blue: "蓝色", hazel: "榛色" };
-    return `固定身份：${coatNames[identity.coat] || "独特毛色"}，${eyeNames[identity.eye_color] || "独特眼睛"}，${identity.marking || "特别印记"}。初始配饰：${accessories || "专属配饰"}。确认后身份和初始配饰不会改变，名字以后仍可修改。`;
+    return `固定身份：${coatNames[identity.coat] || "独特毛色"}，${eyeNames[identity.eye_color] || "独特眼睛"}，${identity.marking || "特别印记"}。初始配饰：${accessories || "专属配饰"}。确认后身份和初始配饰不会改变。`;
   }
 
   function escapeHtml(value) {
@@ -358,7 +336,7 @@ const CatShell = (() => {
 
   function messageView(message) {
     const payload = message.payload || {};
-    const labels = { welcome: "第一次相遇", guide: "猫咪领读", travel: "旅程动态", postcard: "旅程来信", growth: "成长记录", encounter: "共同世界" };
+    const labels = { welcome: "第一次相遇", guide: "旧日领读", travel: "猫咪动态", postcard: "旅程照片", growth: "成长记录", encounter: "共同世界" };
     const title = payload.title || labels[message.kind] || "猫咪的一条记录";
     const text = payload.text || payload.opening || payload.diary?.zh || "猫咪把这段生活收进了日志。";
     return { labels, title, text, payload };
@@ -377,11 +355,10 @@ const CatShell = (() => {
     }
     messagePreview.innerHTML = messages.map((message) => {
       const view = messageView(message);
-      const unread = message.read_at ? "" : " is-unread";
       const photo = view.payload.postcard_url
         ? `<div class="cat-message-card__photo" data-photo-frame><img src="${escapeHtml(view.payload.postcard_url)}" alt="${escapeHtml(view.title)}" loading="lazy"></div>`
         : "";
-      return `<article class="cat-message-card${unread}" data-message-id="${escapeHtml(message.id)}" role="button" tabindex="0">
+      return `<article class="cat-message-card">
         ${photo}
         <div class="cat-message-card__kind">${escapeHtml(view.labels[message.kind] || "猫咪记录")}</div>
         <h3>${escapeHtml(view.title)}</h3>
@@ -390,20 +367,14 @@ const CatShell = (() => {
       </article>`;
     }).join("");
     bindPhotoFallback(messagePreview);
-    messagePreview.querySelectorAll("[data-message-id]").forEach((card) => {
-      card.addEventListener("click", () => readMessage(card.dataset.messageId));
-      card.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          readMessage(card.dataset.messageId);
-        }
-      });
-    });
   }
 
   function renderJournal(items, filter = "all") {
     const visibleItems = items.filter((item) => item.kind !== "guide");
-    const visible = filter === "all" ? visibleItems : visibleItems.filter((item) => item.kind === filter);
+    const visible = filter === "all" ? visibleItems : visibleItems.filter((item) => {
+      if (filter === "postcard") return item.kind === "postcard" || Boolean(item.payload?.postcard_url);
+      return item.kind === filter;
+    });
     if (!visible.length) {
       journalGrid.innerHTML = '<div class="cat-empty">这一类日志还没有记录。猫咪正在慢慢生活。</div>';
       return;
@@ -441,32 +412,14 @@ const CatShell = (() => {
       <article class="cat-atlas-card"><strong>世界记忆 · ${memories.length}</strong><p class="cat-atlas-memory-list">${memoryText || "第一封信还在路上"}</p></article>`;
   }
 
-  async function readMessage(messageId) {
-    const card = document.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
-    card?.setAttribute("aria-busy", "true");
-    try {
-      const data = await api(`/api/cat/inbox/${messageId}/read`, { method: "POST" });
-      updateUnreadCount(data.unread_count);
-      card?.classList.remove("is-unread");
-      card?.setAttribute("aria-label", "已读信件");
-      CatScene.showToast("这封信已经收好了。");
-    } catch (error) {
-      CatScene.showToast(error.message || "信件状态暂时没有保存");
-    } finally {
-      card?.removeAttribute("aria-busy");
-    }
-  }
-
   async function showAdoptionPreview(existingDraft = null) {
     if (authState !== "authenticated") {
-      openDialog("登录后领养", "登录账户后，才能把这只猫咪的身份保存下来。访客仍可以先看看今天的世界来信。", "旅行猫咪");
+      openDialog("登录后领养", "登录账户后，才能把这只猫咪的生活保存下来。", "旅行猫咪");
       return;
     }
     try {
       adoptionPreview = existingDraft || await api("/api/cat/adoption/preview", { method: "POST" });
-      dialogName.value = "小满";
       openDialog("确认领养你的猫咪", identityText(adoptionPreview), "第一次相遇", "adopt");
-      dialogName.focus();
     } catch (error) {
       openDialog("暂时不能领养", error.message || "请稍后再试。", "旅行猫咪");
     }
@@ -474,17 +427,16 @@ const CatShell = (() => {
 
   async function confirmAdoption() {
     if (!adoptionPreview?.draft_id) return;
-    const name = dialogName.value.trim();
     dialogPrimary.disabled = true;
     try {
       const data = await api("/api/cat/adoption/confirm", {
         method: "POST",
-        body: JSON.stringify({ draft_id: adoptionPreview.draft_id, name }),
+        body: JSON.stringify({ draft_id: adoptionPreview.draft_id }),
       });
       applyCatState({ adopted: true, draft: null, cat: data });
       adoptionPreview = null;
       closeDialog();
-      CatScene.react(`${data.name}来到你的猫窝了。`, "我会记住我们的第一次相遇。 ");
+      CatScene.react("猫咪来到你的猫窝了。", "我会记住我们的第一次相遇。 ");
     } catch (error) {
       if (error.status === 409) {
         adoptionPreview = null;
@@ -492,21 +444,6 @@ const CatShell = (() => {
         return;
       }
       openDialog("领养还没有完成", error.message || "请重新生成一份身份预览。", "旅行猫咪", "info");
-    } finally {
-      dialogPrimary.disabled = false;
-    }
-  }
-
-  async function renameCat() {
-    const name = dialogName.value.trim();
-    dialogPrimary.disabled = true;
-    try {
-      const data = await api("/api/cat/name", { method: "PATCH", body: JSON.stringify({ name }) });
-      applyCatState({ ...catState, adopted: true, cat: data });
-      closeDialog();
-      CatScene.react(`${data.name}，这个名字很好听。`, "名字变了，还是同一只我。 ");
-    } catch (error) {
-      openDialog("名字没有保存", error.message || "请稍后再试。", "猫咪设置", "rename");
     } finally {
       dialogPrimary.disabled = false;
     }
@@ -546,34 +483,6 @@ const CatShell = (() => {
   }
 
   function bind() {
-    document.querySelector("#catSettings")?.addEventListener("click", () => {
-      if (!catState?.adopted) {
-        showAdoptionPreview(catState?.draft);
-        return;
-      }
-      dialogName.value = catState.cat.name;
-      openDialog("修改猫咪名字", "名字可以随时修改，但这仍然是同一只独一无二的猫咪。", "猫咪设置", "rename");
-      dialogName.focus();
-    });
-    document.querySelector("#catInbox")?.addEventListener("click", async () => {
-      if (authState !== "authenticated" || !catState?.adopted) {
-        await showAdoptionPreview(catState?.draft);
-        return;
-      }
-      try {
-        const data = await api("/api/cat/inbox");
-        updateUnreadCount(data.unread_count);
-        // The inbox is the place where every unread message can be opened. The
-        // home preview intentionally hides guide cards, but filtering guides
-        // here would leave their badge permanently unread and make the card
-        // impossible to reach.
-        renderMessages(data.items || []);
-        todayPanel.hidden = false;
-        messagePreview.scrollIntoView({ behavior: "smooth", block: "center" });
-      } catch (error) {
-        CatScene.showToast(error.message || "信箱暂时打不开");
-      }
-    });
     document.querySelectorAll("[data-journal-filter]").forEach((button) => {
       button.addEventListener("click", () => {
         document.querySelectorAll("[data-journal-filter]").forEach((item) => {
@@ -617,11 +526,7 @@ const CatShell = (() => {
     document.querySelector("#dialogClose")?.addEventListener("click", closeDialog);
     dialogPrimary?.addEventListener("click", () => {
       if (dialogMode === "adopt") confirmAdoption();
-      else if (dialogMode === "rename") renameCat();
       else closeDialog();
-    });
-    dialogName?.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") dialogPrimary.click();
     });
     dialog?.addEventListener("click", (event) => {
       if (event.target === dialog) closeDialog();

@@ -5,7 +5,7 @@ use axum::{
     http::{HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{any, get, patch, post},
+    routing::{any, get, post},
 };
 use std::time::Duration;
 use tower_http::{services::ServeDir, trace::TraceLayer};
@@ -30,14 +30,10 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/api/cat/home", get(cat::home))
         .route("/api/cat/adoption/preview", post(cat::preview))
         .route("/api/cat/adoption/confirm", post(cat::confirm))
-        .route("/api/cat/name", patch(cat::rename))
         .route("/api/cat/reading", post(cat::reading))
         .route("/api/cat/guide", get(cat_guide::today))
         .route("/api/cat/trips", get(cat::list_trips))
-        .route("/api/cat/trips/{trip_id}/read", post(cat::read_trip))
         .route("/api/cat/journal", get(cat::journal))
-        .route("/api/cat/inbox", get(cat::inbox))
-        .route("/api/cat/inbox/{message_id}/read", post(cat::read_message))
         .route("/api/cat/album", get(cat::album))
         .route("/api/cat/atlas", get(cat::atlas))
         .route("/api/cat/encounters", get(cat::encounters))

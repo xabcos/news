@@ -115,17 +115,15 @@ POST   /api/webhooks/payment
 GET    /api/cat/state             # 登录后读取领养、身份和成长状态
 POST   /api/cat/adoption/preview  # 生成服务端保存的领养身份预览
 POST   /api/cat/adoption/confirm  # 确认领养并永久固定身份与初始配饰
-PATCH  /api/cat/name              # 修改猫咪名字，不改变身份
 POST   /api/cat/reading            # 记录阅读新闻并形成猫咪记忆
 GET    /api/cat/trips              # 读取旅程历史
-POST   /api/cat/trips/{trip_id}/read # 打开归来的来信
 GET    /api/cat/album              # 读取已收藏的旅行明信片
 GET    /api/cat/atlas              # 读取成长配饰和世界记忆
 GET    /api/cat/encounters         # 读取多猫相遇记录
-GET    /api/cat/guide              # 获取猫咪今日领读、观点与继续了解建议
+GET    /api/cat/guide              # 手动获取旧版猫咪领读（自动生活循环不再依赖它）
 ```
 
-旅程结算维护任务按新闻条目和猫咪固定身份生成明信片，优先调用 GPT Image 2.5，失败后切换 Grok Image；两个提供商都失败时使用 NEWS 原图或模板明信片。所有结果都上传到必填的 `TMPFILE_BASE_URL`，浏览器只从猫咪来信和旅迹读取媒体服务返回的 HTTPS 地址。
+旅行猫咪每 4 小时自动生成一张新的生活照片：猫咪可以在院子、草丛、雨窗和夏夜萤火虫间活动，也可以在图片新闻地点旅行；旅行期间允许与友善的成年女性旅伴自然合照。图片新闻主题 `p` 只提供地点和视觉线索，不再驱动猫咪阅读全球新闻。每张动态照片都会写入旅程日志、图鉴记忆并避开上一轮的创意方向。图片生成优先调用 GPT Image 2.5，失败后切换 Grok Image；两个提供商都失败时使用 NEWS 原图或模板明信片。所有结果都上传到必填的 `TMPFILE_BASE_URL`，浏览器只读取媒体服务返回的 HTTPS 地址。
 
 管理员状态接口还返回 `users.active_7d` 和 `users.registered`；工作台将它们以
 `近 7 天活跃用户/注册用户` 的比例显示在状态行中。注册总数用 migration 执行时的当前用户数初始化，之后由数据库事务内维护的计数器提供；近 7 天活跃数只使用成功登录后写入的最后登录时间，不重建历史登录记录。

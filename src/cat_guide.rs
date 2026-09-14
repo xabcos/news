@@ -218,23 +218,6 @@ pub(crate) async fn today(State(state): State<AppState>, user: User) -> Result<R
         .into_response())
 }
 
-/// Runs one durable guide generation for the autonomous cat worker. It never
-/// holds a database transaction while the model is running and returns false
-/// when another request already owns today's brief.
-pub(crate) async fn ensure_today(state: &AppState, cat_id: Uuid, day: NaiveDate) -> Result<bool> {
-    if load_brief(&state.pool, cat_id, day)
-        .await?
-        .is_some_and(|brief| brief.status == "ok")
-    {
-        return Ok(false);
-    }
-    if !claim_brief(&state.pool, cat_id, day, &state.config.ai_default_model).await? {
-        return Ok(false);
-    }
-    finish_generation(state, cat_id, day).await?;
-    Ok(true)
-}
-
 async fn load_brief(pool: &PgPool, cat_id: Uuid, day: NaiveDate) -> Result<Option<StoredBrief>> {
     Ok(sqlx::query_as::<_, StoredBrief>(
         "SELECT status, payload, finished_at, attempts FROM cat_world_briefs WHERE cat_id = $1 AND day = $2",
@@ -609,6 +592,15 @@ pub(crate) async fn recent_creative_memory(pool: &PgPool, cat_id: Uuid) -> Resul
     .into_iter()
     .flatten()
     .collect::<Vec<_>>();
+    let dynamic_scenes = sqlx::query_scalar::<_, Option<Value>>(
+        "SELECT payload FROM cat_messages WHERE cat_id = $1 AND payload ? 'scene_key' ORDER BY created_at DESC LIMIT 12",
+    )
+    .bind(cat_id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
     let trips = sqlx::query_scalar::<_, Option<Value>>(
         "SELECT souvenir->'narrative' FROM cat_trips WHERE cat_id = $1 AND souvenir ? 'narrative' ORDER BY COALESCE(settled_at, returns_at) DESC LIMIT 6",
     )
@@ -626,7 +618,7 @@ pub(crate) async fn recent_creative_memory(pool: &PgPool, cat_id: Uuid) -> Resul
         })
     })
     .collect::<Vec<_>>();
-    Ok(json!({ "daily_scenes": scenes, "travel_moments": trips }))
+    Ok(json!({ "daily_scenes": scenes, "dynamic_scenes": dynamic_scenes, "travel_moments": trips }))
 }
 
 fn creative_seed(cat_id: Uuid, day: NaiveDate) -> String {

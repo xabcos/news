@@ -9,7 +9,7 @@
   <title>旅行猫咪 · 𝑪𝒂𝒕</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
   <script src="/cat/initial.js?v=1"></script>
-  <link rel="stylesheet" href="/cat/cat.css?v=6">
+  <link rel="stylesheet" href="/cat/cat.css?v=7">
 </head>
 <body class="cat-page">
   <main class="cat-shell" id="catApp">
@@ -21,15 +21,6 @@
       <div class="cat-wordmark" aria-label="旅行猫咪">
         <span class="cat-wordmark__mark">𝑪𝒂𝒕</span>
         <span class="cat-wordmark__name">旅行猫咪</span>
-      </div>
-      <div class="cat-top-actions">
-        <span class="cat-status-chip" id="catName">小满</span>
-        <button class="cat-icon-button cat-inbox-button" id="catInbox" type="button" aria-label="打开猫咪信箱" title="信箱">
-          <span aria-hidden="true">✉</span><b id="catUnreadCount" hidden>0</b>
-        </button>
-        <button class="cat-icon-button" id="catSettings" type="button" aria-label="设置" title="设置">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z" /><path d="m19 13.1 1.1.8-1.4 2.4-1.2-.5a7.5 7.5 0 0 1-1.7 1l-.1 1.3h-2.8l-.2-1.3a7.5 7.5 0 0 1-1.7-1l-1.2.5-1.4-2.4 1.1-.8a7 7 0 0 1 0-2.1l-1.1-.8 1.4-2.4 1.2.5a7.5 7.5 0 0 1 1.7-1l.2-1.3h2.8l.1 1.3a7.5 7.5 0 0 1 1.7 1l1.2-.5 1.4 2.4-1.1.8a7 7 0 0 1 0 2.1Z" /></svg>
-        </button>
       </div>
     </header>
 
@@ -89,14 +80,14 @@
 
     <section class="cat-today-panel" id="catTodayPanel" aria-label="猫咪近况">
       <div class="cat-panel-heading">
-        <div><p class="cat-eyebrow">CAT LIFE · 猫咪近况</p><h2 id="catPresenceTitle">猫咪正在窗边休息</h2></div>
+        <div><p class="cat-eyebrow">CAT LIFE · 猫咪动态</p><h2 id="catPresenceTitle">猫咪正在窗边休息</h2></div>
         <span class="cat-panel-meta" id="catPresenceMeta">它会自己生活，也会自己出发</span>
       </div>
       <div class="cat-message-preview" id="catMessagePreview"></div>
     </section>
 
     <section class="cat-content-panel" id="catJournalPanel" hidden aria-labelledby="journalHeading">
-      <div class="cat-panel-heading"><div><p class="cat-eyebrow">MEMORY · 旅迹墙</p><h2 id="journalHeading">猫咪旅迹</h2></div><span class="cat-panel-meta">照片、旅程与成长记录</span></div>
+      <div class="cat-panel-heading"><div><p class="cat-eyebrow">MEMORY · 旅迹墙</p><h2 id="journalHeading">动态照片与旅程</h2></div><span class="cat-panel-meta">照片、旅程与成长记录</span></div>
       <div class="cat-filter-row" role="toolbar" aria-label="日志筛选">
         <button class="cat-filter is-active" type="button" data-journal-filter="all" aria-pressed="true">全部</button>
         <button class="cat-filter" type="button" data-journal-filter="postcard" aria-pressed="false">照片</button>
@@ -124,14 +115,10 @@
     <p class="cat-eyebrow" id="dialogEyebrow">旅行猫咪</p>
     <h2 id="dialogTitle">准备好了吗？</h2>
     <p id="dialogBody">小满正在等你把今天的世界装进行李箱。</p>
-    <label class="cat-dialog__field" id="dialogNameField" hidden>
-      <span>猫咪名字</span>
-      <input id="dialogName" name="name" type="text" maxlength="24" autocomplete="off" value="小满">
-    </label>
     <div class="cat-dialog__actions">
       <button class="cat-button cat-button--primary" id="dialogPrimary" type="button">知道了</button>
     </div>
   </dialog>
-  <script src="/cat/cat.js?v=5" defer></script>
+  <script src="/cat/cat.js?v=6" defer></script>
 </body>
 </html>

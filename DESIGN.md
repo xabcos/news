@@ -171,14 +171,14 @@ PostgreSQL 事务写入 items + runs
 
 - 第一阶段每个账户拥有一只主猫；匿名访客的 guest cat 只保存在浏览器本地。后期家庭模式另行扩展，不改变主猫的身份归属。
 - 领养确认前可以预览身份和初始配饰。确认事务写入唯一身份快照、身份指纹和初始配饰；确认后这些字段不能更新、替换或重新生成。
-- 猫咪名字可以随时修改，名字不参与身份指纹。成长配饰、动作和能力只能追加解锁，初始配饰永远保留。
+- 页面使用固定的“旅行猫咪”称呼，不提供自定义名字入口。成长配饰、动作和能力只能追加解锁，初始配饰永远保留。
 - 成长以追加式 `cat_growth_events` 为事实记录。阶段、性格和解锁规则可以持续增加版本，但不能改写既有身份或历史事件。
 - 社交是默认世界状态，不提供拒绝、屏蔽或暂停入口。一次相遇可以包含任意数量的猫；不使用双猫专用字段，也不要求先加好友或逐次同意。
 - 第一版社交内容由固定短语和系统动作组成。名字、外观标记和共同旅程可以展示，但不暴露邮箱、账户 ID 或个人主题内容。
 
 ### 数据与接口边界
 
-旅行猫咪的核心表包括 `cats`、`cat_growth_events`、`cat_accessory_unlocks`、`cat_memories`、`cat_reading_daily`、`cat_personality_snapshots`、`cat_world_briefs`、`cat_trips`、`cat_postcards`、`cat_encounters` 和 `cat_encounter_members`。`cats.owner_user_id` 第一阶段唯一；身份快照和初始配饰由领养接口写入，名字通过单独接口修改。成长、阅读、旅行和相遇都写入幂等事件，性格与领读是可重算、可版本化的投影，避免刷新或重复请求重复成长。
+旅行猫咪的核心表包括 `cats`、`cat_growth_events`、`cat_accessory_unlocks`、`cat_memories`、`cat_reading_daily`、`cat_personality_snapshots`、`cat_world_briefs`、`cat_trips`、`cat_postcards`、`cat_encounters` 和 `cat_encounter_members`。`cats.owner_user_id` 第一阶段唯一；身份快照和初始配饰由领养接口写入。成长、旅行动态和相遇都写入幂等事件，场景记忆追加到 `cat_memories(kind = 'scene')`，避免刷新或重复请求重复成长。
 
 当前 M0–M4 接口如下：
 
@@ -186,21 +186,19 @@ PostgreSQL 事务写入 items + runs
 GET  /api/cat/state
 POST /api/cat/adoption/preview
 POST /api/cat/adoption/confirm
-PATCH /api/cat/name
 POST /api/cat/reading
 GET  /api/cat/trips
-POST /api/cat/trips/{trip_id}/read
 GET  /api/cat/album
 GET  /api/cat/atlas
 GET  /api/cat/encounters
 GET  /api/cat/guide
 ```
 
-`/api/cat/state` 是猫页面的主要水合入口，返回领养状态、固定身份、当前名字、成长阶段、已解锁内容、当前旅程和未读相遇。`/api/cat/guide` 按猫咪的可重算性格投影选择“重要 / 兴趣 / 探索”三条新闻，返回事实、猫咪观点、继续了解建议和独立的 X 语境；首次生成是异步的，接口先返回 `202 generating`，前端再读取按猫咪和服务时区日期缓存的结果。事实引用 NEWS 条目，X 热梗不能成为事实依据。旅行图片生成属于旅程归来结算，不属于按钮点击的同步请求。普通明信片按猫咪身份和新闻条目复用，多人合影按相遇共享，并统一上传到已经固化的 `TMPFILE_BASE_URL`；`TMPFILE_BASE_URL` 与 `TMPFILE_API_KEY` 始终视为必填基础设施。
+`/api/cat/state` 是猫页面的主要水合入口，返回领养状态、固定身份、成长阶段、已解锁内容、当前旅程和相遇。维护循环每 4 小时生成一张动态照片；在家时选择院子、草丛、雨窗和萤火虫等生活场景，旅行时从图片新闻主题 `p` 的地点选择取景，并可加入友善的成年女性旅伴合照。每次动态都记录到旅程日志、成长事件和场景记忆。`/api/cat/guide` 仅保留为兼容旧客户端的手动领读接口，自动生活循环不再读取全球新闻。
 
 ### 实施顺序
 
-先完成领养确认和不可变身份，再接入猫窝状态与成长事件；之后由维护循环在旅程结算时生成照片，再接入阅读记忆、成长配饰、相册和图鉴查询；最后扩展多人合影、来访和分享页。每个阶段都必须保留旧身份快照可读取，并允许新增成长规则而不修改历史数据。
+先完成领养确认和不可变身份，再接入猫窝状态与成长事件；之后由维护循环每 4 小时生成生活照片，并从图片新闻地点安排旅程，再接入成长配饰、相册和图鉴查询；最后扩展多人合影、来访和分享页。每个阶段都必须保留旧身份快照可读取，并允许新增成长规则而不修改历史数据。
 
 ## 9. 配置与部署
 

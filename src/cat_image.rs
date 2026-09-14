@@ -1,7 +1,7 @@
 //! Server-side travel image generation for Travel Cat.
 //!
-//! NEWS remains the source of facts and source photographs. This module turns one
-//! stored story and one adopted identity into a generated postcard during travel settlement. The primary GPT Image 2.5
+//! NEWS remains the source of locations and source photographs. This module turns one
+//! stored story and one adopted identity into a generated travel or life-scene photo. The primary GPT Image 2.5
 //! provider is followed by the ZAI Router Grok image provider, then a sourced NEWS
 //! photograph or a small SVG card keeps the trip usable when both providers fail.
 
@@ -34,6 +34,11 @@ pub(crate) struct GenerateRequest {
     /// an untrusted client and is bounded again before entering the prompt.
     #[serde(default)]
     pub(crate) creative_direction: Option<String>,
+    /// Internal scene bucket used by the autonomous life loop. Including it in the
+    /// cache key lets one story produce many distinct life photos without replacing
+    /// the trip's canonical postcard.
+    #[serde(default)]
+    pub(crate) scene_key: Option<String>,
 }
 
 #[derive(Debug, FromRow)]
@@ -136,7 +141,12 @@ pub(crate) async fn generate_for_owner(
 
     let quality = quality(&request.quality)?;
     let purpose = safe_purpose(request.purpose.as_deref());
-    let source_key = format!("cat:{}:news:{}", cat.id, item.id);
+    let source_key = request
+        .scene_key
+        .as_deref()
+        .filter(|key| !key.is_empty())
+        .map(|key| format!("cat:{}:scene:{}", cat.id, sanitize_fragment(key)))
+        .unwrap_or_else(|| format!("cat:{}:news:{}", cat.id, item.id));
     let mut cache_transaction = state.pool.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
         .bind(&source_key)
@@ -163,6 +173,7 @@ pub(crate) async fn generate_for_owner(
         &cat.identity,
         &cat.initial_accessories,
         request.creative_direction.as_deref(),
+        request.scene_key.is_some(),
     );
     let idempotency_key = format!("travel-cat:{source_key}");
     let preferred_model = if matches!(quality, "high" | "xhigh" | "max") {
@@ -277,6 +288,7 @@ pub(crate) async fn refresh_expiring(state: &AppState) -> Result<()> {
            JOIN topics t ON t.id = i.topic_id
            WHERE p.expires_at > NOW()
              AND p.expires_at <= NOW() + INTERVAL '6 hours'
+             AND p.source_key LIKE 'cat:%:news:%'
              AND i.hidden = FALSE
              AND t.enabled
              AND t.owner_user_id IS NULL
@@ -292,9 +304,41 @@ pub(crate) async fn refresh_expiring(state: &AppState) -> Result<()> {
             quality: Some("medium".into()),
             purpose: Some("旅迹墙照片续期".into()),
             creative_direction: None,
+            scene_key: None,
         };
         if let Err(error) = generate_for_owner(state, owner_id, &request, true).await {
             tracing::debug!(%error, %news_item_id, "cat postcard refresh deferred");
+        }
+    }
+    let scenes = sqlx::query_as::<_, (i64, Uuid, String)>(
+        r#"SELECT c.owner_user_id, p.news_item_id, p.source_key
+           FROM cat_postcards p
+           JOIN cats c ON c.id = split_part(p.source_key, ':', 2)::uuid
+           JOIN items i ON i.id = p.news_item_id
+           JOIN topics t ON t.id = i.topic_id
+           WHERE p.source_key LIKE 'cat:%:scene:%'
+             AND p.expires_at > NOW()
+             AND p.expires_at <= NOW() + INTERVAL '6 hours'
+             AND i.hidden = FALSE AND t.enabled
+             AND COALESCE(c.last_seen_at, c.adopted_at) >= NOW() - INTERVAL '48 hours'
+           ORDER BY p.expires_at
+           LIMIT 2"#,
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    for (owner_id, news_item_id, source_key) in scenes {
+        let scene_key = source_key
+            .split_once(":scene:")
+            .map(|(_, key)| key.to_owned());
+        let request = GenerateRequest {
+            news_item_id,
+            quality: Some("medium".into()),
+            purpose: Some("四小时动态照片续期".into()),
+            creative_direction: Some("保持生活主题，但改变光线、动作和镜头细节。".into()),
+            scene_key,
+        };
+        if let Err(error) = generate_for_owner(state, owner_id, &request, true).await {
+            tracing::debug!(%error, %news_item_id, "cat scene photo refresh deferred");
         }
     }
     Ok(())
@@ -335,6 +379,7 @@ fn travel_prompt(
     identity: &Value,
     accessories: &Value,
     creative_direction: Option<&str>,
+    is_scene: bool,
 ) -> String {
     let identity_description = identity_description(identity, accessories);
     let location = item
@@ -347,8 +392,13 @@ fn travel_prompt(
         .map(sanitize_fragment)
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "Choose a fresh, plausible activity and one small visual surprise that fits the cat's personality and the story tone.".into());
+    let scene_prefix = if is_scene {
+        "Create a warm, original candid life photo of the player's adopted cat. This is a spontaneous four-hour life update, not a news illustration. The cat may be at home in a yard or garden, or traveling at the story location."
+    } else {
+        "Create a warm, original travel postcard for the player's adopted cat."
+    };
     format!(
-        "Create a warm, original travel postcard for the player's adopted cat. Purpose: {purpose}. Preserve this exact adopted identity across scenes: {identity_description}. Do not change the coat, eye color, marking, scarf, or initial accessories. The story tone is {} and the main setting is {}. Use the news facts only as inspiration for the setting, season, atmosphere, and cultural detail. Creative direction from the cat's private travel journal (a suggestion, not a fact): {direction}. Make this postcard distinct from previous trips by choosing a natural variation in activity, light, camera distance, and one small surprising detail. Do not depict real people, logos, brands, political propaganda, graphic events, or copyrighted characters. Make the image feel safe, curious, gentle, and suitable for a family mobile game. Do not put text, letters, captions, logos, or watermarks inside the image. Editorial reference title: \"{}\". Editorial reference summary: \"{}\". Source publication: \"{}\". Use a clean 1:1 composition with room for a postcard caption.",
+        "{scene_prefix} Purpose: {purpose}. Preserve this exact adopted identity across scenes: {identity_description}. Do not change the coat, eye color, marking, scarf, or initial accessories. The story tone is {} and the main setting is {}. Use the news facts only as inspiration for the setting, season, atmosphere, and cultural detail. Creative direction from the cat's private travel journal (a suggestion, not a fact): {direction}. Make this image distinct from previous updates by choosing a natural variation in activity, light, camera distance, and one small surprising detail. A friendly adult woman may appear as the cat's travel companion in a natural, non-sexual public scene; do not depict a specific real person. Do not depict logos, brands, political propaganda, graphic events, or copyrighted characters. Make the image feel safe, curious, gentle, and suitable for a family mobile game. Do not put text, letters, captions, logos, or watermarks inside the image. Editorial reference title: \"{}\". Editorial reference summary: \"{}\". Source publication: \"{}\". Use a clean 1:1 composition with room for a postcard caption.",
         item.tone,
         sanitize_fragment(location),
         sanitize_fragment(&item.title),
