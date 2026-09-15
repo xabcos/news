@@ -322,7 +322,9 @@ pub(crate) fn router() -> Router<AppState> {
 /// When the topic should run next, in UTC. `last` is the run the cadence continues from;
 /// `None` (a new or re-enabled topic) asks for the first run as soon as the window allows.
 /// Failures back off exponentially from 15 minutes, never beyond the normal interval, and
-/// a topic that has hit its daily cap waits for the next day's window.
+/// a topic that has hit its daily cap waits for the next day's window. When
+/// `window_end` is earlier than `window_start`, the window crosses midnight and
+/// weekdays are attached to the day on which the window starts.
 pub fn next_run(
     topic: &Topic,
     tz: Tz,
@@ -352,22 +354,44 @@ pub fn next_run_with_min_interval(
     ));
     let now = local(now);
     let mut candidate = last.map_or(now, |at| local(at) + delay).max(now);
+    let overnight = topic.window_start > topic.window_end;
     if today_runs >= i64::from(topic.daily_run_cap) {
-        candidate = candidate.max(next_day(now.date()).and_time(NaiveTime::MIN));
+        let anchor_day = if overnight && (now.hour() as i32) < topic.window_end {
+            now.date().pred_opt().expect("date in range")
+        } else {
+            now.date()
+        };
+        candidate = candidate.max(next_window_start(topic, next_day(anchor_day)));
     }
-    let window_start = |day: NaiveDate| {
-        day.and_hms_opt(topic.window_start as u32, 0, 0)
-            .expect("hour below 24")
-    };
     loop {
         let day = candidate.date();
-        let weekday = day.weekday().number_from_monday() as i16;
-        if !topic.weekdays.contains(&weekday) || candidate.hour() as i32 >= topic.window_end {
-            candidate = window_start(next_day(day));
-        } else if (candidate.hour() as i32) < topic.window_start {
-            candidate = window_start(day);
+        let hour = candidate.hour() as i32;
+        if overnight {
+            // After midnight, the active window belongs to the previous day's
+            // start date. The daytime gap rolls forward to the next start.
+            let anchor_day = if hour < topic.window_end {
+                day.pred_opt().expect("date in range")
+            } else {
+                day
+            };
+            let in_window = hour >= topic.window_start || hour < topic.window_end;
+            if in_window
+                && topic
+                    .weekdays
+                    .contains(&(anchor_day.weekday().number_from_monday() as i16))
+            {
+                break;
+            }
+            candidate = next_window_start(topic, day);
         } else {
-            break;
+            let weekday = day.weekday().number_from_monday() as i16;
+            if !topic.weekdays.contains(&weekday) || hour >= topic.window_end {
+                candidate = next_window_start(topic, next_day(day));
+            } else if hour < topic.window_start {
+                candidate = next_window_start(topic, day);
+            } else {
+                break;
+            }
         }
     }
     to_utc(tz, candidate)
@@ -391,6 +415,19 @@ pub(crate) fn effective_run_delay_minutes(
 
 fn next_day(day: NaiveDate) -> NaiveDate {
     day.succ_opt().expect("date in range")
+}
+
+fn next_window_start(topic: &Topic, from: NaiveDate) -> NaiveDateTime {
+    let mut day = from;
+    loop {
+        let weekday = day.weekday().number_from_monday() as i16;
+        if topic.weekdays.contains(&weekday) {
+            return day
+                .and_hms_opt(topic.window_start as u32, 0, 0)
+                .expect("hour below 24");
+        }
+        day = next_day(day);
+    }
 }
 
 /// Resolves a wall-clock time in `tz`; a time skipped by a DST gap rolls forward an hour.
@@ -1072,7 +1109,9 @@ fn map_db_error(error: sqlx::Error) -> AppError {
                 Some("topics_description_valid") => "说明不超过 200 字",
                 Some("topics_brief_valid") => "方向描述不能为空且不超过 2000 字",
                 Some("topics_interval_valid") => "间隔必须在 15 到 1440 分钟之间",
-                Some("topics_window_valid") => "时间窗必须是 0 到 24 点之间的有效区间",
+                Some("topics_window_valid") => {
+                    "时间窗必须有效；结束时间早于开始时间表示跨午夜，且两者不能相同"
+                }
                 Some("topics_weekdays_valid") => "星期必须是 1 到 7 的非空列表",
                 Some("topics_model_valid") => "模型名称无效",
                 Some("topics_effort_valid") => "reasoning_effort 必须是 low、medium 或 high",
@@ -1120,6 +1159,15 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
+    }
+
+    fn overnight_topic() -> Topic {
+        let mut topic = topic();
+        topic.id = "overnight".into();
+        topic.window_start = 22;
+        topic.window_end = 6;
+        topic.interval_minutes = 60;
+        topic
     }
 
     // 2026-09-03 is a Thursday.
@@ -1170,6 +1218,68 @@ mod tests {
         assert_eq!(
             next_run(&topic(), Shanghai, local(2026, 9, 3, 4, 0), None, 0),
             local(2026, 9, 3, 6, 0)
+        );
+    }
+
+    #[test]
+    fn supports_overnight_windows_and_assigns_after_midnight_to_start_day() {
+        let overnight = overnight_topic();
+        // Thursday's window starts at 22:00.
+        assert_eq!(
+            next_run(
+                &overnight,
+                Shanghai,
+                local(2026, 9, 3, 21, 0),
+                Some(local(2026, 9, 3, 21, 0)),
+                1
+            ),
+            local(2026, 9, 3, 22, 0)
+        );
+        // Friday 02:00 still belongs to Thursday's allowed window.
+        assert_eq!(
+            next_run(
+                &overnight,
+                Shanghai,
+                local(2026, 9, 4, 2, 0),
+                Some(local(2026, 9, 4, 1, 0)),
+                1
+            ),
+            local(2026, 9, 4, 2, 0)
+        );
+        // The daytime gap resumes at Friday 22:00.
+        assert_eq!(
+            next_run(
+                &overnight,
+                Shanghai,
+                local(2026, 9, 4, 7, 0),
+                Some(local(2026, 9, 4, 5, 0)),
+                1
+            ),
+            local(2026, 9, 4, 22, 0)
+        );
+        // Saturday morning is still Friday's window; after it closes, skip to Monday.
+        assert_eq!(
+            next_run(
+                &overnight,
+                Shanghai,
+                local(2026, 9, 5, 7, 0),
+                Some(local(2026, 9, 5, 5, 0)),
+                1
+            ),
+            local(2026, 9, 7, 22, 0)
+        );
+        // A cap reached after midnight waits for that day's next start, not the following day.
+        let mut capped = overnight.clone();
+        capped.daily_run_cap = 1;
+        assert_eq!(
+            next_run(
+                &capped,
+                Shanghai,
+                local(2026, 9, 4, 2, 0),
+                Some(local(2026, 9, 4, 1, 0)),
+                1
+            ),
+            local(2026, 9, 4, 22, 0)
         );
     }
 

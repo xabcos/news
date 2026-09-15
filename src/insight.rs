@@ -26,6 +26,7 @@ const INSIGHT_HISTORY_DAYS: i64 = 7;
 const COVER_DEDUP_HOURS: i64 = 32;
 const RETRY_DELAYS: [u64; 2] = [10, 30];
 const MAX_ERROR: usize = 300;
+const STATS_BASELINE_DAYS: i64 = 7;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct InsightSignal {
@@ -58,6 +59,8 @@ pub(crate) struct InsightSignal {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub risk_en: String,
     pub confidence: i16,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub evidence_grade: String,
     #[serde(default)]
     pub source_indexes: Vec<usize>,
 }
@@ -70,6 +73,10 @@ pub(crate) struct InsightAnalysis {
     pub overview_en: String,
     pub changes: String,
     pub changes_en: String,
+    #[serde(default)]
+    pub data_signals: Vec<InsightSignal>,
+    #[serde(default)]
+    pub watch_signals: Vec<InsightSignal>,
     #[serde(default)]
     pub changes_source_indexes: Vec<usize>,
     #[serde(default, skip_serializing)]
@@ -101,7 +108,62 @@ pub(crate) struct InsightSource {
     pub importance: i16,
     pub first_seen_at: DateTime<Utc>,
     #[serde(default)]
+    pub published_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub last_seen_at: Option<DateTime<Utc>>,
+    #[serde(default = "default_seen_count")]
+    pub seen_count: i32,
+    #[serde(default)]
     pub image: Option<NewsImage>,
+}
+
+fn default_seen_count() -> i32 {
+    1
+}
+
+#[derive(Debug, Serialize)]
+struct InsightStats {
+    total_items: i64,
+    topics: Vec<InsightTopicStats>,
+    top_tags: Vec<InsightTagStats>,
+}
+
+#[derive(Debug, Serialize)]
+struct InsightTopicStats {
+    topic: String,
+    topic_en: String,
+    current_items: i64,
+    previous_7d_items: i64,
+    previous_daily_average: f64,
+    change_percent: Option<f64>,
+    repeated_items: i64,
+    source_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct InsightTagStats {
+    tag: String,
+    current_items: i64,
+    previous_7d_items: i64,
+    previous_daily_average: f64,
+    change_percent: Option<f64>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct InsightTopicStatsRow {
+    topic: String,
+    topic_en: String,
+    current_items: i64,
+    previous_7d_items: i64,
+    repeated_items: i64,
+    source_count: i64,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct InsightTagStatsRow {
+    tag: String,
+    current_items: i64,
+    previous_7d_items: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -144,6 +206,9 @@ struct SourceRow {
     tags: Vec<String>,
     importance: i16,
     first_seen_at: DateTime<Utc>,
+    published_at: Option<DateTime<Utc>>,
+    last_seen_at: DateTime<Utc>,
+    seen_count: i32,
     cover: Option<Value>,
 }
 
@@ -332,8 +397,10 @@ async fn render_latest(state: &AppState) -> Result<Rendered> {
 /// next run's cover rotation.
 fn cited_sources(analysis: &InsightAnalysis, sources: Vec<InsightSource>) -> Vec<InsightSource> {
     let cited = analysis
-        .wealth
+        .data_signals
         .iter()
+        .chain(&analysis.watch_signals)
+        .chain(&analysis.wealth)
         .chain(&analysis.employment)
         .chain(&analysis.risks)
         .chain(&analysis.actions)
@@ -345,6 +412,92 @@ fn cited_sources(analysis: &InsightAnalysis, sources: Vec<InsightSource>) -> Vec
         .into_iter()
         .filter(|source| cited.contains(&source.index))
         .collect()
+}
+
+async fn collect_stats(state: &AppState, window_start: DateTime<Utc>) -> Result<InsightStats> {
+    let previous_start = window_start - ChronoDuration::days(STATS_BASELINE_DAYS);
+    let topic_rows = sqlx::query_as::<_, InsightTopicStatsRow>(
+        "SELECT topics.name AS topic, topics.name_en AS topic_en,
+                COUNT(*) FILTER (WHERE items.first_seen_at >= $1) AS current_items,
+                COUNT(*) FILTER (
+                    WHERE items.first_seen_at >= $2 AND items.first_seen_at < $1
+                ) AS previous_7d_items,
+                COUNT(*) FILTER (
+                    WHERE items.first_seen_at >= $1 AND items.seen_count > 1
+                ) AS repeated_items,
+                COUNT(DISTINCT items.source) FILTER (
+                    WHERE items.first_seen_at >= $1
+                ) AS source_count
+         FROM items JOIN topics ON topics.id = items.topic_id
+         WHERE topics.enabled AND topics.owner_user_id IS NULL
+           AND NOT items.hidden AND items.first_seen_at >= $2
+         GROUP BY topics.id, topics.name, topics.name_en
+         ORDER BY current_items DESC, previous_7d_items DESC, topics.id",
+    )
+    .bind(window_start)
+    .bind(previous_start)
+    .fetch_all(&state.pool)
+    .await?;
+    let tag_rows = sqlx::query_as::<_, InsightTagStatsRow>(
+        "SELECT tag.value AS tag,
+                COUNT(*) FILTER (WHERE items.first_seen_at >= $1) AS current_items,
+                COUNT(*) FILTER (
+                    WHERE items.first_seen_at >= $2 AND items.first_seen_at < $1
+                ) AS previous_7d_items
+         FROM items
+         JOIN topics ON topics.id = items.topic_id
+         CROSS JOIN LATERAL unnest(items.tags) AS tag(value)
+         WHERE topics.enabled AND topics.owner_user_id IS NULL
+           AND NOT items.hidden AND items.first_seen_at >= $2
+         GROUP BY tag.value
+         ORDER BY current_items DESC, previous_7d_items DESC, tag
+         LIMIT 16",
+    )
+    .bind(window_start)
+    .bind(previous_start)
+    .fetch_all(&state.pool)
+    .await?;
+    let topics = topic_rows
+        .into_iter()
+        .map(|row| InsightTopicStats {
+            topic: row.topic,
+            topic_en: row.topic_en,
+            current_items: row.current_items,
+            previous_7d_items: row.previous_7d_items,
+            previous_daily_average: daily_average(row.previous_7d_items),
+            change_percent: percent_change(row.current_items, row.previous_7d_items),
+            repeated_items: row.repeated_items,
+            source_count: row.source_count,
+        })
+        .collect::<Vec<_>>();
+    let top_tags = tag_rows
+        .into_iter()
+        .map(|row| InsightTagStats {
+            tag: row.tag,
+            current_items: row.current_items,
+            previous_7d_items: row.previous_7d_items,
+            previous_daily_average: daily_average(row.previous_7d_items),
+            change_percent: percent_change(row.current_items, row.previous_7d_items),
+        })
+        .collect::<Vec<_>>();
+    let total_items = topics.iter().map(|topic| topic.current_items).sum();
+    Ok(InsightStats {
+        total_items,
+        topics,
+        top_tags,
+    })
+}
+
+fn daily_average(items: i64) -> f64 {
+    ((items as f64 / STATS_BASELINE_DAYS as f64) * 10.0).round() / 10.0
+}
+
+fn percent_change(current: i64, previous: i64) -> Option<f64> {
+    let baseline = previous as f64 / STATS_BASELINE_DAYS as f64;
+    if baseline == 0.0 {
+        return None;
+    }
+    Some((((current as f64 - baseline) / baseline) * 100.0 * 10.0).round() / 10.0)
 }
 
 async fn run(
@@ -369,21 +522,36 @@ async fn run(
 
 async fn execute(state: &AppState, window_start: DateTime<Utc>) -> Result<Completed> {
     let rows = sqlx::query_as::<_, SourceRow>(
-        "SELECT topics.id AS topic_id, topics.name AS topic, topics.name_en AS topic_en,
-                items.title, items.title_en, items.summary, items.summary_en, items.url,
-                items.source, items.tags, items.importance, items.first_seen_at,
-                COALESCE(NULLIF(runs.payload->'cover', 'null'::jsonb), items.image) AS cover
-         FROM items JOIN topics ON topics.id = items.topic_id
-         LEFT JOIN runs ON runs.id = items.first_run_id
-         WHERE topics.enabled AND topics.owner_user_id IS NULL
-           AND NOT items.hidden AND items.first_seen_at >= $1
-         ORDER BY items.importance DESC, items.first_seen_at DESC
+        "WITH candidates AS (
+             SELECT topics.id AS topic_id, topics.name AS topic, topics.name_en AS topic_en,
+                    items.title, items.title_en, items.summary, items.summary_en, items.url,
+                    items.source, items.tags, items.importance, items.first_seen_at,
+                    items.published_at, items.last_seen_at, items.seen_count, items.id AS item_id,
+                    COALESCE(NULLIF(runs.payload->'cover', 'null'::jsonb), items.image) AS cover,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY topics.id
+                        ORDER BY items.importance DESC, items.first_seen_at DESC, items.id DESC
+                    ) AS topic_rank
+             FROM items JOIN topics ON topics.id = items.topic_id
+             LEFT JOIN runs ON runs.id = items.first_run_id
+             WHERE topics.enabled AND topics.owner_user_id IS NULL
+               AND NOT items.hidden AND items.first_seen_at >= $1
+         ), topic_total AS (
+             SELECT COUNT(DISTINCT topic_id)::numeric AS total FROM candidates
+         )
+         SELECT topic_id, topic, topic_en, title, title_en, summary, summary_en, url,
+                source, tags, importance, first_seen_at, published_at, last_seen_at,
+                seen_count, cover
+         FROM candidates CROSS JOIN topic_total
+         WHERE topic_rank <= GREATEST(1, CEIL($2::numeric / NULLIF(topic_total.total, 0)))
+         ORDER BY importance DESC, first_seen_at DESC, item_id DESC
          LIMIT $2",
     )
     .bind(window_start)
     .bind(SOURCE_LIMIT)
     .fetch_all(&state.pool)
     .await?;
+    let stats = collect_stats(state, window_start).await?;
     let mut sources = rows
         .into_iter()
         .enumerate()
@@ -407,6 +575,9 @@ async fn execute(state: &AppState, window_start: DateTime<Utc>) -> Result<Comple
                 tags: row.tags,
                 importance: row.importance,
                 first_seen_at: row.first_seen_at,
+                published_at: row.published_at,
+                last_seen_at: Some(row.last_seen_at),
+                seen_count: row.seen_count,
                 image,
             }
         })
@@ -468,6 +639,7 @@ async fn execute(state: &AppState, window_start: DateTime<Utc>) -> Result<Comple
     .await?;
     let recent_cover_text = serde_json::to_string(&recent_cover_urls)?;
     let source_text = serde_json::to_string(&sources)?;
+    let stats_text = serde_json::to_string(&stats)?;
     let history_text = serde_json::to_string(&history)?;
     let tools = if state.config.ai_insight_model.starts_with("grok") {
         json!([{ "type": "web_search" }, { "type": "x_search" }])
@@ -482,9 +654,9 @@ async fn execute(state: &AppState, window_start: DateTime<Utc>) -> Result<Comple
         "tool_choice": "auto",
         "instructions": instructions(),
         "input": format!(
-            "当前时间：{}\n分析窗口起点：{}\n最近24小时新闻（按重要度排序）：{}\n最近7天每日最后一份研判（按服务时区日期倒序）：{}\n最近32小时已使用的配图 URL（优先避开重复）：{}\n如已有资料不足以支撑趋势、商业价值或前瞻判断，可调用搜索工具补充公开数据；只保留实际使用的检索来源。若历史研判为空，这是首次分析；changes 自然说明观察起点，不要用固定套话。历史研判仅用于识别趋势和复核判断，不要逐条复述；历史研判中的 source_indexes 和 cover_source_index 只属于当日新闻集合，不能用于本次引用。若本次没有合适配图，cover_source_index 返回 null。",
-            Utc::now().to_rfc3339(), window_start.to_rfc3339(), source_text, history_text,
-            recent_cover_text,
+            "当前时间：{}\n分析窗口起点：{}\n最近24小时新闻（跨主题均衡抽样，按重要度排序）：{}\n最近24小时与此前7日的结构化统计（由数据库计算，只能引用其中的数字）：{}\n最近7天每日最后一份研判（按服务时区日期倒序）：{}\n最近32小时已使用的配图 URL（优先避开重复）：{}\n如已有资料不足以支撑趋势、商业价值或前瞻判断，可调用搜索工具补充公开数据；只保留实际使用的检索来源。若历史研判为空，这是首次分析；changes 自然说明观察起点，不要用固定套话。历史研判仅用于识别趋势和复核判断，不要逐条复述；历史研判中的 source_indexes 和 cover_source_index 只属于当日新闻集合，不能用于本次引用。若本次没有合适配图，cover_source_index 返回 null。",
+            Utc::now().to_rfc3339(), window_start.to_rfc3339(), source_text, stats_text,
+            history_text, recent_cover_text,
         ),
         "text": { "format": {
             "type": "json_schema", "name": "news_insight", "strict": true, "schema": schema(),
@@ -605,11 +777,13 @@ fn instructions() -> &'static str {
 编辑要求：
 1. headline 用一句短标题点明最重要的变化。overview 用约 60–100 个中文字说明事实及现实影响，不重复标题。
 2. changes（界面显示为“趋势分析”）写成自然、连贯的 2–4 句短文：先描述已确认的事实和数据，再说明变化的含义；证据足够时自然写出未来一段时间可能的走向、成立条件和反转风险。不要使用“趋势判断：”“数据依据：”“未来展望：”等固定小标题、报告套话或机械的“相较上一份”开头。趋势信号不足就直说。历史研判为空时，用自然语言说明这是首次观察，并写清观察起点。changes_en 同样独立润色，不直译模板。
-3. 如果现有新闻不足以支撑趋势、商业价值或前瞻判断，可以按需调用可用的搜索工具补充资料；优先官方公告、监管机构、统计数据、财报、研究报告和一手报道，最多进行 6 次工具调用。research_source_urls 只填写本次实际使用且出现在检索引用中的 HTTPS URL，不要填写输入新闻本身的 URL；没有检索就返回空数组，并保留关键数据的时间点。没有可靠资料时不要补猜。
-4. wealth 表示“商业与机遇”。每条说明一个可能产生价值的方向：kind 取 business、income、industry 或 asset_watch；horizon 取 0-3m、3-12m 或 12m+；summary 用自然语言说明事实、价值链和成立逻辑；beneficiaries 写可能受益的角色或环节；entry 写可理解的切入方式；watch 写接下来要观察的信号；risk 写主要限制或失效条件。它们是基于证据的机会假设，不是收益承诺。employment 关注岗位、技能与行业迁移；risks 关注经济、政策、冲突、灾害和生活风险；actions 给出未来 24–72 小时可以观察、核验或尝试的事项。每组最多 3 条，通常 1–2 条，证据不足可以为空，跨组避免重复。
-5. 区分事实、推断和前瞻。保留关键数字、时间、适用条件和数据边界。每个要点引用有效的 source_indexes；changes_source_indexes 引用支持趋势正文的输入新闻。confidence 为 1–5，表示证据强度，不表示收益概率。source_indexes 只用于输入新闻，检索资料使用 research_source_urls；正文不要出现来源编号、脚注或 URL。不得保证收益、给出个性化买卖指令或确定性人生结论。
-6. cover_source_index 从带 image 的输入新闻中选一张最能解释本期主线的照片；优先避开最近 32 小时使用过的配图，没有合适图片就返回 null。只返回来源索引，不生成图片 URL 或无法核实的画面描述。
-7. 中文自然流畅，英文事实一致且独立润色。所有字段按 JSON Schema 输出，正文使用纯文本，不加 Markdown 标题或套话。"#
+3. data_signals（界面显示为“关键数据”）只引用输入中的结构化统计和新闻，不要自行创造数字。每条用标题和摘要说明当前 24 小时数量、此前 7 日日均、变化幅度、重复传播或主题/标签变化中的一个明确事实；没有显著变化就返回空数组，最多 4 条。
+4. watch_signals（界面显示为“后续信号”）写未来 24 小时至 30 天内值得验证的具体信号，说明触发条件、时间范围和可能推翻当前判断的情况，最多 3 条；不要与 actions 重复。
+5. 如果现有新闻不足以支撑趋势、商业价值或前瞻判断，可以按需调用可用的搜索工具补充资料；优先官方公告、监管机构、统计数据、财报、研究报告和一手报道，最多进行 6 次工具调用。research_source_urls 只填写本次实际使用且出现在检索引用中的 HTTPS URL，不要填写输入新闻本身的 URL；没有检索就返回空数组，并保留关键数据的时间点。没有可靠资料时不要补猜。
+6. wealth 表示“商业与机遇”。每条说明一个可能产生价值的方向：kind 取 business、income、industry 或 asset_watch；horizon 取 0-3m、3-12m 或 12m+；summary 用自然语言说明事实、价值链和成立逻辑；beneficiaries 写可能受益的角色或环节；entry 写可理解的切入方式；watch 写接下来要观察的信号；risk 写主要限制或失效条件。它们是基于证据的机会假设，不是收益承诺。employment 关注岗位、技能与行业迁移；risks 关注经济、政策、冲突、灾害和生活风险；actions 给出未来 24–72 小时可以观察、核验或尝试的事项。每组最多 3 条，通常 1–2 条，证据不足可以为空，跨组避免重复。
+7. 区分事实、推断和前瞻。保留关键数字、时间、适用条件和数据边界。每个要点引用有效的 source_indexes；changes_source_indexes 引用支持趋势正文的输入新闻。confidence 为 1–5，表示证据强度，不表示收益概率。evidence_grade 取 A、B 或 C：A 为官方/一手且有交叉验证，B 为单个权威来源或可靠二手报道，C 为早期线索或单一社区信号；资料不足时用 C 并明确限制。source_indexes 只用于输入新闻，检索资料使用 research_source_urls；正文不要出现来源编号、脚注或 URL。不得保证收益、给出个性化买卖指令或确定性人生结论。
+8. cover_source_index 从带 image 的输入新闻中选一张最能解释本期主线的照片；优先避开最近 32 小时使用过的配图，没有合适图片就返回 null。只返回来源索引，不生成图片 URL 或无法核实的画面描述。
+9. 中文自然流畅，英文事实一致且独立润色。所有字段按 JSON Schema 输出，正文使用纯文本，不加 Markdown 标题或套话。"#
 }
 
 fn selected_cover(analysis: &InsightAnalysis, sources: &[InsightSource]) -> Option<NewsImage> {
@@ -669,11 +843,12 @@ fn ensure_distinct_cover(
 fn schema() -> Value {
     let signal = json!({
         "type": "object", "additionalProperties": false,
-        "required": ["title", "title_en", "summary", "summary_en", "confidence", "source_indexes"],
+        "required": ["title", "title_en", "summary", "summary_en", "confidence", "evidence_grade", "source_indexes"],
         "properties": {
             "title": { "type": "string" }, "title_en": { "type": "string" },
             "summary": { "type": "string" }, "summary_en": { "type": "string" },
             "confidence": { "type": "integer", "minimum": 1, "maximum": 5 },
+            "evidence_grade": { "type": "string", "enum": ["A", "B", "C"] },
             "source_indexes": { "type": "array", "maxItems": 2, "items": { "type": "integer", "minimum": 0 } }
         }
     });
@@ -683,7 +858,7 @@ fn schema() -> Value {
             "title", "title_en", "summary", "summary_en", "kind", "kind_en",
             "horizon", "horizon_en", "beneficiaries", "beneficiaries_en", "entry",
             "entry_en", "watch", "watch_en", "risk", "risk_en", "confidence",
-            "source_indexes"
+            "evidence_grade", "source_indexes"
         ],
         "properties": {
             "title": { "type": "string" }, "title_en": { "type": "string" },
@@ -697,6 +872,7 @@ fn schema() -> Value {
             "watch": { "type": "string" }, "watch_en": { "type": "string" },
             "risk": { "type": "string" }, "risk_en": { "type": "string" },
             "confidence": { "type": "integer", "minimum": 1, "maximum": 5 },
+            "evidence_grade": { "type": "string", "enum": ["A", "B", "C"] },
             "source_indexes": { "type": "array", "maxItems": 3, "items": { "type": "integer", "minimum": 0 } }
         }
     });
@@ -704,13 +880,15 @@ fn schema() -> Value {
         "type": "object", "additionalProperties": false,
         "required": [
             "headline", "headline_en", "overview", "overview_en", "changes", "changes_en",
-            "changes_source_indexes", "research_source_urls", "cover_source_index", "wealth",
-            "employment", "risks", "actions"
+            "data_signals", "watch_signals", "changes_source_indexes", "research_source_urls",
+            "cover_source_index", "wealth", "employment", "risks", "actions"
         ],
         "properties": {
             "headline": { "type": "string" }, "headline_en": { "type": "string" },
             "overview": { "type": "string" }, "overview_en": { "type": "string" },
             "changes": { "type": "string" }, "changes_en": { "type": "string" },
+            "data_signals": { "type": "array", "items": signal, "maxItems": 4 },
+            "watch_signals": { "type": "array", "items": signal, "maxItems": 3 },
             "changes_source_indexes": { "type": "array", "maxItems": 3, "items": { "type": "integer", "minimum": 0 } },
             "research_source_urls": { "type": "array", "maxItems": 8, "items": { "type": "string" } },
             "cover_source_index": { "type": ["integer", "null"], "minimum": 0 },
@@ -805,8 +983,8 @@ fn clip(value: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        InsightAnalysis, InsightCache, InsightSignal, InsightSource, cited_sources,
-        reasoning_effort, research_citations,
+        InsightAnalysis, InsightCache, InsightSignal, InsightSource, cited_sources, daily_average,
+        percent_change, reasoning_effort, research_citations,
     };
     use crate::digest::Rendered;
     use chrono::Utc;
@@ -831,6 +1009,7 @@ mod tests {
             risk: String::new(),
             risk_en: String::new(),
             confidence: 3,
+            evidence_grade: String::new(),
             source_indexes,
         }
     }
@@ -850,6 +1029,9 @@ mod tests {
             tags: Vec::new(),
             importance: 3,
             first_seen_at: Utc::now(),
+            published_at: None,
+            last_seen_at: None,
+            seen_count: 1,
             image: None,
         }
     }
@@ -863,6 +1045,8 @@ mod tests {
             overview_en: String::new(),
             changes: String::new(),
             changes_en: String::new(),
+            data_signals: Vec::new(),
+            watch_signals: Vec::new(),
             changes_source_indexes: Vec::new(),
             research_source_urls: Vec::new(),
             cover_source_index: Some(7),
@@ -904,6 +1088,32 @@ mod tests {
     fn selects_reasoning_effort_for_model_family() {
         assert_eq!(reasoning_effort("grok-4.6"), "xhigh");
         assert_eq!(reasoning_effort("gpt-6-astra"), "max");
+    }
+
+    #[test]
+    fn computes_baseline_changes_without_inventing_zero_baselines() {
+        assert_eq!(daily_average(14), 2.0);
+        assert_eq!(percent_change(4, 14), Some(100.0));
+        assert_eq!(percent_change(1, 0), None);
+    }
+
+    #[test]
+    fn reads_previous_briefings_without_new_analysis_fields() {
+        let previous = serde_json::json!({
+            "headline": "headline",
+            "headline_en": "headline",
+            "overview": "overview",
+            "overview_en": "overview",
+            "changes": "changes",
+            "changes_en": "changes",
+            "wealth": [],
+            "employment": [],
+            "risks": [],
+            "actions": []
+        });
+        let analysis: InsightAnalysis = serde_json::from_value(previous).expect("legacy insight");
+        assert!(analysis.data_signals.is_empty());
+        assert!(analysis.watch_signals.is_empty());
     }
 
     #[test]

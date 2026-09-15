@@ -52,10 +52,10 @@ const TEXT = {
     empty: "这一天还没有内容", latest: "查看最近有内容的一天",
     space: "工作台", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
     backToTop: "回到顶部", insightEmpty: "𝐀𝐈 将在首次分析完成后显示。",
-    changes: "趋势分析", coverSource: "原文", wealth: "商业与机遇", employment: "就业与技能",
+    changes: "趋势分析", dataSignals: "关键数据", watchSignals: "后续信号", coverSource: "原文", wealth: "商业与机遇", employment: "就业与技能",
     risks: "风险预警", actions: "观察方向", researchSources: "数据来源",
     kind: "类型", horizon: "时间", beneficiaries: "受益者", entry: "切入方式", watch: "观察信号", risk: "主要风险",
-    confidence: (n) => `证据强度 ${n}/5`, sources: "来源",
+    confidence: (n, grade) => `证据强度 ${n}/5${grade ? ` · 证据 ${grade}` : ""}`, sources: "来源",
     items: (n) => `${n} 条`,
   },
   en: {
@@ -64,10 +64,10 @@ const TEXT = {
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
     space: "𝑾𝒐𝒓𝒌𝒔𝒑𝒂𝒄𝒆", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
     backToTop: "Back to top", insightEmpty: "𝐀𝐈 will appear after its first analysis.",
-    changes: "Trend analysis", coverSource: "Source", wealth: "Business & opportunities", employment: "Employment & skills",
+    changes: "Trend analysis", dataSignals: "Key data", watchSignals: "Signals ahead", coverSource: "Source", wealth: "Business & opportunities", employment: "Employment & skills",
     risks: "Risk alerts", actions: "What to watch", researchSources: "Data sources",
     kind: "Type", horizon: "Horizon", beneficiaries: "Who may benefit", entry: "Entry path", watch: "Signals to watch", risk: "Main risk",
-    confidence: (n) => `Evidence ${n}/5`, sources: "Sources",
+    confidence: (n, grade) => `Evidence ${n}/5${grade ? ` · Grade ${grade}` : ""}`, sources: "Sources",
     items: (n) => `${n} ${n === 1 ? "item" : "items"}`,
   },
 };
@@ -768,6 +768,8 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
   );
   if (changeSources) changes.append(changeSources);
   section.append(changes);
+  section.append(...renderInsightGroup(t().dataSignals, insight.data_signals || [], sources));
+  section.append(...renderInsightGroup(t().watchSignals, insight.watch_signals || [], sources));
   const researchSources = sourceList(t().researchSources, insight.research_sources || []);
   if (researchSources) section.append(researchSources);
   for (const [label, items, opportunities] of [
@@ -850,7 +852,7 @@ function insightCard(item, sources, opportunity = false) {
   const title = document.createElement("h3");
   title.className = "item-title";
   title.textContent = pick(item, "title");
-  itemHeading.append(title, span(t().confidence(item.confidence), "muted small"));
+  itemHeading.append(title, span(t().confidence(item.confidence, item.evidence_grade), "muted small"));
   const summary = document.createElement("p");
   summary.className = "item-summary";
   summary.append(insightText(pick(item, "summary")));

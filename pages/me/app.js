@@ -380,8 +380,10 @@ function openEditor(topic = null) {
   $("#topicId").readOnly = Boolean(topic);
   $("#topicEnabled").checked = topic?.enabled ?? true;
   $("#topicInterval").min = String(minimum);
-  $("#intervalHint").textContent = s.admin ? "最短 15 分钟" : `${s.user.plan === "pro" ? "Pro" : "Free"} 最短 ${minimum} 分钟 · 每天 06:00–24:00`;
-  $("#scheduleTimezone").textContent = `排程时区：${s.timezone}`;
+  $("#intervalHint").textContent = s.admin
+    ? "最短 15 分钟 · 结束时间早于开始时间表示跨午夜"
+    : `${s.user.plan === "pro" ? "Pro" : "Free"} 最短 ${minimum} 分钟 · 结束时间早于开始时间表示跨午夜`;
+  $("#scheduleTimezone").textContent = `排程时区：${s.timezone} · 结束早于开始表示运行到次日`;
   $("#weekdays").querySelectorAll("input").forEach((input) => { input.checked = (topic?.weekdays || [1, 2, 3, 4, 5]).includes(Number(input.value)); });
   openDialog($("#topicDialog"));
   $("#topicName").focus();
@@ -402,9 +404,9 @@ function saveTopic(event) {
     for (const key of publicFields) body[key] = data.get(key).trim();
     for (const key of numericFields) body[key] = Number(data.get(key));
     body.weekdays = data.getAll("weekdays").map(Number);
-    if (body.window_start >= body.window_end || !body.weekdays.length) {
+    if (body.window_start === body.window_end || !body.weekdays.length) {
       $("#advancedSettings").open = true;
-      return message("topicFormMessage", "结束时间须晚于开始时间，并至少选择一天");
+      return message("topicFormMessage", "开始和结束时间不能相同；结束早于开始表示跨午夜，并至少选择一天");
     }
     if (!s.editing && data.get("id").trim()) body.id = data.get("id").trim();
   }
