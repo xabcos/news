@@ -48,12 +48,12 @@ pub(crate) struct PlanLimits {
 
 pub(crate) const FREE_LIMITS: PlanLimits = PlanLimits {
     max_topics: 1,
-    min_interval_minutes: 240,
+    min_interval_minutes: 512,
     daily_run_cap: 12,
 };
 pub(crate) const PRO_LIMITS: PlanLimits = PlanLimits {
-    max_topics: 8,
-    min_interval_minutes: 60,
+    max_topics: 4,
+    min_interval_minutes: 64,
     daily_run_cap: 48,
 };
 
@@ -640,8 +640,9 @@ fn cookie(state: &AppState, name: &str, value: &str, max_age: u64, http_only: bo
 #[cfg(test)]
 mod tests {
     use super::{
-        GLOBAL_RATE_WINDOW_MAX, RATE_WINDOW_MAX, RATE_WINDOW_SECONDS, RESEND_COOLDOWN_SECONDS,
-        build_login_url, hash_token, new_token, normalize_email, valid_email,
+        FREE_LIMITS, GLOBAL_RATE_WINDOW_MAX, PRO_LIMITS, RATE_WINDOW_MAX, RATE_WINDOW_SECONDS,
+        RESEND_COOLDOWN_SECONDS, build_login_url, hash_token, new_token, normalize_email,
+        valid_email,
     };
     use url::Url;
 
@@ -701,5 +702,13 @@ mod tests {
             assert!(RATE_WINDOW_MAX > 0);
             assert!(RATE_WINDOW_MAX < GLOBAL_RATE_WINDOW_MAX);
         }
+    }
+
+    #[test]
+    fn plan_limits_match_current_product_policy() {
+        assert_eq!(FREE_LIMITS.max_topics, 1);
+        assert_eq!(FREE_LIMITS.min_interval_minutes, 512);
+        assert_eq!(PRO_LIMITS.max_topics, 4);
+        assert_eq!(PRO_LIMITS.min_interval_minutes, 64);
     }
 }

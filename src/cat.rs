@@ -1764,8 +1764,14 @@ async fn load_unlocks(pool: &PgPool, cat_id: Uuid) -> Result<Vec<Value>> {
     Ok(rows
         .into_iter()
         .map(|row| {
+            let name = ACCESSORY_UNLOCKS
+                .iter()
+                .find(|(_, id, _)| *id == row.accessory_id)
+                .map(|(_, _, name)| *name)
+                .unwrap_or(&row.accessory_id);
             json!({
                 "id": row.accessory_id,
+                "name": name,
                 "unlocked_at": row.unlocked_at,
             })
         })

@@ -560,7 +560,7 @@ const CatShell = (() => {
     ].join(" · ");
     const signature = identity.signature ? `<small>身份签名 · ${escapeHtml(identity.signature)}</small>` : "";
     atlasGrid.innerHTML = `<article class="cat-atlas-card cat-atlas-card--identity"><strong>固定身份</strong><p>${escapeHtml(identityText)}</p>${signature}</article>
-      <article class="cat-atlas-card"><strong>成长配饰 · ${accessories.length}</strong><p>${accessories.length ? accessories.map((item) => escapeHtml(item.accessory_id)).join(" · ") : "猫咪还在积攒自己的旅途"}</p></article>
+      <article class="cat-atlas-card"><strong>成长配饰 · ${accessories.length}</strong><p>${accessories.length ? accessories.map((item) => escapeHtml(item.name || item.id)).join(" · ") : "猫咪还在积攒自己的旅途"}</p></article>
       <article class="cat-atlas-card"><strong>世界记忆 · ${memories.length}</strong><p class="cat-atlas-memory-list">${memoryText || "第一封信还在路上"}</p></article>`;
   }
 
