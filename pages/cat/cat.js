@@ -15,13 +15,38 @@ const REALISTIC_CATS = Object.freeze({
   black_white: "/cat/assets/character/cat-realistic-black-white.webp",
 });
 
+// The stage and the "此刻" heading describe the same presence, so both read from here.
+const PRESENCE_LABELS = Object.freeze({
+  home_awake: "猫咪正在窗边休息",
+  home_sleeping: "猫咪已经睡着了",
+  away: "猫咪正在旅途中",
+  returning_soon: "猫咪快要回来了",
+  vigil: "猫咪在灯下安静地休息",
+});
+const PRESENCE_CAPTIONS = Object.freeze({
+  home_awake: "在家 · 安静地生活",
+  home_sleeping: "睡着了 · 房间替它守着夜",
+  away: "在路上 · 正在收集新的照片",
+  returning_soon: "快回来了 · 门口的灯已经亮起",
+  vigil: "今晚在家 · 点一盏灯陪自己安静下来",
+});
+const PRESENCE_SHORT = Object.freeze({
+  home_awake: "在家", home_sleeping: "睡着了", away: "在路上", returning_soon: "快回来了", vigil: "今晚在家",
+});
+// "travel" is the default stream of the whole page; labelling every card with it only
+// repeats the panel heading, so it is deliberately absent here.
+const MESSAGE_LABELS = Object.freeze({
+  welcome: "第一次相遇", postcard: "旅程照片", growth: "成长记录", encounter: "共同世界",
+});
+// Titles the backend stores that say nothing the card does not already say.
+const REDUNDANT_TITLES = new Set(["猫咪动态", "猫咪记录", "猫咪的一条记录"]);
+
 const CatScene = (() => {
   const elements = {
     stage: document.querySelector(".cat-stage"),
     companion: document.querySelector("#catCompanion"),
     realisticImage: document.querySelector("#catRealisticImage"),
     latestPhoto: document.querySelector("#catLatestPhoto"),
-    latestPhotoBackdrop: document.querySelector("#catLatestPhotoBackdrop"),
     thought: document.querySelector("#catThought"),
     caption: document.querySelector("#catSceneCaption"),
     identityMeta: document.querySelector("#catIdentityMeta"),
@@ -37,10 +62,6 @@ const CatScene = (() => {
   let lastPhotoUrl = "";
   let displayedPhotoUrl = "";
   let photoLoadToken = 0;
-  let photoCarouselUrls = [];
-  let photoCarouselIndex = 0;
-  let photoCarouselSignature = "";
-  let photoCarouselTimer;
   let photoSwapTimer;
   const IDLE_ACTIONS = ["blink", "look", "tail", "stretch"];
   const ACTIVITY_GLYPHS = Object.freeze({
@@ -237,28 +258,28 @@ const CatScene = (() => {
     delete document.documentElement.dataset.catPhotoPending;
   }
 
-  function stopPhotoCarousel() {
-    window.clearInterval(photoCarouselTimer);
+  function stopPhotoSwap() {
     window.clearTimeout(photoSwapTimer);
-    photoCarouselTimer = undefined;
     photoSwapTimer = undefined;
-    photoCarouselUrls = [];
-    photoCarouselIndex = 0;
-    photoCarouselSignature = "";
+    elements.stage.classList.remove("is-photo-transitioning");
   }
 
-  function setLatestPhoto(url, catId) {
+  function clearLatestPhoto(catId) {
+    lastPhotoUrl = "";
+    displayedPhotoUrl = "";
+    photoLoadToken += 1;
+    stopPhotoSwap();
+    elements.stage.classList.remove("has-latest-photo");
+    settlePhotoPending();
+    rememberPhoto(catId, "");
+  }
+
+  // Shows one photo: the newest the cat has. `alternates` is only a failure chain —
+  // an expired link falls through to the next candidate instead of leaving an empty stage.
+  function setLatestPhoto(url, catId, alternates = []) {
     const nextUrl = typeof url === "string" ? url.trim() : "";
     if (!nextUrl || !elements.latestPhoto) {
-      lastPhotoUrl = "";
-      displayedPhotoUrl = "";
-      photoLoadToken += 1;
-      window.clearTimeout(photoSwapTimer);
-      photoSwapTimer = undefined;
-      elements.stage.classList.remove("is-photo-transitioning");
-      elements.stage.classList.remove("has-latest-photo");
-      settlePhotoPending();
-      rememberPhoto(catId, "");
+      clearLatestPhoto(catId);
       return;
     }
     if (nextUrl === lastPhotoUrl) return;
@@ -278,7 +299,6 @@ const CatScene = (() => {
       const applyPhoto = () => {
         if (token !== photoLoadToken) return;
         elements.latestPhoto.src = nextUrl;
-        if (elements.latestPhotoBackdrop) elements.latestPhotoBackdrop.src = nextUrl;
         displayedPhotoUrl = nextUrl;
         elements.stage.classList.add("has-latest-photo");
         elements.stage.classList.remove("is-photo-transitioning");
@@ -295,50 +315,15 @@ const CatScene = (() => {
     };
     preload.onerror = () => {
       if (token !== photoLoadToken) return;
-      window.clearTimeout(photoSwapTimer);
-      photoSwapTimer = undefined;
-      elements.stage.classList.remove("is-photo-transitioning");
-      const failedIndex = photoCarouselUrls.indexOf(nextUrl);
-      if (failedIndex !== -1) {
-        photoCarouselUrls.splice(failedIndex, 1);
-        photoCarouselSignature = photoCarouselUrls.join("\n");
-        if (photoCarouselUrls.length) {
-          photoCarouselIndex %= photoCarouselUrls.length;
-          setLatestPhoto(photoCarouselUrls[photoCarouselIndex], catId);
-          return;
-        }
-        stopPhotoCarousel();
+      stopPhotoSwap();
+      if (alternates.length) {
+        lastPhotoUrl = "";
+        setLatestPhoto(alternates[0], catId, alternates.slice(1));
+        return;
       }
-      elements.stage.classList.remove("has-latest-photo");
-      settlePhotoPending();
-      rememberPhoto(catId, "");
+      clearLatestPhoto(catId);
     };
     preload.src = nextUrl;
-  }
-
-  function setLatestPhotos(urls, catId) {
-    const normalized = [...new Set((Array.isArray(urls) ? urls : [])
-      .filter((url) => typeof url === "string")
-      .map((url) => url.trim())
-      .filter(Boolean))];
-    if (!normalized.length) {
-      stopPhotoCarousel();
-      setLatestPhoto("", catId);
-      return;
-    }
-    const signature = normalized.join("\n");
-    if (signature === photoCarouselSignature) return;
-    stopPhotoCarousel();
-    photoCarouselUrls = normalized;
-    photoCarouselSignature = signature;
-    setLatestPhoto(photoCarouselUrls[0], catId);
-    if (photoCarouselUrls.length > 1) {
-      photoCarouselTimer = window.setInterval(() => {
-        if (document.visibilityState !== "visible" || photoCarouselUrls.length < 2) return;
-        photoCarouselIndex = (photoCarouselIndex + 1) % photoCarouselUrls.length;
-        setLatestPhoto(photoCarouselUrls[photoCarouselIndex], catId);
-      }, 5000);
-    }
   }
 
   function setPresence(presence, trip) {
@@ -347,28 +332,14 @@ const CatScene = (() => {
     const changed = nextPresence !== lastPresence || note !== lastPresenceNote;
     elements.stage.dataset.presence = nextPresence;
     elements.companion.dataset.presence = nextPresence;
-    const labels = {
-      home_awake: "猫咪正在窗边休息",
-      home_sleeping: "猫咪已经睡着了",
-      away: "猫咪正在旅途中",
-      returning_soon: "猫咪快要回来了",
-      vigil: "猫咪在灯下安静地休息",
-    };
-    const captions = {
-      home_awake: "在家 · 安静地生活",
-      home_sleeping: "睡着了 · 房间替它守着夜",
-      away: "在路上 · 正在收集新的照片",
-      returning_soon: "快回来了 · 门口的灯已经亮起",
-      vigil: "今晚在家 · 点一盏灯陪自己安静下来",
-    };
     if (changed) {
-      elements.caption.textContent = captions[nextPresence] || captions.home_awake;
-      elements.thought.textContent = labels[nextPresence] || labels.home_awake;
+      elements.caption.textContent = PRESENCE_CAPTIONS[nextPresence] || PRESENCE_CAPTIONS.home_awake;
+      elements.thought.textContent = PRESENCE_LABELS[nextPresence] || PRESENCE_LABELS.home_awake;
     }
-    const presenceLabel = labels[nextPresence] || labels.home_awake;
+    const presenceLabel = PRESENCE_LABELS[nextPresence] || PRESENCE_LABELS.home_awake;
     const identityLabel = elements.companion.dataset.identityLabel;
     elements.companion.setAttribute("aria-label", identityLabel ? `${presenceLabel}；${identityLabel}` : presenceLabel);
-    elements.stage.setAttribute("aria-label", labels[nextPresence] || labels.home_awake);
+    elements.stage.setAttribute("aria-label", presenceLabel);
     if (note && (nextPresence === "away" || nextPresence === "returning_soon") && changed) elements.thought.textContent = note;
     if (changed) scheduleIdle();
     lastPresence = nextPresence;
@@ -376,13 +347,12 @@ const CatScene = (() => {
   }
 
   function revealPreview() {
-    stopPhotoCarousel();
     setLatestPhoto("");
     elements.companion.classList.remove("is-identity-pending");
   }
 
   scheduleIdle();
-  return Object.freeze({ setIdentity, setLatestPhoto, setLatestPhotos, rememberedPhotoFor, setPresence, setScene, react, showToast, revealPreview });
+  return Object.freeze({ setIdentity, setLatestPhoto, rememberedPhotoFor, setPresence, setScene, react, showToast, revealPreview });
 })();
 
 const CatShell = (() => {
@@ -392,13 +362,14 @@ const CatShell = (() => {
   const dialogBody = document.querySelector("#dialogBody");
   const dialogPrimary = document.querySelector("#dialogPrimary");
   const messagePreview = document.querySelector("#catMessagePreview");
+  const presenceTitle = document.querySelector("#catPresenceTitle");
+  const presenceMeta = document.querySelector("#catPresenceMeta");
   const todayPanel = document.querySelector("#catTodayPanel");
   const journalPanel = document.querySelector("#catJournalPanel");
   const atlasPanel = document.querySelector("#catAtlasPanel");
   const journalGrid = document.querySelector("#catJournalGrid");
   const atlasGrid = document.querySelector("#catAtlasGrid");
   let catState = null;
-  let homeState = null;
   let authState = "unknown";
   let dialogMode = "info";
   let adoptionPreview = null;
@@ -436,26 +407,39 @@ const CatShell = (() => {
 
   function applyCatState(nextState) {
     catState = nextState;
-    if (nextState.cat) {
-      CatScene.setIdentity(nextState.cat.identity, nextState.cat.initial_accessories);
-      const presence = Object.prototype.hasOwnProperty.call(nextState, "presence")
-        ? nextState.presence
-        : derivePresence(nextState.cat);
-      const trip = nextState.cat.current_trip;
-      CatScene.setPresence(presence, trip);
-      const catId = nextState.cat.id;
-      const scene = nextState.scene || nextState.cat.scene || trip?.scene;
-      CatScene.setScene(scene, presence, trip);
-      const hasMessages = Array.isArray(nextState.messages);
-      const photoUrls = (nextState.messages || [])
-        .map((message) => message.payload?.postcard_url)
-        .filter(Boolean);
-      photoUrls.push(scene?.photo_url, trip?.postcard_url);
+    if (!nextState.cat) return;
+    CatScene.setIdentity(nextState.cat.identity, nextState.cat.initial_accessories);
+    const presence = Object.prototype.hasOwnProperty.call(nextState, "presence")
+      ? nextState.presence
+      : derivePresence(nextState.cat);
+    const trip = nextState.cat.current_trip;
+    CatScene.setPresence(presence, trip);
+    const catId = nextState.cat.id;
+    const scene = nextState.scene || nextState.cat.scene || trip?.scene;
+    CatScene.setScene(scene, presence, trip);
+    const messages = Array.isArray(nextState.messages) ? nextState.messages : null;
+    // Messages arrive newest first, so the head of this list is the latest photo and the
+    // rest only stand in when a link has expired.
+    const photos = [...new Set([
+      ...(messages || []).map((message) => message.payload?.postcard_url),
+      scene?.photo_url,
+      trip?.postcard_url,
       // /api/cat/state carries no messages; until /api/cat/home answers, fall back to
       // the photo this browser last showed for this same cat.
-      if (!hasMessages) photoUrls.push(CatScene.rememberedPhotoFor(catId));
-      CatScene.setLatestPhotos(photoUrls, catId);
-    }
+      messages ? "" : CatScene.rememberedPhotoFor(catId),
+    ].filter((url) => typeof url === "string" && url.trim()))];
+    CatScene.setLatestPhoto(photos[0] || "", catId, photos.slice(1));
+    if (messages) renderPresence(messages[0], presence);
+  }
+
+  // The heading is the cat's own latest words, not a fixed label.
+  function renderPresence(latest, presence) {
+    const payload = latest?.payload || {};
+    const text = (payload.text || payload.opening || payload.diary?.zh || "").trim();
+    presenceTitle.textContent = text || PRESENCE_LABELS[presence] || PRESENCE_LABELS.home_awake;
+    presenceMeta.textContent = latest
+      ? `${relativeTime(latest.created_at)} · ${PRESENCE_SHORT[presence] || PRESENCE_SHORT.home_awake}`
+      : PRESENCE_CAPTIONS[presence] || PRESENCE_CAPTIONS.home_awake;
   }
 
   function derivePresence(cat) {
@@ -488,12 +472,43 @@ const CatShell = (() => {
     return Number.isNaN(date.valueOf()) ? "刚刚" : date.toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
   }
 
+  function relativeTime(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.valueOf())) return "刚刚";
+    const minutes = Math.floor((Date.now() - date.getTime()) / 60_000);
+    if (minutes < 1) return "刚刚";
+    if (minutes < 60) return `${minutes} 分钟前`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours} 小时前`;
+    const days = Math.floor(hours / 24);
+    return days < 7 ? `${days} 天前` : formatDate(value);
+  }
+
+  // Scene messages carry a title that only repeats the kind label and the panel heading,
+  // while a departure in the same "travel" stream carries a real one — so the title is
+  // judged by what it says, not by the kind it belongs to.
   function messageView(message) {
     const payload = message.payload || {};
-    const labels = { welcome: "第一次相遇", guide: "旧日领读", travel: "猫咪动态", postcard: "旅程照片", growth: "成长记录", encounter: "共同世界" };
-    const title = payload.title || labels[message.kind] || "猫咪的一条记录";
-    const text = payload.text || payload.opening || payload.diary?.zh || "猫咪把这段生活收进了日志。";
-    return { labels, title, text, payload };
+    const label = message.kind === "travel" ? "" : MESSAGE_LABELS[message.kind] || "猫咪记录";
+    const title = (payload.title || "").trim();
+    return {
+      label,
+      title: title && title !== label && !REDUNDANT_TITLES.has(title) ? title : "",
+      text: payload.text || payload.opening || payload.diary?.zh || "猫咪把这段生活收进了日志。",
+      photo: payload.postcard_url || "",
+    };
+  }
+
+  function cardHtml(message, block, extraClass = "") {
+    const view = messageView(message);
+    const alt = view.title || view.text;
+    return `<article class="${block}${extraClass}">
+      ${view.photo ? `<div class="${block}__photo" data-photo-frame><img src="${escapeHtml(view.photo)}" alt="${escapeHtml(alt)}" loading="lazy"></div>` : ""}
+      ${view.label ? `<div class="${block}__kind">${escapeHtml(view.label)}</div>` : ""}
+      ${view.title ? `<h3>${escapeHtml(view.title)}</h3>` : ""}
+      <p>${escapeHtml(view.text)}</p>
+      <time datetime="${escapeHtml(message.created_at)}">${escapeHtml(relativeTime(message.created_at))}</time>
+    </article>`;
   }
 
   function bindPhotoFallback(container) {
@@ -502,30 +517,19 @@ const CatShell = (() => {
     });
   }
 
+  // The newest message is already the heading above the stage, so the list starts after it.
   function renderMessages(messages) {
-    if (!messages.length) {
-      messagePreview.innerHTML = '<div class="cat-empty">猫咪正在慢慢生活，第一段旅迹还在路上。</div>';
+    const rest = messages.slice(1);
+    if (!rest.length) {
+      messagePreview.innerHTML = `<div class="cat-empty">${messages.length ? "更早的旅迹还在路上。" : "猫咪正在慢慢生活，第一段旅迹还在路上。"}</div>`;
       return;
     }
-    messagePreview.innerHTML = messages.map((message) => {
-      const view = messageView(message);
-      const photo = view.payload.postcard_url
-        ? `<div class="cat-message-card__photo" data-photo-frame><img src="${escapeHtml(view.payload.postcard_url)}" alt="${escapeHtml(view.title)}" loading="lazy"></div>`
-        : "";
-      return `<article class="cat-message-card">
-        ${photo}
-        <div class="cat-message-card__kind">${escapeHtml(view.labels[message.kind] || "猫咪记录")}</div>
-        <h3>${escapeHtml(view.title)}</h3>
-        <p>${escapeHtml(view.text)}</p>
-        <time datetime="${escapeHtml(message.created_at)}">${escapeHtml(formatDate(message.created_at))}</time>
-      </article>`;
-    }).join("");
+    messagePreview.innerHTML = rest.map((message) => cardHtml(message, "cat-message-card")).join("");
     bindPhotoFallback(messagePreview);
   }
 
   function renderJournal(items, filter = "all") {
-    const visibleItems = items.filter((item) => item.kind !== "guide");
-    const visible = filter === "all" ? visibleItems : visibleItems.filter((item) => {
+    const visible = filter === "all" ? items : items.filter((item) => {
       if (filter === "postcard") return item.kind === "postcard" || Boolean(item.payload?.postcard_url);
       return item.kind === filter;
     });
@@ -533,15 +537,9 @@ const CatShell = (() => {
       journalGrid.innerHTML = '<div class="cat-empty">这一类日志还没有记录。猫咪正在慢慢生活。</div>';
       return;
     }
-    journalGrid.innerHTML = visible.map((message) => {
-      const view = messageView(message);
-      const photo = view.payload.postcard_url ? `<div class="cat-journal-card__photo" data-photo-frame><img src="${escapeHtml(view.payload.postcard_url)}" alt="${escapeHtml(view.title)}" loading="lazy"></div>` : "";
-      return `<article class="cat-journal-card ${message.kind === "postcard" ? "cat-journal-card--postcard" : ""}">
-        ${photo}<div class="cat-journal-card__kind">${escapeHtml(view.labels[message.kind] || "猫咪记录")}</div>
-        <h3>${escapeHtml(view.title)}</h3><p>${escapeHtml(view.text)}</p>
-        <time datetime="${escapeHtml(message.created_at)}">${escapeHtml(formatDate(message.created_at))}</time>
-      </article>`;
-    }).join("");
+    journalGrid.innerHTML = visible
+      .map((message) => cardHtml(message, "cat-journal-card", message.kind === "postcard" ? " cat-journal-card--postcard" : ""))
+      .join("");
     bindPhotoFallback(journalGrid);
   }
 
@@ -628,9 +626,10 @@ const CatShell = (() => {
   async function loadHome() {
     if (authState !== "authenticated" || !catState?.adopted) return;
     try {
-      homeState = await api("/api/cat/home");
-      applyCatState({ ...homeState, adopted: true });
-      renderMessages((homeState.messages || []).filter((message) => message.kind !== "guide"));
+      // /api/cat/home already excludes retired guide messages, so nothing is filtered here.
+      const home = await api("/api/cat/home");
+      applyCatState({ ...home, adopted: true });
+      renderMessages(home.messages || []);
     } catch (error) {
       CatScene.showToast(error.message || "猫窝状态暂时无法读取");
     }
