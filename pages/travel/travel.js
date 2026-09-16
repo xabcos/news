@@ -1,27 +1,20 @@
 "use strict";
 
 /*
- * Travel Cat's first page deliberately keeps three boundaries visible:
+ * Travel Girl's first page deliberately keeps three boundaries visible:
  *
- * - CatScene owns only presentation and local interaction feedback.
- * - CatShell wires the two together. Future account state, trip jobs and image
+ * - TravelScene owns only presentation and local interaction feedback.
+ * - TravelShell wires the two together. Future account state, trip jobs and image
  *   generation can replace one boundary without changing the other two.
  */
 
-const REALISTIC_CATS = Object.freeze({
-  orange_white: "/cat/assets/character/cat-realistic-orange-white.webp",
-  cream_tabby: "/cat/assets/character/cat-realistic-cream-tabby.webp",
-  silver_tabby: "/cat/assets/character/cat-realistic-silver-tabby.webp",
-  black_white: "/cat/assets/character/cat-realistic-black-white.webp",
-});
-
 // The stage and the "此刻" heading describe the same presence, so both read from here.
 const PRESENCE_LABELS = Object.freeze({
-  home_awake: "猫咪正在窗边休息",
-  home_sleeping: "猫咪已经睡着了",
-  away: "猫咪正在旅途中",
-  returning_soon: "猫咪快要回来了",
-  vigil: "猫咪在灯下安静地休息",
+  home_awake: "旅行女孩正在窗边休息",
+  home_sleeping: "旅行女孩已经睡着了",
+  away: "旅行女孩正在旅途中",
+  returning_soon: "旅行女孩快要回来了",
+  vigil: "旅行女孩在灯下安静地休息",
 });
 const PRESENCE_CAPTIONS = Object.freeze({
   home_awake: "在家 · 安静地生活",
@@ -39,18 +32,18 @@ const MESSAGE_LABELS = Object.freeze({
   welcome: "第一次相遇", postcard: "旅程照片", growth: "成长记录", encounter: "共同世界",
 });
 // Titles the backend stores that say nothing the card does not already say.
-const REDUNDANT_TITLES = new Set(["猫咪动态", "猫咪记录", "猫咪的一条记录"]);
+const REDUNDANT_TITLES = new Set(["旅行女孩动态", "旅行女孩记录", "旅行女孩的一条记录"]);
 
-const CatScene = (() => {
+const TravelScene = (() => {
   const elements = {
-    stage: document.querySelector(".cat-stage"),
-    companion: document.querySelector("#catCompanion"),
-    realisticImage: document.querySelector("#catRealisticImage"),
-    latestPhoto: document.querySelector("#catLatestPhoto"),
-    thought: document.querySelector("#catThought"),
-    caption: document.querySelector("#catSceneCaption"),
-    identityMeta: document.querySelector("#catIdentityMeta"),
-    toast: document.querySelector("#catToast"),
+    stage: document.querySelector(".travel-stage"),
+    companion: document.querySelector("#travelCompanion"),
+    realisticImage: document.querySelector("#travelRealisticImage"),
+    latestPhoto: document.querySelector("#travelLatestPhoto"),
+    thought: document.querySelector("#travelThought"),
+    caption: document.querySelector("#travelSceneCaption"),
+    identityMeta: document.querySelector("#travelIdentityMeta"),
+    toast: document.querySelector("#travelToast"),
   };
   let toastTimer;
   let idleTimer;
@@ -71,22 +64,12 @@ const CatScene = (() => {
   const PROP_GLYPHS = Object.freeze({ scarf: "▰", satchel: "▱", suitcase: "▣", letter: "✉", telescope: "◌" });
 
   const sceneOverlay = document.createElement("span");
-  sceneOverlay.className = "cat-scene-overlay";
+  sceneOverlay.className = "travel-scene-overlay";
   sceneOverlay.setAttribute("aria-hidden", "true");
   const motionOverlay = document.createElement("span");
-  motionOverlay.className = "cat-scene-motion";
+  motionOverlay.className = "travel-scene-motion";
   motionOverlay.setAttribute("aria-hidden", "true");
   elements.companion?.append(sceneOverlay, motionOverlay);
-
-  function clearRealisticArt() {
-    elements.companion.classList.remove("has-realistic-art");
-    elements.companion.classList.remove("is-identity-pending");
-    elements.realisticImage?.removeAttribute("src");
-  }
-
-  // Bind this before any account state is loaded so the anonymous preview
-  // also falls back to the deterministic SVG when the raster cannot load.
-  if (elements.realisticImage) elements.realisticImage.onerror = clearRealisticArt;
 
   function showToast(message) {
     window.clearTimeout(toastTimer);
@@ -179,7 +162,7 @@ const CatScene = (() => {
     if (activity || mood || prop) {
       const details = [normalized.activity, normalized.mood, normalized.prop].filter(Boolean).join(" · ");
       elements.companion.setAttribute("data-scene-label", details);
-      const presenceLabel = elements.stage.getAttribute("aria-label") || "猫咪正在生活";
+      const presenceLabel = elements.stage.getAttribute("aria-label") || "旅行女孩正在生活";
       elements.stage.setAttribute("aria-label", `${presenceLabel}；${details}`);
       elements.companion.setAttribute("aria-description", details);
     } else {
@@ -189,37 +172,22 @@ const CatScene = (() => {
 
   function setIdentity(identity, accessories) {
     if (!identity) return;
-    const identityKey = JSON.stringify([identity.coat, identity.eye_color, identity.marking, identity.signature, (accessories || []).map((item) => item.id)]);
-    ["coat", "eye_color", "marking"].forEach((key) => {
+    const identityKey = JSON.stringify([identity.name_seed, identity.hair, identity.skin_tone, identity.silhouette, identity.style, identity.signature, (accessories || []).map((item) => item.id)]);
+    ["hair", "skin_tone", "silhouette", "style"].forEach((key) => {
       const value = identity[key];
-      const datasetKey = key === "eye_color" ? "eye" : key;
-      if (value) elements.companion.dataset[datasetKey] = value;
-      else delete elements.companion.dataset[datasetKey];
+      if (value) elements.companion.dataset[key] = value;
+      else delete elements.companion.dataset[key];
     });
-    const accent = (accessories || []).find((item) => item.id && item.id !== "sage_scarf");
+    const accent = (accessories || []).find((item) => item.id);
     if (accent) elements.companion.dataset.accent = accent.id;
     else delete elements.companion.dataset.accent;
-    const realisticSource = REALISTIC_CATS[identity.coat];
     if (identityKey === lastIdentityKey) return;
     lastIdentityKey = identityKey;
-    if (realisticSource && elements.realisticImage) {
-      elements.companion.classList.add("is-identity-pending");
-      elements.realisticImage.onerror = clearRealisticArt;
-      elements.realisticImage.onload = () => elements.companion.classList.remove("is-identity-pending");
-      elements.realisticImage.src = realisticSource;
-      elements.companion.classList.add("has-realistic-art");
-    } else {
-      elements.companion.classList.remove("has-realistic-art");
-      elements.companion.classList.remove("is-identity-pending");
-    }
-    const coatNames = { orange_white: "橘白", cream_tabby: "奶油虎斑", silver_tabby: "银灰虎斑", black_white: "黑白" };
-    const eyeNames = { amber: "琥珀色眼睛", green: "绿色眼睛", blue: "蓝色眼睛", hazel: "榛色眼睛" };
-    const markingNames = { star: "星形额纹", stripe: "条纹额纹", cloud: "云朵额纹", heart: "心形额纹" };
     const identityLabel = [
-      coatNames[identity.coat] || "独特毛色",
-      eyeNames[identity.eye_color] || "独特眼睛",
-      markingNames[identity.marking] || "特别印记",
-    ].join("、");
+      identity.name_seed || "独特名字",
+      identity.hair || "独特发型",
+      identity.style || "旅行风格",
+    ].join(" · ");
     const accessoryLabel = (accessories || []).map((item) => item.name).filter(Boolean).join("、");
     if (elements.identityMeta) {
       elements.identityMeta.textContent = `身份已锁定 · ${identityLabel}${accessoryLabel ? ` · ${accessoryLabel}` : ""}`;
@@ -228,26 +196,26 @@ const CatScene = (() => {
     if (identity.signature) elements.companion.dataset.identitySignature = identity.signature;
     elements.companion.setAttribute("data-identity-label", identityLabel);
     elements.companion.setAttribute("aria-description", identityLabel);
-    elements.companion.setAttribute("aria-label", `一只${identityLabel}的旅行猫咪`);
+    elements.companion.setAttribute("aria-label", `${identityLabel}的旅行女孩`);
   }
 
-  const PHOTO_STORAGE_KEY = "cat:latestPhoto";
+  const PHOTO_STORAGE_KEY = "travel:latestPhoto";
 
-  function rememberPhoto(catId, url) {
+  function rememberPhoto(travelId, url) {
     try {
-      if (catId && url) window.localStorage.setItem(PHOTO_STORAGE_KEY, JSON.stringify({ cat: catId, url }));
+      if (travelId && url) window.localStorage.setItem(PHOTO_STORAGE_KEY, JSON.stringify({ travel: travelId, url }));
       else window.localStorage.removeItem(PHOTO_STORAGE_KEY);
     } catch (_) {
       // Without storage the page still works; it only loses the first-paint hint.
     }
   }
 
-  // Only reused for the cat the API has just confirmed, so switching accounts in one
-  // browser never shows the previous account's cat.
-  function rememberedPhotoFor(catId) {
+  // Only reused for the travel the API has just confirmed, so switching accounts in one
+  // browser never shows the previous account's travel.
+  function rememberedPhotoFor(travelId) {
     try {
       const stored = JSON.parse(window.localStorage.getItem(PHOTO_STORAGE_KEY) || "null");
-      return stored && catId && stored.cat === catId && typeof stored.url === "string" ? stored.url : "";
+      return stored && travelId && stored.travel === travelId && typeof stored.url === "string" ? stored.url : "";
     } catch (_) {
       return "";
     }
@@ -255,7 +223,7 @@ const CatScene = (() => {
 
   function settlePhotoPending() {
     elements.stage.classList.remove("is-photo-pending");
-    delete document.documentElement.dataset.catPhotoPending;
+    delete document.documentElement.dataset.travelPhotoPending;
   }
 
   function stopPhotoSwap() {
@@ -264,32 +232,32 @@ const CatScene = (() => {
     elements.stage.classList.remove("is-photo-transitioning");
   }
 
-  function clearLatestPhoto(catId) {
+  function clearLatestPhoto(travelId) {
     lastPhotoUrl = "";
     displayedPhotoUrl = "";
     photoLoadToken += 1;
     stopPhotoSwap();
     elements.stage.classList.remove("has-latest-photo");
     settlePhotoPending();
-    rememberPhoto(catId, "");
+    rememberPhoto(travelId, "");
   }
 
-  // Shows one photo: the newest the cat has. `alternates` is only a failure chain —
+  // Shows one photo: the newest the travel has. `alternates` is only a failure chain —
   // an expired link falls through to the next candidate instead of leaving an empty stage.
-  function setLatestPhoto(url, catId, alternates = []) {
+  function setLatestPhoto(url, travelId, alternates = []) {
     const nextUrl = typeof url === "string" ? url.trim() : "";
     if (!nextUrl || !elements.latestPhoto) {
-      clearLatestPhoto(catId);
+      clearLatestPhoto(travelId);
       return;
     }
     if (nextUrl === lastPhotoUrl) return;
     const previousDisplayedUrl = displayedPhotoUrl;
     lastPhotoUrl = nextUrl;
     const token = ++photoLoadToken;
-    // While the cat is still hidden on first paint, keep it hidden until the photo
-    // has loaded; a cat that is already visible is cross-faded once the photo arrives.
+    // While the travel is still hidden on first paint, keep it hidden until the photo
+    // has loaded; a travel that is already visible is cross-faded once the photo arrives.
     const companionHidden = elements.companion.classList.contains("is-identity-pending")
-      || Boolean(document.documentElement.dataset.catPhotoPending);
+      || Boolean(document.documentElement.dataset.travelPhotoPending);
     if (companionHidden && !elements.stage.classList.contains("has-latest-photo")) {
       elements.stage.classList.add("is-photo-pending");
     }
@@ -303,7 +271,7 @@ const CatScene = (() => {
         elements.stage.classList.add("has-latest-photo");
         elements.stage.classList.remove("is-photo-transitioning");
         settlePhotoPending();
-        rememberPhoto(catId, nextUrl);
+        rememberPhoto(travelId, nextUrl);
       };
       if (previousDisplayedUrl && previousDisplayedUrl !== nextUrl && elements.stage.classList.contains("has-latest-photo")) {
         elements.stage.classList.add("is-photo-transitioning");
@@ -318,10 +286,10 @@ const CatScene = (() => {
       stopPhotoSwap();
       if (alternates.length) {
         lastPhotoUrl = "";
-        setLatestPhoto(alternates[0], catId, alternates.slice(1));
+        setLatestPhoto(alternates[0], travelId, alternates.slice(1));
         return;
       }
-      clearLatestPhoto(catId);
+      clearLatestPhoto(travelId);
     };
     preload.src = nextUrl;
   }
@@ -355,21 +323,21 @@ const CatScene = (() => {
   return Object.freeze({ setIdentity, setLatestPhoto, rememberedPhotoFor, setPresence, setScene, react, showToast, revealPreview });
 })();
 
-const CatShell = (() => {
-  const dialog = document.querySelector("#catDialog");
+const TravelShell = (() => {
+  const dialog = document.querySelector("#travelDialog");
   const dialogEyebrow = document.querySelector("#dialogEyebrow");
   const dialogTitle = document.querySelector("#dialogTitle");
   const dialogBody = document.querySelector("#dialogBody");
   const dialogPrimary = document.querySelector("#dialogPrimary");
-  const messagePreview = document.querySelector("#catMessagePreview");
-  const presenceTitle = document.querySelector("#catPresenceTitle");
-  const presenceMeta = document.querySelector("#catPresenceMeta");
-  const todayPanel = document.querySelector("#catTodayPanel");
-  const journalPanel = document.querySelector("#catJournalPanel");
-  const atlasPanel = document.querySelector("#catAtlasPanel");
-  const journalGrid = document.querySelector("#catJournalGrid");
-  const atlasGrid = document.querySelector("#catAtlasGrid");
-  let catState = null;
+  const messagePreview = document.querySelector("#travelMessagePreview");
+  const presenceTitle = document.querySelector("#travelPresenceTitle");
+  const presenceMeta = document.querySelector("#travelPresenceMeta");
+  const todayPanel = document.querySelector("#travelTodayPanel");
+  const journalPanel = document.querySelector("#travelJournalPanel");
+  const atlasPanel = document.querySelector("#travelAtlasPanel");
+  const journalGrid = document.querySelector("#travelJournalGrid");
+  const atlasGrid = document.querySelector("#travelAtlasGrid");
+  let travelState = null;
   let authState = "unknown";
   let dialogMode = "info";
   let adoptionPreview = null;
@@ -390,14 +358,14 @@ const CatShell = (() => {
     return data;
   }
 
-  function openDialog(title, body, eyebrow = "旅行猫咪", mode = "info") {
+  function openDialog(title, body, eyebrow = "旅行女孩", mode = "info") {
     dialogMode = mode;
     dialogEyebrow.textContent = eyebrow;
     dialogTitle.textContent = title;
     dialogBody.textContent = body;
     dialogPrimary.textContent = mode === "adopt" ? "确认领养" : "知道了";
     if (typeof dialog.showModal === "function" && !dialog.open) dialog.showModal();
-    else CatScene.showToast(body);
+    else TravelScene.showToast(body);
   }
 
   function closeDialog() {
@@ -405,18 +373,18 @@ const CatShell = (() => {
     dialogMode = "info";
   }
 
-  function applyCatState(nextState) {
-    catState = nextState;
-    if (!nextState.cat) return;
-    CatScene.setIdentity(nextState.cat.identity, nextState.cat.initial_accessories);
+  function applyTravelState(nextState) {
+    travelState = nextState;
+    if (!nextState.girl) return;
+    TravelScene.setIdentity(nextState.girl.identity, nextState.girl.initial_accessories);
     const presence = Object.prototype.hasOwnProperty.call(nextState, "presence")
       ? nextState.presence
-      : derivePresence(nextState.cat);
-    const trip = nextState.cat.current_trip;
-    CatScene.setPresence(presence, trip);
-    const catId = nextState.cat.id;
-    const scene = nextState.scene || nextState.cat.scene || trip?.scene;
-    CatScene.setScene(scene, presence, trip);
+      : derivePresence(nextState.girl);
+    const trip = nextState.girl.current_trip;
+    TravelScene.setPresence(presence, trip);
+    const travelId = nextState.girl.id;
+    const scene = nextState.scene || nextState.girl.scene || trip?.scene;
+    TravelScene.setScene(scene, presence, trip);
     const messages = Array.isArray(nextState.messages) ? nextState.messages : null;
     // Messages arrive newest first, so the head of this list is the latest photo and the
     // rest only stand in when a link has expired.
@@ -424,15 +392,15 @@ const CatShell = (() => {
       ...(messages || []).map((message) => message.payload?.postcard_url),
       scene?.photo_url,
       trip?.postcard_url,
-      // /api/cat/state carries no messages; until /api/cat/home answers, fall back to
-      // the photo this browser last showed for this same cat.
-      messages ? "" : CatScene.rememberedPhotoFor(catId),
+      // /api/travel/state carries no messages; until /api/travel/home answers, fall back to
+      // the photo this browser last showed for this same travel.
+      messages ? "" : TravelScene.rememberedPhotoFor(travelId),
     ].filter((url) => typeof url === "string" && url.trim()))];
-    CatScene.setLatestPhoto(photos[0] || "", catId, photos.slice(1));
+    TravelScene.setLatestPhoto(photos[0] || "", travelId, photos.slice(1));
     if (messages) renderPresence(messages[0], presence);
   }
 
-  // The heading is the cat's own latest words, not a fixed label.
+  // The heading is the travel's own latest words, not a fixed label.
   function renderPresence(latest, presence) {
     const payload = latest?.payload || {};
     const text = (payload.text || payload.opening || payload.diary?.zh || "").trim();
@@ -442,8 +410,8 @@ const CatShell = (() => {
       : PRESENCE_CAPTIONS[presence] || PRESENCE_CAPTIONS.home_awake;
   }
 
-  function derivePresence(cat) {
-    const status = cat?.current_trip?.status;
+  function derivePresence(travel) {
+    const status = travel?.current_trip?.status;
     if (status === "away" || status === "settling") return "away";
     const hour = new Date().getHours();
     return hour < 6 || hour >= 23 ? "home_sleeping" : "home_awake";
@@ -452,9 +420,7 @@ const CatShell = (() => {
   function identityText(preview) {
     const identity = preview.identity || {};
     const accessories = (preview.initial_accessories || []).map((item) => item.name).join("、");
-    const coatNames = { orange_white: "橘白", cream_tabby: "奶油虎斑", silver_tabby: "银灰虎斑", black_white: "黑白" };
-    const eyeNames = { amber: "琥珀色", green: "绿色", blue: "蓝色", hazel: "榛色" };
-    return `固定身份：${coatNames[identity.coat] || "独特毛色"}，${eyeNames[identity.eye_color] || "独特眼睛"}，${identity.marking || "特别印记"}。初始配饰：${accessories || "专属配饰"}。确认后身份和初始配饰不会改变。`;
+    return `固定身份：${identity.name_seed || "独特名字"}，${identity.hair || "独特发型"}，${identity.style || "旅行风格"}，${identity.silhouette || "自然身形"}。初始配饰：${accessories || "专属配饰"}。确认后身份和初始配饰不会改变。`;
   }
 
   function escapeHtml(value) {
@@ -489,12 +455,12 @@ const CatShell = (() => {
   // judged by what it says, not by the kind it belongs to.
   function messageView(message) {
     const payload = message.payload || {};
-    const label = message.kind === "travel" ? "" : MESSAGE_LABELS[message.kind] || "猫咪记录";
+    const label = message.kind === "travel" ? "" : MESSAGE_LABELS[message.kind] || "旅行女孩记录";
     const title = (payload.title || "").trim();
     return {
       label,
       title: title && title !== label && !REDUNDANT_TITLES.has(title) ? title : "",
-      text: payload.text || payload.opening || payload.diary?.zh || "猫咪把这段生活收进了日志。",
+      text: payload.text || payload.opening || payload.diary?.zh || "旅行女孩把这段生活收进了日志。",
       photo: payload.postcard_url || "",
     };
   }
@@ -521,10 +487,10 @@ const CatShell = (() => {
   function renderMessages(messages) {
     const rest = messages.slice(1);
     if (!rest.length) {
-      messagePreview.innerHTML = `<div class="cat-empty">${messages.length ? "更早的旅迹还在路上。" : "猫咪正在慢慢生活，第一段旅迹还在路上。"}</div>`;
+      messagePreview.innerHTML = `<div class="travel-empty">${messages.length ? "更早的旅迹还在路上。" : "旅行女孩正在慢慢生活，第一段旅迹还在路上。"}</div>`;
       return;
     }
-    messagePreview.innerHTML = rest.map((message) => cardHtml(message, "cat-message-card")).join("");
+    messagePreview.innerHTML = rest.map((message) => cardHtml(message, "travel-message-card")).join("");
     bindPhotoFallback(messagePreview);
   }
 
@@ -534,11 +500,11 @@ const CatShell = (() => {
       return item.kind === filter;
     });
     if (!visible.length) {
-      journalGrid.innerHTML = '<div class="cat-empty">这一类日志还没有记录。猫咪正在慢慢生活。</div>';
+      journalGrid.innerHTML = '<div class="travel-empty">这一类日志还没有记录。旅行女孩正在慢慢生活。</div>';
       return;
     }
     journalGrid.innerHTML = visible
-      .map((message) => cardHtml(message, "cat-journal-card", message.kind === "postcard" ? " cat-journal-card--postcard" : ""))
+      .map((message) => cardHtml(message, "travel-journal-card", message.kind === "postcard" ? " travel-journal-card--postcard" : ""))
       .join("");
     bindPhotoFallback(journalGrid);
   }
@@ -547,33 +513,24 @@ const CatShell = (() => {
     const accessories = data.accessories || [];
     const memories = data.memories || [];
     const memoryText = memories.slice(0, 12).map((memory) => `<span>${escapeHtml(memory.label || memory.memory_key)}</span>`).join("");
-    const identity = catState?.cat?.identity || {};
-    const identityNames = {
-      coat: { orange_white: "橘白", cream_tabby: "奶油虎斑", silver_tabby: "银灰虎斑", black_white: "黑白" },
-      eye_color: { amber: "琥珀色", green: "绿色", blue: "蓝色", hazel: "榛色" },
-      marking: { star: "星形额纹", stripe: "条纹额纹", cloud: "云朵额纹", heart: "心形额纹" },
-    };
-    const identityText = [
-      identityNames.coat[identity.coat] || "独特毛色",
-      `${identityNames.eye_color[identity.eye_color] || "独特"}眼睛`,
-      identityNames.marking[identity.marking] || "特别印记",
-    ].join(" · ");
+    const identity = travelState?.girl?.identity || {};
+    const identityText = [identity.name_seed, identity.hair, identity.style, identity.silhouette].filter(Boolean).join(" · ") || "旅行女孩的固定形象";
     const signature = identity.signature ? `<small>身份签名 · ${escapeHtml(identity.signature)}</small>` : "";
-    atlasGrid.innerHTML = `<article class="cat-atlas-card cat-atlas-card--identity"><strong>固定身份</strong><p>${escapeHtml(identityText)}</p>${signature}</article>
-      <article class="cat-atlas-card"><strong>成长配饰 · ${accessories.length}</strong><p>${accessories.length ? accessories.map((item) => escapeHtml(item.name || item.id)).join(" · ") : "猫咪还在积攒自己的旅途"}</p></article>
-      <article class="cat-atlas-card"><strong>世界记忆 · ${memories.length}</strong><p class="cat-atlas-memory-list">${memoryText || "第一封信还在路上"}</p></article>`;
+    atlasGrid.innerHTML = `<article class="travel-atlas-card travel-atlas-card--identity"><strong>固定身份</strong><p>${escapeHtml(identityText)}</p>${signature}</article>
+      <article class="travel-atlas-card"><strong>成长配饰 · ${accessories.length}</strong><p>${accessories.length ? accessories.map((item) => escapeHtml(item.name || item.id)).join(" · ") : "旅行女孩还在积攒自己的旅途"}</p></article>
+      <article class="travel-atlas-card"><strong>世界记忆 · ${memories.length}</strong><p class="travel-atlas-memory-list">${memoryText || "第一封信还在路上"}</p></article>`;
   }
 
   async function showAdoptionPreview(existingDraft = null) {
     if (authState !== "authenticated") {
-      openDialog("登录后领养", "登录账户后，才能把这只猫咪的生活保存下来。", "旅行猫咪");
+      openDialog("登录后领养", "登录账户后，才能把这只旅行女孩的生活保存下来。", "旅行女孩");
       return;
     }
     try {
-      adoptionPreview = existingDraft || await api("/api/cat/adoption/preview", { method: "POST" });
-      openDialog("确认领养你的猫咪", identityText(adoptionPreview), "第一次相遇", "adopt");
+      adoptionPreview = existingDraft || await api("/api/travel/adoption/preview", { method: "POST" });
+      openDialog("确认领养你的旅行女孩", identityText(adoptionPreview), "第一次相遇", "adopt");
     } catch (error) {
-      openDialog("暂时不能领养", error.message || "请稍后再试。", "旅行猫咪");
+      openDialog("暂时不能领养", error.message || "请稍后再试。", "旅行女孩");
     }
   }
 
@@ -581,57 +538,57 @@ const CatShell = (() => {
     if (!adoptionPreview?.draft_id) return;
     dialogPrimary.disabled = true;
     try {
-      const data = await api("/api/cat/adoption/confirm", {
+      const data = await api("/api/travel/adoption/confirm", {
         method: "POST",
         body: JSON.stringify({ draft_id: adoptionPreview.draft_id }),
       });
-      applyCatState({ adopted: true, draft: null, cat: data });
+      applyTravelState({ adopted: true, draft: null, girl: data });
       adoptionPreview = null;
       closeDialog();
-      CatScene.react("猫咪来到你的猫窝了。", "我会记住我们的第一次相遇。 ");
+      TravelScene.react("旅行女孩来到你的旅居空间了。", "我会记住我们的第一次相遇。 ");
     } catch (error) {
       if (error.status === 409) {
         adoptionPreview = null;
-        await loadCatState();
+        await loadTravelState();
         return;
       }
-      openDialog("领养还没有完成", error.message || "请重新生成一份身份预览。", "旅行猫咪", "info");
+      openDialog("领养还没有完成", error.message || "请重新生成一份身份预览。", "旅行女孩", "info");
     } finally {
       dialogPrimary.disabled = false;
     }
   }
 
-  async function loadCatState() {
+  async function loadTravelState() {
     try {
-      const data = await api("/api/cat/state");
+      const data = await api("/api/travel/state");
       authState = "authenticated";
-      applyCatState(data);
+      applyTravelState(data);
       if (!data.adopted) {
         await showAdoptionPreview(data.draft);
-        CatScene.revealPreview();
+        TravelScene.revealPreview();
       }
       else await loadHome();
     } catch (error) {
       if (error.status === 401 || error.status === 403) {
         authState = "anonymous";
-        catState = { adopted: false, cat: null, draft: null };
-        CatScene.revealPreview();
+        travelState = { adopted: false, girl: null, draft: null };
+        TravelScene.revealPreview();
       } else {
-        CatScene.revealPreview();
-        CatScene.showToast(error.message || "猫咪状态暂时无法读取");
+        TravelScene.revealPreview();
+        TravelScene.showToast(error.message || "旅行女孩状态暂时无法读取");
       }
     }
   }
 
   async function loadHome() {
-    if (authState !== "authenticated" || !catState?.adopted) return;
+    if (authState !== "authenticated" || !travelState?.adopted) return;
     try {
-      // /api/cat/home already excludes retired guide messages, so nothing is filtered here.
-      const home = await api("/api/cat/home");
-      applyCatState({ ...home, adopted: true });
+      // /api/travel/home already excludes retired guide messages, so nothing is filtered here.
+      const home = await api("/api/travel/home");
+      applyTravelState({ ...home, adopted: true });
       renderMessages(home.messages || []);
     } catch (error) {
-      CatScene.showToast(error.message || "猫窝状态暂时无法读取");
+      TravelScene.showToast(error.message || "旅居空间状态暂时无法读取");
     }
   }
 
@@ -646,16 +603,16 @@ const CatShell = (() => {
         renderJournal(journalItems, button.dataset.journalFilter || "all");
       });
     });
-    document.querySelectorAll(".cat-nav-item").forEach((item) => {
+    document.querySelectorAll(".travel-nav-item").forEach((item) => {
       item.addEventListener("click", async (event) => {
         event.preventDefault();
-        document.querySelectorAll(".cat-nav-item").forEach((nav) => {
+        document.querySelectorAll(".travel-nav-item").forEach((nav) => {
           const active = nav === item;
           nav.classList.toggle("is-active", active);
           if (active) nav.setAttribute("aria-current", "page"); else nav.removeAttribute("aria-current");
         });
-        if (authState !== "authenticated" || !catState?.adopted) {
-          await showAdoptionPreview(catState?.draft);
+        if (authState !== "authenticated" || !travelState?.adopted) {
+          await showAdoptionPreview(travelState?.draft);
           return;
         }
         todayPanel.hidden = item.hash !== "#home";
@@ -663,14 +620,14 @@ const CatShell = (() => {
         atlasPanel.hidden = item.hash !== "#atlas";
         if (item.hash === "#journal") {
           try {
-            const data = await api("/api/cat/journal");
+            const data = await api("/api/travel/journal");
             journalItems = data.items || [];
             renderJournal(journalItems);
-          } catch (error) { CatScene.showToast(error.message || "旅迹暂时无法读取"); }
+          } catch (error) { TravelScene.showToast(error.message || "旅迹暂时无法读取"); }
         }
         if (item.hash === "#atlas") {
-          try { renderAtlas(await api("/api/cat/atlas")); }
-          catch (error) { CatScene.showToast(error.message || "图鉴暂时无法读取"); }
+          try { renderAtlas(await api("/api/travel/atlas")); }
+          catch (error) { TravelScene.showToast(error.message || "图鉴暂时无法读取"); }
         }
         if (item.hash === "#home") window.scrollTo({ top: 0, behavior: "smooth" });
         else (item.hash === "#journal" ? journalPanel : atlasPanel)?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -689,16 +646,16 @@ const CatShell = (() => {
   async function init() {
     bind();
     renderMessages([]);
-    await loadCatState();
+    await loadTravelState();
     window.setInterval(() => {
-      if (document.visibilityState === "visible" && authState === "authenticated" && catState?.adopted) loadHome();
+      if (document.visibilityState === "visible" && authState === "authenticated" && travelState?.adopted) loadHome();
     }, 60_000);
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible" && authState === "authenticated" && catState?.adopted) loadHome();
+      if (document.visibilityState === "visible" && authState === "authenticated" && travelState?.adopted) loadHome();
     });
   }
 
   return Object.freeze({ init });
 })();
 
-document.addEventListener("DOMContentLoaded", () => CatShell.init());
+document.addEventListener("DOMContentLoaded", () => TravelShell.init());

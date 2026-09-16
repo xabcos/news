@@ -163,42 +163,42 @@ PostgreSQL 事务写入 items + runs
 
 `pages/styles.css` 提供全站基础样式和新闻首页样式，`pages/me/styles.css` 集中管理工作台布局与控件，沿用既有颜色和排版，并支持手机与深色模式。旧管理员页面已删除，不保留跳转入口。
 
-## 8. 旅行猫咪
+## 8. 旅行女孩
 
-旅行猫咪是 NEWS 之上的成长型多人世界。NEWS 提供每天变化的新闻、地点和图片素材；猫咪服务负责领养、身份、成长、旅程、相册和共同世界中的相遇。
+旅行女孩是 NEWS 之上的成长型多人世界。NEWS 提供每天变化的新闻、地点和图片素材；旅行女孩服务负责领养、身份、成长、旅程、相册和共同世界中的相遇。
 
 ### 产品不变量
 
 - 第一阶段每个账户拥有一只主猫；匿名访客的 guest cat 只保存在浏览器本地。后期家庭模式另行扩展，不改变主猫的身份归属。
 - 领养确认前可以预览身份和初始配饰。确认事务写入唯一身份快照、身份指纹和初始配饰；确认后这些字段不能更新、替换或重新生成。
-- 页面使用固定的“旅行猫咪”称呼，不提供自定义名字入口。成长配饰、动作和能力只能追加解锁，初始配饰永远保留。
+- 页面使用固定的“旅行女孩”称呼，不提供自定义名字入口。成长配饰、动作和能力只能追加解锁，初始配饰永远保留。
 - 成长以追加式 `cat_growth_events` 为事实记录。阶段、性格和解锁规则可以持续增加版本，但不能改写既有身份或历史事件。
 - 社交是默认世界状态，不提供拒绝、屏蔽或暂停入口。一次相遇可以包含任意数量的猫；不使用双猫专用字段，也不要求先加好友或逐次同意。
 - 第一版社交内容由固定短语和系统动作组成。名字、外观标记和共同旅程可以展示，但不暴露邮箱、账户 ID 或个人主题内容。
 
 ### 数据与接口边界
 
-旅行猫咪的核心表包括 `cats`、`cat_growth_events`、`cat_accessory_unlocks`、`cat_memories`、`cat_reading_daily`、`cat_personality_snapshots`、`cat_world_briefs`、`cat_trips`、`cat_postcards`、`cat_encounters` 和 `cat_encounter_members`。`cats.owner_user_id` 第一阶段唯一；身份快照和初始配饰由领养接口写入。成长、旅行动态和相遇都写入幂等事件，场景记忆追加到 `cat_memories(kind = 'scene')`，避免刷新或重复请求重复成长。
+旅行女孩当前复用历史存储表 `cats`、`cat_growth_events`、`cat_accessory_unlocks`、`cat_memories`、`cat_reading_daily`、`cat_personality_snapshots`、`cat_world_briefs`、`cat_trips`、`cat_postcards`、`cat_encounters` 和 `cat_encounter_members`，数据库中的旧角色数据已清空。`cats.owner_user_id` 第一阶段唯一；身份快照和初始配饰由领养接口写入。成长、旅行动态和共同旅途都写入幂等事件，场景记忆追加到 `cat_memories(kind = 'scene')`，避免刷新或重复请求重复成长。
 
 当前 M0–M4 接口如下：
 
 ```text
-GET  /api/cat/state
-POST /api/cat/adoption/preview
-POST /api/cat/adoption/confirm
-POST /api/cat/reading
-GET  /api/cat/trips
-GET  /api/cat/album
-GET  /api/cat/atlas
-GET  /api/cat/encounters
-GET  /api/cat/guide
+GET  /api/travel/state
+POST /api/travel/adoption/preview
+POST /api/travel/adoption/confirm
+POST /api/travel/reading
+GET  /api/travel/trips
+GET  /api/travel/album
+GET  /api/travel/atlas
+GET  /api/travel/encounters
+GET  /api/travel/guide
 ```
 
-`/api/cat/state` 是猫页面的主要水合入口，返回领养状态、固定身份、成长阶段、已解锁内容、当前旅程和相遇；其中 `cat.scene` 附带最新动态照片的 `photo_url`，页面首屏据此直接显示照片，不会先闪出默认插画。维护循环每 4 小时生成一张动态照片：叙事模型根据本地时间、在家或旅途、性格、最近动态和图片新闻主题 `p` 提供的地点氛围，决定动态文案、情绪、动作、道具、是否有旅伴同框以及画面方向；固定活动列表只在模型不可用时兜底。旅途中的旅伴是一位青春靓丽的美丽少女，合照按全身像取景。每次动态都记录到旅程日志、成长事件和场景记忆。`/api/cat/guide` 仅保留为兼容旧客户端的手动领读接口，自动生活循环不再读取全球新闻。
+`/api/travel/state` 是旅行女孩页面的主要水合入口，返回固定身份、成长阶段、已解锁内容、当前旅程和共同旅途；其中 `girl.scene` 附带最新动态照片的 `photo_url`，页面首屏据此直接显示照片。维护循环每 4 小时生成一张动态照片：叙事模型根据本地时间、地点、图片新闻事件线索、女孩性格和最近动态，决定文案、情绪、动作、服装方向和画面构图；固定活动列表只在模型不可用时兜底。第一张人物图会作为后续 Grok 图片请求的参考，保持人物身份稳定，同时让服装、动作、表情和镜头持续变化。每次动态都记录到旅程日志、成长事件和场景记忆。
 
 ### 实施顺序
 
-先完成领养确认和不可变身份，再接入猫窝状态与成长事件；之后由维护循环每 4 小时生成生活照片，并从图片新闻地点安排旅程，再接入成长配饰、相册和图鉴查询；最后扩展多人合影、来访和分享页。每个阶段都必须保留旧身份快照可读取，并允许新增成长规则而不修改历史数据。
+先完成领养确认和不可变身份，再接入旅居空间状态与成长事件；之后由维护循环每 4 小时生成生活照片，并从图片新闻地点安排旅程，再接入成长配饰、相册和图鉴查询；最后扩展多人合影、来访和分享页。每个阶段都必须保留旧身份快照可读取，并允许新增成长规则而不修改历史数据。
 
 ## 9. 配置与部署
 

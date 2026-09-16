@@ -1,0 +1,214 @@
+:root {
+  color-scheme: light;
+  --travel-ink: #382f2b;
+  --travel-muted: #85766d;
+  --travel-line: rgba(86, 65, 52, .16);
+  --travel-paper: #f7f1e8;
+  --travel-paper-deep: #ede1d1;
+  --travel-card: rgba(255, 252, 247, .88);
+  --travel-accent: #b8674d;
+  --travel-accent-dark: #8e4d3a;
+  --travel-gold: #b78643;
+  --travel-green: #71806a;
+  --travel-shadow: 0 1.5rem 4rem rgba(80, 56, 40, .14);
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body { min-width: 320px; min-height: 100%; margin: 0; }
+body { min-height: 100svh; color: var(--travel-ink); background: var(--travel-paper); -webkit-font-smoothing: antialiased; }
+button, a { font: inherit; color: inherit; -webkit-tap-highlight-color: transparent; }
+button { border: 0; cursor: pointer; }
+a { text-decoration: none; }
+:where(button, a):focus-visible { outline: 2px solid var(--travel-accent); outline-offset: 3px; }
+
+.travel-page { overflow-x: hidden; overflow-y: auto; }
+.travel-shell { display: grid; min-height: 100svh; grid-template-rows: auto minmax(0, 1fr) auto auto; padding: 0 clamp(1rem, 3vw, 3rem) max(.7rem, env(safe-area-inset-bottom)); background: radial-gradient(circle at 12% 8%, rgba(255,255,255,.68), transparent 30rem), var(--travel-paper); }
+.travel-topbar { display: flex; height: 4.2rem; align-items: center; justify-content: space-between; gap: 1rem; max-width: 1180px; width: 100%; margin: 0 auto; }
+.travel-back { display: inline-flex; align-items: center; gap: .5rem; min-width: 0; }
+.travel-back { color: var(--travel-muted); font-size: .83rem; }
+.travel-back:hover { color: var(--travel-accent-dark); }
+.travel-back svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.travel-wordmark { display: flex; align-items: baseline; gap: .65rem; }
+.travel-wordmark__mark { color: var(--travel-accent-dark); font-size: 1.1rem; font-weight: 720; letter-spacing: .08em; }
+.travel-wordmark__name { color: var(--travel-muted); font-size: .78rem; }
+
+.travel-layout { max-width: 1180px; width: 100%; margin: 0 auto clamp(1.5rem, 3vw, 2.5rem); }
+.travel-stage { position: relative; height: clamp(28rem, calc(100svh - 10.5rem), 42rem); min-height: 0; overflow: hidden; border: 1px solid rgba(112,83,61,.13); border-radius: 2rem; background: linear-gradient(180deg, #bdd4d3 0%, #dbe3d6 46%, #d8b99b 46%, #caa685 100%); box-shadow: var(--travel-shadow); isolation: isolate; }
+.travel-stage--art { background-image: url("/travel/assets/room/room-day.webp"); background-size: cover; background-position: center; }
+html[data-travel-initial-presence="home_sleeping"] .travel-stage--art:not([data-presence]) { background-image: url("/travel/assets/room/room-night.webp"); }
+.travel-stage--art[data-presence="home_sleeping"] { background-image: url("/travel/assets/room/room-night.webp"); }
+.travel-stage--art[data-weather="rain"] { background-image: url("/travel/assets/room/room-rain.webp"); }
+/* Grok travel portraits use a tall composition so the complete figure and location remain visible. */
+.travel-stage.has-latest-photo { height: auto; width: min(100%, 44rem, calc(100svh - 9rem)); margin-inline: auto; aspect-ratio: 2 / 3; }
+
+.travel-companion { --travel-shift-x: 0rem; --travel-shift-y: 0rem; --travel-rotate: 0deg; --travel-scale: 1; position: absolute; z-index: 2; right: 24%; bottom: 8%; width: min(52%, 19rem); min-width: 12rem; aspect-ratio: 1 / 1.18; animation: travel-float 4s ease-in-out infinite; transition: opacity .18s ease; }
+.travel-companion.is-identity-pending { opacity: 0; }
+.travel-girl-placeholder { display: grid; width: 100%; height: 100%; place-items: end center; padding-bottom: 18%; border-radius: 48% 48% 18% 18%; background: linear-gradient(160deg, rgba(255,245,240,.96), rgba(215,184,186,.9) 52%, rgba(103,119,147,.9)); box-shadow: 0 1rem 2rem rgba(66,48,55,.2); color: rgba(255,255,255,.86); font-size: .68rem; font-weight: 800; letter-spacing: .22em; text-shadow: 0 .1rem .4rem rgba(45,35,43,.3); }
+.travel-girl-placeholder::before { content: ""; position: absolute; top: 11%; width: 35%; aspect-ratio: 1; border-radius: 50%; background: #f1b496; box-shadow: 0 -.35rem 0 1.2rem #513e58; }
+.travel-companion:not(.has-realistic-art) { aspect-ratio: 1; }
+.travel-body-svg { display: block; width: 100%; overflow: visible; }
+.travel-realistic-image { position: absolute; inset: 0; display: none; width: 100%; height: 100%; object-fit: contain; object-position: center bottom; filter: drop-shadow(0 .45rem .45rem rgba(49, 39, 32, .16)); }
+.travel-companion.has-realistic-art .travel-realistic-image { display: block; }
+.travel-companion.has-realistic-art .travel-body-svg { display: none; }
+/* A square stage lets a square photo cover it without letterboxing. */
+.travel-latest-photo { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; object-fit: cover; object-position: center; opacity: 0; transition: opacity .35s ease; }
+.travel-stage.has-latest-photo .travel-latest-photo { opacity: 1; }
+.travel-stage.has-latest-photo.is-photo-transitioning .travel-latest-photo { opacity: 0; }
+.travel-stage.has-latest-photo .travel-companion { opacity: 0; pointer-events: none; }
+/* Keeps the caption legible over a dark photo. */
+.travel-stage.has-latest-photo::after { content: ""; position: absolute; z-index: 2; inset: auto 0 0; height: 32%; background: linear-gradient(180deg, transparent, rgba(34,24,17,.62)); pointer-events: none; }
+.travel-stage.has-latest-photo .travel-stage__caption { color: rgba(255,252,247,.94); }
+.travel-stage.has-latest-photo .travel-identity-meta { color: rgba(255,252,247,.76); }
+/* A remembered or still-loading photo keeps the room art and the illustrated travel hidden, so the stage never shows the default art before the real photo. */
+html[data-travel-photo-pending] .travel-stage--art:not(.has-latest-photo) { background-image: linear-gradient(180deg, #e9dfd0 0%, #d8c7b2 100%); }
+html[data-travel-photo-pending] .travel-companion, .travel-stage.is-photo-pending .travel-companion { opacity: 0; pointer-events: none; }
+.travel-scene-overlay, .travel-scene-motion { position: absolute; z-index: 2; display: grid; width: 1.8rem; height: 1.8rem; place-items: center; border: 1px solid rgba(118,83,62,.16); border-radius: 50%; color: var(--travel-accent-dark); background: rgba(255,252,247,.82); box-shadow: 0 .35rem .8rem rgba(84,57,39,.12); font-size: .9rem; line-height: 1; pointer-events: none; }
+.travel-scene-overlay { right: 3%; bottom: 22%; }
+.travel-scene-motion { top: 8%; left: 4%; color: var(--travel-green); opacity: .82; }
+.travel-scene-motion:not([hidden]) { animation: travel-scene-drift 2.8s ease-in-out infinite; }
+.travel-shadow { fill: rgba(89,57,38,.18); }
+.travel-body { fill: #d88b58; stroke: #995d40; stroke-width: 3; }
+.travel-chest { fill: #f4d4a4; }
+.travel-head { fill: #dc915e; stroke: #995d40; stroke-width: 3; }
+.travel-ear-fill { fill: #d88b58; stroke: #995d40; stroke-width: 3; stroke-linejoin: round; }
+.travel-ear-inner { stroke: #efbd9e; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.travel-eye { fill: #3d302c; animation: travel-blink 7s ease-in-out infinite; transform-origin: center; }
+.travel-face, .travel-paw { stroke: #69443a; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.travel-marking { display: none; }
+.travel-marking--star, .travel-marking--cloud, .travel-marking--heart { fill: rgba(133, 79, 57, .5); stroke: rgba(105, 62, 48, .55); stroke-width: 1.4; }
+.travel-marking--stripe { fill: none; stroke: rgba(105, 62, 48, .55); stroke-width: 3; stroke-linecap: round; }
+.travel-companion[data-marking="star"] .travel-marking--star,
+.travel-companion[data-marking="stripe"] .travel-marking--stripe,
+.travel-companion[data-marking="cloud"] .travel-marking--cloud,
+.travel-companion[data-marking="heart"] .travel-marking--heart { display: block; }
+.travel-scarf { fill: #789184; stroke: #526b61; stroke-width: 2.5; }
+.travel-scarf-tail { stroke: #526b61; stroke-width: 4; stroke-linecap: round; }
+.travel-tail { stroke: #995d40; stroke-width: 13; stroke-linecap: round; }
+.travel-companion[data-coat="cream_tabby"] .travel-body,
+.travel-companion[data-coat="cream_tabby"] .travel-head,
+.travel-companion[data-coat="cream_tabby"] .travel-ear-fill { fill: #e2b27c; }
+.travel-companion[data-coat="silver_tabby"] .travel-body,
+.travel-companion[data-coat="silver_tabby"] .travel-head,
+.travel-companion[data-coat="silver_tabby"] .travel-ear-fill { fill: #a8a6a0; }
+.travel-companion[data-coat="black_white"] .travel-body,
+.travel-companion[data-coat="black_white"] .travel-head,
+.travel-companion[data-coat="black_white"] .travel-ear-fill { fill: #4e4948; }
+.travel-companion[data-coat="black_white"] .travel-chest { fill: #f0e7dc; }
+.travel-companion[data-eye="green"] .travel-eye { fill: #567a5a; }
+.travel-companion[data-eye="blue"] .travel-eye { fill: #54789c; }
+.travel-companion[data-eye="hazel"] .travel-eye { fill: #8a6e46; }
+.travel-accessory-accent { display: none; }
+.travel-accessory--bronze_bell { fill: #d6a552; stroke: #8e6330; stroke-width: 2; }
+.travel-accessory--canvas_satchel { fill: #b38d6f; stroke: #76533e; stroke-width: 2; }
+.travel-accessory--blue_ribbon { fill: none; stroke: #5d83a6; stroke-width: 4; stroke-linecap: round; }
+.travel-accessory--round_glasses { fill: none; stroke: #574944; stroke-width: 2.5; }
+.travel-companion[data-accent="bronze_bell"] .travel-accessory--bronze_bell,
+.travel-companion[data-accent="canvas_satchel"] .travel-accessory--canvas_satchel,
+.travel-companion[data-accent="blue_ribbon"] .travel-accessory--blue_ribbon,
+.travel-companion[data-accent="round_glasses"] .travel-accessory--round_glasses { display: block; }
+.travel-thought { position: absolute; top: -1rem; right: -2rem; max-width: 13rem; padding: .65rem .85rem; border: 1px solid rgba(118,83,62,.14); border-radius: 1rem 1rem 1rem .25rem; color: var(--travel-muted); background: rgba(255,252,247,.85); box-shadow: 0 .7rem 1.3rem rgba(84,57,39,.1); font-size: .75rem; line-height: 1.45; }
+.travel-companion.is-reacting { animation: travel-reaction .65s ease-out 1; }
+.travel-companion[data-presence="away"], .travel-companion[data-presence="returning_soon"] { --travel-shift-y: 1.2rem; --travel-scale: .92; opacity: 0; pointer-events: none; }
+.travel-companion[data-presence="home_sleeping"] { --travel-shift-y: .2rem; --travel-scale: .96; filter: saturate(.7); }
+.travel-stage--art[data-presence="home_sleeping"] { background-image: url("/travel/assets/room/room-night.webp"); background-size: cover; background-position: center; }
+.travel-stage--art[data-presence="away"], .travel-stage--art[data-presence="returning_soon"] { background-image: url("/travel/assets/room/room-day.webp"); background-size: cover; background-position: center; background-color: rgba(118, 139, 141, .28); background-blend-mode: multiply; }
+.travel-stage[data-weather="rain"] .travel-weather-dot { background: #6b91a4; box-shadow: 0 0 0 .25rem rgba(107,145,164,.15); }
+.travel-companion[data-mood="sleepy"] { filter: saturate(.72) brightness(.96); }
+.travel-companion[data-mood="happy"], .travel-companion[data-mood="playful"] { filter: saturate(1.08); }
+.travel-companion[data-mood="wistful"] { filter: saturate(.84) brightness(.98); }
+.travel-companion[data-activity="packing"] { --travel-rotate: -1.5deg; --travel-shift-y: -.18rem; }
+.travel-companion[data-activity="reading"] { --travel-rotate: 1deg; --travel-shift-y: .08rem; }
+.travel-companion[data-activity="observe"] { --travel-shift-x: .22rem; --travel-rotate: 1deg; }
+.travel-companion[data-activity="daydreaming"] { opacity: .94; }
+.travel-companion[data-activity="sleeping"] { --travel-shift-y: .22rem; --travel-scale: .97; filter: saturate(.66) brightness(.94); }
+.travel-companion[data-activity="wandering"] { animation-duration: 3.2s; }
+.travel-companion[data-activity="stretching"] { --travel-shift-y: -.2rem; --travel-scale: 1.015; }
+.travel-companion[data-prop="satchel"] .travel-accessory--canvas_satchel,
+.travel-companion[data-prop="scarf"] .travel-scarf { display: block; }
+.travel-stage__caption { position: absolute; z-index: 3; bottom: 1.2rem; left: 1.4rem; right: 1.4rem; display: flex; align-items: center; gap: .45rem; color: rgba(56,47,43,.62); font-size: .72rem; }
+.travel-identity-meta { margin-left: auto; max-width: 62%; overflow: hidden; color: rgba(56,47,43,.52); font-size: .66rem; text-overflow: ellipsis; white-space: nowrap; }
+.travel-weather-dot { width: .45rem; height: .45rem; border-radius: 50%; background: #d6a552; box-shadow: 0 0 0 .25rem rgba(214,165,82,.15); }
+
+.travel-eyebrow { margin: 0 0 .45rem; color: var(--travel-accent); font-size: .68rem; font-weight: 750; letter-spacing: .1em; }
+.travel-button { min-height: 2.65rem; padding: .65rem 1rem; border-radius: .7rem; font-size: .83rem; font-weight: 680; transition: transform .18s ease, background-color .18s ease; }
+.travel-button:active { transform: translateY(1px); }
+.travel-button--primary { color: #fff9f1; background: var(--travel-accent); }
+.travel-button--primary:hover { background: var(--travel-accent-dark); }
+
+.travel-bottom-nav { display: flex; max-width: 32rem; width: 100%; align-items: center; justify-content: space-around; margin: 0 auto; padding: .35rem .4rem; border: 1px solid var(--travel-line); border-radius: 1rem; background: rgba(255,252,247,.72); }
+.travel-nav-item { display: inline-flex; min-width: 4.2rem; flex-direction: column; align-items: center; gap: .05rem; padding: .38rem .7rem; border-radius: .75rem; color: var(--travel-muted); font-size: 1rem; }
+.travel-nav-item small { font-size: .66rem; }
+.travel-nav-item:hover, .travel-nav-item.is-active { color: var(--travel-accent-dark); background: rgba(184,103,77,.09); }
+
+.travel-today-panel, .travel-content-panel { position: relative; z-index: 2; max-width: 1180px; width: 100%; margin: clamp(1.5rem, 3vw, 2.5rem) auto 0; padding: clamp(1rem, 2vw, 1.5rem); border: 1px solid var(--travel-line); border-radius: 1.25rem; background: rgba(255,252,247,.72); box-shadow: 0 .8rem 2.8rem rgba(82,56,39,.06); }
+.travel-today-panel { margin-top: 0; }
+.travel-panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.travel-panel-heading h2 { margin: 0; font-size: clamp(1.15rem, 2vw, 1.55rem); }
+.travel-panel-meta { color: var(--travel-muted); font-size: .75rem; line-height: 1.5; text-align: right; }
+.travel-message-preview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; margin-top: 1rem; }
+.travel-message-card, .travel-journal-card, .travel-atlas-card { padding: 1rem; border: 1px solid var(--travel-line); border-radius: .9rem; background: rgba(255,255,255,.62); }
+.travel-message-card { min-height: 7rem; }
+.travel-message-card__photo { margin: -.25rem -.25rem .75rem; overflow: hidden; border-radius: .65rem; aspect-ratio: 16 / 9; background: var(--travel-paper-deep); }
+.travel-message-card__photo img { width: 100%; height: 100%; object-fit: cover; }
+.travel-message-card__kind, .travel-journal-card__kind { color: var(--travel-accent); font-size: .65rem; font-weight: 750; letter-spacing: .1em; }
+.travel-message-card h3, .travel-journal-card h3 { margin: .4rem 0; font-size: .95rem; }
+.travel-message-card p, .travel-journal-card p { margin: 0; color: #62564f; font-size: .8rem; line-height: 1.65; }
+.travel-message-card time, .travel-journal-card time { display: block; margin-top: .65rem; color: var(--travel-muted); font-size: .68rem; }
+.travel-filter-row { display: flex; flex-wrap: wrap; gap: .4rem; margin: 1rem 0; }
+.travel-filter { min-height: 2rem; padding: .35rem .7rem; border: 1px solid var(--travel-line); border-radius: 999px; color: var(--travel-muted); background: transparent; font-size: .72rem; }
+.travel-filter.is-active { color: #fff; border-color: var(--travel-accent); background: var(--travel-accent); }
+.travel-journal-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; }
+.travel-journal-card--postcard { grid-column: span 2; }
+.travel-journal-card__photo { width: 100%; aspect-ratio: 16 / 9; margin: -.1rem 0 .75rem; overflow: hidden; border-radius: .65rem; background: var(--travel-paper-deep); }
+.travel-journal-card__photo img { width: 100%; height: 100%; object-fit: cover; }
+.travel-atlas-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; margin-top: 1rem; }
+.travel-atlas-card strong { display: block; margin-bottom: .35rem; font-size: .9rem; }
+.travel-atlas-card--identity { border-color: rgba(184,103,77,.35); background: linear-gradient(135deg, rgba(255,249,240,.9), rgba(255,255,255,.56)); }
+.travel-atlas-card--identity small { color: var(--travel-muted); font-size: .68rem; letter-spacing: .04em; }
+.travel-empty { padding: 2rem 1rem; color: var(--travel-muted); text-align: center; }
+
+.travel-toast { position: fixed; z-index: 20; right: 1rem; bottom: calc(1rem + env(safe-area-inset-bottom)); max-width: min(20rem, calc(100vw - 2rem)); padding: .7rem .9rem; border: 1px solid var(--travel-line); border-radius: .75rem; color: var(--travel-ink); background: rgba(255,252,247,.96); box-shadow: var(--travel-shadow); font-size: .8rem; opacity: 0; pointer-events: none; transform: translateY(.5rem); transition: opacity .2s ease, transform .2s ease; }
+.travel-toast.is-visible { opacity: 1; transform: translateY(0); }
+.travel-dialog { position: relative; width: min(22rem, calc(100vw - 2rem)); max-height: calc(100vh - 2rem); overflow-y: auto; margin: auto; padding: 1.6rem; border: 1px solid var(--travel-line); border-radius: 1rem; color: var(--travel-ink); background: var(--travel-paper); box-shadow: var(--travel-shadow); }
+.travel-dialog::backdrop { background: rgba(56,47,43,.28); backdrop-filter: blur(4px); }
+.travel-dialog__close { position: absolute; top: .55rem; right: .7rem; width: 2rem; height: 2rem; border-radius: 50%; color: var(--travel-muted); background: transparent; font-size: 1.4rem; }
+.travel-dialog h2 { margin: 0 0 .5rem; font-size: 1.35rem; }
+.travel-dialog p:not(.travel-eyebrow) { color: var(--travel-muted); font-size: .88rem; line-height: 1.65; }
+.travel-dialog__actions { display: flex; justify-content: flex-end; margin-top: 1rem; }
+
+@keyframes travel-float { 0%, 100% { transform: translate3d(var(--travel-shift-x), var(--travel-shift-y), 0) rotate(var(--travel-rotate)) scale(var(--travel-scale)); } 50% { transform: translate3d(var(--travel-shift-x), calc(var(--travel-shift-y) - .35rem), 0) rotate(var(--travel-rotate)) scale(var(--travel-scale)); } }
+@keyframes travel-reaction { 0% { transform: translateY(0) rotate(0); } 35% { transform: translateY(-.7rem) rotate(-2deg); } 70% { transform: translateY(.15rem) rotate(1deg); } 100% { transform: translateY(0) rotate(0); } }
+@keyframes travel-blink { 0%, 42%, 46%, 100% { transform: scaleY(1); } 44% { transform: scaleY(.1); } }
+@keyframes travel-idle-blink { 0%, 100% { transform: translateY(0) scaleY(1); } 35% { transform: translateY(-.05rem) scaleY(.985); } 55% { transform: translateY(0) scaleY(1); } }
+@keyframes travel-idle-look { 0%, 100% { transform: translateX(0) rotate(0); } 45% { transform: translateX(.3rem) rotate(1deg); } 75% { transform: translateX(-.12rem) rotate(-.4deg); } }
+@keyframes travel-idle-tail { 0%, 100% { transform: translateY(0) rotate(0); } 45% { transform: translateY(-.16rem) rotate(3deg); } 75% { transform: translateY(0) rotate(-2deg); } }
+@keyframes travel-idle-stretch { 0%, 100% { transform: translateY(0) scale(1); } 45% { transform: translateY(-.45rem) scale(1.025, .98); } 75% { transform: translateY(.06rem) scale(.99, 1.01); } }
+@keyframes travel-scene-drift { 0%, 100% { transform: translateY(0) rotate(-3deg); opacity: .72; } 50% { transform: translateY(-.22rem) rotate(4deg); opacity: 1; } }
+.travel-companion.is-idle-blink { animation: travel-idle-blink .72s ease-in-out 1; }
+.travel-companion.is-idle-look { animation: travel-idle-look 1s ease-in-out 1; }
+.travel-companion.is-idle-tail .travel-tail { animation: travel-idle-tail 1s ease-in-out 1; transform-origin: 180px 190px; }
+.travel-companion.is-idle-stretch { animation: travel-idle-stretch 1.45s ease-in-out 1; }
+
+@media (max-width: 820px) {
+  .travel-shell { padding-right: max(.75rem, env(safe-area-inset-right)); padding-left: max(.75rem, env(safe-area-inset-left)); }
+  .travel-topbar { height: 3.7rem; }
+  .travel-stage { height: min(48svh, 32rem); border-radius: 1.5rem; }
+  .travel-bottom-nav { margin-top: .15rem; }
+  .travel-message-preview, .travel-journal-grid, .travel-atlas-grid { grid-template-columns: 1fr; }
+  .travel-journal-card--postcard { grid-column: auto; }
+  .travel-panel-heading { display: block; }
+  .travel-panel-meta { display: block; margin-top: .35rem; text-align: left; }
+}
+
+@media (max-width: 480px) {
+  .travel-wordmark__name { display: none; }
+  .travel-stage { height: min(45svh, 28rem); }
+  .travel-companion { right: 16%; width: min(60%, 16rem); }
+  .travel-thought { right: -1.4rem; max-width: 10rem; padding: .5rem .65rem; font-size: .68rem; }
+  .travel-nav-item { min-width: 3.8rem; padding-right: .45rem; padding-left: .45rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}

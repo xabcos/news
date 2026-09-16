@@ -65,9 +65,8 @@ cargo run
 | `NEWS_ADMIN_EMAILS` | – | 管理员邮箱，逗号分隔；其他有效邮箱自动使用 Free |
 | `AI_API_KEY` | – | 调用模型的密钥，只存在于环境变量 |
 | `AI_BASE_URL` / `AI_DEFAULT_MODEL` | `https://api.zairouter.com` / `grok-4.6` | 新闻抓取接口与默认模型 |
-| `CAT_IMAGE_FLARE_MODEL` / `CAT_IMAGE_SUNBURST_MODEL` | `gpt-image-2.5-flare` / `gpt-image-2.5-sunburst` | 旅行猫咪日常图片与重要图片模型 |
-| `CAT_IMAGE_FALLBACK_MODEL` | `grok-imagine-image-quality` | GPT 图片生成失败时的备用模型 |
-| `CAT_IMAGE_GENERATION_TIMEOUT_SECS` | `900` | 单次旅行图片生成总超时 |
+| `TRAVEL_IMAGE_MODEL` | `grok-imagine-image-quality` | 旅行女孩图片生成模型；分辨率和比例由服务端固定为高质量默认值 |
+| `TRAVEL_IMAGE_GENERATION_TIMEOUT_SECS` | `900` | 单次旅行图片生成总超时 |
 | `AI_RESPONSES_TIMEOUT_SECS` | `900` | 新闻领读、旅行叙事等 Responses 请求超时 |
 | `NEWS_TIMEZONE` | `Asia/Shanghai` | 天边界与时间窗 |
 | `NEWS_SCHEDULER_ENABLED` | `true` | `false` 时只提供页面与 API |
@@ -112,18 +111,18 @@ POST   /api/orders                GET    /api/orders/{out_trade_no}
 GET    /api/orders/{out_trade_no}/qr.svg
 POST   /api/webhooks/payment
 
-GET    /api/cat/state             # 登录后读取领养、身份和成长状态
-POST   /api/cat/adoption/preview  # 生成服务端保存的领养身份预览
-POST   /api/cat/adoption/confirm  # 确认领养并永久固定身份与初始配饰
-POST   /api/cat/reading            # 记录阅读新闻并形成猫咪记忆
-GET    /api/cat/trips              # 读取旅程历史
-GET    /api/cat/album              # 读取已收藏的旅行明信片
-GET    /api/cat/atlas              # 读取成长配饰和世界记忆
-GET    /api/cat/encounters         # 读取多猫相遇记录
-GET    /api/cat/guide              # 手动获取旧版猫咪领读（自动生活循环不再依赖它）
+GET    /api/travel/state             # 登录后读取领养、身份和成长状态
+POST   /api/travel/adoption/preview  # 生成服务端保存的领养身份预览
+POST   /api/travel/adoption/confirm  # 确认领养并永久固定身份与初始配饰
+POST   /api/travel/reading            # 记录阅读新闻并形成旅行女孩记忆
+GET    /api/travel/trips              # 读取旅程历史
+GET    /api/travel/album              # 读取已收藏的旅行明信片
+GET    /api/travel/atlas              # 读取成长配饰和世界记忆
+GET    /api/travel/encounters         # 读取共同旅途记录
+GET    /api/travel/guide              # 读取旅行女孩的世界领读
 ```
 
-旅行猫咪每 4 小时自动生成一张新的生活照片。每次动态先由叙事模型以猫咪第一人称决定「此刻在做什么」：输入本地时间、在家或旅途中、固定身份与性格、最近十余条动态（避开重复意象）以及图片新闻提供的地点和氛围，输出动态文案、情绪、动作、道具、是否有旅伴同框和给图片模型的画面方向；模型不可用时才退回到一小组固定活动轮换。旅途中可以有一位青春靓丽的美丽少女旅伴同框，合照时按从头到脚完整入镜的全身像取景。图片新闻主题 `p` 只提供地点和视觉线索，不再驱动猫咪阅读全球新闻。每张动态照片都会写入旅程日志、图鉴记忆并避开上一轮的创意方向。图片生成优先调用 GPT Image 2.5，失败后切换 Grok Image；两个提供商都失败时使用 NEWS 原图或模板明信片。所有结果都上传到必填的 `TMPFILE_BASE_URL`，浏览器只读取媒体服务返回的 HTTPS 地址。
+旅行女孩每 4 小时自动生成一张新的生活照片。每次动态先由叙事模型以旅行女孩第一人称决定「此刻在做什么」：输入本地时间、在家或旅途中、固定身份与性格、最近十余条动态（避开重复意象）以及图片新闻的地点、摘要、标签、语气和图片说明，输出动态文案、情绪、动作、道具和给图片模型的画面方向；模型不可用时才退回到一小组固定活动轮换。女孩的固定身份会作为图片参考，后续场景再随机变化服装、动作、表情、镜头和光线。图片新闻主题 `p` 提供地点和视觉线索，不直接复制敏感事件画面。每张动态照片都会写入旅程日志、图鉴记忆并避开上一轮的创意方向。图片生成使用 `TRAVEL_IMAGE_MODEL` 指定的 Grok Image 模型，失败时使用女孩风格的内置占位图。所有结果都上传到必填的 `TMPFILE_BASE_URL`，浏览器只读取媒体服务返回的 HTTPS 地址。
 
 管理员状态接口还返回 `users.active_7d` 和 `users.registered`；工作台将它们以
 `近 7 天活跃用户/注册用户` 的比例显示在状态行中。注册总数用 migration 执行时的当前用户数初始化，之后由数据库事务内维护的计数器提供；近 7 天活跃数只使用成功登录后写入的最后登录时间，不重建历史登录记录。

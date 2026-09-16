@@ -36,10 +36,8 @@ pub struct Config {
     pub(crate) ai_default_model: String,
     pub(crate) ai_insight_model: String,
     pub(crate) ai_response_timeout: Duration,
-    pub(crate) cat_image_flare_model: String,
-    pub(crate) cat_image_sunburst_model: String,
-    pub(crate) cat_image_fallback_model: String,
-    pub(crate) cat_image_generation_timeout: Duration,
+    pub(crate) travel_image_model: String,
+    pub(crate) travel_image_generation_timeout: Duration,
     pub(crate) ai_insight_interval_minutes: u64,
     pub(crate) timezone: Tz,
     pub(crate) fetch_timeout: Duration,
@@ -169,11 +167,11 @@ impl Config {
                 "AI_RESPONSES_TIMEOUT_SECS 必须在 120 到 1800 秒之间".into(),
             ));
         }
-        let cat_image_generation_timeout_secs =
-            parse_env("CAT_IMAGE_GENERATION_TIMEOUT_SECS", 120_u64)?;
-        if !(15..=900).contains(&cat_image_generation_timeout_secs) {
+        let travel_image_generation_timeout_secs =
+            parse_env("TRAVEL_IMAGE_GENERATION_TIMEOUT_SECS", 900_u64)?;
+        if !(15..=900).contains(&travel_image_generation_timeout_secs) {
             return Err(AppError::Config(
-                "CAT_IMAGE_GENERATION_TIMEOUT_SECS 必须在 15 到 900 秒之间".into(),
+                "TRAVEL_IMAGE_GENERATION_TIMEOUT_SECS 必须在 15 到 900 秒之间".into(),
             ));
         }
         let timezone = env_value("NEWS_TIMEZONE", "Asia/Shanghai")
@@ -239,16 +237,10 @@ impl Config {
             ai_default_model: env_value("AI_DEFAULT_MODEL", "grok-4.6"),
             ai_insight_model: env_value("AI_INSIGHT_MODEL", "gpt-6-astra"),
             ai_response_timeout: Duration::from_secs(ai_response_timeout_secs),
-            cat_image_flare_model: env_value("CAT_IMAGE_FLARE_MODEL", "gpt-image-2.5-flare"),
-            cat_image_sunburst_model: env_value(
-                "CAT_IMAGE_SUNBURST_MODEL",
-                "gpt-image-2.5-sunburst",
+            travel_image_model: env_value("TRAVEL_IMAGE_MODEL", "grok-imagine-image-quality"),
+            travel_image_generation_timeout: Duration::from_secs(
+                travel_image_generation_timeout_secs,
             ),
-            cat_image_fallback_model: env_value(
-                "CAT_IMAGE_FALLBACK_MODEL",
-                "grok-imagine-image-quality",
-            ),
-            cat_image_generation_timeout: Duration::from_secs(cat_image_generation_timeout_secs),
             ai_insight_interval_minutes,
             timezone,
             fetch_timeout: Duration::from_secs(fetch_timeout_secs),

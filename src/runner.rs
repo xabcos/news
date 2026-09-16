@@ -672,19 +672,19 @@ async fn maintenance_loop(state: AppState) {
     if let Err(error) = prune(&state, day).await {
         tracing::warn!(%error, "initial data pruning failed");
     }
-    if let Err(error) = crate::cat::settle_due(&state).await {
-        tracing::warn!(%error, "initial travel cat settlement failed");
+    if let Err(error) = crate::travel::settle_due(&state).await {
+        tracing::warn!(%error, "initial travel companion settlement failed");
     }
-    if let Err(error) = crate::cat::autonomous_tick(&state).await {
-        tracing::warn!(%error, "initial autonomous cat tick failed");
+    if let Err(error) = crate::travel::autonomous_tick(&state).await {
+        tracing::warn!(%error, "initial autonomous travel tick failed");
     }
     loop {
         interval.tick().await;
-        if let Err(error) = crate::cat::settle_due(&state).await {
-            tracing::warn!(%error, "travel cat settlement failed");
+        if let Err(error) = crate::travel::settle_due(&state).await {
+            tracing::warn!(%error, "travel companion settlement failed");
         }
-        if let Err(error) = crate::cat::autonomous_tick(&state).await {
-            tracing::warn!(%error, "autonomous cat tick failed");
+        if let Err(error) = crate::travel::autonomous_tick(&state).await {
+            tracing::warn!(%error, "autonomous travel tick failed");
         }
         ticks += 1;
         let today = state.digest.today();
@@ -697,8 +697,8 @@ async fn maintenance_loop(state: AppState) {
             if let Err(error) = media::startup_sync(&state).await {
                 tracing::warn!(%error, "scheduled image refresh failed");
             }
-            if let Err(error) = crate::cat_image::refresh_expiring(&state).await {
-                tracing::warn!(%error, "scheduled cat postcard refresh failed");
+            if let Err(error) = crate::travel_image::refresh_expiring(&state).await {
+                tracing::warn!(%error, "scheduled travel image refresh failed");
             }
             if let Err(error) = prune(&state, today).await {
                 tracing::warn!(%error, "scheduled data pruning failed");

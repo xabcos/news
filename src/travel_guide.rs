@@ -1,4 +1,4 @@
-//! M4: a durable world guide for the adopted cat.
+//! M4: a durable world guide for the adopted travel girl.
 //!
 //! Growth events and memories remain the source of truth. This module derives a
 //! bounded personality projection, selects three daily stories, and asks the AI
@@ -154,8 +154,8 @@ pub(crate) async fn today(State(state): State<AppState>, user: User) -> Result<R
         .bind(user.id)
         .fetch_optional(&state.pool)
         .await?
-        .ok_or_else(|| AppError::Conflict("请先领养一只猫咪".into()))?;
-    crate::cat::touch_cat(&state.pool, cat_id).await?;
+        .ok_or_else(|| AppError::Conflict("请先领养一只旅行女孩".into()))?;
+    crate::travel::touch_cat(&state.pool, cat_id).await?;
     let day = state.digest.today();
 
     if let Some(stored) = load_brief(&state.pool, cat_id, day).await?
@@ -171,21 +171,21 @@ pub(crate) async fn today(State(state): State<AppState>, user: User) -> Result<R
         return Ok(Json(stored.payload).into_response());
     }
     let permit = state
-        .cat_slots
+        .travel_slots
         .clone()
         .try_acquire_owned()
-        .map_err(|_| AppError::TooManyRequests("猫咪正在整理其他旅程，请稍后再试".into()))?;
+        .map_err(|_| AppError::TooManyRequests("旅行女孩正在整理其他旅程，请稍后再试".into()))?;
     if !claim_brief(&state.pool, cat_id, day, &state.config.ai_default_model).await? {
         drop(permit);
         let stored = load_brief(&state.pool, cat_id, day)
             .await?
-            .ok_or_else(|| AppError::Conflict("猫咪正在整理今天的世界，请稍后再试".into()))?;
+            .ok_or_else(|| AppError::Conflict("旅行女孩正在整理今天的世界，请稍后再试".into()))?;
         if stored.status == "ok" {
             return Ok(Json(stored.payload).into_response());
         }
         if stored.status == "failed" && stored.attempts >= MAX_GUIDE_ATTEMPTS {
             return Err(AppError::ServiceUnavailable(
-                "今天的猫咪领读暂时不可用，明天会自动恢复".into(),
+                "今天的旅行女孩领读暂时不可用，明天会自动恢复".into(),
             ));
         }
         if stored.status == "failed"
@@ -194,7 +194,7 @@ pub(crate) async fn today(State(state): State<AppState>, user: User) -> Result<R
             })
         {
             return Err(AppError::ServiceUnavailable(
-                "猫咪刚才没有整理好这封领读，请过几分钟再试".into(),
+                "旅行女孩刚才没有整理好这封领读，请过几分钟再试".into(),
             ));
         }
         return Ok((
@@ -207,7 +207,7 @@ pub(crate) async fn today(State(state): State<AppState>, user: User) -> Result<R
     let worker_state = state.clone();
     tokio::spawn(async move {
         if let Err(error) = finish_generation(&worker_state, cat_id, day).await {
-            tracing::warn!(%error, %cat_id, %day, "cat guide generation failed");
+            tracing::warn!(%error, %cat_id, %day, "travel girl guide generation failed");
         }
         drop(permit);
     });
@@ -286,7 +286,7 @@ async fn finish_generation(state: &AppState, cat_id: Uuid, day: NaiveDate) -> Re
             .execute(&state.pool)
             .await?;
             if updated.rows_affected() > 0 {
-                crate::cat::record_message(
+                crate::travel::record_message(
                     &state.pool,
                     cat_id,
                     "guide",
@@ -322,7 +322,7 @@ async fn generate(
     let selected = choose_news(candidates, &profile);
     if selected.is_empty() {
         return Err(AppError::ServiceUnavailable(
-            "今天还没有可供猫咪领读的新闻，请稍后再试".into(),
+            "今天还没有可供旅行女孩领读的新闻，请稍后再试".into(),
         ));
     }
     let creative_memory = recent_creative_memory(&state.pool, cat_id).await?;
@@ -718,9 +718,9 @@ pub(crate) async fn responses_request(state: &AppState, body: &Value) -> Result<
                 .send(),
         )
         .await
-        .map_err(|_| AppError::ServiceUnavailable("猫咪领读生成超时，请稍后再试".into()))?
+        .map_err(|_| AppError::ServiceUnavailable("旅行女孩领读生成超时，请稍后再试".into()))?
         .map_err(|error| {
-            AppError::ServiceUnavailable(format!("猫咪领读请求失败: {error}").into())
+            AppError::ServiceUnavailable(format!("旅行女孩领读请求失败: {error}").into())
         })?;
         if response.status().is_success() {
             return Ok(response.json().await?);
@@ -735,7 +735,7 @@ pub(crate) async fn responses_request(state: &AppState, body: &Value) -> Result<
     }
     Err(AppError::ServiceUnavailable(
         format!(
-            "猫咪领读暂时不可用: {}",
+            "旅行女孩领读暂时不可用: {}",
             last_error.unwrap_or_else(|| "unknown".into())
         )
         .into(),
@@ -757,12 +757,12 @@ fn parse_draft(reply: &Value) -> Result<GuideDraft> {
         .flatten()
         .find(|content| content["type"] == "output_text")
         .and_then(|content| content["text"].as_str())
-        .ok_or_else(|| AppError::Internal("猫咪领读没有文本输出".into()))?;
+        .ok_or_else(|| AppError::Internal("旅行女孩领读没有文本输出".into()))?;
     let text = match (text.find('{'), text.rfind('}')) {
         (Some(start), Some(end)) if start < end => &text[start..=end],
         _ => text,
     };
-    serde_json::from_str(text).map_err(|_| AppError::Internal("猫咪领读输出结构无效".into()))
+    serde_json::from_str(text).map_err(|_| AppError::Internal("旅行女孩领读输出结构无效".into()))
 }
 
 fn normalize_cards(mut cards: Vec<GuideCard>, selected: &[SelectedNews]) -> Vec<Value> {
@@ -823,15 +823,15 @@ fn normalize_cards(mut cards: Vec<GuideCard>, selected: &[SelectedNews]) -> Vec<
 }
 
 fn instructions() -> &'static str {
-    r#"你是一个旅行猫咪，带主人温柔地认识当天的世界。你的语气必须同时具备：温柔陪伴、理性分析、轻微俏皮。不要装成熟人类专家，也不要用夸张卖萌。
+    r#"你是一个旅行女孩，带主人温柔地认识当天的世界。你的语气必须同时具备：温柔陪伴、理性分析、轻微俏皮。不要装成熟人类专家，也不要用夸张卖萌。
 
 输出规则：
-1. 每条新闻分成 fact、opinion、guidance、playful_line。fact 只能根据输入新闻写，source_indexes 必须引用输入新闻；opinion 是猫咪基于当前性格投影的判断；guidance 是邀请主人继续了解、比较或观察的建议，不是医疗、法律、投资或人生保证；playful_line 只能轻轻点缀。
-2. 不要把猫咪观点写成新闻事实。不要创造数字、人物、因果或来源。confidence 表示证据强度。
+1. 每条新闻分成 fact、opinion、guidance、playful_line。fact 只能根据输入新闻写，source_indexes 必须引用输入新闻；opinion 是旅行女孩基于当前性格投影的判断；guidance 是邀请主人继续了解、比较或观察的建议，不是医疗、法律、投资或人生保证；playful_line 只能轻轻点缀。
+2. 不要把旅行女孩观点写成新闻事实。不要创造数字、人物、因果或来源。confidence 表示证据强度。
 3. 新闻候选固定分为 important、interest、explore 三条，不能把三条都写成同一种主题。explore 必须帮助主人走出兴趣回音壁。
 4. 如果可用，可以调用一次 x_search 了解当天公开 X.com 语境中的热梗或表达方式。X 内容只能写入 culture_context，用作比喻、语境或轻微俏皮表达；绝不能作为 fact、source_indexes 或 guidance 的事实依据。不要引用私人账号、攻击性内容、歧视性内容或未经核实的传闻。没有合适热梗就留空。
-5. 性格投影是长期倾向，不是本次新闻的临时情绪。性格语气固定为 warmth 0.90、rationality 0.90、playfulness 0.35。要让主人感觉猫咪在逐渐形成自己的判断，但不要突然改变性格。
-6. 另外生成 scene，描述猫咪此刻正在做什么。action 必须从 observe、packing、reading、wandering、stretching、sleeping、daydreaming 中选择一个，emotion 是短情绪词，bubble 是猫咪可能说的一句短话，prop 是一个可见的小道具。scene 必须和当天内容有关但不能编造新闻事实；每次可以换一个自然的小动作，避免固定套话。输入中的最近场景与纪念物是“去重提示”，不要机械重复其中的姿势、道具、情绪或句式；CREATIVE_SEED 只用于稳定地产生当天的微小差异。
+5. 性格投影是长期倾向，不是本次新闻的临时情绪。性格语气固定为 warmth 0.90、rationality 0.90、playfulness 0.35。要让主人感觉旅行女孩在逐渐形成自己的判断，但不要突然改变性格。
+6. 另外生成 scene，描述旅行女孩此刻正在做什么。action 必须从 observe、packing、reading、wandering、stretching、sleeping、daydreaming 中选择一个，emotion 是短情绪词，bubble 是旅行女孩可能说的一句短话，prop 是一个可见的小道具。scene 必须和当天内容有关但不能编造新闻事实；每次可以换一个自然的小动作，避免固定套话。输入中的最近场景与纪念物是“去重提示”，不要机械重复其中的姿势、道具、情绪或句式；CREATIVE_SEED 只用于稳定地产生当天的微小差异。
 7. 中文自然，英文独立润色。严格只输出 JSON，不输出 Markdown 或解释。
 "#
 }

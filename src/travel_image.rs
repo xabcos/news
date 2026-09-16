@@ -1,4 +1,4 @@
-//! Server-side travel image generation for Travel Cat.
+//! Server-side travel image generation for the persistent travel companion.
 //!
 //! NEWS remains the source of locations and source photographs. This module turns one
 //! stored story and one adopted identity into a generated travel or life-scene photo. The primary GPT Image 2.5
@@ -39,10 +39,6 @@ pub(crate) struct GenerateRequest {
     /// the trip's canonical postcard.
     #[serde(default)]
     pub(crate) scene_key: Option<String>,
-    /// Internal. `Some(true)` puts the cat's companion in the frame, `Some(false)`
-    /// keeps people out of it, `None` leaves the choice to the image model.
-    #[serde(default)]
-    pub(crate) companion: Option<bool>,
 }
 
 #[derive(Debug, FromRow)]
@@ -52,7 +48,6 @@ struct NewsRow {
     summary: String,
     url: String,
     source: String,
-    image: Option<Value>,
     tone: String,
     location: Option<Value>,
 }
@@ -112,7 +107,7 @@ struct PublishedAsset {
     expires_at: Option<DateTime<Utc>>,
 }
 
-/// Generates and publishes one shared postcard for an adopted cat. The owner id is
+/// Generates and publishes one shared travel image for an adopted companion. The owner id is
 /// explicit so the trip settlement worker can use the same path without fabricating an
 /// HTTP extractor.
 pub(crate) async fn generate_for_owner(
@@ -122,35 +117,35 @@ pub(crate) async fn generate_for_owner(
     force_refresh: bool,
 ) -> Result<GenerateResponse> {
     let _permit = state
-        .cat_image_slots
+        .travel_image_slots
         .clone()
         .try_acquire_owned()
         .map_err(|_| AppError::TooManyRequests("当前生成任务较多，请稍后重试".into()))?;
 
     let item = sqlx::query_as::<_, NewsRow>(
-        "SELECT items.id, items.title, items.summary, items.url, items.source, items.image, items.tone, items.location FROM items JOIN topics ON topics.id = items.topic_id WHERE items.id = $1 AND items.hidden = FALSE AND (topics.owner_user_id IS NULL OR topics.owner_user_id = $2)",
+        "SELECT items.id, items.title, items.summary, items.url, items.source, items.tone, items.location FROM items JOIN topics ON topics.id = items.topic_id WHERE items.id = $1 AND items.hidden = FALSE AND (topics.owner_user_id IS NULL OR topics.owner_user_id = $2)",
     )
     .bind(request.news_item_id)
     .bind(owner_user_id)
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(|| AppError::NotFound("旅行新闻不存在或已下线".into()))?;
-    let cat = sqlx::query_as::<_, CatIdentityRow>(
+    let girl = sqlx::query_as::<_, CatIdentityRow>(
         "SELECT id, identity, initial_accessories FROM cats WHERE owner_user_id = $1",
     )
     .bind(owner_user_id)
     .fetch_optional(&state.pool)
     .await?
-    .ok_or_else(|| AppError::Conflict("请先领养一只猫咪".into()))?;
+    .ok_or_else(|| AppError::Conflict("请先确定旅行女孩身份".into()))?;
 
-    let quality = quality(&request.quality)?;
+    let _quality = quality(&request.quality)?;
     let purpose = safe_purpose(request.purpose.as_deref());
     let source_key = request
         .scene_key
         .as_deref()
         .filter(|key| !key.is_empty())
-        .map(|key| format!("cat:{}:scene:{}", cat.id, sanitize_fragment(key)))
-        .unwrap_or_else(|| format!("cat:{}:news:{}", cat.id, item.id));
+        .map(|key| format!("travel:{}:scene:{}", girl.id, sanitize_fragment(key)))
+        .unwrap_or_else(|| format!("travel:{}:news:{}", girl.id, item.id));
     let mut cache_transaction = state.pool.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
         .bind(&source_key)
@@ -174,43 +169,32 @@ pub(crate) async fn generate_for_owner(
     let prompt = travel_prompt(
         &item,
         &purpose,
-        &cat.identity,
-        &cat.initial_accessories,
+        &girl.identity,
+        &girl.initial_accessories,
         request.creative_direction.as_deref(),
         request.scene_key.is_some(),
-        request.companion,
     );
-    let idempotency_key = format!("travel-cat:{source_key}");
-    let preferred_model = if matches!(quality, "high" | "xhigh" | "max") {
-        state.config.cat_image_sunburst_model.clone()
-    } else {
-        state.config.cat_image_flare_model.clone()
-    };
-
-    let generated = match call_gpt(state, &preferred_model, quality, &prompt, &idempotency_key)
-        .await
+    let anchor_url = sqlx::query_scalar::<_, String>(
+        "SELECT url FROM cat_postcards WHERE source_key LIKE $1 ORDER BY created_at ASC LIMIT 1",
+    )
+    .bind(format!("travel:{}:%", girl.id))
+    .fetch_optional(&state.pool)
+    .await?
+    .filter(|url| url::Url::parse(url).is_ok_and(|value| media::is_public_https_url(&value)));
+    let idempotency_key = format!("travel-girl:{source_key}");
+    let generated = match call_grok(
+        state,
+        &state.config.travel_image_model,
+        &prompt,
+        &idempotency_key,
+        anchor_url.as_deref(),
+    )
+    .await
     {
         Ok(asset) => asset,
         Err(error) => {
-            tracing::warn!(provider = error.provider, reason = %error.message, "travel image primary provider failed");
-            match call_grok(
-                state,
-                &state.config.cat_image_fallback_model,
-                &prompt,
-                &idempotency_key,
-            )
-            .await
-            {
-                Ok(asset) => asset,
-                Err(fallback_error) => {
-                    tracing::warn!(provider = fallback_error.provider, reason = %fallback_error.message, "travel image fallback provider failed");
-                    if let Some(asset) = source_asset(state, &item.image).await {
-                        asset
-                    } else {
-                        template_asset(&item, &purpose)
-                    }
-                }
-            }
+            tracing::warn!(provider = error.provider, reason = %error.message, "travel girl image provider failed");
+            template_asset(&item, &purpose)
         }
     };
 
@@ -293,7 +277,7 @@ pub(crate) async fn refresh_expiring(state: &AppState) -> Result<()> {
            JOIN topics t ON t.id = i.topic_id
            WHERE p.expires_at > NOW()
              AND p.expires_at <= NOW() + INTERVAL '6 hours'
-             AND p.source_key LIKE 'cat:%:news:%'
+            AND p.source_key LIKE 'travel:%:news:%'
              AND i.hidden = FALSE
              AND t.enabled
              AND t.owner_user_id IS NULL
@@ -310,7 +294,6 @@ pub(crate) async fn refresh_expiring(state: &AppState) -> Result<()> {
             purpose: Some("旅迹墙照片续期".into()),
             creative_direction: None,
             scene_key: None,
-            companion: None,
         };
         if let Err(error) = generate_for_owner(state, owner_id, &request, true).await {
             tracing::debug!(%error, %news_item_id, "cat postcard refresh deferred");
@@ -318,14 +301,14 @@ pub(crate) async fn refresh_expiring(state: &AppState) -> Result<()> {
     }
     let scenes = sqlx::query_as::<_, (i64, Uuid, String, Option<bool>)>(
         r#"SELECT c.owner_user_id, p.news_item_id, p.source_key,
-                  (m.payload->>'with_companion')::boolean
+                  NULL::boolean
            FROM cat_postcards p
            JOIN cats c ON c.id = split_part(p.source_key, ':', 2)::uuid
            JOIN items i ON i.id = p.news_item_id
            JOIN topics t ON t.id = i.topic_id
            LEFT JOIN cat_messages m
              ON m.cat_id = c.id AND m.payload->>'scene_key' = split_part(p.source_key, ':', 4)
-           WHERE p.source_key LIKE 'cat:%:scene:%'
+           WHERE p.source_key LIKE 'travel:%:scene:%'
              AND p.expires_at > NOW()
              AND p.expires_at <= NOW() + INTERVAL '6 hours'
              AND i.hidden = FALSE AND t.enabled
@@ -335,7 +318,7 @@ pub(crate) async fn refresh_expiring(state: &AppState) -> Result<()> {
     )
     .fetch_all(&state.pool)
     .await?;
-    for (owner_id, news_item_id, source_key, companion) in scenes {
+    for (owner_id, news_item_id, source_key, _companion) in scenes {
         let scene_key = source_key
             .split_once(":scene:")
             .map(|(_, key)| key.to_owned());
@@ -345,7 +328,6 @@ pub(crate) async fn refresh_expiring(state: &AppState) -> Result<()> {
             purpose: Some("四小时动态照片续期".into()),
             creative_direction: Some("保持生活主题，但改变光线、动作和镜头细节。".into()),
             scene_key,
-            companion,
         };
         if let Err(error) = generate_for_owner(state, owner_id, &request, true).await {
             tracing::debug!(%error, %news_item_id, "cat scene photo refresh deferred");
@@ -390,7 +372,6 @@ fn travel_prompt(
     accessories: &Value,
     creative_direction: Option<&str>,
     is_scene: bool,
-    companion: Option<bool>,
 ) -> String {
     let identity_description = identity_description(identity, accessories);
     let location = item
@@ -402,23 +383,14 @@ fn travel_prompt(
     let direction = creative_direction
         .map(sanitize_fragment)
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "Choose a fresh, plausible activity and one small visual surprise that fits the cat's personality and the story tone.".into());
+        .unwrap_or_else(|| "Choose a fresh, plausible activity and one small visual surprise that fits her personality and the story tone.".into());
     let scene_prefix = if is_scene {
-        "Create a warm, original candid life photo of the player's adopted cat. This is a spontaneous four-hour life update, not a news illustration. The cat may be at home in a yard or garden, or traveling at the story location."
+        "Create a warm, original candid life photo of the player's adopted travel girl. This is a spontaneous four-hour life update, not a news illustration. She may be at home or traveling at the story location."
     } else {
-        "Create a warm, original travel postcard for the player's adopted cat."
-    };
-    let companion_direction = match companion {
-        Some(true) => {
-            "The cat's travel companion, a radiant, youthful, beautiful young woman, is in this scene with the cat in a natural, non-sexual public setting; do not depict a specific real person. Show her as a complete full-length figure from head to feet, fully inside the frame with the cat beside her; step the camera back to a wider shot rather than cropping her body at the edges or cutting to a close-up."
-        }
-        Some(false) => "No people appear in this image; the cat is on its own.",
-        None => {
-            "A radiant, youthful, beautiful young woman may appear as the cat's travel companion in a natural, non-sexual public scene; do not depict a specific real person. Whenever she appears, show her as a complete full-length figure from head to feet, fully inside the frame with the cat beside her; step the camera back to a wider shot rather than cropping her body at the edges or cutting to a close-up."
-        }
+        "Create a warm, original travel postcard for the player's adopted travel girl."
     };
     format!(
-        "{scene_prefix} Purpose: {purpose}. Preserve this exact adopted identity across scenes: {identity_description}. Do not change the coat, eye color, marking, scarf, or initial accessories. The story tone is {} and the main setting is {}. Use the news facts only as inspiration for the setting, season, atmosphere, and cultural detail. Creative direction from the cat's private travel journal (a suggestion, not a fact): {direction}. Make this image distinct from previous updates by choosing a natural variation in activity, light, camera distance, and one small surprising detail. {companion_direction} Do not depict logos, brands, political propaganda, graphic events, or copyrighted characters. Make the image feel safe, curious, gentle, and suitable for a family mobile game. Do not put text, letters, captions, logos, or watermarks inside the image. Editorial reference title: \"{}\". Editorial reference summary: \"{}\". Source publication: \"{}\". Use a clean 1:1 composition with room for a postcard caption.",
+        "{scene_prefix} Purpose: {purpose}. Preserve this exact adult young woman's identity across scenes: {identity_description}. Do not change her face, hair, skin tone, body silhouette, signature accessory, or established style. The story tone is {} and the main setting is {}. Use the news facts only as inspiration for the setting, season, atmosphere, cultural detail, and a respectful depiction of the event. Creative direction from her private travel journal (a suggestion, not a fact): {direction}. Make this image distinct from previous updates by choosing a natural variation in activity, tasteful outfit, expression, light, camera distance, and one small surprising detail. She can be elegant, cute, playful, stylish, or softly glamorous; tasteful fitted clothing and a confident silhouette are welcome, with no nudity or explicit sexual content. Show her as a complete full-length figure from head to feet whenever the scene calls for it. Do not depict a specific real person, a minor, logos, brands, political propaganda, graphic events, or copyrighted characters. Make the image feel warm, curious, vivid, and suitable for a family mobile game. Do not put text, letters, captions, logos, or watermarks inside the image. Editorial reference title: \"{}\". Editorial reference summary: \"{}\". Source publication: \"{}\". Use a high-quality 2:3 portrait composition with the location clearly visible.",
         item.tone,
         sanitize_fragment(location),
         sanitize_fragment(&item.title),
@@ -428,18 +400,22 @@ fn travel_prompt(
 }
 
 fn identity_description(identity: &Value, accessories: &Value) -> String {
-    let coat = identity
-        .get("coat")
+    let hair = identity
+        .get("hair")
         .and_then(Value::as_str)
-        .unwrap_or("unique domestic cat");
-    let eyes = identity
-        .get("eye_color")
+        .unwrap_or("distinctive hairstyle");
+    let skin = identity
+        .get("skin_tone")
         .and_then(Value::as_str)
-        .unwrap_or("distinctive eyes");
-    let marking = identity
-        .get("marking")
+        .unwrap_or("natural skin tone");
+    let style = identity
+        .get("style")
         .and_then(Value::as_str)
-        .unwrap_or("a unique marking");
+        .unwrap_or("versatile travel fashion");
+    let silhouette = identity
+        .get("silhouette")
+        .and_then(Value::as_str)
+        .unwrap_or("natural feminine silhouette");
     let accessory_names = accessories
         .as_array()
         .map(|items| {
@@ -453,7 +429,7 @@ fn identity_description(identity: &Value, accessories: &Value) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "the adopted initial accessories".into());
     format!(
-        "a domestic cat with coat {coat}, {eyes} eyes, marking {marking}, and accessories {accessory_names}"
+        "an adult young woman with hair {hair}, skin tone {skin}, silhouette {silhouette}, fashion style {style}, and signature accessories {accessory_names}"
     )
 }
 
@@ -467,40 +443,24 @@ fn safe_purpose(value: Option<&str>) -> String {
     }
 }
 
-async fn call_gpt(
-    state: &AppState,
-    model: &str,
-    quality: &str,
-    prompt: &str,
-    idempotency_key: &str,
-) -> std::result::Result<GeneratedAsset, ProviderFailure> {
-    let body = json!({
-        "model": model,
-        "prompt": prompt,
-        "n": 1,
-        "size": "1024x1024",
-        "quality": quality,
-        "output_format": "webp",
-        "response_format": "b64_json"
-    });
-    let value = call_provider(state, "gpt_image", &body, idempotency_key).await?;
-    parse_asset(&value, "gpt_image", model, "image/webp", state).await
-}
-
 async fn call_grok(
     state: &AppState,
     model: &str,
     prompt: &str,
     idempotency_key: &str,
+    anchor_url: Option<&str>,
 ) -> std::result::Result<GeneratedAsset, ProviderFailure> {
-    let body = json!({
+    let mut body = json!({
         "model": model,
         "prompt": prompt,
         "n": 1,
-        "aspect_ratio": "1:1",
-        "resolution": "1k",
+        "aspect_ratio": "2:3",
+        "resolution": "2k",
         "response_format": "b64_json"
     });
+    if let Some(anchor_url) = anchor_url {
+        body["images"] = json!([{ "url": anchor_url }]);
+    }
     let value = call_provider(state, "grok_image", &body, idempotency_key).await?;
     parse_asset(&value, "grok_image", model, "image/jpeg", state).await
 }
@@ -521,7 +481,7 @@ async fn call_provider(
         .bearer_auth(&state.config.ai_api_key)
         .header("Idempotency-Key", idempotency_key)
         .json(body);
-    let result = tokio::time::timeout(state.config.cat_image_generation_timeout, async {
+    let result = tokio::time::timeout(state.config.travel_image_generation_timeout, async {
         let response = request.send().await.map_err(|error| ProviderFailure {
             provider,
             message: error.to_string(),
@@ -659,7 +619,7 @@ async fn read_limited(
 
 async fn publish_asset(state: &AppState, asset: &GeneratedAsset) -> Result<PublishedAsset> {
     let base_url = state.config.tmpfile_base_url.as_ref().ok_or_else(|| {
-        AppError::Config("TMPFILE_BASE_URL 必须配置后才能发布旅行猫咪图片".into())
+        AppError::Config("TMPFILE_BASE_URL 必须配置后才能发布旅行女孩图片".into())
     })?;
     upload_tmpfile(state, base_url, asset)
         .await
@@ -677,7 +637,7 @@ async fn upload_tmpfile(
         "image/svg+xml" => "svg",
         _ => "webp",
     };
-    let filename = format!("travel-cat-{}.{}", Uuid::new_v4(), extension);
+    let filename = format!("travel-girl-{}.{}", Uuid::new_v4(), extension);
     let part = Part::bytes(asset.bytes.clone())
         .file_name(filename)
         .mime_str(asset.content_type)
@@ -744,67 +704,17 @@ async fn upload_tmpfile(
     })
 }
 
-async fn source_asset(state: &AppState, image: &Option<Value>) -> Option<GeneratedAsset> {
-    let url = image.as_ref()?.get("url")?.as_str()?;
-    let parsed = url::Url::parse(url).ok()?;
-    if !media::is_public_https_url(&parsed) {
-        return None;
-    }
-    let response = state
-        .image_http
-        .get(parsed)
-        .timeout(state.config.image_timeout)
-        .send()
-        .await
-        .ok()?;
-    if !response.status().is_success() || !media::is_public_https_url(response.url()) {
-        return None;
-    }
-    let content_type = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(source_content_type)?;
-    let bytes = read_limited(response, MAX_IMAGE_BYTES, "news_source")
-        .await
-        .ok()?;
-    Some(GeneratedAsset {
-        bytes,
-        content_type,
-        provider: "news_source",
-        model: "news-image".into(),
-    })
-}
-
-fn source_content_type(value: &str) -> Option<&'static str> {
-    match value
-        .split(';')
-        .next()?
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "image/avif" => Some("image/avif"),
-        "image/webp" => Some("image/webp"),
-        "image/jpeg" | "image/jpg" => Some("image/jpeg"),
-        "image/png" => Some("image/png"),
-        "image/gif" => Some("image/gif"),
-        "image/bmp" => Some("image/bmp"),
-        _ => None,
-    }
-}
-
 fn template_asset(item: &NewsRow, purpose: &str) -> GeneratedAsset {
     let title = xml_escape(&sanitize_fragment(&item.title));
     let purpose = xml_escape(purpose);
     let svg = format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1024 1024\"><rect width=\"1024\" height=\"1024\" fill=\"#f7f1e8\"/><circle cx=\"800\" cy=\"190\" r=\"110\" fill=\"#f8db9b\"/><path d=\"M0 720c210-110 350-20 510-120s300-80 514-10v434H0Z\" fill=\"#d8b99b\"/><path d=\"M335 712c0-160 65-252 177-252s177 92 177 252c0 118-65 165-177 165s-177-47-177-165Z\" fill=\"#d88b58\" stroke=\"#995d40\" stroke-width=\"12\"/><path d=\"M352 480 335 365l112 79M672 480l17-115-112 79\" fill=\"#d88b58\" stroke=\"#995d40\" stroke-width=\"12\"/><circle cx=\"438\" cy=\"560\" r=\"12\" fill=\"#3d302c\"/><circle cx=\"586\" cy=\"560\" r=\"12\" fill=\"#3d302c\"/><path d=\"M500 595c-25 24-25 45 0 60 25-15 25-36 0-60ZM465 670c23 22 47 22 70 0\" fill=\"none\" stroke=\"#69443a\" stroke-width=\"10\" stroke-linecap=\"round\"/><text x=\"64\" y=\"100\" fill=\"#8e4d3a\" font-family=\"sans-serif\" font-size=\"28\" letter-spacing=\"6\">TRAVEL CAT</text><text x=\"64\" y=\"930\" fill=\"#382f2b\" font-family=\"sans-serif\" font-size=\"32\">{title}</text><text x=\"64\" y=\"972\" fill=\"#85766d\" font-family=\"sans-serif\" font-size=\"20\">{purpose}</text></svg>"
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 800 1200\"><defs><linearGradient id=\"bg\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\"><stop stop-color=\"#f5d8cf\"/><stop offset=\"1\" stop-color=\"#d6e4e5\"/></linearGradient></defs><rect width=\"800\" height=\"1200\" fill=\"url(#bg)\"/><circle cx=\"650\" cy=\"180\" r=\"95\" fill=\"#fff5d6\" opacity=\".8\"/><path d=\"M0 880c180-130 315-65 430-155 130-102 220-64 370-118v593H0Z\" fill=\"#a9c6bc\" opacity=\".8\"/><path d=\"M205 1060c18-190 65-320 195-320s177 130 195 320Z\" fill=\"#7b789e\"/><path d=\"M270 670c0-125 68-218 130-218s130 93 130 218c0 91-58 142-130 142s-130-51-130-142Z\" fill=\"#f1b496\"/><path d=\"M253 676c-9-178 68-286 147-286 90 0 164 108 147 286-24-54-48-79-78-102-70 36-132 33-216 102Z\" fill=\"#513e58\"/><circle cx=\"347\" cy=\"672\" r=\"9\" fill=\"#3d3037\"/><circle cx=\"453\" cy=\"672\" r=\"9\" fill=\"#3d3037\"/><path d=\"M372 730c22 18 34 18 56 0\" fill=\"none\" stroke=\"#9c5862\" stroke-width=\"7\" stroke-linecap=\"round\"/><path d=\"M265 845c55 36 215 36 270 0\" fill=\"none\" stroke=\"#e7b7a5\" stroke-width=\"18\" stroke-linecap=\"round\"/><text x=\"48\" y=\"70\" fill=\"#624b61\" font-family=\"sans-serif\" font-size=\"24\" letter-spacing=\"4\">TRAVEL GIRL</text><text x=\"48\" y=\"1115\" fill=\"#382f38\" font-family=\"sans-serif\" font-size=\"24\">{title}</text><text x=\"48\" y=\"1153\" fill=\"#6f626d\" font-family=\"sans-serif\" font-size=\"18\">{purpose}</text></svg>"
     );
     GeneratedAsset {
         bytes: svg.into_bytes(),
         content_type: "image/svg+xml",
         provider: "template",
-        model: "travel-cat-template-v1".into(),
+        model: "travel-girl-template-v1".into(),
     }
 }
 

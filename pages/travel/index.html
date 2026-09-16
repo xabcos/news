@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="旅行女孩 · 让旅行女孩带你看见世界">
+  <meta name="theme-color" content="#e9dfd0">
+  <meta name="referrer" content="no-referrer">
+  <title>旅行女孩 · 𝑮𝒊𝒓𝒍</title>
+  <link rel="icon" type="image/svg+xml" href="/icon.svg">
+  <script src="/travel/initial.js?v=2"></script>
+  <link rel="stylesheet" href="/travel/travel.css?v=11">
+</head>
+<body class="travel-page">
+  <main class="travel-shell" id="travelApp">
+    <header class="travel-topbar">
+      <a class="travel-back" href="/" aria-label="返回 𝑵𝒆𝒘𝒔">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14.5 5-7 7 7 7M8 12h11" /></svg>
+        <span>𝑵𝒆𝒘𝒔</span>
+      </a>
+      <div class="travel-wordmark" aria-label="旅行女孩">
+        <span class="travel-wordmark__mark">𝑮𝒊𝒓𝒍</span>
+        <span class="travel-wordmark__name">旅行女孩</span>
+      </div>
+    </header>
+
+    <section class="travel-layout" aria-label="旅行女孩">
+      <section class="travel-stage travel-stage--art" aria-label="旅居空间">
+        <img class="travel-latest-photo" id="travelLatestPhoto" alt="" aria-hidden="true" loading="eager">
+        <div class="travel-companion is-identity-pending" id="travelCompanion" role="img" aria-label="旅行女孩正在旅途中">
+          <div class="travel-girl-placeholder" aria-hidden="true"><span>TRAVEL GIRL</span></div>
+          <span class="travel-thought" id="travelThought">今天的风，闻起来像远方。</span>
+        </div>
+        <div class="travel-stage__caption">
+          <span class="travel-weather-dot"></span>
+          <span id="travelSceneCaption">午后的窗边 · 适合整理行囊</span>
+          <span class="travel-identity-meta" id="travelIdentityMeta" hidden></span>
+        </div>
+      </section>
+
+    </section>
+
+    <section class="travel-today-panel" id="travelTodayPanel" aria-label="旅行女孩近况">
+      <div class="travel-panel-heading">
+        <div><p class="travel-eyebrow">GIRL LIFE · 此刻</p><h2 id="travelPresenceTitle">旅行女孩正在窗边整理行囊</h2></div>
+        <span class="travel-panel-meta" id="travelPresenceMeta">她会自己生活，也会自己出发</span>
+      </div>
+      <div class="travel-message-preview" id="travelMessagePreview"></div>
+    </section>
+
+    <section class="travel-content-panel" id="travelJournalPanel" hidden aria-labelledby="journalHeading">
+      <div class="travel-panel-heading"><div><p class="travel-eyebrow">MEMORY · 旅迹墙</p><h2 id="journalHeading">动态照片与旅程</h2></div><span class="travel-panel-meta">照片、旅程与成长记录</span></div>
+      <div class="travel-filter-row" role="toolbar" aria-label="日志筛选">
+        <button class="travel-filter is-active" type="button" data-journal-filter="all" aria-pressed="true">全部</button>
+        <button class="travel-filter" type="button" data-journal-filter="postcard" aria-pressed="false">照片</button>
+        <button class="travel-filter" type="button" data-journal-filter="travel" aria-pressed="false">旅程</button>
+        <button class="travel-filter" type="button" data-journal-filter="growth" aria-pressed="false">成长</button>
+      </div>
+      <div class="travel-journal-grid" id="travelJournalGrid"></div>
+    </section>
+
+    <section class="travel-content-panel" id="travelAtlasPanel" hidden aria-labelledby="atlasHeading">
+      <div class="travel-panel-heading"><div><p class="travel-eyebrow">WORLD · 图鉴</p><h2 id="atlasHeading">旅行女孩认识的世界</h2></div><span class="travel-panel-meta">地点、配饰与记忆</span></div>
+      <div class="travel-atlas-grid" id="travelAtlasGrid"></div>
+    </section>
+
+    <nav class="travel-bottom-nav" aria-label="游戏导航">
+      <a class="travel-nav-item is-active" href="#home" aria-current="page"><span aria-hidden="true">⌂</span><small>旅居空间</small></a>
+      <a class="travel-nav-item" href="#journal"><span aria-hidden="true">▣</span><small>旅迹</small></a>
+      <a class="travel-nav-item" href="#atlas"><span aria-hidden="true">◇</span><small>图鉴</small></a>
+    </nav>
+  </main>
+
+  <div class="travel-toast" id="travelToast" role="status" aria-live="polite"></div>
+  <dialog class="travel-dialog" id="travelDialog">
+    <button class="travel-dialog__close" id="dialogClose" type="button" aria-label="关闭">×</button>
+    <p class="travel-eyebrow" id="dialogEyebrow">旅行女孩</p>
+    <h2 id="dialogTitle">准备好了吗？</h2>
+    <p id="dialogBody">她正在等你把今天的世界装进行李箱。</p>
+    <div class="travel-dialog__actions">
+      <button class="travel-button travel-button--primary" id="dialogPrimary" type="button">知道了</button>
+    </div>
+  </dialog>
+  <script src="/travel/travel.js?v=11" defer></script>
+</body>
+</html>
