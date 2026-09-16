@@ -102,7 +102,7 @@
 ### 2.4 数据与配置
 
 - M0–M4 已新增 `cats`、`cat_adoption_drafts`、`cat_growth_events`、`cat_accessory_unlocks`、`cat_memories`、`cat_reading_daily`、`cat_personality_snapshots`、`cat_world_briefs`、`cat_trips`、`cat_postcards`、`cat_encounters` 和 `cat_encounter_members`；真正的分享页、丰富日记和地点选题策略仍按后续阶段增加。
-- 新增配置 `TRAVEL_IMAGE_MODEL / SUNBURST_MODEL / FALLBACK_MODEL / GENERATION_TIMEOUT_SECS`（`src/config.rs` diff）；`TMPFILE_*` 从可选改为必填（这会影响所有部署，包括本地 compose，见 3.11）。
+- 新增配置 `TRAVEL_IMAGE_MODEL / TRAVEL_IMAGE_GENERATION_TIMEOUT_SECS`（`src/config.rs`）；图片分辨率和比例由服务端固定为高质量默认值；`TMPFILE_*` 从可选改为必填（这会影响所有部署，包括本地 compose，见 3.11）。
 
 ---
 
