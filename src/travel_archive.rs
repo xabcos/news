@@ -235,10 +235,41 @@ fn write_archive(
 
 fn compare_existing(directory: &Path, companion_id: Uuid, expected: &Manifest) -> Result<()> {
     let existing = read_verified_archive(directory, companion_id)?;
-    if &existing != expected {
+    // The database asset UUID is an implementation detail.  A migration or a
+    // recovery can recreate the row while restoring the exact same original
+    // bytes.  The archive is the durable identity copy, so compare the
+    // content and its role rather than requiring that transient row UUID to
+    // be unchanged.  `read_verified_archive` has already checked each
+    // archive filename, size and digest against its own manifest.
+    if !equivalent_manifest(&existing, expected) {
         return Err(invalid("既有身份档案与本次内容不同，拒绝覆盖"));
     }
     Ok(())
+}
+
+fn equivalent_manifest(left: &Manifest, right: &Manifest) -> bool {
+    if left.schema_version != right.schema_version
+        || left.companion_id != right.companion_id
+        || left.identity != right.identity
+        || left.accessories != right.accessories
+        || left.assets.len() != right.assets.len()
+    {
+        return false;
+    }
+    let mut left_assets = left.assets.iter().collect::<Vec<_>>();
+    let mut right_assets = right.assets.iter().collect::<Vec<_>>();
+    left_assets.sort_by_key(|asset| (&asset.role, asset.ordinal));
+    right_assets.sort_by_key(|asset| (&asset.role, asset.ordinal));
+    left_assets.iter().zip(right_assets).all(|(left, right)| {
+        left.role == right.role
+            && left.ordinal == right.ordinal
+            && left.content_type == right.content_type
+            && left.image_content_type == right.image_content_type
+            && left.sha256 == right.sha256
+            && left.image_sha256 == right.image_sha256
+            && left.original_size == right.original_size
+            && left.image_size == right.image_size
+    })
 }
 
 fn read_verified_archive(directory: &Path, companion_id: Uuid) -> Result<Manifest> {
@@ -527,6 +558,19 @@ mod tests {
             .await
             .is_err()
         );
+        // Asset UUIDs belong to database rows and may change during a
+        // restore.  Identical original/reference bytes still describe the
+        // same permanent identity and must not trigger a rewrite.
+        assets[0].id = Uuid::new_v4();
+        write_identity_archive(
+            &root.0,
+            companion,
+            &json!({"name":"first"}),
+            &json!([]),
+            &assets,
+        )
+        .await
+        .unwrap();
         assets[0].original_bytes.push(0);
         assert!(
             write_identity_archive(&root.0, Uuid::new_v4(), &json!({}), &json!([]), &assets)
