@@ -683,7 +683,9 @@ fn reasoning_effort(model: &str) -> &'static str {
     if model.starts_with("grok") {
         "xhigh"
     } else {
-        "max"
+        // The production relay currently accepts xhigh for the GPT insight
+        // route and rejects max, even though some model docs list max.
+        "xhigh"
     }
 }
 
@@ -1087,7 +1089,7 @@ mod tests {
     #[test]
     fn selects_reasoning_effort_for_model_family() {
         assert_eq!(reasoning_effort("grok-4.6"), "xhigh");
-        assert_eq!(reasoning_effort("gpt-6-astra"), "max");
+        assert_eq!(reasoning_effort("gpt-6-astra"), "xhigh");
     }
 
     #[test]

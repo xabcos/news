@@ -586,10 +586,18 @@ async fn archive_companion(state: &AppState, id: Uuid) -> Result<()> {
 }
 
 pub(crate) async fn archive_pending_identities(state: &AppState) -> Result<()> {
-    let ids=sqlx::query_scalar::<_,Uuid>("SELECT c.id FROM travel_companions c WHERE identity_archive_at IS NULL AND EXISTS(SELECT 1 FROM travel_identity_assets a WHERE a.companion_id=c.id AND a.role='portrait') ORDER BY adopted_at LIMIT 2")
+    let ids=sqlx::query_scalar::<_,Uuid>("SELECT c.id FROM travel_companions c WHERE identity_archive_at IS NULL AND identity_archive_error IS NULL AND EXISTS(SELECT 1 FROM travel_identity_assets a WHERE a.companion_id=c.id AND a.role='portrait') ORDER BY adopted_at LIMIT 2")
         .fetch_all(&state.pool).await?;
     for id in ids {
-        archive_companion(state, id).await?;
+        if let Err(error) = archive_companion(state, id).await {
+            if error.to_string().contains("既有身份档案与本次内容不同") {
+                sqlx::query("UPDATE travel_companions SET identity_archive_error=$2 WHERE id=$1 AND identity_archive_at IS NULL")
+                    .bind(id).bind("archive_conflict").execute(&state.pool).await?;
+                tracing::error!(companion_id=%id,"permanent identity archive conflicts with database; automatic retry disabled");
+            } else {
+                return Err(error);
+            }
+        }
     }
     Ok(())
 }
