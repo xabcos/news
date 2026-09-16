@@ -1,4 +1,7 @@
-use crate::{auth, digest, error::Result, payment, state::AppState, topics, travel, travel_guide};
+use crate::{
+    auth, digest, error::Result, payment, state::AppState, topics, travel, travel_assets,
+    travel_guide, travel_world,
+};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Request, State},
@@ -23,7 +26,7 @@ const STATIC_MAX_AGE: &str = "public, max-age=300";
 const HTML_MAX_AGE: &str = "public, max-age=60";
 /// The public page hosts the Broadcast embed and sends anonymous page views to Stats;
 /// news images may come from any HTTPS origin. Everything else stays same-origin.
-const CSP: &str = "default-src 'self'; script-src 'self' https://broadcast.xairouter.com; style-src 'self'; img-src 'self' data: https:; font-src 'self'; connect-src 'self' https://stats.xairouter.com https://broadcast.xairouter.com; media-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
+const CSP: &str = "default-src 'self'; script-src 'self' https://broadcast.xairouter.com; style-src 'self'; img-src 'self' data: blob: https:; font-src 'self'; connect-src 'self' https://stats.xairouter.com https://broadcast.xairouter.com; media-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
 
 pub(crate) fn router(state: AppState) -> Router {
     let pages_dir = state.config.pages_dir.clone();
@@ -34,8 +37,20 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/api/me", get(auth::me))
         .route("/api/travel/state", get(travel::state))
         .route("/api/travel/home", get(travel::home))
-        .route("/api/travel/adoption/preview", post(travel::preview))
+        .route(
+            "/api/travel/adoption/preview",
+            get(travel::draft_status)
+                .post(travel::preview)
+                .layer(DefaultBodyLimit::max(travel_assets::MAX_UPLOAD_BODY)),
+        )
         .route("/api/travel/adoption/confirm", post(travel::confirm))
+        .route(
+            "/api/travel/identity/assets/{id}",
+            get(travel_assets::identity_image),
+        )
+        .route("/api/travel/media/{id}", get(travel_assets::media_image))
+        .route("/api/travel/world", get(travel_world::world))
+        .route("/api/travel/world/settings", post(travel_world::settings))
         .route("/api/travel/reading", post(travel::reading))
         .route("/api/travel/guide", get(travel_guide::today))
         .route("/api/travel/trips", get(travel::list_trips))

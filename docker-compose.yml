@@ -23,6 +23,7 @@ services:
       AI_DEFAULT_MODEL: ${AI_DEFAULT_MODEL:-grok-4.6}
       AI_INSIGHT_MODEL: ${AI_INSIGHT_MODEL:-gpt-6-astra}
       AI_RESPONSES_TIMEOUT_SECS: ${AI_RESPONSES_TIMEOUT_SECS:-900}
+      TRAVEL_ARCHIVE_DIR: /home/nonroot/along-archive
       TRAVEL_IMAGE_MODEL: ${TRAVEL_IMAGE_MODEL:-gpt-image-2.5-flare}
       TRAVEL_IMAGE_GENERATION_TIMEOUT_SECS: ${TRAVEL_IMAGE_GENERATION_TIMEOUT_SECS:-900}
       AI_INSIGHT_INTERVAL_MINUTES: ${AI_INSIGHT_INTERVAL_MINUTES:-120}
@@ -39,6 +40,7 @@ services:
       PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET:-}
       # Provided by .env (0600); never written into this file.
       AI_API_KEY: ${AI_API_KEY}
+    volumes: [along_archive:/home/nonroot/along-archive]
     networks: [network]
 
   news-mail:
@@ -83,6 +85,7 @@ services:
     networks: [network]
 
 volumes:
+  along_archive:
   postgres_data:
   redis_data:
 

@@ -10,6 +10,11 @@ async fn main() -> Result<()> {
         Config::from_env()?;
         return Ok(());
     }
+    if std::env::args().nth(1).as_deref() == Some("archivecheck") {
+        let count = news::travel::verify_identity_archives(&Config::from_env()?).await?;
+        println!("Verified {count} permanent Along identity archives");
+        return Ok(());
+    }
     fmt()
         .with_env_filter(
             EnvFilter::from_default_env()

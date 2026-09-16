@@ -12,6 +12,7 @@ pub struct Config {
     pub(crate) database_max_connections: u32,
     pub(crate) migrations_dir: PathBuf,
     pub(crate) pages_dir: PathBuf,
+    pub(crate) travel_archive_dir: PathBuf,
     pub(crate) public_base_url: Url,
     pub(crate) session_cookie_name: String,
     pub(crate) session_ttl: Duration,
@@ -209,12 +210,21 @@ impl Config {
             ));
         }
 
+        let archive_path = PathBuf::from(env_value("TRAVEL_ARCHIVE_DIR", "data/along-archive"));
+        let travel_archive_dir = if archive_path.is_absolute() {
+            archive_path
+        } else {
+            std::env::current_dir()
+                .map_err(|_| AppError::Config("无法确定档案路径".into()))?
+                .join(archive_path)
+        };
         Ok(Self {
             bind_addr,
             database_url,
             database_max_connections,
             migrations_dir: PathBuf::from(env_value("MIGRATIONS_DIR", "migrations")),
             pages_dir: PathBuf::from(env_value("PAGES_DIR", "pages")),
+            travel_archive_dir,
             public_base_url,
             session_cookie_name,
             session_ttl: Duration::from_secs(session_days * 24 * 60 * 60),

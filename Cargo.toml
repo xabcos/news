@@ -5,13 +5,14 @@ edition = "2024"
 rust-version = "1.94"
 
 [dependencies]
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "multipart"] }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 dotenvy = "0.15"
 getrandom = "0.4"
 hmac = "0.12"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 hex = "0.4"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 redis = { version = "1", default-features = false, features = ["tokio-rustls-comp", "connection-manager"] }

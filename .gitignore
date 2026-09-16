@@ -4,3 +4,5 @@
 !/.env.example
 /pages/*.gz
 *.log
+
+/data/

@@ -2,7 +2,7 @@
 
 一个轻量的新闻聚合服务。NEWS 按主题调用 `grok-4.6`（Responses API，`web_search` + `x_search`）检索最新报道，按天写入 PostgreSQL，热数据放 Redis 和进程内存，对外提供无鉴权的公共 JSON API、Atom 源和一个简洁的聚合页；登录用户还可读取包含公共与个人主题的个性化摘要。每个有效邮箱都可以登录统一工作台 `/me/`；普通账户管理个人主题，管理员管理公共主题。
 
-生产地址：`https://xabcnews.com`，工作台 `/me/`。设计说明见 [`DESIGN.md`](DESIGN.md)。
+生产地址：`https://xabcnews.com`，工作台 `/me/`，虚拟旅伴「与行 · 𝑨𝒍𝒐𝒏𝒈」入口 `/travel/`。设计说明见 [`DESIGN.md`](DESIGN.md)。
 
 套餐只有两档：`free` 最多 1 个主题、最短 512 分钟；`pro` 最多 4 个主题、最短 64 分钟，微信支付 ¥99 开通 31 天（每日运行上限分别为 12 次和 48 次）。
 
@@ -65,8 +65,9 @@ cargo run
 | `NEWS_ADMIN_EMAILS` | – | 管理员邮箱，逗号分隔；其他有效邮箱自动使用 Free |
 | `AI_API_KEY` | – | 调用模型的密钥，只存在于环境变量 |
 | `AI_BASE_URL` / `AI_DEFAULT_MODEL` | `https://api.zairouter.com` / `grok-4.6` | 新闻抓取接口与默认模型 |
-| `TRAVEL_IMAGE_MODEL` | `gpt-image-2.5-flare` | 旅行女孩 Images API 模型；默认 high，尺寸和构图由服务端选择，无需额外配置 |
+| `TRAVEL_IMAGE_MODEL` | `gpt-image-2.5-flare` | 与行 Images API 模型；默认 high，尺寸和构图由服务端选择，无需额外配置 |
 | `TRAVEL_IMAGE_GENERATION_TIMEOUT_SECS` | `900` | 单次旅行图片生成总超时 |
+| `TRAVEL_ARCHIVE_DIR` | `data/along-archive` | 私有身份档案的独立磁盘副本；容器部署必须挂载持久卷 |
 | `AI_RESPONSES_TIMEOUT_SECS` | `900` | 新闻领读、旅行叙事等 Responses 请求超时 |
 | `NEWS_TIMEZONE` | `Asia/Shanghai` | 天边界与时间窗 |
 | `NEWS_SCHEDULER_ENABLED` | `true` | `false` 时只提供页面与 API |
@@ -111,22 +112,23 @@ POST   /api/orders                GET    /api/orders/{out_trade_no}
 GET    /api/orders/{out_trade_no}/qr.svg
 POST   /api/webhooks/payment
 
-GET    /api/travel/state             # 登录后读取领养、身份和成长状态
-POST   /api/travel/adoption/preview  # 生成服务端保存的领养身份预览
-POST   /api/travel/adoption/confirm  # 确认领养并永久固定身份与初始配饰
-POST   /api/travel/reading            # 记录阅读新闻并形成旅行女孩记忆
-GET    /api/travel/trips              # 读取旅程历史
-GET    /api/travel/album              # 读取已收藏的旅行明信片
-GET    /api/travel/atlas              # 读取成长配饰和世界记忆
-GET    /api/travel/encounters         # 读取共同旅途记录
-GET    /api/travel/guide              # 读取旅行女孩的世界领读
+GET    /api/travel/state              # 读取相识状态、companion 身份与成长
+GET    /api/travel/home               # 此刻的生活与最近动态
+POST   /api/travel/adoption/preview   # multipart：创建人物与真实初见照片草稿
+GET    /api/travel/adoption/preview   # 只读查询草稿进度，不触发生成
+POST   /api/travel/adoption/confirm   # 确认眼前的人物与原图，开始同行
+POST   /api/travel/reading            # 记录阅读新闻并形成旅伴记忆
+GET    /api/travel/trips              # 旅程历史
+GET    /api/travel/journal            # 生活动态与共同经历
+GET    /api/travel/album              # 已收藏的旅行照片
+GET    /api/travel/atlas              # 成长配饰和世界记忆
+GET    /api/travel/encounters         # 相遇记录
+GET    /api/travel/guide              # 世界领读
+GET    /api/travel/world              # 社交设置、共同事件和朋友关系
+POST   /api/travel/world/settings     # {"social_mode":"private"|"open"}
+GET    /api/travel/identity/assets/{id} # 本人私有形象预览；上传图显示去元数据衍生件
+GET    /api/travel/media/{id}         # 私有纪念照；共同合影仅参与者可读
 ```
-
-旅行女孩由 AI 独立创作，统一保持 22–24 岁成年亚洲女性、青春靓丽、轻妆自然与优美身形的审美。人物的五官、发型、身材、性格和审美偏好均为 AI 开放创作，不从固定人物或服饰列表抽选。创建采用异步草稿，浏览器轮询等待；确认时保存原草稿，不再次生成，因此刷新、重试和确认不会偷偷换人。数据库去重相同外观描述，AI 审阅近期人物差异；这不等于视觉人脸相似度检测，不能保证绝不撞脸。
-
-首次确认后立即排队生成照片，随后活跃用户约每 4 小时更新一次。每次先让 AI 根据人物性格、当地时间、在家/旅途状态、图片新闻地点事件与图注、最近 20 张照片的创意记录，提出三个不同情节，再由独立 AI 审阅选出合适且新鲜的一条。活动、衣着、表情、正侧背面视角和光线均由 AI 决定；代码只验证结构、拒绝明显重复、限制耗时和并发。没有活动轮换表，创作失败会延后重试。新闻是背景参考，不把女孩冒充为真实事件参与者。
-
-首张成功原图保存在 `travel_portrait_anchors`，每位约占数 MB 数据库空间，不受临时媒体地址过期影响；以后每张图都通过 multipart Images Edits 上传这张固定原图，保持五官、肤色、发色和身体比例。默认 `TRAVEL_IMAGE_MODEL=gpt-image-2.5-flare`，`quality=high`、PNG；AI 选择构图方向后，服务端映射到 1024×1536、1536×1024 或 1024×1024，无需配置尺寸。初始照片使用面容清楚的竖向构图。身份创建并发最多 2 个，图片任务最多 3 个，每位女孩有独立生成租约；不会为所有注册账户预生成图片。图片失败不保存占位图冒充成功。所有展示图片上传到 `TMPFILE_BASE_URL`，浏览器只读取该媒体服务的 HTTPS 地址。
 
 管理员状态接口还返回 `users.active_7d` 和 `users.registered`；工作台将它们以
 `近 7 天活跃用户/注册用户` 的比例显示在状态行中。注册总数用 migration 执行时的当前用户数初始化，之后由数据库事务内维护的计数器提供；近 7 天活跃数只使用成功登录后写入的最后登录时间，不重建历史登录记录。
@@ -143,6 +145,22 @@ Pro 订单固定为 ¥99 / 31 天，通过 YPay 的 store-token 接口创建微�
 
 `/api/plans` 返回套餐列表和 `checkout_enabled`；未配置完整 YPay 三项时，个人页会保留套餐说明但不显示可点击的升级按钮。
 
+## 与行 · 𝑨𝒍𝒐𝒏𝒈
+
+`/travel/` 的初遇流程有两条入口：**让 AI 创作**，或**从照片开始**。用户先主动选择「遇见他 · 帅哥」或「遇见她 · 靓女」，可补充名字、气质与希望保留的特点，再点击创造相遇。AI 原创人物默认采用 22–24 岁成年亚洲形象，人物五官、体态、性格与审美由 AI 独立创作，不从固定人物、服饰或活动列表抽选。已有用户的旅伴保持原来的身份、形象与经历，品牌升级不会重新创造这个人。
+
+照片模式支持同一位成年人物的 **1–7 张 JPEG、PNG 或 WebP**，每张不超过 10 MiB，总计不超过 70 MiB。第一张为主形象，其他照片补充侧脸、全身或不同角度，提交前可设主图与移除。用户需确认照片为本人、已获授权的成年人，或有权使用的成年虚拟人物。服务端解码验证真实图片格式、尺寸与像素上限；原始字节和 SHA-256 校验值完整保留，另外生成去除元数据并纠正方向的参考副本供模型使用。上传照片不会转存到公共文件服务器，也不会直接分享给其他用户。
+
+创建请求使用 `multipart/form-data`，字段为 `source=ai|photos`、`gender=male|female`、可选 `name`、`description`；照片模式还需 `consent=true` 和重复的 `photos` 文件字段。后台依次创作人物与真实初见照片，草稿状态为 `preparing`、`ready` 或 `failed`，尚未创建时 GET 返回 `empty`。页面进入时不会自动生成，等待期间仅轮询 GET；用户看到真实照片后才能「开始同行」。确认接受 `{"draft_id":"…"}`，直接固定当前草稿及其照片，不另画一个人。刷新可恢复已保存的草稿；失败、返回调整与重新创造都需要明确操作。
+
+**永久身份与媒体。** 人物保存在 `travel_companions`，关联字段统一为 `companion_id`；原始上传照片与已确认初见图保存在 `travel_identity_assets`，数据库触发器保护已确认身份及原图不被常规更新、删除或清空。图片与文字模型升级不改变人物 UUID，也不按画面版本重新建立身份。历史人物与原始根图通过迁移保留，不建立旧表名或旧 `/api/cat/*` 的兼容层。后续图片继续参考人物自己的固定原图与补充参考，力求保持五官和身体特征；模型仍可能出现身份偏差，文本去重也不等于视觉人脸去重。
+
+普通个人动态继续上传到 `TMPFILE_BASE_URL` 的默认文件服务器；原始形象、初见预览和共同合影通过鉴权的私有 API 读取。合影只向参与人物的所属用户开放，即使知道图片地址，其他账户也不能读取。重要纪念照保存原始图片字节与校验值，媒体地址变化不通过 AI 重画历史照片。身份原件另有独立磁盘档案，部署与恢复要求见下文。
+
+**动态生活与共同记忆。** 活跃旅伴约每 4 小时更新一次个人动态。AI 根据人物性格、当地时间、当前旅途、图片新闻的地点事件与图注、近期创作记录构思不同情节，再审阅选择；活动、穿搭、神情、正侧背面视角和光线开放变化。新闻作为背景参考，不把虚拟旅伴冒充为现实事件的参与者。默认 `TRAVEL_IMAGE_MODEL=gpt-image-2.5-flare`，`quality=high`；服务端按构图选择 1024×1536、1536×1024 或 1024×1024，初见照片采用面容清楚的竖向构图，不提供额外尺寸环境变量。
+
+自主结伴默认 **`private`**，用户在「共同世界」开启后才变为 `open`。开启的旅伴可以在共同旅途中相识、形成同一份共同事件，并在双方记忆与日志中留下各自的感受；再次相遇时可读取此前共同经历。双人合影同时引用各自固定形象，双方引用同一个成片。共同事实与照片生成分别记录：照片尚在准备或生成失败时，真实发生的虚拟世界事件和记忆仍然保留；关闭自主结伴停止新的匹配，不删除已有回忆。上传原图始终私密。当前实现聚焦双人相遇、共享事件、关系与重要共同记忆闭环，尚未提供完整的实时人物对话或自主长期目标系统。
+
 ## 部署
 
 服务监听容器内 `8788`，`docker-compose.yml` 只绑定宿主机 `127.0.0.1:8793`；把 `xabcnews.com` 的反向代理 upstream 指向它。`.env`（`0600`）提供 `NEWS_ADMIN_EMAILS`、`AI_API_KEY`、SMTP `EMAIL_PASS` 以及启用支付所需的 YPay 三项配置。YPay 侧需先创建与 `YPAY_TENANT_CODE` 对应的 NEWS 租户，并把 webhook fulfillment URL 指向上面的回调地址：
@@ -154,7 +172,22 @@ docker-compose config >/dev/null
 docker-compose up -d
 ```
 
-数据库会按顺序自动执行 `migrations/` 中的 migration；当前版本按全新部署设计，请使用空数据库，或重建 `postgres_data` volume 后再启动。
+数据库会按顺序自动执行 `migrations/` 中的 migration。新部署使用空数据库；已有部署在完整备份后顺序升级，保留现有账户、人物、原图与旅迹，不重建数据库或持久卷，也不修改已执行迁移文件。发布只更新 `news` 服务，避免重启无关服务或清理数据卷。
+
+### 身份档案与恢复验证
+
+`TRAVEL_ARCHIVE_DIR` 默认 `data/along-archive`；生产 Compose 将它设为 `/home/nonroot/along-archive` 并挂载独立持久卷。每位已确认旅伴对应独立目录，保存身份清单、上传原件、用于生成的参考副本、初见照片及文件大小和 SHA-256。目录权限为 `0700`，文件为 `0600`；档案不可挂在公开网站目录下。数据库保留原件，磁盘档案提供另一份可单独验证的副本，不能把容器的临时可写层当成档案存储。
+
+只读校验工具不会修改、修复或删除原件，也不输出人物描述或图片内容。在能读取档案的运维环境执行，路径须为独立档案目录的绝对路径：
+
+```bash
+python3 ops/along-archive-verify.py /absolute/path/to/along-archive
+python3 ops/along-archive-verify.py /absolute/path/to/restored-along-archive --companion '人物UUID'
+```
+
+日常备份应同时覆盖 PostgreSQL 与身份档案持久卷；恢复到隔离环境后，先校验档案清单和全部文件，再核对数据库中的人物 UUID、原图数量与校验值，确认人物和原图均完整。此工具校验磁盘档案和恢复副本，不替代数据库恢复演练。
+
+同一服务器上的数据库与档案副本不构成异地容灾；仍需另行配置异地备份、保留策略和定期恢复验证。项目不假定已存在可用的异地备份。
 
 ### 反向代理与边缘缓存
 
@@ -188,4 +221,14 @@ CI 与 broadcast 相同：`quality-gate.yml` 执行 `make release-check`；`buil
 make release-check   # fmt、test、clippy、全部 JS 语法、compose 配置
 ```
 
-单元测试覆盖工作台角色边界、调度计算、URL 规范化与指纹、标题相似度、条目校验、真实 Responses 返回样例（`tests/fixtures/`）的解析、ETag/304。
+单元测试覆盖工作台角色边界、调度计算、URL 规范化与指纹、标题相似度、条目校验、真实 Responses 返回样例（`tests/fixtures/`）的解析、ETag/304，以及人物创建参数、图片解码与原件保留、档案完整性和共同事件校验。
+
+需要 PostgreSQL 的共同世界集成测试默认 `ignored`。仅为它创建独立、可丢弃的数据库，名称必须以 `along_world_audit_` 开头，并预先应用全部 migrations；不要使用开发主库或生产数据库。通过专用环境变量传入测试 DSN：
+
+```bash
+ALONG_WORLD_TEST_DATABASE_URL='<独立测试数据库 DSN>' cargo test postgres_shared_world -- --ignored --test-threads=1
+```
+
+测试会写入人物、不可变原图、关系和共享记忆夹具，验证默认私密、并发认领与双方事件提交。结束后可移除整个专用测试数据库；不要通过绕过不可变约束来清理常规数据库。
+
+与行上传入口需反向代理允许 70 MiB 加 multipart 开销；站点模板仅对 `/api/travel/adoption/preview` 设置 `client_max_body_size 80m`，其他 API 仍保持小请求限制。已有服务器配置也需同步该精确路由。可在运行容器中执行 `docker exec news ./news archivecheck` 只读检查独立身份档案（不会连接数据库或运行迁移）。

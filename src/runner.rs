@@ -675,6 +675,12 @@ async fn maintenance_loop(state: AppState) {
     if let Err(error) = crate::travel::settle_due(&state).await {
         tracing::warn!(%error, "initial travel companion settlement failed");
     }
+    if let Err(error) = crate::travel_world::tick(&state).await {
+        tracing::warn!(%error,"Along world tick deferred");
+    }
+    if let Err(error) = crate::travel_image::archive_pending_identities(&state).await {
+        tracing::warn!(%error,"Along original archive pending");
+    }
     if let Err(error) = crate::travel::autonomous_tick(&state).await {
         tracing::warn!(%error, "initial autonomous travel tick failed");
     }
@@ -682,6 +688,12 @@ async fn maintenance_loop(state: AppState) {
         interval.tick().await;
         if let Err(error) = crate::travel::settle_due(&state).await {
             tracing::warn!(%error, "travel companion settlement failed");
+        }
+        if let Err(error) = crate::travel_world::tick(&state).await {
+            tracing::warn!(%error,"Along world tick deferred");
+        }
+        if let Err(error) = crate::travel_image::archive_pending_identities(&state).await {
+            tracing::warn!(%error,"Along original archive pending");
         }
         if let Err(error) = crate::travel::autonomous_tick(&state).await {
             tracing::warn!(%error, "autonomous travel tick failed");

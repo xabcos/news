@@ -11,3 +11,5 @@ pages/*.gz
 # Local image review artifacts are not deployment inputs.
 output
 tmp
+
+data

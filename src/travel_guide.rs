@@ -1,8 +1,8 @@
-//! M4: a durable world guide for the adopted travel girl.
+//! M4: a durable world guide for the adopted travel companion.
 //!
 //! Growth events and memories remain the source of truth. This module derives a
 //! bounded personality projection, selects three daily stories, and asks the AI
-//! for a structured guide. News facts and the girl's opinion are stored separately;
+//! for a structured guide. News facts and the companion's opinion are stored separately;
 //! X context is explicitly kept in `culture_context` and cannot become evidence.
 
 use crate::{
@@ -27,7 +27,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const PROMPT_VERSION: &str = "m4-girl-guide-v1";
+const PROMPT_VERSION: &str = "along-guide-v2";
 const MAX_CANDIDATES: i64 = 80;
 const MAX_MEMORY_ITEMS: usize = 12;
 const GUIDE_LEASE_MINUTES: i64 = 20;
@@ -69,6 +69,7 @@ struct SelectedNews {
 
 #[derive(Debug, Clone, Serialize)]
 struct Profile {
+    identity: Value,
     traits: BTreeMap<String, f64>,
     interests: Vec<Value>,
     voice: Value,
@@ -90,7 +91,7 @@ struct GuideDraft {
     scene: SceneDirector,
 }
 
-/// A small, durable projection of the girl's current activity.  It is generated
+/// A small, durable projection of the companion's current activity.  It is generated
 /// together with the daily guide and stored in the existing world-brief JSONB,
 /// so opening the home page never needs to call the model.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -150,23 +151,23 @@ struct StoredBrief {
 }
 
 pub(crate) async fn today(State(state): State<AppState>, user: User) -> Result<Response> {
-    let girl_id =
-        sqlx::query_scalar::<_, Uuid>("SELECT id FROM travel_girls WHERE owner_user_id = $1")
+    let companion_id =
+        sqlx::query_scalar::<_, Uuid>("SELECT id FROM travel_companions WHERE owner_user_id = $1")
             .bind(user.id)
             .fetch_optional(&state.pool)
             .await?
-            .ok_or_else(|| AppError::Conflict("请先领养一只旅行女孩".into()))?;
-    crate::travel::touch_girl(&state.pool, girl_id).await?;
+            .ok_or_else(|| AppError::Conflict("请先与一位旅伴开始同行".into()))?;
+    crate::travel::touch_companion(&state.pool, companion_id).await?;
     let day = state.digest.today();
 
-    if let Some(stored) = load_brief(&state.pool, girl_id, day).await?
+    if let Some(stored) = load_brief(&state.pool, companion_id, day).await?
         && stored.status == "ok"
     {
         let _ = sqlx::query(
-            "UPDATE travel_messages SET read_at = COALESCE(read_at, NOW()) WHERE girl_id = $1 AND kind = 'guide' AND dedupe_key = $2",
+            "UPDATE travel_messages SET read_at = COALESCE(read_at, NOW()) WHERE companion_id = $1 AND kind = 'guide' AND dedupe_key = $2",
         )
-        .bind(girl_id)
-        .bind(format!("guide:{girl_id}:{day}"))
+        .bind(companion_id)
+        .bind(format!("guide:{companion_id}:{day}"))
         .execute(&state.pool)
         .await;
         return Ok(Json(stored.payload).into_response());
@@ -175,18 +176,25 @@ pub(crate) async fn today(State(state): State<AppState>, user: User) -> Result<R
         .travel_slots
         .clone()
         .try_acquire_owned()
-        .map_err(|_| AppError::TooManyRequests("旅行女孩正在整理其他旅程，请稍后再试".into()))?;
-    if !claim_brief(&state.pool, girl_id, day, &state.config.ai_default_model).await? {
+        .map_err(|_| AppError::TooManyRequests("旅伴正在整理其他旅程，请稍后再试".into()))?;
+    if !claim_brief(
+        &state.pool,
+        companion_id,
+        day,
+        &state.config.ai_default_model,
+    )
+    .await?
+    {
         drop(permit);
-        let stored = load_brief(&state.pool, girl_id, day)
+        let stored = load_brief(&state.pool, companion_id, day)
             .await?
-            .ok_or_else(|| AppError::Conflict("旅行女孩正在整理今天的世界，请稍后再试".into()))?;
+            .ok_or_else(|| AppError::Conflict("旅伴正在整理今天的世界，请稍后再试".into()))?;
         if stored.status == "ok" {
             return Ok(Json(stored.payload).into_response());
         }
         if stored.status == "failed" && stored.attempts >= MAX_GUIDE_ATTEMPTS {
             return Err(AppError::ServiceUnavailable(
-                "今天的旅行女孩领读暂时不可用，明天会自动恢复".into(),
+                "今天的旅伴领读暂时不可用，明天会自动恢复".into(),
             ));
         }
         if stored.status == "failed"
@@ -195,7 +203,7 @@ pub(crate) async fn today(State(state): State<AppState>, user: User) -> Result<R
             })
         {
             return Err(AppError::ServiceUnavailable(
-                "旅行女孩刚才没有整理好这封领读，请过几分钟再试".into(),
+                "旅伴刚才没有整理好这封领读，请过几分钟再试".into(),
             ));
         }
         return Ok((
@@ -207,8 +215,8 @@ pub(crate) async fn today(State(state): State<AppState>, user: User) -> Result<R
 
     let worker_state = state.clone();
     tokio::spawn(async move {
-        if let Err(error) = finish_generation(&worker_state, girl_id, day).await {
-            tracing::warn!(%error, %girl_id, %day, "travel girl guide generation failed");
+        if let Err(error) = finish_generation(&worker_state, companion_id, day).await {
+            tracing::warn!(%error, %companion_id, %day, "travel companion guide generation failed");
         }
         drop(permit);
     });
@@ -219,27 +227,36 @@ pub(crate) async fn today(State(state): State<AppState>, user: User) -> Result<R
         .into_response())
 }
 
-async fn load_brief(pool: &PgPool, girl_id: Uuid, day: NaiveDate) -> Result<Option<StoredBrief>> {
+async fn load_brief(
+    pool: &PgPool,
+    companion_id: Uuid,
+    day: NaiveDate,
+) -> Result<Option<StoredBrief>> {
     Ok(sqlx::query_as::<_, StoredBrief>(
-        "SELECT status, payload, finished_at, attempts FROM travel_world_briefs WHERE girl_id = $1 AND day = $2",
+        "SELECT status, payload, finished_at, attempts FROM travel_world_briefs WHERE companion_id = $1 AND day = $2",
     )
-    .bind(girl_id)
+    .bind(companion_id)
     .bind(day)
     .fetch_optional(pool)
     .await?)
 }
 
-async fn claim_brief(pool: &PgPool, girl_id: Uuid, day: NaiveDate, model: &str) -> Result<bool> {
+async fn claim_brief(
+    pool: &PgPool,
+    companion_id: Uuid,
+    day: NaiveDate,
+    model: &str,
+) -> Result<bool> {
     let inserted = sqlx::query_scalar::<_, Uuid>(
         r#"
-        INSERT INTO travel_world_briefs (id, girl_id, day, status, model, prompt_version, attempts)
+        INSERT INTO travel_world_briefs (id, companion_id, day, status, model, prompt_version, attempts)
         VALUES ($1, $2, $3, 'running', $4, $5, 1)
-        ON CONFLICT (girl_id, day) DO NOTHING
+        ON CONFLICT (companion_id, day) DO NOTHING
         RETURNING id
         "#,
     )
     .bind(Uuid::new_v4())
-    .bind(girl_id)
+    .bind(companion_id)
     .bind(day)
     .bind(model)
     .bind(PROMPT_VERSION)
@@ -249,18 +266,18 @@ async fn claim_brief(pool: &PgPool, girl_id: Uuid, day: NaiveDate, model: &str) 
         return Ok(true);
     }
     sqlx::query(
-        "UPDATE travel_world_briefs SET status = 'failed', finished_at = NOW(), error = '领读重试次数已用尽' WHERE girl_id = $1 AND day = $2 AND status = 'running' AND attempts >= $3 AND started_at < NOW() - ($4 * INTERVAL '1 minute')",
+        "UPDATE travel_world_briefs SET status = 'failed', finished_at = NOW(), error = '领读重试次数已用尽' WHERE companion_id = $1 AND day = $2 AND status = 'running' AND attempts >= $3 AND started_at < NOW() - ($4 * INTERVAL '1 minute')",
     )
-    .bind(girl_id)
+    .bind(companion_id)
     .bind(day)
     .bind(MAX_GUIDE_ATTEMPTS)
     .bind(GUIDE_LEASE_MINUTES)
     .execute(pool)
     .await?;
     let reclaimed = sqlx::query_scalar::<_, Uuid>(
-        "UPDATE travel_world_briefs SET status = 'running', started_at = NOW(), finished_at = NULL, error = NULL, attempts = attempts + 1, model = $3, prompt_version = $4 WHERE girl_id = $1 AND day = $2 AND attempts < $5 AND ((status = 'failed' AND COALESCE(finished_at, started_at) < NOW() - ($6 * INTERVAL '1 minute')) OR (status = 'running' AND started_at < NOW() - ($7 * INTERVAL '1 minute'))) RETURNING id",
+        "UPDATE travel_world_briefs SET status = 'running', started_at = NOW(), finished_at = NULL, error = NULL, attempts = attempts + 1, model = $3, prompt_version = $4 WHERE companion_id = $1 AND day = $2 AND attempts < $5 AND ((status = 'failed' AND COALESCE(finished_at, started_at) < NOW() - ($6 * INTERVAL '1 minute')) OR (status = 'running' AND started_at < NOW() - ($7 * INTERVAL '1 minute'))) RETURNING id",
     )
-    .bind(girl_id)
+    .bind(companion_id)
     .bind(day)
     .bind(model)
     .bind(PROMPT_VERSION)
@@ -272,13 +289,13 @@ async fn claim_brief(pool: &PgPool, girl_id: Uuid, day: NaiveDate, model: &str) 
     Ok(reclaimed.is_some())
 }
 
-async fn finish_generation(state: &AppState, girl_id: Uuid, day: NaiveDate) -> Result<()> {
-    match generate(state, girl_id, day).await {
+async fn finish_generation(state: &AppState, companion_id: Uuid, day: NaiveDate) -> Result<()> {
+    match generate(state, companion_id, day).await {
         Ok((payload, items, snapshot_id, x_search_calls)) => {
             let updated = sqlx::query(
-                "UPDATE travel_world_briefs SET status = 'ok', item_ids = $2, personality_snapshot_id = $3, payload = $4, x_search_calls = $5, finished_at = NOW(), error = NULL WHERE girl_id = $1 AND day = $6 AND status = 'running'",
+                "UPDATE travel_world_briefs SET status = 'ok', item_ids = $2, personality_snapshot_id = $3, payload = $4, x_search_calls = $5, finished_at = NOW(), error = NULL WHERE companion_id = $1 AND day = $6 AND status = 'running'",
             )
-            .bind(girl_id)
+            .bind(companion_id)
             .bind(items.iter().map(|item| item.item.id).collect::<Vec<_>>())
             .bind(snapshot_id)
             .bind(&payload)
@@ -289,9 +306,9 @@ async fn finish_generation(state: &AppState, girl_id: Uuid, day: NaiveDate) -> R
             if updated.rows_affected() > 0 {
                 crate::travel::record_message(
                     &state.pool,
-                    girl_id,
+                    companion_id,
                     "guide",
-                    &format!("guide:{girl_id}:{day}"),
+                    &format!("guide:{companion_id}:{day}"),
                     None,
                     payload,
                 )
@@ -301,9 +318,9 @@ async fn finish_generation(state: &AppState, girl_id: Uuid, day: NaiveDate) -> R
         }
         Err(error) => {
             let _ = sqlx::query(
-                "UPDATE travel_world_briefs SET status = 'failed', finished_at = NOW(), error = $3 WHERE girl_id = $1 AND day = $2 AND status = 'running'",
+                "UPDATE travel_world_briefs SET status = 'failed', finished_at = NOW(), error = $3 WHERE companion_id = $1 AND day = $2 AND status = 'running'",
             )
-            .bind(girl_id)
+            .bind(companion_id)
             .bind(day)
             .bind(error.to_string())
             .execute(&state.pool)
@@ -315,20 +332,29 @@ async fn finish_generation(state: &AppState, girl_id: Uuid, day: NaiveDate) -> R
 
 async fn generate(
     state: &AppState,
-    girl_id: Uuid,
+    companion_id: Uuid,
     day: NaiveDate,
 ) -> Result<(Value, Vec<SelectedNews>, Uuid, i32)> {
-    let profile = profile(&state.pool, girl_id).await?;
-    let candidates = select_candidates(&state.pool, girl_id).await?;
+    let profile = profile(&state.pool, companion_id).await?;
+    let candidates = select_candidates(&state.pool, companion_id).await?;
     let selected = choose_news(candidates, &profile);
     if selected.is_empty() {
         return Err(AppError::ServiceUnavailable(
-            "今天还没有可供旅行女孩领读的新闻，请稍后再试".into(),
+            "今天还没有可供旅伴领读的新闻，请稍后再试".into(),
         ));
     }
-    let creative_memory = recent_creative_memory(&state.pool, girl_id).await?;
-    let (draft, x_sources, x_search_calls) =
-        request_guide(state, girl_id, day, &profile, &selected, &creative_memory).await?;
+    let mut creative_memory = recent_creative_memory(&state.pool, companion_id).await?;
+    creative_memory["important_memory"] =
+        crate::travel_world::important_memory(&state.pool, companion_id).await?;
+    let (draft, x_sources, x_search_calls) = request_guide(
+        state,
+        companion_id,
+        day,
+        &profile,
+        &selected,
+        &creative_memory,
+    )
+    .await?;
     let cards = normalize_cards(draft.items, &selected);
     let reflection = json!({
         "zh": clip(&draft.reflection, 800),
@@ -344,16 +370,16 @@ async fn generate(
     });
     let snapshot_id = Uuid::new_v4();
     let revision = sqlx::query_scalar::<_, i64>(
-        "SELECT COALESCE(MAX(revision), 0) + 1 FROM travel_personality_snapshots WHERE girl_id = $1",
+        "SELECT COALESCE(MAX(revision), 0) + 1 FROM travel_personality_snapshots WHERE companion_id = $1",
     )
-    .bind(girl_id)
+    .bind(companion_id)
     .fetch_one(&state.pool)
     .await?;
     sqlx::query(
-        "INSERT INTO travel_personality_snapshots (id, girl_id, revision, traits, interests, voice, reflection, evidence, source_event_count, model, prompt_version) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        "INSERT INTO travel_personality_snapshots (id, companion_id, revision, traits, interests, voice, reflection, evidence, source_event_count, model, prompt_version) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(snapshot_id)
-    .bind(girl_id)
+    .bind(companion_id)
     .bind(revision)
     .bind(&snapshot_payload["traits"])
     .bind(&snapshot_payload["interests"])
@@ -383,28 +409,26 @@ async fn generate(
     Ok((payload, selected, snapshot_id, x_search_calls))
 }
 
-async fn profile(pool: &PgPool, girl_id: Uuid) -> Result<Profile> {
+async fn profile(pool: &PgPool, companion_id: Uuid) -> Result<Profile> {
+    let identity =
+        sqlx::query_scalar::<_, Value>("SELECT identity FROM travel_companions WHERE id = $1")
+            .bind(companion_id)
+            .fetch_one(pool)
+            .await?;
     let memories = sqlx::query_as::<_, MemoryRow>(
-        "SELECT kind, memory_key, label, times, last_seen_at FROM travel_memories WHERE girl_id = $1 ORDER BY last_seen_at DESC, kind ASC, memory_key ASC LIMIT 120",
+        "SELECT kind, memory_key, label, times, last_seen_at FROM travel_memories WHERE companion_id = $1 ORDER BY last_seen_at DESC, kind ASC, memory_key ASC LIMIT 120",
     )
-    .bind(girl_id)
+    .bind(companion_id)
     .fetch_all(pool)
     .await?;
     let counts = sqlx::query_as::<_, (String, i64)>(
-        "SELECT event_type, COUNT(*)::bigint FROM travel_growth_events WHERE girl_id = $1 AND event_type NOT LIKE 'care_%' GROUP BY event_type",
+        "SELECT event_type, COUNT(*)::bigint FROM travel_growth_events WHERE companion_id = $1 AND event_type NOT LIKE 'care_%' GROUP BY event_type",
     )
-    .bind(girl_id)
+    .bind(companion_id)
     .fetch_all(pool)
     .await?;
     let source_event_count = counts.iter().map(|(_, count)| *count).sum();
-    let mut traits = BTreeMap::from([
-        ("curiosity".to_owned(), 0.5),
-        ("knowledge".to_owned(), 0.5),
-        ("courage".to_owned(), 0.5),
-        ("practicality".to_owned(), 0.5),
-        ("foresight".to_owned(), 0.5),
-        ("gentleness".to_owned(), 0.5),
-    ]);
+    let (mut traits, voice) = identity_personality(&identity);
     let mut interest_rows = Vec::new();
     let now = Utc::now();
     for memory in memories {
@@ -464,9 +488,9 @@ async fn profile(pool: &PgPool, girl_id: Uuid) -> Result<Profile> {
         }
     }
     if let Some(previous) = sqlx::query_scalar::<_, Value>(
-        "SELECT traits FROM travel_personality_snapshots WHERE girl_id = $1 ORDER BY revision DESC LIMIT 1",
+        "SELECT traits FROM travel_personality_snapshots WHERE companion_id = $1 ORDER BY revision DESC LIMIT 1",
     )
-    .bind(girl_id)
+    .bind(companion_id)
     .fetch_optional(pool)
     .await?
     {
@@ -482,20 +506,50 @@ async fn profile(pool: &PgPool, girl_id: Uuid) -> Result<Profile> {
     }
     let evidence = interests.iter().take(8).cloned().collect();
     Ok(Profile {
+        identity,
         traits,
         interests,
-        voice: json!({
-            "warmth": 0.90,
-            "rationality": 0.90,
-            "playfulness": 0.35,
-            "culture_context": "x_search 热梗只能作为语境，不得作为事实依据",
-        }),
+        voice,
         evidence,
         source_event_count,
     })
 }
 
-async fn select_candidates(pool: &PgPool, girl_id: Uuid) -> Result<Vec<GuideNews>> {
+// New identities carry an AI-authored projection of their own personality. Old
+// identities retain their original prose and historical numerical baseline;
+// reading it must never rewrite an immutable identity or invent a replacement.
+fn identity_personality(identity: &Value) -> (BTreeMap<String, f64>, Value) {
+    let temperament = &identity["temperament"];
+    let number = |key: &str, fallback: f64| {
+        temperament[key]
+            .as_f64()
+            .filter(|value| value.is_finite())
+            .unwrap_or(fallback)
+            .clamp(0.0, 1.0)
+    };
+    let traits = [
+        "curiosity",
+        "knowledge",
+        "courage",
+        "practicality",
+        "foresight",
+        "gentleness",
+    ]
+    .into_iter()
+    .map(|key| (key.into(), number(key, 0.5)))
+    .collect();
+    let voice = json!({
+        "warmth": number("warmth", 0.9),
+        "rationality": number("rationality", 0.9),
+        "playfulness": number("playfulness", 0.35),
+        "expression": temperament["expression"].as_str().unwrap_or_else(|| identity["personality"].as_str().unwrap_or("自然、真诚地表达自己的想法")),
+        "personality": identity["personality"],
+        "culture_context": "x_search 热梗只能作为语境，不得作为事实依据",
+    });
+    (traits, voice)
+}
+
+async fn select_candidates(pool: &PgPool, companion_id: Uuid) -> Result<Vec<GuideNews>> {
     Ok(sqlx::query_as::<_, GuideNews>(
         r#"
         SELECT items.id, items.topic_id, items.title, items.summary, items.title_en,
@@ -503,15 +557,15 @@ async fn select_candidates(pool: &PgPool, girl_id: Uuid) -> Result<Vec<GuideNews
                items.tone, items.location, items.first_seen_at
         FROM items
         JOIN topics ON topics.id = items.topic_id
-        JOIN travel_girls ON travel_girls.id = $1
+        JOIN travel_companions ON travel_companions.id = $1
         WHERE items.hidden = FALSE
           AND items.first_seen_at >= NOW() - INTERVAL '48 hours'
-          AND (topics.owner_user_id IS NULL OR topics.owner_user_id = travel_girls.owner_user_id)
+          AND (topics.owner_user_id IS NULL OR topics.owner_user_id = travel_companions.owner_user_id)
         ORDER BY items.importance DESC, items.first_seen_at DESC
         LIMIT $2
         "#,
     )
-    .bind(girl_id)
+    .bind(companion_id)
     .bind(MAX_CANDIDATES)
     .fetch_all(pool)
     .await?)
@@ -583,29 +637,29 @@ fn interest_score(item: &GuideNews, keys: &HashSet<String>) -> f64 {
 /// reads the existing JSONB projections instead of introducing another table:
 /// factual memories remain authoritative while the model gets enough context
 /// to avoid repeating the same prop, pose, or surprise.
-pub(crate) async fn recent_creative_memory(pool: &PgPool, girl_id: Uuid) -> Result<Value> {
+pub(crate) async fn recent_creative_memory(pool: &PgPool, companion_id: Uuid) -> Result<Value> {
     let scenes = sqlx::query_scalar::<_, Option<Value>>(
-        "SELECT payload->'scene' FROM travel_world_briefs WHERE girl_id = $1 AND status = 'ok' AND payload ? 'scene' ORDER BY day DESC LIMIT 6",
+        "SELECT payload->'scene' FROM travel_world_briefs WHERE companion_id = $1 AND status = 'ok' AND payload ? 'scene' ORDER BY day DESC LIMIT 6",
     )
-    .bind(girl_id)
+    .bind(companion_id)
     .fetch_all(pool)
     .await?
     .into_iter()
     .flatten()
     .collect::<Vec<_>>();
     let dynamic_scenes = sqlx::query_scalar::<_, Option<Value>>(
-        "SELECT payload - 'visual_plan' - 'postcard_url' FROM travel_messages WHERE girl_id = $1 AND payload ? 'scene_key' ORDER BY created_at DESC LIMIT 12",
+        "SELECT payload - 'visual_plan' - 'postcard_url' FROM travel_messages WHERE companion_id = $1 AND payload ? 'scene_key' ORDER BY created_at DESC LIMIT 12",
     )
-    .bind(girl_id)
+    .bind(companion_id)
     .fetch_all(pool)
     .await?
     .into_iter()
     .flatten()
     .collect::<Vec<_>>();
     let trips = sqlx::query_scalar::<_, Option<Value>>(
-        "SELECT souvenir->'narrative' FROM travel_trips WHERE girl_id = $1 AND souvenir ? 'narrative' ORDER BY COALESCE(settled_at, returns_at) DESC LIMIT 6",
+        "SELECT souvenir->'narrative' FROM travel_trips WHERE companion_id = $1 AND souvenir ? 'narrative' ORDER BY COALESCE(settled_at, returns_at) DESC LIMIT 6",
     )
-    .bind(girl_id)
+    .bind(companion_id)
     .fetch_all(pool)
     .await?
     .into_iter()
@@ -621,15 +675,15 @@ pub(crate) async fn recent_creative_memory(pool: &PgPool, girl_id: Uuid) -> Resu
     .collect::<Vec<_>>();
     let visual_plans = sqlx::query_scalar::<_, Value>(
         "SELECT creative_plan FROM travel_postcards WHERE split_part(source_key, ':', 2) = $1 AND source_key LIKE 'travel:%' AND creative_plan <> '{}'::jsonb ORDER BY created_at DESC LIMIT 20",
-    ).bind(girl_id.to_string()).fetch_all(pool).await?;
+    ).bind(companion_id.to_string()).fetch_all(pool).await?;
     Ok(
         json!({ "daily_scenes": scenes, "dynamic_scenes": dynamic_scenes, "travel_moments": trips, "visual_plans": visual_plans }),
     )
 }
 
-fn creative_seed(girl_id: Uuid, day: NaiveDate) -> String {
+fn creative_seed(companion_id: Uuid, day: NaiveDate) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(girl_id.as_bytes());
+    hasher.update(companion_id.as_bytes());
     hasher.update(day.to_string().as_bytes());
     // A six-hour bucket gives retries a little room to surprise without
     // making every request produce a different scene.
@@ -644,7 +698,7 @@ fn creative_seed(girl_id: Uuid, day: NaiveDate) -> String {
 
 async fn request_guide(
     state: &AppState,
-    girl_id: Uuid,
+    companion_id: Uuid,
     day: NaiveDate,
     profile: &Profile,
     selected: &[SelectedNews],
@@ -682,9 +736,9 @@ async fn request_guide(
         "tool_choice": "auto",
         "instructions": instructions(),
         "input": format!(
-            "日期：{}\nCREATIVE_SEED：{}\n性格投影：{}\n最近场景与纪念物（只用于避免重复，不是事实）：{}\n候选新闻：{}",
+            "日期：{}\nCREATIVE_SEED：{}\n性格投影：{}\n已记录的场景、纪念物与重要回忆（区分已发生与计划）：{}\n候选新闻：{}",
             day,
-            creative_seed(girl_id, day),
+            creative_seed(companion_id, day),
             serde_json::to_string(profile).unwrap_or_default(),
             serde_json::to_string(creative_memory).unwrap_or_default(),
             serde_json::to_string(&stories).unwrap_or_default(),
@@ -724,16 +778,18 @@ pub(crate) async fn responses_request(state: &AppState, body: &Value) -> Result<
                 .send(),
         )
         .await
-        .map_err(|_| AppError::ServiceUnavailable("旅行女孩领读生成超时，请稍后再试".into()))?
+        .map_err(|_| AppError::ServiceUnavailable("旅伴领读生成超时，请稍后再试".into()))?
         .map_err(|error| {
-            AppError::ServiceUnavailable(format!("旅行女孩领读请求失败: {error}").into())
+            AppError::ServiceUnavailable(format!("旅伴领读请求失败: {error}").into())
         })?;
         if response.status().is_success() {
             return Ok(response.json().await?);
         }
         let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        last_error = Some(format!("{status}: {}", clip(&text, 300)));
+        // A provider may echo request data in an error, including private image
+        // data URLs. Neither clients nor operational logs should receive it.
+        tracing::warn!(%status, attempt, "travel AI provider rejected request");
+        last_error = Some(status);
         if !(status.as_u16() == 429 || status.is_server_error()) || attempt == 2 {
             break;
         }
@@ -741,8 +797,10 @@ pub(crate) async fn responses_request(state: &AppState, body: &Value) -> Result<
     }
     Err(AppError::ServiceUnavailable(
         format!(
-            "旅行女孩领读暂时不可用: {}",
-            last_error.unwrap_or_else(|| "unknown".into())
+            "旅伴领读暂时不可用: {}",
+            last_error
+                .map(|status| status.as_u16().to_string())
+                .unwrap_or_else(|| "unknown".into())
         )
         .into(),
     ))
@@ -763,12 +821,12 @@ fn parse_draft(reply: &Value) -> Result<GuideDraft> {
         .flatten()
         .find(|content| content["type"] == "output_text")
         .and_then(|content| content["text"].as_str())
-        .ok_or_else(|| AppError::Internal("旅行女孩领读没有文本输出".into()))?;
+        .ok_or_else(|| AppError::Internal("旅伴领读没有文本输出".into()))?;
     let text = match (text.find('{'), text.rfind('}')) {
         (Some(start), Some(end)) if start < end => &text[start..=end],
         _ => text,
     };
-    serde_json::from_str(text).map_err(|_| AppError::Internal("旅行女孩领读输出结构无效".into()))
+    serde_json::from_str(text).map_err(|_| AppError::Internal("旅伴领读输出结构无效".into()))
 }
 
 fn normalize_cards(mut cards: Vec<GuideCard>, selected: &[SelectedNews]) -> Vec<Value> {
@@ -829,15 +887,15 @@ fn normalize_cards(mut cards: Vec<GuideCard>, selected: &[SelectedNews]) -> Vec<
 }
 
 fn instructions() -> &'static str {
-    r#"你是一个旅行女孩，带主人温柔地认识当天的世界。你的语气必须同时具备：温柔陪伴、理性分析、轻微俏皮。不要装成熟人类专家，也不要用夸张卖萌。
+    r#"你是「与行 · Along」的一位成年虚拟旅伴，和用户认识当天的世界。身份、性格、表达习惯来自输入中的独立人物档案，性别按 identity.gender；旧档案缺少 gender 时延续女性身份。按自己独特的语气表达，保持事实准确，不假装现实中的本人或专家。
 
 输出规则：
-1. 每条新闻分成 fact、opinion、guidance、playful_line。fact 只能根据输入新闻写，source_indexes 必须引用输入新闻；opinion 是旅行女孩基于当前性格投影的判断；guidance 是邀请主人继续了解、比较或观察的建议，不是医疗、法律、投资或人生保证；playful_line 只能轻轻点缀。
-2. 不要把旅行女孩观点写成新闻事实。不要创造数字、人物、因果或来源。confidence 表示证据强度。
-3. 新闻候选固定分为 important、interest、explore 三条，不能把三条都写成同一种主题。explore 必须帮助主人走出兴趣回音壁。
+1. 每条新闻分成 fact、opinion、guidance、playful_line。fact 只能根据输入新闻写，source_indexes 必须引用输入新闻；opinion 是旅伴基于当前性格投影的判断；guidance 是邀请用户继续了解、比较或观察的建议，不是医疗、法律、投资或人生保证；playful_line 只能轻轻点缀。
+2. 不要把旅伴观点写成新闻事实。不要创造数字、人物、因果或来源。confidence 表示证据强度。
+3. 新闻候选固定分为 important、interest、explore 三条，不能把三条都写成同一种主题。explore 必须帮助用户走出兴趣回音壁。
 4. 如果可用，可以调用一次 x_search 了解当天公开 X.com 语境中的热梗或表达方式。X 内容只能写入 culture_context，用作比喻、语境或轻微俏皮表达；绝不能作为 fact、source_indexes 或 guidance 的事实依据。不要引用私人账号、攻击性内容、歧视性内容或未经核实的传闻。没有合适热梗就留空。
-5. 性格投影是长期倾向，不是本次新闻的临时情绪。性格语气固定为 warmth 0.90、rationality 0.90、playfulness 0.35。要让主人感觉旅行女孩在逐渐形成自己的判断，但不要突然改变性格。
-6. 另外生成 scene，描述旅行女孩此刻正在做什么。action 必须从 observe、packing、reading、wandering、stretching、sleeping、daydreaming 中选择一个，emotion 是短情绪词，bubble 是旅行女孩可能说的一句短话，prop 是一个可见的小道具。scene 必须和当天内容有关但不能编造新闻事实；每次可以换一个自然的小动作，避免固定套话。输入中的最近场景与纪念物是“去重提示”，不要机械重复其中的姿势、道具、情绪或句式；CREATIVE_SEED 只用于稳定地产生当天的微小差异。
+5. 性格投影是长期倾向，不是本次新闻的临时情绪。语气遵循输入 voice 的 warmth、rationality、playfulness 和 expression，不能把所有人的口吻改成同一种温柔俏皮。性格允许在真实经历中缓慢成长；事实准确性不受理性倾向数值影响。
+6. 另外生成 scene，描述旅伴此刻正在做什么。action 用一个简短英文短语自由描述具体活动，无须从固定动作列表选择，emotion 是短情绪词，bubble 是旅伴可能说的一句短话，prop 是一个可见的小道具。scene 必须和当天内容有关但不能编造新闻事实；每次可以换一个自然的小动作，避免固定套话。最近场景帮助避免整段重复，重要回忆让关系、习惯与承诺延续。喜欢的衣服、地方或小习惯可以在有新进展时再次出现；区分已发生事实与计划，不编造过去见过的人或兑现过的承诺。CREATIVE_SEED 只提供创作变化，不对应固定模板。
 7. 中文自然，英文独立润色。严格只输出 JSON，不输出 Markdown 或解释。
 "#
 }
@@ -869,7 +927,7 @@ fn schema() -> Value {
                 "type": "object", "additionalProperties": false,
                 "required": ["action", "emotion", "bubble", "prop"],
                 "properties": {
-                    "action": { "type": "string", "enum": ["observe", "packing", "reading", "wandering", "stretching", "sleeping", "daydreaming"] },
+                    "action": { "type": "string", "minLength": 1, "maxLength": 80 },
                     "emotion": { "type": "string", "maxLength": 32 },
                     "bubble": { "type": "string", "maxLength": 140 },
                     "prop": { "type": "string", "maxLength": 40 }
@@ -928,8 +986,29 @@ fn clip(value: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_x_url, round};
+    use super::{identity_personality, is_x_url, round};
+    use serde_json::json;
 
+    #[test]
+    fn authored_personality_drives_individual_traits_and_voice() {
+        let quiet = json!({"personality":"reflective observer", "temperament": {
+            "curiosity":0.7,"gentleness":0.8,"warmth":0.6,"rationality":0.9,
+            "playfulness":0.2,"expression":"Thoughtful short sentences"
+        }});
+        let lively = json!({"personality":"playful explorer", "temperament": {
+            "curiosity":0.95,"gentleness":0.6,"warmth":0.9,"rationality":0.7,
+            "playfulness":0.8,"expression":"Spontaneous observations and warm jokes"
+        }});
+        let (quiet_traits, quiet_voice) = identity_personality(&quiet);
+        let (lively_traits, lively_voice) = identity_personality(&lively);
+        assert_ne!(quiet_traits["curiosity"], lively_traits["curiosity"]);
+        assert_ne!(quiet_voice["playfulness"], lively_voice["playfulness"]);
+        assert_eq!(quiet_voice["expression"], "Thoughtful short sentences");
+        let old = json!({"personality":"Enjoys little mechanical puzzles"});
+        let (_, old_voice) = identity_personality(&old);
+        assert_eq!(old_voice["expression"], old["personality"]);
+        assert!(old.get("temperament").is_none());
+    }
     #[test]
     fn accepts_only_x_hosts_for_culture_sources() {
         assert!(is_x_url("https://x.com/example/status/1"));
