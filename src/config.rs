@@ -237,7 +237,7 @@ impl Config {
             ai_default_model: env_value("AI_DEFAULT_MODEL", "grok-4.6"),
             ai_insight_model: env_value("AI_INSIGHT_MODEL", "gpt-6-astra"),
             ai_response_timeout: Duration::from_secs(ai_response_timeout_secs),
-            travel_image_model: env_value("TRAVEL_IMAGE_MODEL", "grok-imagine-image-quality"),
+            travel_image_model: env_value("TRAVEL_IMAGE_MODEL", "gpt-image-2.5-flare"),
             travel_image_generation_timeout: Duration::from_secs(
                 travel_image_generation_timeout_secs,
             ),

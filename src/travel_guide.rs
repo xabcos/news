@@ -594,7 +594,7 @@ pub(crate) async fn recent_creative_memory(pool: &PgPool, girl_id: Uuid) -> Resu
     .flatten()
     .collect::<Vec<_>>();
     let dynamic_scenes = sqlx::query_scalar::<_, Option<Value>>(
-        "SELECT payload FROM travel_messages WHERE girl_id = $1 AND payload ? 'scene_key' ORDER BY created_at DESC LIMIT 12",
+        "SELECT payload - 'visual_plan' - 'postcard_url' FROM travel_messages WHERE girl_id = $1 AND payload ? 'scene_key' ORDER BY created_at DESC LIMIT 12",
     )
     .bind(girl_id)
     .fetch_all(pool)
@@ -619,7 +619,12 @@ pub(crate) async fn recent_creative_memory(pool: &PgPool, girl_id: Uuid) -> Resu
         })
     })
     .collect::<Vec<_>>();
-    Ok(json!({ "daily_scenes": scenes, "dynamic_scenes": dynamic_scenes, "travel_moments": trips }))
+    let visual_plans = sqlx::query_scalar::<_, Value>(
+        "SELECT creative_plan FROM travel_postcards WHERE split_part(source_key, ':', 2) = $1 AND source_key LIKE 'travel:%' AND creative_plan <> '{}'::jsonb ORDER BY created_at DESC LIMIT 20",
+    ).bind(girl_id.to_string()).fetch_all(pool).await?;
+    Ok(
+        json!({ "daily_scenes": scenes, "dynamic_scenes": dynamic_scenes, "travel_moments": trips, "visual_plans": visual_plans }),
+    )
 }
 
 fn creative_seed(girl_id: Uuid, day: NaiveDate) -> String {

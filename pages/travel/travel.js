@@ -33,7 +33,7 @@ const MESSAGE_LABELS = Object.freeze({
 });
 // Titles the backend stores that say nothing the card does not already say.
 const REDUNDANT_TITLES = new Set(["旅行女孩动态", "旅行女孩记录", "旅行女孩的一条记录"]);
-const VISUAL_VERSION = "asian-v1";
+const VISUAL_VERSION = "flare-youth-v1";
 
 const TravelScene = (() => {
   const elements = {
@@ -435,7 +435,7 @@ const TravelShell = (() => {
   function identityText(preview) {
     const identity = preview.identity || {};
     const accessories = (preview.initial_accessories || []).map((item) => item.name).join("、");
-    return `固定身份：${identity.name_seed || "独特名字"}，${identity.hair || "独特发型"}，${identity.style || "旅行风格"}，${identity.silhouette || "自然身形"}。初始配饰：${accessories || "专属配饰"}。确认后身份和初始配饰不会改变。`;
+    return `她叫${identity.name_seed || "旅行女孩"}。${identity.appearance_summary || "她有属于自己的面容、气质和审美。"} 随身小物：${accessories || "专属配饰"}。确认后五官和身材固定，穿搭、配饰和动作会随旅途变化。`;
   }
 
   function escapeHtml(value) {
@@ -536,16 +536,39 @@ const TravelShell = (() => {
       <article class="travel-atlas-card"><strong>世界记忆 · ${memories.length}</strong><p class="travel-atlas-memory-list">${memoryText || "第一封信还在路上"}</p></article>`;
   }
 
+  let preparingAdoption = false;
   async function showAdoptionPreview(existingDraft = null) {
+    if (preparingAdoption) return;
     if (authState !== "authenticated") {
-      openDialog("登录后领养", "登录账户后，才能把这只旅行女孩的生活保存下来。", "旅行女孩");
+      openDialog("登录后领养", "登录账户后，才能把这位旅行女孩的生活保存下来。", "旅行女孩");
       return;
     }
+    preparingAdoption = true;
     try {
-      adoptionPreview = existingDraft || await api("/api/travel/adoption/preview", { method: "POST" });
+      adoptionPreview = existingDraft;
+      if (!adoptionPreview) {
+        openDialog("正在准备你们的相遇", "她的模样、性格和故事正在慢慢成形，请稍候。", "新朋友");
+        const deadline = Date.now() + 210000;
+        while (Date.now() < deadline) {
+          let draft;
+          try {
+            draft = await api("/api/travel/adoption/preview", { method: "POST" });
+          } catch (error) {
+            if (error.status !== 429) throw error;
+          }
+          if (draft?.draft_id && draft.identity) {
+            adoptionPreview = draft;
+            break;
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 3000));
+        }
+        if (!adoptionPreview) throw new Error("她还在准备中，稍后再来看看吧。");
+      }
       openDialog("确认领养你的旅行女孩", identityText(adoptionPreview), "第一次相遇", "adopt");
     } catch (error) {
       openDialog("暂时不能领养", error.message || "请稍后再试。", "旅行女孩");
+    } finally {
+      preparingAdoption = false;
     }
   }
 

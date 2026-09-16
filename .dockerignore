@@ -7,3 +7,7 @@ README.md
 docker-compose*.yml
 Makefile
 pages/*.gz
+
+# Local image review artifacts are not deployment inputs.
+output
+tmp

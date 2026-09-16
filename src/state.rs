@@ -40,6 +40,7 @@ pub struct AppState {
     /// Image generation is even more expensive than text; keep it isolated
     /// from both NEWS collection and the autonomous planner.
     pub(crate) travel_image_slots: Arc<Semaphore>,
+    pub(crate) travel_identity_slots: Arc<Semaphore>,
     /// A settlement worker may wait on this slot without blocking the minute
     /// maintenance loop itself.
     pub(crate) travel_settle_slots: Arc<Semaphore>,
@@ -96,8 +97,9 @@ impl AppState {
             config: Arc::new(config),
             in_flight: Arc::default(),
             run_slots: Arc::new(Semaphore::new(max_concurrent_runs)),
-            travel_slots: Arc::new(Semaphore::new(2)),
-            travel_image_slots: Arc::new(Semaphore::new(1)),
+            travel_slots: Arc::new(Semaphore::new(4)),
+            travel_image_slots: Arc::new(Semaphore::new(3)),
+            travel_identity_slots: Arc::new(Semaphore::new(2)),
             travel_settle_slots: Arc::new(Semaphore::new(1)),
         };
         Ok(state)
