@@ -896,10 +896,15 @@ pub(crate) async fn album(State(state): State<AppState>, user: User) -> Result<J
     let companion_id = companion_id_for_user(&state.pool, user.id).await?;
     let rows = sqlx::query_as::<_, AlbumRow>(
         r#"
-        SELECT t.id AS trip_id, t.day, t.status, t.news_item_id, p.url AS postcard_url,
+        SELECT t.id AS trip_id, t.day, t.status, t.news_item_id,
+               COALESCE(
+                   CASE WHEN p.expires_at IS NULL OR p.expires_at > NOW() THEN p.url END,
+                   CASE WHEN a.id IS NULL THEN '' ELSE '/api/travel/media/' || a.id::text END
+               ) AS postcard_url,
                t.diary, COALESCE(t.settled_at, t.departed_at) AS created_at
         FROM travel_trips t
         JOIN travel_postcards p ON p.id = t.postcard_id
+        LEFT JOIN travel_media_assets a ON a.id = p.media_asset_id
         WHERE t.companion_id = $1
         ORDER BY COALESCE(t.settled_at, t.departed_at) DESC
         LIMIT 60
@@ -1952,6 +1957,9 @@ async fn travel_view(pool: &PgPool, companion: CompanionRow) -> Result<Value> {
     let encounters = load_encounters(pool, companion.id).await?;
     let unlocked_accessories = load_unlocks(pool, companion.id).await?;
     let memories = load_memories(pool, companion.id).await?;
+    let portrait_url = sqlx::query_scalar::<_, Option<Uuid>>(
+        "SELECT id FROM travel_identity_assets WHERE companion_id = $1 AND role = 'portrait' ORDER BY ordinal LIMIT 1",
+    ).bind(companion.id).fetch_one(pool).await?;
     let scene = load_scene(pool, companion.id).await.unwrap_or_else(|_| {
         json!({
             "action": "observe",
@@ -1966,6 +1974,7 @@ async fn travel_view(pool: &PgPool, companion: CompanionRow) -> Result<Value> {
         "gender": companion.gender,
         "identity_version": companion.identity_version,
         "identity": companion.identity,
+        "portrait_url": portrait_url.map(|id| format!("/api/travel/identity/assets/{id}")),
         "initial_accessories": companion.initial_accessories,
         "unlocked_accessories": unlocked_accessories,
         "memories": memories,
@@ -1994,6 +2003,7 @@ async fn load_scene(pool: &PgPool, companion_id: Uuid) -> Result<Value> {
            FROM travel_messages m
            LEFT JOIN travel_postcards p
              ON p.source_key = 'travel:' || m.companion_id::text || ':scene:' || (m.payload->>'scene_key')
+            AND (p.expires_at IS NULL OR p.expires_at > NOW())
            WHERE m.companion_id = $1 AND m.payload ? 'scene_key'
 
            ORDER BY m.created_at DESC

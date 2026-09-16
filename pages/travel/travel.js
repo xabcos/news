@@ -410,6 +410,7 @@ const TravelShell = (() => {
     const photos = [...new Set([
       ...(messages || []).map((message) => message.payload?.postcard_url),
       scene?.photo_url,
+      nextState.companion?.portrait_url,
       // /api/travel/state carries no messages; until /api/travel/home answers, fall back to
       // the photo this browser last showed for this same travel.
       messages ? "" : TravelScene.rememberedPhotoFor(travelId),
