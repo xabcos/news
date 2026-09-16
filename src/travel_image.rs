@@ -53,7 +53,7 @@ struct NewsRow {
 }
 
 #[derive(Debug, FromRow)]
-struct CatIdentityRow {
+struct GirlIdentityRow {
     id: Uuid,
     identity: Value,
     initial_accessories: Value,
@@ -130,8 +130,8 @@ pub(crate) async fn generate_for_owner(
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(|| AppError::NotFound("旅行新闻不存在或已下线".into()))?;
-    let girl = sqlx::query_as::<_, CatIdentityRow>(
-        "SELECT id, identity, initial_accessories FROM cats WHERE owner_user_id = $1",
+    let girl = sqlx::query_as::<_, GirlIdentityRow>(
+        "SELECT id, identity, initial_accessories FROM travel_girls WHERE owner_user_id = $1",
     )
     .bind(owner_user_id)
     .fetch_optional(&state.pool)
@@ -153,7 +153,7 @@ pub(crate) async fn generate_for_owner(
         .await?;
     if !force_refresh
         && let Some(cached) = sqlx::query_as::<_, CachedPostcard>(
-            "SELECT provider, model, url, expires_at FROM cat_postcards WHERE source_key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+            "SELECT provider, model, url, expires_at FROM travel_postcards WHERE source_key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
         )
         .bind(&source_key)
         .fetch_optional(&mut *cache_transaction)
@@ -175,7 +175,7 @@ pub(crate) async fn generate_for_owner(
         request.scene_key.is_some(),
     );
     let anchor_url = sqlx::query_scalar::<_, String>(
-        "SELECT url FROM cat_postcards WHERE source_key LIKE $1 ORDER BY created_at ASC LIMIT 1",
+        "SELECT url FROM travel_postcards WHERE source_key LIKE $1 ORDER BY created_at ASC LIMIT 1",
     )
     .bind(format!("travel:{}:%", girl.id))
     .fetch_optional(&state.pool)
@@ -206,7 +206,7 @@ pub(crate) async fn generate_for_owner(
         .await?;
     if !force_refresh
         && let Some(cached) = sqlx::query_as::<_, CachedPostcard>(
-            "SELECT provider, model, url, expires_at FROM cat_postcards WHERE source_key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+            "SELECT provider, model, url, expires_at FROM travel_postcards WHERE source_key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
         )
         .bind(&source_key)
         .fetch_optional(&mut *write_transaction)
@@ -217,7 +217,7 @@ pub(crate) async fn generate_for_owner(
         }
     sqlx::query(
         r#"
-        INSERT INTO cat_postcards
+        INSERT INTO travel_postcards
             (id, source_key, news_item_id, tone, provider, model, url, expires_at)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT (source_key) DO UPDATE SET
@@ -271,8 +271,8 @@ fn cached_response(item: &NewsRow, cached: CachedPostcard) -> GenerateResponse {
 pub(crate) async fn refresh_expiring(state: &AppState) -> Result<()> {
     let rows = sqlx::query_as::<_, (i64, Uuid)>(
         r#"SELECT c.owner_user_id, p.news_item_id
-           FROM cat_postcards p
-           JOIN cats c ON c.id = split_part(p.source_key, ':', 2)::uuid
+           FROM travel_postcards p
+           JOIN travel_girls c ON c.id = split_part(p.source_key, ':', 2)::uuid
            JOIN items i ON i.id = p.news_item_id
            JOIN topics t ON t.id = i.topic_id
            WHERE p.expires_at > NOW()
@@ -296,18 +296,18 @@ pub(crate) async fn refresh_expiring(state: &AppState) -> Result<()> {
             scene_key: None,
         };
         if let Err(error) = generate_for_owner(state, owner_id, &request, true).await {
-            tracing::debug!(%error, %news_item_id, "cat postcard refresh deferred");
+            tracing::debug!(%error, %news_item_id, "girl postcard refresh deferred");
         }
     }
     let scenes = sqlx::query_as::<_, (i64, Uuid, String, Option<bool>)>(
         r#"SELECT c.owner_user_id, p.news_item_id, p.source_key,
                   NULL::boolean
-           FROM cat_postcards p
-           JOIN cats c ON c.id = split_part(p.source_key, ':', 2)::uuid
+           FROM travel_postcards p
+           JOIN travel_girls c ON c.id = split_part(p.source_key, ':', 2)::uuid
            JOIN items i ON i.id = p.news_item_id
            JOIN topics t ON t.id = i.topic_id
-           LEFT JOIN cat_messages m
-             ON m.cat_id = c.id AND m.payload->>'scene_key' = split_part(p.source_key, ':', 4)
+           LEFT JOIN travel_messages m
+             ON m.girl_id = c.id AND m.payload->>'scene_key' = split_part(p.source_key, ':', 4)
            WHERE p.source_key LIKE 'travel:%:scene:%'
              AND p.expires_at > NOW()
              AND p.expires_at <= NOW() + INTERVAL '6 hours'
@@ -330,7 +330,7 @@ pub(crate) async fn refresh_expiring(state: &AppState) -> Result<()> {
             scene_key,
         };
         if let Err(error) = generate_for_owner(state, owner_id, &request, true).await {
-            tracing::debug!(%error, %news_item_id, "cat scene photo refresh deferred");
+            tracing::debug!(%error, %news_item_id, "girl scene photo refresh deferred");
         }
     }
     Ok(())

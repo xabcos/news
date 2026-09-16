@@ -169,16 +169,16 @@ PostgreSQL 事务写入 items + runs
 
 ### 产品不变量
 
-- 第一阶段每个账户拥有一只主猫；匿名访客的 guest cat 只保存在浏览器本地。后期家庭模式另行扩展，不改变主猫的身份归属。
+- 第一阶段每个账户拥有一只主猫；匿名访客的 guest girl 只保存在浏览器本地。后期家庭模式另行扩展，不改变主猫的身份归属。
 - 领养确认前可以预览身份和初始配饰。确认事务写入唯一身份快照、身份指纹和初始配饰；确认后这些字段不能更新、替换或重新生成。
 - 页面使用固定的“旅行女孩”称呼，不提供自定义名字入口。成长配饰、动作和能力只能追加解锁，初始配饰永远保留。
-- 成长以追加式 `cat_growth_events` 为事实记录。阶段、性格和解锁规则可以持续增加版本，但不能改写既有身份或历史事件。
+- 成长以追加式 `travel_growth_events` 为事实记录。阶段、性格和解锁规则可以持续增加版本，但不能改写既有身份或历史事件。
 - 社交是默认世界状态，不提供拒绝、屏蔽或暂停入口。一次相遇可以包含任意数量的猫；不使用双猫专用字段，也不要求先加好友或逐次同意。
 - 第一版社交内容由固定短语和系统动作组成。名字、外观标记和共同旅程可以展示，但不暴露邮箱、账户 ID 或个人主题内容。
 
 ### 数据与接口边界
 
-旅行女孩当前复用历史存储表 `cats`、`cat_growth_events`、`cat_accessory_unlocks`、`cat_memories`、`cat_reading_daily`、`cat_personality_snapshots`、`cat_world_briefs`、`cat_trips`、`cat_postcards`、`cat_encounters` 和 `cat_encounter_members`，数据库中的旧角色数据已清空。`cats.owner_user_id` 第一阶段唯一；身份快照和初始配饰由领养接口写入。成长、旅行动态和共同旅途都写入幂等事件，场景记忆追加到 `cat_memories(kind = 'scene')`，避免刷新或重复请求重复成长。
+旅行女孩当前复用历史存储表 `travel_girls`、`travel_growth_events`、`travel_accessory_unlocks`、`travel_memories`、`travel_reading_daily`、`travel_personality_snapshots`、`travel_world_briefs`、`travel_trips`、`travel_postcards`、`travel_encounters` 和 `travel_encounter_members`，数据库中的旧角色数据已清空。`travel_girls.owner_user_id` 第一阶段唯一；身份快照和初始配饰由领养接口写入。成长、旅行动态和共同旅途都写入幂等事件，场景记忆追加到 `travel_memories(kind = 'scene')`，避免刷新或重复请求重复成长。
 
 当前 M0–M4 接口如下：
 

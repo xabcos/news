@@ -50,7 +50,7 @@ struct DraftRow {
 }
 
 #[derive(Debug, FromRow)]
-struct CatRow {
+struct GirlRow {
     id: Uuid,
     name: String,
     identity_version: String,
@@ -70,7 +70,7 @@ struct GrowthCount {
 #[derive(Debug, FromRow)]
 struct TripRow {
     id: Uuid,
-    cat_id: Uuid,
+    girl_id: Uuid,
     news_item_id: Option<Uuid>,
     day: NaiveDate,
     status: String,
@@ -103,8 +103,8 @@ struct MessageRow {
 }
 
 #[derive(Debug, FromRow)]
-struct AutoCat {
-    cat_id: Uuid,
+struct AutoGirl {
+    girl_id: Uuid,
 }
 
 #[derive(Debug, FromRow)]
@@ -218,7 +218,7 @@ struct MemoryRow {
 #[derive(Debug, FromRow)]
 struct DueTrip {
     id: Uuid,
-    cat_id: Uuid,
+    girl_id: Uuid,
     news_item_id: Option<Uuid>,
     pack: Vec<String>,
 }
@@ -245,10 +245,10 @@ fn default_reading_signal() -> String {
 }
 
 pub(crate) async fn state(State(state): State<AppState>, user: User) -> Result<Json<Value>> {
-    let cat = load_cat(&state.pool, user.id).await?;
-    let draft = if cat.is_none() {
+    let girl = load_girl(&state.pool, user.id).await?;
+    let draft = if girl.is_none() {
         sqlx::query_as::<_, DraftRow>(
-            "SELECT id, identity_version, identity_seed, created_at FROM cat_adoption_drafts WHERE user_id = $1",
+            "SELECT id, identity_version, identity_seed, created_at FROM travel_adoption_drafts WHERE user_id = $1",
         )
         .bind(user.id)
         .fetch_optional(&state.pool)
@@ -257,60 +257,60 @@ pub(crate) async fn state(State(state): State<AppState>, user: User) -> Result<J
         None
     };
 
-    let cat = match cat {
-        Some(cat) => {
-            touch_cat(&state.pool, cat.id).await?;
-            Some(cat_view(&state.pool, cat).await?)
+    let girl = match girl {
+        Some(girl) => {
+            touch_girl(&state.pool, girl.id).await?;
+            Some(travel_view(&state.pool, girl).await?)
         }
         None => None,
     };
-    let presence = cat
+    let presence = girl
         .as_ref()
-        .map(|cat_value| presence_for_cat(cat_value, state.config.timezone));
+        .map(|travel_value| presence_for_girl(travel_value, state.config.timezone));
     let draft = draft.map(draft_view);
     Ok(Json(json!({
-        "adopted": cat.is_some(),
+        "adopted": girl.is_some(),
         "draft": draft,
-        "girl": cat,
+        "girl": girl,
         "presence": presence,
     })))
 }
 
 pub(crate) async fn home(State(state): State<AppState>, user: User) -> Result<Json<Value>> {
-    let cat = load_cat(&state.pool, user.id)
+    let girl = load_girl(&state.pool, user.id)
         .await?
         .ok_or_else(|| AppError::Conflict("请先领养一只旅行女孩".into()))?;
-    touch_cat(&state.pool, cat.id).await?;
-    let messages = load_messages(&state.pool, cat.id, 16).await?;
-    let cat_value = cat_view(&state.pool, cat).await?;
+    touch_girl(&state.pool, girl.id).await?;
+    let messages = load_messages(&state.pool, girl.id, 16).await?;
+    let travel_value = travel_view(&state.pool, girl).await?;
     Ok(Json(json!({
-        "girl": cat_value,
-        "presence": presence_for_cat(&cat_value, state.config.timezone),
+        "girl": travel_value,
+        "presence": presence_for_girl(&travel_value, state.config.timezone),
         "messages": messages,
     })))
 }
 
 pub(crate) async fn journal(State(state): State<AppState>, user: User) -> Result<Json<Value>> {
-    let cat_id = cat_id_for_user(&state.pool, user.id).await?;
-    touch_cat(&state.pool, cat_id).await?;
+    let girl_id = girl_id_for_user(&state.pool, user.id).await?;
+    touch_girl(&state.pool, girl_id).await?;
     Ok(Json(json!({
-        "items": load_messages(&state.pool, cat_id, 80).await?,
+        "items": load_messages(&state.pool, girl_id, 80).await?,
     })))
 }
 
 pub(crate) async fn record_message(
     pool: &PgPool,
-    cat_id: Uuid,
+    girl_id: Uuid,
     kind: &str,
     dedupe_key: &str,
     entity_id: Option<Uuid>,
     payload: Value,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO cat_messages (id, cat_id, kind, dedupe_key, entity_id, payload) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (dedupe_key) DO NOTHING",
+        "INSERT INTO travel_messages (id, girl_id, kind, dedupe_key, entity_id, payload) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (dedupe_key) DO NOTHING",
     )
     .bind(Uuid::new_v4())
-    .bind(cat_id)
+    .bind(girl_id)
     .bind(kind)
     .bind(dedupe_key)
     .bind(entity_id)
@@ -320,23 +320,23 @@ pub(crate) async fn record_message(
     Ok(())
 }
 
-/// Photo URLs are resolved from cat_postcards at read time: tmpfile links are renewed
+/// Photo URLs are resolved from travel_postcards at read time: tmpfile links are renewed
 /// there, while a message payload keeps the URL that was current when it was written.
-async fn load_messages(pool: &PgPool, cat_id: Uuid, limit: i64) -> Result<Vec<Value>> {
+async fn load_messages(pool: &PgPool, girl_id: Uuid, limit: i64) -> Result<Vec<Value>> {
     let rows = sqlx::query_as::<_, MessageRow>(
         r#"SELECT m.id, m.kind, m.entity_id, m.payload, m.created_at, m.read_at,
                   COALESCE(scene.url, trip_postcard.url) AS current_url
-           FROM cat_messages m
-           LEFT JOIN cat_postcards scene
+           FROM travel_messages m
+           LEFT JOIN travel_postcards scene
              ON m.payload ? 'scene_key'
-            AND scene.source_key = 'travel:' || m.cat_id::text || ':scene:' || (m.payload->>'scene_key')
-           LEFT JOIN cat_trips trip ON m.kind = 'postcard' AND trip.id = m.entity_id
-           LEFT JOIN cat_postcards trip_postcard ON trip_postcard.id = trip.postcard_id
-           WHERE m.cat_id = $1 AND m.kind <> 'guide'
+            AND scene.source_key = 'travel:' || m.girl_id::text || ':scene:' || (m.payload->>'scene_key')
+           LEFT JOIN travel_trips trip ON m.kind = 'postcard' AND trip.id = m.entity_id
+           LEFT JOIN travel_postcards trip_postcard ON trip_postcard.id = trip.postcard_id
+           WHERE m.girl_id = $1 AND m.kind <> 'guide'
            ORDER BY m.created_at DESC
            LIMIT $2"#,
     )
-    .bind(cat_id)
+    .bind(girl_id)
     .bind(limit)
     .fetch_all(pool)
     .await?;
@@ -360,7 +360,7 @@ async fn load_messages(pool: &PgPool, cat_id: Uuid, limit: i64) -> Result<Vec<Va
     Ok(messages)
 }
 
-fn presence_for_cat(travel: &Value, timezone: chrono_tz::Tz) -> &'static str {
+fn presence_for_girl(travel: &Value, timezone: chrono_tz::Tz) -> &'static str {
     let trip_status = travel
         .get("current_trip")
         .and_then(|trip| trip.get("status"))
@@ -385,7 +385,7 @@ fn presence_for_cat(travel: &Value, timezone: chrono_tz::Tz) -> &'static str {
 }
 
 pub(crate) async fn preview(State(state): State<AppState>, user: User) -> Result<Json<Value>> {
-    if load_cat(&state.pool, user.id).await?.is_some() {
+    if load_girl(&state.pool, user.id).await?.is_some() {
         return Err(AppError::Conflict("你已经领养了一只旅行女孩".into()));
     }
 
@@ -394,7 +394,7 @@ pub(crate) async fn preview(State(state): State<AppState>, user: User) -> Result
     let draft_id = Uuid::new_v4();
     sqlx::query(
         r#"
-        INSERT INTO cat_adoption_drafts (user_id, id, identity_version, identity_seed)
+        INSERT INTO travel_adoption_drafts (user_id, id, identity_version, identity_seed)
         VALUES ($1, $2, $3, $4)
         ON CONFLICT (user_id) DO UPDATE SET
             id = EXCLUDED.id,
@@ -431,7 +431,7 @@ pub(crate) async fn confirm(
     let draft = sqlx::query_as::<_, DraftRow>(
         r#"
         SELECT id, identity_version, identity_seed, created_at
-        FROM cat_adoption_drafts
+        FROM travel_adoption_drafts
         WHERE user_id = $1
         FOR UPDATE
         "#,
@@ -441,13 +441,13 @@ pub(crate) async fn confirm(
     .await?;
 
     let Some(draft) = draft else {
-        let existing = sqlx::query_as::<_, CatRow>(cat_select_sql())
+        let existing = sqlx::query_as::<_, GirlRow>(travel_select_sql())
             .bind(user.id)
             .fetch_optional(&mut *transaction)
             .await?;
         transaction.commit().await?;
         return match existing {
-            Some(cat) => Ok(Json(cat_view(&state.pool, cat).await?)),
+            Some(girl) => Ok(Json(travel_view(&state.pool, girl).await?)),
             None => Err(AppError::Conflict("领养预览不存在或已过期".into())),
         };
     };
@@ -455,17 +455,17 @@ pub(crate) async fn confirm(
         return Err(AppError::Conflict("领养预览已更新，请重新确认".into()));
     }
 
-    if let Some(existing) = sqlx::query_as::<_, CatRow>(cat_select_sql())
+    if let Some(existing) = sqlx::query_as::<_, GirlRow>(travel_select_sql())
         .bind(user.id)
         .fetch_optional(&mut *transaction)
         .await?
     {
-        sqlx::query("DELETE FROM cat_adoption_drafts WHERE user_id = $1")
+        sqlx::query("DELETE FROM travel_adoption_drafts WHERE user_id = $1")
             .bind(user.id)
             .execute(&mut *transaction)
             .await?;
         transaction.commit().await?;
-        return Ok(Json(cat_view(&state.pool, existing).await?));
+        return Ok(Json(travel_view(&state.pool, existing).await?));
     }
 
     let preview = identity_preview(&draft.identity_version, &draft.identity_seed);
@@ -475,10 +475,10 @@ pub(crate) async fn confirm(
         &preview.identity,
         &preview.initial_accessories,
     );
-    let cat_id = Uuid::new_v4();
-    let cat = sqlx::query_as::<_, CatRow>(
+    let girl_id = Uuid::new_v4();
+    let girl = sqlx::query_as::<_, GirlRow>(
         r#"
-        INSERT INTO cats (
+        INSERT INTO travel_girls (
             id, owner_user_id, name, identity_version, identity_seed,
             identity_fingerprint, identity, initial_accessories, last_seen_at
         )
@@ -489,7 +489,7 @@ pub(crate) async fn confirm(
                   adopted_at, name_updated_at, last_seen_at
         "#,
     )
-    .bind(cat_id)
+    .bind(girl_id)
     .bind(user.id)
     .bind(name)
     .bind(&draft.identity_version)
@@ -500,70 +500,70 @@ pub(crate) async fn confirm(
     .fetch_optional(&mut *transaction)
     .await?;
 
-    let cat = match cat {
-        Some(cat) => cat,
+    let girl = match girl {
+        Some(girl) => girl,
         None => {
-            let existing = sqlx::query_as::<_, CatRow>(cat_select_sql())
+            let existing = sqlx::query_as::<_, GirlRow>(travel_select_sql())
                 .bind(user.id)
                 .fetch_one(&mut *transaction)
                 .await?;
-            sqlx::query("DELETE FROM cat_adoption_drafts WHERE user_id = $1")
+            sqlx::query("DELETE FROM travel_adoption_drafts WHERE user_id = $1")
                 .bind(user.id)
                 .execute(&mut *transaction)
                 .await?;
             transaction.commit().await?;
-            return Ok(Json(cat_view(&state.pool, existing).await?));
+            return Ok(Json(travel_view(&state.pool, existing).await?));
         }
     };
 
     sqlx::query(
         r#"
-        INSERT INTO cat_growth_events (id, cat_id, event_type, source_key, payload)
+        INSERT INTO travel_growth_events (id, girl_id, event_type, source_key, payload)
         VALUES ($1, $2, 'adopted', $3, $4)
-        ON CONFLICT (cat_id, event_type, source_key) DO NOTHING
+        ON CONFLICT (girl_id, event_type, source_key) DO NOTHING
         "#,
     )
     .bind(Uuid::new_v4())
-    .bind(cat.id)
-    .bind(format!("adoption:{}", cat.id))
-    .bind(json!({ "identity_version": cat.identity_version }))
+    .bind(girl.id)
+    .bind(format!("adoption:{}", girl.id))
+    .bind(json!({ "identity_version": girl.identity_version }))
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
-        "INSERT INTO cat_autonomy_state (cat_id, next_trip_at) VALUES ($1, NOW() + INTERVAL '6 hours') ON CONFLICT (cat_id) DO NOTHING",
+        "INSERT INTO travel_autonomy_state (girl_id, next_trip_at) VALUES ($1, NOW() + INTERVAL '6 hours') ON CONFLICT (girl_id) DO NOTHING",
     )
-    .bind(cat.id)
+    .bind(girl.id)
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
-        "INSERT INTO cat_messages (id, cat_id, kind, dedupe_key, payload) VALUES ($1, $2, 'welcome', $3, $4) ON CONFLICT (dedupe_key) DO NOTHING",
+        "INSERT INTO travel_messages (id, girl_id, kind, dedupe_key, payload) VALUES ($1, $2, 'welcome', $3, $4) ON CONFLICT (dedupe_key) DO NOTHING",
     )
     .bind(Uuid::new_v4())
-    .bind(cat.id)
-    .bind(format!("welcome:{}", cat.id))
+    .bind(girl.id)
+    .bind(format!("welcome:{}", girl.id))
     .bind(json!({
         "title": "欢迎来到旅居空间",
-        "text": format!("{}记住了你们第一次相遇。接下来，它会自己生活、拍下新的动态照片，也会去图片新闻里的地点旅行。", cat.name),
+        "text": format!("{}记住了你们第一次相遇。接下来，它会自己生活、拍下新的动态照片，也会去图片新闻里的地点旅行。", girl.name),
     }))
     .execute(&mut *transaction)
     .await?;
-    sqlx::query("DELETE FROM cat_adoption_drafts WHERE user_id = $1")
+    sqlx::query("DELETE FROM travel_adoption_drafts WHERE user_id = $1")
         .bind(user.id)
         .execute(&mut *transaction)
         .await?;
     transaction.commit().await?;
 
-    Ok(Json(cat_view(&state.pool, cat).await?))
+    Ok(Json(travel_view(&state.pool, girl).await?))
 }
 
 pub(crate) async fn list_trips(State(state): State<AppState>, user: User) -> Result<Json<Value>> {
     let rows = sqlx::query_as::<_, TripRow>(
         r#"
-        SELECT t.id, t.cat_id, t.news_item_id, t.day, t.status, t.pack, t.tone, t.location,
+        SELECT t.id, t.girl_id, t.news_item_id, t.day, t.status, t.pack, t.tone, t.location,
                t.departed_at, t.returns_at, t.settled_at, t.read_at, t.postcard_id,
                t.diary, t.souvenir, t.error, t.origin, t.attempts, t.news_snapshot, t.note
-        FROM cat_trips t
-        JOIN cats c ON c.id = t.cat_id
+        FROM travel_trips t
+        JOIN travel_girls c ON c.id = t.girl_id
         WHERE c.owner_user_id = $1
         ORDER BY t.departed_at DESC
         LIMIT 30
@@ -590,12 +590,13 @@ pub(crate) async fn reading(
     }
     let day = state.digest.today();
     let mut transaction = state.pool.begin().await?;
-    let cat_id =
-        sqlx::query_scalar::<_, Uuid>("SELECT id FROM cats WHERE owner_user_id = $1 FOR UPDATE")
-            .bind(user.id)
-            .fetch_optional(&mut *transaction)
-            .await?
-            .ok_or_else(|| AppError::Conflict("请先领养一只旅行女孩".into()))?;
+    let girl_id = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM travel_girls WHERE owner_user_id = $1 FOR UPDATE",
+    )
+    .bind(user.id)
+    .fetch_optional(&mut *transaction)
+    .await?
+    .ok_or_else(|| AppError::Conflict("请先领养一只旅行女孩".into()))?;
     let item = sqlx::query_as::<_, ReadingNews>(
         "SELECT items.id, items.topic_id, items.title, items.tags, items.location FROM items JOIN topics ON topics.id = items.topic_id WHERE items.id = $1 AND items.hidden = FALSE AND (topics.owner_user_id IS NULL OR topics.owner_user_id = $2)",
     )
@@ -610,21 +611,21 @@ pub(crate) async fn reading(
     let source_key = format!("{day}:{}", item.id);
     let applied = sqlx::query_scalar::<_, Uuid>(
         r#"
-        INSERT INTO cat_growth_events (id, cat_id, event_type, source_key, payload)
+        INSERT INTO travel_growth_events (id, girl_id, event_type, source_key, payload)
         SELECT $1, $2, 'reading_opened', $3, $4
         WHERE NOT EXISTS (
             SELECT 1
-            FROM cat_growth_events
-            WHERE cat_id = $2
+            FROM travel_growth_events
+            WHERE girl_id = $2
               AND event_type = 'reading_opened'
               AND (source_key = $3 OR source_key LIKE $3 || ':%')
         )
-        ON CONFLICT (cat_id, event_type, source_key) DO NOTHING
+        ON CONFLICT (girl_id, event_type, source_key) DO NOTHING
         RETURNING id
         "#,
     )
     .bind(Uuid::new_v4())
-    .bind(cat_id)
+    .bind(girl_id)
     .bind(&source_key)
     .bind(json!({ "news_item_id": item.id, "signal": signal, "day": day }))
     .fetch_optional(&mut *transaction)
@@ -651,13 +652,13 @@ pub(crate) async fn reading(
         for (kind, key, label) in memories {
             sqlx::query(
                 r#"
-                INSERT INTO cat_memories (cat_id, kind, memory_key, label)
+                INSERT INTO travel_memories (girl_id, kind, memory_key, label)
                 VALUES ($1, $2, $3, $4)
-                ON CONFLICT (cat_id, kind, memory_key) DO UPDATE SET
-                    label = EXCLUDED.label, last_seen_at = NOW(), times = cat_memories.times + 1
+                ON CONFLICT (girl_id, kind, memory_key) DO UPDATE SET
+                    label = EXCLUDED.label, last_seen_at = NOW(), times = travel_memories.times + 1
                 "#,
             )
-            .bind(cat_id)
+            .bind(girl_id)
             .bind(kind)
             .bind(key)
             .bind(label)
@@ -666,54 +667,54 @@ pub(crate) async fn reading(
         }
         sqlx::query(
             r#"
-            INSERT INTO cat_reading_daily (cat_id, day, topics, item_ids, read_count)
+            INSERT INTO travel_reading_daily (girl_id, day, topics, item_ids, read_count)
             VALUES ($1, $2, jsonb_build_object($3, 1), ARRAY[$4]::uuid[], 1)
-            ON CONFLICT (cat_id, day) DO UPDATE SET
-                topics = cat_reading_daily.topics || jsonb_build_object(
-                    $3, COALESCE((cat_reading_daily.topics ->> $3)::integer, 0) + 1
+            ON CONFLICT (girl_id, day) DO UPDATE SET
+                topics = travel_reading_daily.topics || jsonb_build_object(
+                    $3, COALESCE((travel_reading_daily.topics ->> $3)::integer, 0) + 1
                 ),
                 item_ids = CASE
-                    WHEN $4 = ANY(cat_reading_daily.item_ids) THEN cat_reading_daily.item_ids
-                    ELSE array_append(cat_reading_daily.item_ids, $4)
+                    WHEN $4 = ANY(travel_reading_daily.item_ids) THEN travel_reading_daily.item_ids
+                    ELSE array_append(travel_reading_daily.item_ids, $4)
                 END,
-                read_count = cat_reading_daily.read_count + 1
+                read_count = travel_reading_daily.read_count + 1
             "#,
         )
-        .bind(cat_id)
+        .bind(girl_id)
         .bind(day)
         .bind(&item.topic_id)
         .bind(item.id)
         .execute(&mut *transaction)
         .await?;
     }
-    sqlx::query("UPDATE cats SET last_seen_at = NOW() WHERE id = $1")
-        .bind(cat_id)
+    sqlx::query("UPDATE travel_girls SET last_seen_at = NOW() WHERE id = $1")
+        .bind(girl_id)
         .execute(&mut *transaction)
         .await?;
     transaction.commit().await?;
-    let cat = load_cat(&state.pool, user.id)
+    let girl = load_girl(&state.pool, user.id)
         .await?
         .ok_or_else(|| AppError::Internal("旅行女孩状态不存在".into()))?;
     Ok(Json(json!({
         "applied": applied,
-        "girl": cat_view(&state.pool, cat).await?,
+        "girl": travel_view(&state.pool, girl).await?,
     })))
 }
 
 pub(crate) async fn album(State(state): State<AppState>, user: User) -> Result<Json<Value>> {
-    let cat_id = cat_id_for_user(&state.pool, user.id).await?;
+    let girl_id = girl_id_for_user(&state.pool, user.id).await?;
     let rows = sqlx::query_as::<_, AlbumRow>(
         r#"
         SELECT t.id AS trip_id, t.day, t.status, t.news_item_id, p.url AS postcard_url,
                t.diary, COALESCE(t.settled_at, t.departed_at) AS created_at
-        FROM cat_trips t
-        JOIN cat_postcards p ON p.id = t.postcard_id
-        WHERE t.cat_id = $1
+        FROM travel_trips t
+        JOIN travel_postcards p ON p.id = t.postcard_id
+        WHERE t.girl_id = $1
         ORDER BY COALESCE(t.settled_at, t.departed_at) DESC
         LIMIT 60
         "#,
     )
-    .bind(cat_id)
+    .bind(girl_id)
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(json!({
@@ -730,34 +731,34 @@ pub(crate) async fn album(State(state): State<AppState>, user: User) -> Result<J
 }
 
 pub(crate) async fn atlas(State(state): State<AppState>, user: User) -> Result<Json<Value>> {
-    let cat_id = cat_id_for_user(&state.pool, user.id).await?;
-    sync_accessory_unlocks(&state.pool, cat_id).await?;
+    let girl_id = girl_id_for_user(&state.pool, user.id).await?;
+    sync_accessory_unlocks(&state.pool, girl_id).await?;
     Ok(Json(json!({
-        "accessories": load_unlocks(&state.pool, cat_id).await?,
-        "memories": load_memories(&state.pool, cat_id).await?,
+        "accessories": load_unlocks(&state.pool, girl_id).await?,
+        "memories": load_memories(&state.pool, girl_id).await?,
     })))
 }
 
 pub(crate) async fn encounters(State(state): State<AppState>, user: User) -> Result<Json<Value>> {
-    let cat_id = cat_id_for_user(&state.pool, user.id).await?;
+    let girl_id = girl_id_for_user(&state.pool, user.id).await?;
     Ok(Json(json!({
-        "encounters": load_encounters(&state.pool, cat_id).await?,
+        "encounters": load_encounters(&state.pool, girl_id).await?,
     })))
 }
 
-/// Claims a small batch of autonomous cats. Claims are persisted so multiple
-/// application instances cannot make the same cat travel twice.
+/// Claims a small batch of autonomous travel_girls. Claims are persisted so multiple
+/// application instances cannot make the same girl travel twice.
 pub(crate) async fn autonomous_tick(state: &AppState) -> Result<()> {
     let slots = state.travel_slots.available_permits().min(4);
     if slots == 0 {
         return Ok(());
     }
     let mut transaction = state.pool.begin().await?;
-    let cats = sqlx::query_as::<_, AutoCat>(
+    let travel_girls = sqlx::query_as::<_, AutoGirl>(
         r#"
-        SELECT a.cat_id
-        FROM cat_autonomy_state a
-        JOIN cats c ON c.id = a.cat_id
+        SELECT a.girl_id
+        FROM travel_autonomy_state a
+        JOIN travel_girls c ON c.id = a.girl_id
         WHERE (a.next_scene_at <= NOW() OR a.next_trip_at <= NOW())
           AND (a.lease_until IS NULL OR a.lease_until < NOW())
           AND COALESCE(c.last_seen_at, c.adopted_at) >= NOW() - INTERVAL '48 hours'
@@ -769,34 +770,34 @@ pub(crate) async fn autonomous_tick(state: &AppState) -> Result<()> {
     .bind(slots as i64)
     .fetch_all(&mut *transaction)
     .await?;
-    let mut claims = Vec::with_capacity(cats.len());
-    for cat in cats {
+    let mut claims = Vec::with_capacity(travel_girls.len());
+    for girl in travel_girls {
         let token = Uuid::new_v4();
         sqlx::query(
-            "UPDATE cat_autonomy_state SET lease_until = NOW() + INTERVAL '10 minutes', lease_token = $2, updated_at = NOW() WHERE cat_id = $1",
+            "UPDATE travel_autonomy_state SET lease_until = NOW() + INTERVAL '10 minutes', lease_token = $2, updated_at = NOW() WHERE girl_id = $1",
         )
-        .bind(cat.cat_id)
+        .bind(girl.girl_id)
         .bind(token)
         .execute(&mut *transaction)
         .await?;
-        claims.push((cat.cat_id, token));
+        claims.push((girl.girl_id, token));
     }
     transaction.commit().await?;
 
-    for (cat_id, token) in claims {
+    for (girl_id, token) in claims {
         let Ok(permit) = state.travel_slots.clone().try_acquire_owned() else {
             break;
         };
         let worker_state = state.clone();
         tokio::spawn(async move {
-            let result = autonomous_one(&worker_state, cat_id).await;
+            let result = autonomous_one(&worker_state, girl_id).await;
             if let Err(error) = result {
-                tracing::warn!(%error, %cat_id, "autonomous cat worker failed");
+                tracing::warn!(%error, %girl_id, "autonomous girl worker failed");
             }
             let _ = sqlx::query(
-                "UPDATE cat_autonomy_state SET lease_until = NULL, lease_token = NULL, updated_at = NOW() WHERE cat_id = $1 AND lease_token = $2",
+                "UPDATE travel_autonomy_state SET lease_until = NULL, lease_token = NULL, updated_at = NOW() WHERE girl_id = $1 AND lease_token = $2",
             )
-            .bind(cat_id)
+            .bind(girl_id)
             .bind(token)
             .execute(&worker_state.pool)
             .await;
@@ -806,30 +807,30 @@ pub(crate) async fn autonomous_tick(state: &AppState) -> Result<()> {
     Ok(())
 }
 
-async fn autonomous_one(state: &AppState, cat_id: Uuid) -> Result<()> {
+async fn autonomous_one(state: &AppState, girl_id: Uuid) -> Result<()> {
     let due_scene = sqlx::query_scalar::<_, bool>(
-        "SELECT next_scene_at <= NOW() FROM cat_autonomy_state WHERE cat_id = $1",
+        "SELECT next_scene_at <= NOW() FROM travel_autonomy_state WHERE girl_id = $1",
     )
-    .bind(cat_id)
+    .bind(girl_id)
     .fetch_optional(&state.pool)
     .await?
     .unwrap_or(false);
     if due_scene {
-        match auto_scene(state, cat_id).await {
+        match auto_scene(state, girl_id).await {
             Ok(_) => {
                 sqlx::query(
-                    "UPDATE cat_autonomy_state SET next_scene_at = NOW() + INTERVAL '4 hours', updated_at = NOW() WHERE cat_id = $1",
+                    "UPDATE travel_autonomy_state SET next_scene_at = NOW() + INTERVAL '4 hours', updated_at = NOW() WHERE girl_id = $1",
                 )
-                .bind(cat_id)
+                .bind(girl_id)
                 .execute(&state.pool)
                 .await?;
             }
             Err(error) => {
-                tracing::debug!(%error, %cat_id, "autonomous scene deferred");
+                tracing::debug!(%error, %girl_id, "autonomous scene deferred");
                 sqlx::query(
-                    "UPDATE cat_autonomy_state SET next_scene_at = NOW() + INTERVAL '30 minutes', updated_at = NOW() WHERE cat_id = $1",
+                    "UPDATE travel_autonomy_state SET next_scene_at = NOW() + INTERVAL '30 minutes', updated_at = NOW() WHERE girl_id = $1",
                 )
-                .bind(cat_id)
+                .bind(girl_id)
                 .execute(&state.pool)
                 .await?;
             }
@@ -837,29 +838,29 @@ async fn autonomous_one(state: &AppState, cat_id: Uuid) -> Result<()> {
     }
 
     let due_trip = sqlx::query_scalar::<_, bool>(
-        "SELECT next_trip_at <= NOW() FROM cat_autonomy_state WHERE cat_id = $1",
+        "SELECT next_trip_at <= NOW() FROM travel_autonomy_state WHERE girl_id = $1",
     )
-    .bind(cat_id)
+    .bind(girl_id)
     .fetch_optional(&state.pool)
     .await?
     .unwrap_or(false);
     if due_trip {
-        match auto_depart(state, cat_id).await? {
+        match auto_depart(state, girl_id).await? {
             true => {
-                let offset_hours = 48 + (cat_id.as_u128() % 25) as i64;
+                let offset_hours = 48 + (girl_id.as_u128() % 25) as i64;
                 sqlx::query(
-                    "UPDATE cat_autonomy_state SET next_trip_at = NOW() + ($2 * INTERVAL '1 hour'), last_trip_at = NOW(), failures = 0 WHERE cat_id = $1",
+                    "UPDATE travel_autonomy_state SET next_trip_at = NOW() + ($2 * INTERVAL '1 hour'), last_trip_at = NOW(), failures = 0 WHERE girl_id = $1",
                 )
-                .bind(cat_id)
+                .bind(girl_id)
                 .bind(offset_hours)
                 .execute(&state.pool)
                 .await?;
             }
             false => {
                 sqlx::query(
-                    "UPDATE cat_autonomy_state SET next_trip_at = NOW() + INTERVAL '6 hours' WHERE cat_id = $1",
+                    "UPDATE travel_autonomy_state SET next_trip_at = NOW() + INTERVAL '6 hours' WHERE girl_id = $1",
                 )
-                .bind(cat_id)
+                .bind(girl_id)
                 .execute(&state.pool)
                 .await?;
             }
@@ -871,17 +872,17 @@ async fn autonomous_one(state: &AppState, cat_id: Uuid) -> Result<()> {
 /// Generates one four-hour life snapshot. During a trip the selected image-news
 /// location is the setting; at home the latest visual story only supplies a gentle
 /// seasonal cue while the creative direction chooses a domestic activity.
-async fn auto_scene(state: &AppState, cat_id: Uuid) -> Result<()> {
+async fn auto_scene(state: &AppState, girl_id: Uuid) -> Result<()> {
     let in_trip = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS (SELECT 1 FROM cat_trips WHERE cat_id = $1 AND status IN ('away', 'settling'))",
+        "SELECT EXISTS (SELECT 1 FROM travel_trips WHERE girl_id = $1 AND status IN ('away', 'settling'))",
     )
-    .bind(cat_id)
+    .bind(girl_id)
     .fetch_one(&state.pool)
     .await?;
     let source_id = sqlx::query_scalar::<_, Uuid>(
         r#"SELECT COALESCE(
-                 (SELECT news_item_id FROM cat_trips
-                  WHERE cat_id = $1 AND status IN ('away', 'settling')
+                 (SELECT news_item_id FROM travel_trips
+                  WHERE girl_id = $1 AND status IN ('away', 'settling')
                   ORDER BY departed_at DESC LIMIT 1),
                  (SELECT i.id FROM items i JOIN topics t ON t.id = i.topic_id
                   WHERE t.id = 'p' AND t.owner_user_id IS NULL
@@ -889,7 +890,7 @@ async fn auto_scene(state: &AppState, cat_id: Uuid) -> Result<()> {
                   ORDER BY i.first_seen_at DESC LIMIT 1)
                )"#,
     )
-    .bind(cat_id)
+    .bind(girl_id)
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(|| AppError::ServiceUnavailable("暂时没有可供旅行女孩出发的图片新闻".into()))?;
@@ -909,9 +910,9 @@ async fn auto_scene(state: &AppState, cat_id: Uuid) -> Result<()> {
         .map(str::to_owned);
     let bucket = Utc::now().timestamp().div_euclid(4 * 3600);
     let (scene, directed_by) =
-        match generate_scene_narrative(state, cat_id, bucket, in_trip, &news).await {
+        match generate_scene_narrative(state, girl_id, bucket, in_trip, &news).await {
             Some(scene) => (scene, "ai"),
-            None => (fallback_scene(cat_id, bucket, in_trip), "fallback"),
+            None => (fallback_scene(girl_id, bucket, in_trip), "fallback"),
         };
     let request = crate::travel_image::GenerateRequest {
         news_item_id: source_id,
@@ -922,15 +923,15 @@ async fn auto_scene(state: &AppState, cat_id: Uuid) -> Result<()> {
     };
     let generated = crate::travel_image::generate_for_owner(
         state,
-        owner_for_cat(state, cat_id).await?,
+        owner_for_girl(state, girl_id).await?,
         &request,
         false,
     )
     .await?;
-    let dedupe = format!("scene:{cat_id}:{bucket}");
+    let dedupe = format!("scene:{girl_id}:{bucket}");
     record_message(
         &state.pool,
-        cat_id,
+        girl_id,
         "travel",
         &dedupe,
         None,
@@ -949,10 +950,10 @@ async fn auto_scene(state: &AppState, cat_id: Uuid) -> Result<()> {
     )
     .await?;
     sqlx::query(
-        "INSERT INTO cat_growth_events (id, cat_id, event_type, source_key, payload) VALUES ($1, $2, 'scene_generated', $3, $4) ON CONFLICT DO NOTHING",
+        "INSERT INTO travel_growth_events (id, girl_id, event_type, source_key, payload) VALUES ($1, $2, 'scene_generated', $3, $4) ON CONFLICT DO NOTHING",
     )
     .bind(Uuid::new_v4())
-    .bind(cat_id)
+    .bind(girl_id)
     .bind(&dedupe)
     .bind(json!({ "scene_key": bucket, "news_item_id": source_id }))
     .execute(&state.pool)
@@ -963,9 +964,9 @@ async fn auto_scene(state: &AppState, cat_id: Uuid) -> Result<()> {
     }
     for (kind, key, label) in memories {
         sqlx::query(
-            "INSERT INTO cat_memories (cat_id, kind, memory_key, label) VALUES ($1, $2, $3, $4) ON CONFLICT (cat_id, kind, memory_key) DO UPDATE SET label = EXCLUDED.label, last_seen_at = NOW(), times = cat_memories.times + 1",
+            "INSERT INTO travel_memories (girl_id, kind, memory_key, label) VALUES ($1, $2, $3, $4) ON CONFLICT (girl_id, kind, memory_key) DO UPDATE SET label = EXCLUDED.label, last_seen_at = NOW(), times = travel_memories.times + 1",
         )
-        .bind(cat_id)
+        .bind(girl_id)
         .bind(kind)
         .bind(key)
         .bind(label)
@@ -975,9 +976,9 @@ async fn auto_scene(state: &AppState, cat_id: Uuid) -> Result<()> {
     Ok(())
 }
 
-async fn owner_for_cat(state: &AppState, cat_id: Uuid) -> Result<i64> {
-    sqlx::query_scalar::<_, i64>("SELECT owner_user_id FROM cats WHERE id = $1")
-        .bind(cat_id)
+async fn owner_for_girl(state: &AppState, girl_id: Uuid) -> Result<i64> {
+    sqlx::query_scalar::<_, i64>("SELECT owner_user_id FROM travel_girls WHERE id = $1")
+        .bind(girl_id)
         .fetch_optional(&state.pool)
         .await?
         .ok_or_else(|| AppError::Conflict("旅行女孩不存在".into()))
@@ -985,7 +986,7 @@ async fn owner_for_cat(state: &AppState, cat_id: Uuid) -> Result<i64> {
 
 /// Only used when the narrative model is unavailable; the rotation keeps each
 /// four-hour update at least superficially different.
-fn fallback_scene(cat_id: Uuid, bucket: i64, in_trip: bool) -> SceneNarrative {
+fn fallback_scene(girl_id: Uuid, bucket: i64, in_trip: bool) -> SceneNarrative {
     const HOME_ACTIVITIES: [&str; 7] = [
         "我在院子里追一片飘动的叶子",
         "我在后院的草丛探险，鼻尖还沾着露水",
@@ -1002,7 +1003,7 @@ fn fallback_scene(cat_id: Uuid, bucket: i64, in_trip: bool) -> SceneNarrative {
         "我在海边或湖边听浪，风把裙摆吹得轻轻扬起",
         "我在林间小路上发现一朵与众不同的小花",
     ];
-    let pick = |len: usize| (cat_id.as_u128().wrapping_add(bucket as u128) % len as u128) as usize;
+    let pick = |len: usize| (girl_id.as_u128().wrapping_add(bucket as u128) % len as u128) as usize;
     let text = if in_trip {
         TRAVEL_ACTIVITIES[pick(TRAVEL_ACTIVITIES.len())]
     } else {
@@ -1032,13 +1033,13 @@ fn scene_direction(scene: &SceneNarrative) -> String {
 
 async fn generate_scene_narrative(
     state: &AppState,
-    cat_id: Uuid,
+    girl_id: Uuid,
     bucket: i64,
     in_trip: bool,
     news: &SceneNews,
 ) -> Option<SceneNarrative> {
-    let context = narrative_context(state, cat_id).await?;
-    let seed = creative_seed_hex(format!("{cat_id}:{bucket}").as_bytes());
+    let context = narrative_context(state, girl_id).await?;
+    let seed = creative_seed_hex(format!("{girl_id}:{bucket}").as_bytes());
     let local_time = Utc::now()
         .with_timezone(&state.config.timezone)
         .format("%Y-%m-%d %H:%M %A")
@@ -1104,7 +1105,7 @@ fn scene_narrative_schema() -> Value {
     })
 }
 
-async fn auto_depart(state: &AppState, cat_id: Uuid) -> Result<bool> {
+async fn auto_depart(state: &AppState, girl_id: Uuid) -> Result<bool> {
     let Some(news) = sqlx::query_as::<_, AutoNews>(
         r#"
         SELECT items.id, items.title, items.summary, items.url, items.source,
@@ -1119,14 +1120,14 @@ async fn auto_depart(state: &AppState, cat_id: Uuid) -> Result<bool> {
           AND items.image IS NOT NULL
           AND items.location IS NOT NULL
           AND NOT EXISTS (
-              SELECT 1 FROM cat_trips
-              WHERE cat_id = $1 AND news_item_id = items.id
+              SELECT 1 FROM travel_trips
+              WHERE girl_id = $1 AND news_item_id = items.id
           )
         ORDER BY (items.image IS NOT NULL) DESC, items.importance DESC, items.first_seen_at DESC
         LIMIT 1
         "#,
     )
-    .bind(cat_id)
+    .bind(girl_id)
     .fetch_optional(&state.pool)
     .await?
     else {
@@ -1143,7 +1144,7 @@ async fn auto_depart(state: &AppState, cat_id: Uuid) -> Result<bool> {
     }
     let day = state.digest.today();
     let trip_id = Uuid::new_v4();
-    let returns_minutes = 240 + (cat_id.as_u128() % 241) as i64;
+    let returns_minutes = 240 + (girl_id.as_u128() % 241) as i64;
     let snapshot = json!({
         "id": news.id,
         "title": news.title,
@@ -1162,9 +1163,9 @@ async fn auto_depart(state: &AppState, cat_id: Uuid) -> Result<bool> {
     });
     let mut transaction = state.pool.begin().await?;
     let active = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM cat_trips WHERE cat_id = $1 AND status IN ('away', 'settling') FOR UPDATE",
+        "SELECT id FROM travel_trips WHERE girl_id = $1 AND status IN ('away', 'settling') FOR UPDATE",
     )
-    .bind(cat_id)
+    .bind(girl_id)
     .fetch_optional(&mut *transaction)
     .await?;
     if active.is_some() {
@@ -1173,15 +1174,15 @@ async fn auto_depart(state: &AppState, cat_id: Uuid) -> Result<bool> {
     }
     sqlx::query(
         r#"
-        INSERT INTO cat_trips (
-            id, cat_id, news_item_id, day, status, pack, returns_at,
+        INSERT INTO travel_trips (
+            id, girl_id, news_item_id, day, status, pack, returns_at,
             tone, location, origin, news_snapshot, note
         )
         VALUES ($1, $2, $3, $4, 'away', $5, NOW() + ($6 * INTERVAL '1 minute'), $7, $8, 'autonomous', $9, $10)
         "#,
     )
     .bind(trip_id)
-    .bind(cat_id)
+    .bind(girl_id)
     .bind(news.id)
     .bind(day)
     .bind(&pack)
@@ -1193,16 +1194,16 @@ async fn auto_depart(state: &AppState, cat_id: Uuid) -> Result<bool> {
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
-        "INSERT INTO cat_growth_events (id, cat_id, event_type, source_key, payload) VALUES ($1, $2, 'trip_departed', $3, $4) ON CONFLICT DO NOTHING",
+        "INSERT INTO travel_growth_events (id, girl_id, event_type, source_key, payload) VALUES ($1, $2, 'trip_departed', $3, $4) ON CONFLICT DO NOTHING",
     )
     .bind(Uuid::new_v4())
-    .bind(cat_id)
+    .bind(girl_id)
     .bind(trip_id.to_string())
     .bind(json!({ "trip_id": trip_id, "news_item_id": news.id, "origin": "autonomous" }))
     .execute(&mut *transaction)
     .await?;
     let encounter_id = sqlx::query_scalar::<_, Uuid>(
-        "INSERT INTO cat_encounters (id, world_key, day, news_item_id) VALUES ($1, $2, $3, $4) ON CONFLICT (world_key, day) DO UPDATE SET news_item_id = COALESCE(cat_encounters.news_item_id, EXCLUDED.news_item_id) RETURNING id",
+        "INSERT INTO travel_encounters (id, world_key, day, news_item_id) VALUES ($1, $2, $3, $4) ON CONFLICT (world_key, day) DO UPDATE SET news_item_id = COALESCE(travel_encounters.news_item_id, EXCLUDED.news_item_id) RETURNING id",
     )
     .bind(Uuid::new_v4())
     .bind(format!("item:{}", news.id))
@@ -1211,17 +1212,17 @@ async fn auto_depart(state: &AppState, cat_id: Uuid) -> Result<bool> {
     .fetch_one(&mut *transaction)
     .await?;
     sqlx::query(
-        "INSERT INTO cat_encounter_members (encounter_id, cat_id, phrase_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+        "INSERT INTO travel_encounter_members (encounter_id, girl_id, phrase_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
     )
     .bind(encounter_id)
-    .bind(cat_id)
+    .bind(girl_id)
     .bind("wind_is_big")
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
     record_message(
         &state.pool,
-        cat_id,
+        girl_id,
         "travel",
         &format!("travel:{trip_id}:departed"),
         Some(trip_id),
@@ -1233,12 +1234,12 @@ async fn auto_depart(state: &AppState, cat_id: Uuid) -> Result<bool> {
 
 async fn generate_travel_narrative(
     state: &AppState,
-    cat_id: Uuid,
+    girl_id: Uuid,
     trip_id: Uuid,
     snapshot: &Value,
     pack: &[String],
 ) -> Option<TravelNarrative> {
-    let context = narrative_context(state, cat_id).await?;
+    let context = narrative_context(state, girl_id).await?;
     let seed = creative_seed_hex(trip_id.as_bytes());
     let body = json!({
         "model": state.config.ai_default_model,
@@ -1281,25 +1282,25 @@ impl NarrativeContext {
     }
 }
 
-async fn narrative_context(state: &AppState, cat_id: Uuid) -> Option<NarrativeContext> {
+async fn narrative_context(state: &AppState, girl_id: Uuid) -> Option<NarrativeContext> {
     let identity = sqlx::query_as::<_, TravelIdentity>(
-        "SELECT name, identity, initial_accessories FROM cats WHERE id = $1",
+        "SELECT name, identity, initial_accessories FROM travel_girls WHERE id = $1",
     )
-    .bind(cat_id)
+    .bind(girl_id)
     .fetch_optional(&state.pool)
     .await
     .ok()
     .flatten()?;
     let personality = sqlx::query_scalar::<_, Value>(
-        "SELECT jsonb_build_object('traits', traits, 'interests', interests, 'voice', voice) FROM cat_personality_snapshots WHERE cat_id = $1 ORDER BY revision DESC LIMIT 1",
+        "SELECT jsonb_build_object('traits', traits, 'interests', interests, 'voice', voice) FROM travel_personality_snapshots WHERE girl_id = $1 ORDER BY revision DESC LIMIT 1",
     )
-    .bind(cat_id)
+    .bind(girl_id)
     .fetch_optional(&state.pool)
     .await
     .ok()
     .flatten()
     .unwrap_or_else(|| json!({}));
-    let creative_memory = crate::travel_guide::recent_creative_memory(&state.pool, cat_id)
+    let creative_memory = crate::travel_guide::recent_creative_memory(&state.pool, girl_id)
         .await
         .unwrap_or_else(|_| json!({}));
     Some(NarrativeContext {
@@ -1373,7 +1374,7 @@ pub(crate) async fn settle_due(state: &AppState) -> Result<()> {
         return Ok(());
     }
     let ids = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM cat_trips WHERE (status = 'away' AND returns_at <= NOW()) OR (status = 'settling' AND settling_at <= NOW() - INTERVAL '15 minutes') ORDER BY returns_at LIMIT $1",
+        "SELECT id FROM travel_trips WHERE (status = 'away' AND returns_at <= NOW()) OR (status = 'settling' AND settling_at <= NOW() - INTERVAL '15 minutes') ORDER BY returns_at LIMIT $1",
     )
     .bind(slots as i64)
     .fetch_all(&state.pool)
@@ -1387,7 +1388,7 @@ pub(crate) async fn settle_due(state: &AppState) -> Result<()> {
             if let Err(error) = settle_one(&worker_state, id).await {
                 tracing::warn!(%error, %id, "travel companion trip settlement failed");
                 let attempts =
-                    sqlx::query_scalar::<_, i32>("SELECT attempts FROM cat_trips WHERE id = $1")
+                    sqlx::query_scalar::<_, i32>("SELECT attempts FROM travel_trips WHERE id = $1")
                         .bind(id)
                         .fetch_optional(&worker_state.pool)
                         .await
@@ -1400,24 +1401,25 @@ pub(crate) async fn settle_due(state: &AppState) -> Result<()> {
                         "en": "I am back home with a letter about the journey. I will add the photo when it is ready.",
                     });
                     let _ = sqlx::query(
-                        "UPDATE cat_trips SET status = 'home', settled_at = NOW(), settling_at = NULL, error = $2, diary = COALESCE(diary, $3) WHERE id = $1 AND status = 'settling'",
+                        "UPDATE travel_trips SET status = 'home', settled_at = NOW(), settling_at = NULL, error = $2, diary = COALESCE(diary, $3) WHERE id = $1 AND status = 'settling'",
                     )
                     .bind(id)
                     .bind(error.to_string())
                     .bind(&diary)
                     .execute(&worker_state.pool)
                     .await;
-                    if let Some(cat_id) =
-                        sqlx::query_scalar::<_, Uuid>("SELECT cat_id FROM cat_trips WHERE id = $1")
-                            .bind(id)
-                            .fetch_optional(&worker_state.pool)
-                            .await
-                            .ok()
-                            .flatten()
+                    if let Some(girl_id) = sqlx::query_scalar::<_, Uuid>(
+                        "SELECT girl_id FROM travel_trips WHERE id = $1",
+                    )
+                    .bind(id)
+                    .fetch_optional(&worker_state.pool)
+                    .await
+                    .ok()
+                    .flatten()
                     {
                         let _ = record_message(
                             &worker_state.pool,
-                            cat_id,
+                            girl_id,
                             "postcard",
                             &format!("travel:{id}:returned"),
                             Some(id),
@@ -1427,7 +1429,7 @@ pub(crate) async fn settle_due(state: &AppState) -> Result<()> {
                     }
                 } else {
                     let _ = sqlx::query(
-                        "UPDATE cat_trips SET status = 'away', settling_at = NULL, returns_at = GREATEST(returns_at, NOW() + INTERVAL '5 minutes'), error = $2 WHERE id = $1 AND status = 'settling'",
+                        "UPDATE travel_trips SET status = 'away', settling_at = NULL, returns_at = GREATEST(returns_at, NOW() + INTERVAL '5 minutes'), error = $2 WHERE id = $1 AND status = 'settling'",
                     )
                     .bind(id)
                     .bind(error.to_string())
@@ -1444,13 +1446,13 @@ pub(crate) async fn settle_due(state: &AppState) -> Result<()> {
 async fn settle_one(state: &AppState, trip_id: Uuid) -> Result<()> {
     let claimed = sqlx::query_as::<_, DueTrip>(
         r#"
-        UPDATE cat_trips
+        UPDATE travel_trips
         SET status = 'settling', settling_at = NOW(), attempts = attempts + 1
         WHERE id = $1 AND (
             (status = 'away' AND returns_at <= NOW())
             OR (status = 'settling' AND settling_at <= NOW() - INTERVAL '15 minutes')
         )
-        RETURNING id, cat_id, news_item_id, pack
+        RETURNING id, girl_id, news_item_id, pack
         "#,
     )
     .bind(trip_id)
@@ -1460,14 +1462,15 @@ async fn settle_one(state: &AppState, trip_id: Uuid) -> Result<()> {
         return Ok(());
     };
 
-    let snapshot =
-        sqlx::query_scalar::<_, Option<Value>>("SELECT news_snapshot FROM cat_trips WHERE id = $1")
-            .bind(trip.id)
-            .fetch_one(&state.pool)
-            .await?
-            .unwrap_or_else(|| json!({}));
+    let snapshot = sqlx::query_scalar::<_, Option<Value>>(
+        "SELECT news_snapshot FROM travel_trips WHERE id = $1",
+    )
+    .bind(trip.id)
+    .fetch_one(&state.pool)
+    .await?
+    .unwrap_or_else(|| json!({}));
     let saved_souvenir =
-        sqlx::query_scalar::<_, Option<Value>>("SELECT souvenir FROM cat_trips WHERE id = $1")
+        sqlx::query_scalar::<_, Option<Value>>("SELECT souvenir FROM travel_trips WHERE id = $1")
             .bind(trip.id)
             .fetch_one(&state.pool)
             .await?;
@@ -1478,7 +1481,9 @@ async fn settle_one(state: &AppState, trip_id: Uuid) -> Result<()> {
         .and_then(|value| serde_json::from_value::<TravelNarrative>(value).ok());
     let narrative = match saved_narrative {
         Some(narrative) => Some(narrative.bounded()),
-        None => generate_travel_narrative(state, trip.cat_id, trip.id, &snapshot, &trip.pack).await,
+        None => {
+            generate_travel_narrative(state, trip.girl_id, trip.id, &snapshot, &trip.pack).await
+        }
     };
     if saved_souvenir
         .as_ref()
@@ -1490,23 +1495,24 @@ async fn settle_one(state: &AppState, trip_id: Uuid) -> Result<()> {
             "prompt_version": TRAVEL_NARRATIVE_PROMPT_VERSION,
             "narrative": narrative,
         });
-        sqlx::query("UPDATE cat_trips SET souvenir = $2 WHERE id = $1 AND status = 'settling'")
+        sqlx::query("UPDATE travel_trips SET souvenir = $2 WHERE id = $1 AND status = 'settling'")
             .bind(trip.id)
             .bind(souvenir)
             .execute(&state.pool)
             .await?;
     }
 
-    let owner_id = sqlx::query_scalar::<_, i64>("SELECT owner_user_id FROM cats WHERE id = $1")
-        .bind(trip.cat_id)
-        .fetch_one(&state.pool)
-        .await?;
+    let owner_id =
+        sqlx::query_scalar::<_, i64>("SELECT owner_user_id FROM travel_girls WHERE id = $1")
+            .bind(trip.girl_id)
+            .fetch_one(&state.pool)
+            .await?;
     let mut postcard_id = None;
     let mut settlement_error = None;
     if let Some(news_item_id) = trip.news_item_id {
-        let source_key = format!("travel:{}:news:{}", trip.cat_id, news_item_id);
+        let source_key = format!("travel:{}:news:{}", trip.girl_id, news_item_id);
         let existing = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM cat_postcards WHERE source_key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+            "SELECT id FROM travel_postcards WHERE source_key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
         )
         .bind(&source_key)
         .fetch_optional(&state.pool)
@@ -1525,7 +1531,7 @@ async fn settle_one(state: &AppState, trip_id: Uuid) -> Result<()> {
                 Ok(_) => {
                     postcard_id = Some(
                         sqlx::query_scalar::<_, Uuid>(
-                            "SELECT id FROM cat_postcards WHERE source_key = $1",
+                            "SELECT id FROM travel_postcards WHERE source_key = $1",
                         )
                         .bind(&source_key)
                         .fetch_one(&state.pool)
@@ -1568,7 +1574,7 @@ async fn settle_one(state: &AppState, trip_id: Uuid) -> Result<()> {
     };
     sqlx::query(
         r#"
-        UPDATE cat_trips
+        UPDATE travel_trips
         SET status = 'home', settled_at = NOW(), postcard_id = $2,
             settling_at = NULL, error = $3, diary = COALESCE(diary, $4)
         WHERE id = $1 AND status = 'settling'
@@ -1582,7 +1588,7 @@ async fn settle_one(state: &AppState, trip_id: Uuid) -> Result<()> {
     .await?;
     record_message(
         &state.pool,
-        trip.cat_id,
+        trip.girl_id,
         "postcard",
         &format!("travel:{}:returned", trip.id),
         Some(trip.id),
@@ -1592,7 +1598,7 @@ async fn settle_one(state: &AppState, trip_id: Uuid) -> Result<()> {
             "trip_id": trip.id,
             "postcard_id": postcard_id,
             "postcard_url": match postcard_id {
-                Some(id) => sqlx::query_scalar::<_, String>("SELECT url FROM cat_postcards WHERE id = $1").bind(id).fetch_optional(&state.pool).await?,
+                Some(id) => sqlx::query_scalar::<_, String>("SELECT url FROM travel_postcards WHERE id = $1").bind(id).fetch_optional(&state.pool).await?,
                 None => None,
             },
             "diary": diary,
@@ -1613,37 +1619,37 @@ fn retryable_settlement_error(error: &AppError) -> bool {
     )
 }
 
-fn cat_select_sql() -> &'static str {
-    "SELECT id, name, identity_version, identity, initial_accessories, adopted_at, name_updated_at, last_seen_at FROM cats WHERE owner_user_id = $1 FOR UPDATE"
+fn travel_select_sql() -> &'static str {
+    "SELECT id, name, identity_version, identity, initial_accessories, adopted_at, name_updated_at, last_seen_at FROM travel_girls WHERE owner_user_id = $1 FOR UPDATE"
 }
 
-async fn cat_id_for_user(pool: &PgPool, user_id: i64) -> Result<Uuid> {
-    sqlx::query_scalar::<_, Uuid>("SELECT id FROM cats WHERE owner_user_id = $1")
+async fn girl_id_for_user(pool: &PgPool, user_id: i64) -> Result<Uuid> {
+    sqlx::query_scalar::<_, Uuid>("SELECT id FROM travel_girls WHERE owner_user_id = $1")
         .bind(user_id)
         .fetch_optional(pool)
         .await?
         .ok_or_else(|| AppError::Conflict("请先领养一只旅行女孩".into()))
 }
 
-pub(crate) async fn touch_cat(pool: &PgPool, cat_id: Uuid) -> Result<()> {
+pub(crate) async fn touch_girl(pool: &PgPool, girl_id: Uuid) -> Result<()> {
     sqlx::query(
-        "UPDATE cats SET last_seen_at = NOW() WHERE id = $1 AND (last_seen_at IS NULL OR last_seen_at < NOW() - INTERVAL '30 minutes')",
+        "UPDATE travel_girls SET last_seen_at = NOW() WHERE id = $1 AND (last_seen_at IS NULL OR last_seen_at < NOW() - INTERVAL '30 minutes')",
     )
-    .bind(cat_id)
+    .bind(girl_id)
     .execute(pool)
     .await?;
     sqlx::query(
-        "INSERT INTO cat_autonomy_state (cat_id) VALUES ($1) ON CONFLICT (cat_id) DO NOTHING",
+        "INSERT INTO travel_autonomy_state (girl_id) VALUES ($1) ON CONFLICT (girl_id) DO NOTHING",
     )
-    .bind(cat_id)
+    .bind(girl_id)
     .execute(pool)
     .await?;
     Ok(())
 }
 
-async fn load_cat(pool: &PgPool, user_id: i64) -> Result<Option<CatRow>> {
+async fn load_girl(pool: &PgPool, user_id: i64) -> Result<Option<GirlRow>> {
     Ok(
-        sqlx::query_as::<_, CatRow>(cat_select_sql().trim_end_matches(" FOR UPDATE"))
+        sqlx::query_as::<_, GirlRow>(travel_select_sql().trim_end_matches(" FOR UPDATE"))
             .bind(user_id)
             .fetch_optional(pool)
             .await?,
@@ -1668,8 +1674,8 @@ const ACCESSORY_UNLOCKS: [(i64, &str, &str); 4] = [
     (20, "star_beret", "星星贝雷帽"),
 ];
 
-async fn sync_accessory_unlocks(pool: &PgPool, cat_id: Uuid) -> Result<()> {
-    let progress = growth_progress(pool, cat_id).await?;
+async fn sync_accessory_unlocks(pool: &PgPool, girl_id: Uuid) -> Result<()> {
+    let progress = growth_progress(pool, girl_id).await?;
     for (threshold, accessory_id, label) in ACCESSORY_UNLOCKS {
         if progress < threshold {
             continue;
@@ -1677,14 +1683,14 @@ async fn sync_accessory_unlocks(pool: &PgPool, cat_id: Uuid) -> Result<()> {
         let source_key = format!("accessory:{accessory_id}");
         let event_id = sqlx::query_scalar::<_, Uuid>(
             r#"
-            INSERT INTO cat_growth_events (id, cat_id, event_type, source_key, payload)
+            INSERT INTO travel_growth_events (id, girl_id, event_type, source_key, payload)
             VALUES ($1, $2, 'accessory_unlocked', $3, $4)
-            ON CONFLICT (cat_id, event_type, source_key) DO NOTHING
+            ON CONFLICT (girl_id, event_type, source_key) DO NOTHING
             RETURNING id
             "#,
         )
         .bind(Uuid::new_v4())
-        .bind(cat_id)
+        .bind(girl_id)
         .bind(&source_key)
         .bind(json!({ "accessory_id": accessory_id, "name": label, "threshold": threshold }))
         .fetch_optional(pool)
@@ -1692,26 +1698,26 @@ async fn sync_accessory_unlocks(pool: &PgPool, cat_id: Uuid) -> Result<()> {
         let event_id = match event_id {
             Some(id) => id,
             None => sqlx::query_scalar::<_, Uuid>(
-                "SELECT id FROM cat_growth_events WHERE cat_id = $1 AND event_type = 'accessory_unlocked' AND source_key = $2",
+                "SELECT id FROM travel_growth_events WHERE girl_id = $1 AND event_type = 'accessory_unlocked' AND source_key = $2",
             )
-            .bind(cat_id)
+            .bind(girl_id)
             .bind(&source_key)
             .fetch_one(pool)
             .await?,
         };
         sqlx::query(
-            "INSERT INTO cat_accessory_unlocks (cat_id, accessory_id, source_event) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+            "INSERT INTO travel_accessory_unlocks (girl_id, accessory_id, source_event) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
         )
-        .bind(cat_id)
+        .bind(girl_id)
         .bind(accessory_id)
         .bind(event_id)
         .execute(pool)
         .await?;
         record_message(
             pool,
-            cat_id,
+            girl_id,
             "growth",
-            &format!("growth:accessory:{cat_id}:{accessory_id}"),
+            &format!("growth:accessory:{girl_id}:{accessory_id}"),
             Some(event_id),
             json!({ "title": format!("解锁了{}", label), "text": format!("{}把这件配饰收进了自己的旅途。", label) }),
         )
@@ -1720,33 +1726,33 @@ async fn sync_accessory_unlocks(pool: &PgPool, cat_id: Uuid) -> Result<()> {
     Ok(())
 }
 
-async fn growth_progress(pool: &PgPool, cat_id: Uuid) -> Result<i64> {
+async fn growth_progress(pool: &PgPool, girl_id: Uuid) -> Result<i64> {
     Ok(sqlx::query_scalar::<_, i64>(
         r#"
         SELECT
             (SELECT COUNT(*)::bigint
-             FROM cat_growth_events
-             WHERE cat_id = $1
+             FROM travel_growth_events
+             WHERE girl_id = $1
                AND event_type NOT IN ('accessory_unlocked', 'reading_opened')
                AND event_type NOT LIKE 'care_%')
           + (SELECT COUNT(DISTINCT (payload ->> 'day') || ':' || (payload ->> 'news_item_id'))::bigint
-             FROM cat_growth_events
-             WHERE cat_id = $1
+             FROM travel_growth_events
+             WHERE girl_id = $1
                AND event_type = 'reading_opened'
                AND payload ? 'day'
                AND payload ? 'news_item_id')
         "#,
     )
-    .bind(cat_id)
+    .bind(girl_id)
     .fetch_one(pool)
     .await?)
 }
 
-async fn load_unlocks(pool: &PgPool, cat_id: Uuid) -> Result<Vec<Value>> {
+async fn load_unlocks(pool: &PgPool, girl_id: Uuid) -> Result<Vec<Value>> {
     let rows = sqlx::query_as::<_, UnlockRow>(
-        "SELECT accessory_id, unlocked_at FROM cat_accessory_unlocks WHERE cat_id = $1 ORDER BY unlocked_at",
+        "SELECT accessory_id, unlocked_at FROM travel_accessory_unlocks WHERE girl_id = $1 ORDER BY unlocked_at",
     )
-    .bind(cat_id)
+    .bind(girl_id)
     .fetch_all(pool)
     .await?;
     Ok(rows
@@ -1766,13 +1772,13 @@ async fn load_unlocks(pool: &PgPool, cat_id: Uuid) -> Result<Vec<Value>> {
         .collect())
 }
 
-async fn load_memories(pool: &PgPool, cat_id: Uuid) -> Result<Vec<Value>> {
+async fn load_memories(pool: &PgPool, girl_id: Uuid) -> Result<Vec<Value>> {
     let rows = sqlx::query_as::<_, MemoryRow>(
         r#"WITH ranked AS (
                 SELECT kind, memory_key, label, times, last_seen_at,
                        ROW_NUMBER() OVER (PARTITION BY (kind = 'scene') ORDER BY last_seen_at DESC) AS scene_rank
-                FROM cat_memories
-                WHERE cat_id = $1
+                FROM travel_memories
+                WHERE girl_id = $1
             )
             SELECT kind, memory_key, label, times, last_seen_at
             FROM ranked
@@ -1780,7 +1786,7 @@ async fn load_memories(pool: &PgPool, cat_id: Uuid) -> Result<Vec<Value>> {
             ORDER BY last_seen_at DESC
             LIMIT 60"#,
     )
-    .bind(cat_id)
+    .bind(girl_id)
     .fetch_all(pool)
     .await?;
     Ok(rows
@@ -1797,25 +1803,25 @@ async fn load_memories(pool: &PgPool, cat_id: Uuid) -> Result<Vec<Value>> {
         .collect())
 }
 
-async fn load_encounters(pool: &PgPool, cat_id: Uuid) -> Result<Vec<Value>> {
+async fn load_encounters(pool: &PgPool, girl_id: Uuid) -> Result<Vec<Value>> {
     let rows = sqlx::query_as::<_, EncounterSummary>(
         r#"
         SELECT e.id, e.world_key, e.day, e.news_item_id,
-               COUNT(m.cat_id)::bigint AS member_count,
+               COUNT(m.girl_id)::bigint AS member_count,
                COALESCE(
                    ARRAY_AGG(c.name ORDER BY c.name) FILTER (WHERE c.id IS NOT NULL),
                    ARRAY[]::text[]
                ) AS member_names
-        FROM cat_encounters e
-        JOIN cat_encounter_members mine ON mine.encounter_id = e.id AND mine.cat_id = $1
-        JOIN cat_encounter_members m ON m.encounter_id = e.id
-        JOIN cats c ON c.id = m.cat_id
+        FROM travel_encounters e
+        JOIN travel_encounter_members mine ON mine.encounter_id = e.id AND mine.girl_id = $1
+        JOIN travel_encounter_members m ON m.encounter_id = e.id
+        JOIN travel_girls c ON c.id = m.girl_id
         GROUP BY e.id, e.world_key, e.day, e.news_item_id
         ORDER BY e.day DESC, e.id DESC
         LIMIT 24
         "#,
     )
-    .bind(cat_id)
+    .bind(girl_id)
     .fetch_all(pool)
     .await?;
     Ok(rows
@@ -1833,41 +1839,41 @@ async fn load_encounters(pool: &PgPool, cat_id: Uuid) -> Result<Vec<Value>> {
         .collect())
 }
 
-async fn cat_view(pool: &PgPool, cat: CatRow) -> Result<Value> {
-    sync_accessory_unlocks(pool, cat.id).await?;
+async fn travel_view(pool: &PgPool, girl: GirlRow) -> Result<Value> {
+    sync_accessory_unlocks(pool, girl.id).await?;
     let counts = sqlx::query_as::<_, GrowthCount>(
-        "SELECT event_type, COUNT(*)::bigint AS count FROM cat_growth_events WHERE cat_id = $1 AND event_type NOT LIKE 'care_%' GROUP BY event_type ORDER BY event_type",
+        "SELECT event_type, COUNT(*)::bigint AS count FROM travel_growth_events WHERE girl_id = $1 AND event_type NOT LIKE 'care_%' GROUP BY event_type ORDER BY event_type",
     )
-    .bind(cat.id)
+    .bind(girl.id)
     .fetch_all(pool)
     .await?;
-    let total_events = growth_progress(pool, cat.id).await?;
+    let total_events = growth_progress(pool, girl.id).await?;
     let events = counts
         .into_iter()
         .map(|item| (item.event_type, json!(item.count)))
         .collect::<serde_json::Map<String, Value>>();
     let current_trip = sqlx::query_as::<_, TripRow>(
         r#"
-        SELECT id, cat_id, news_item_id, day, status, pack, tone, location, departed_at,
+        SELECT id, girl_id, news_item_id, day, status, pack, tone, location, departed_at,
                returns_at, settled_at, read_at, postcard_id, diary, souvenir, error,
                origin, attempts, news_snapshot, note
-        FROM cat_trips
-        WHERE cat_id = $1 AND status IN ('away', 'settling')
+        FROM travel_trips
+        WHERE girl_id = $1 AND status IN ('away', 'settling')
         ORDER BY departed_at DESC
         LIMIT 1
         "#,
     )
-    .bind(cat.id)
+    .bind(girl.id)
     .fetch_optional(pool)
     .await?;
     let current_trip = match current_trip {
         Some(trip) => Some(trip_view(pool, trip).await?),
         None => None,
     };
-    let encounters = load_encounters(pool, cat.id).await?;
-    let unlocked_accessories = load_unlocks(pool, cat.id).await?;
-    let memories = load_memories(pool, cat.id).await?;
-    let scene = load_scene(pool, cat.id).await.unwrap_or_else(|_| {
+    let encounters = load_encounters(pool, girl.id).await?;
+    let unlocked_accessories = load_unlocks(pool, girl.id).await?;
+    let memories = load_memories(pool, girl.id).await?;
+    let scene = load_scene(pool, girl.id).await.unwrap_or_else(|_| {
         json!({
             "action": "observe",
             "emotion": "好奇",
@@ -1876,16 +1882,16 @@ async fn cat_view(pool: &PgPool, cat: CatRow) -> Result<Value> {
         })
     });
     Ok(json!({
-        "id": cat.id,
-        "name": cat.name,
-        "identity_version": cat.identity_version,
-        "identity": cat.identity,
-        "initial_accessories": cat.initial_accessories,
+        "id": girl.id,
+        "name": girl.name,
+        "identity_version": girl.identity_version,
+        "identity": girl.identity,
+        "initial_accessories": girl.initial_accessories,
         "unlocked_accessories": unlocked_accessories,
         "memories": memories,
-        "adopted_at": cat.adopted_at,
-        "name_updated_at": cat.name_updated_at,
-        "last_seen_at": cat.last_seen_at,
+        "adopted_at": girl.adopted_at,
+        "name_updated_at": girl.name_updated_at,
+        "last_seen_at": girl.last_seen_at,
         "growth": {
             "stage": stage_for_events(total_events),
             "event_count": total_events,
@@ -1900,19 +1906,19 @@ async fn cat_view(pool: &PgPool, cat: CatRow) -> Result<Value> {
 /// Read the latest AI-directed activity from the durable daily brief.  The
 /// brief is already cached in JSONB, so this projection remains cheap and
 /// deterministic for every home page request.
-async fn load_scene(pool: &PgPool, cat_id: Uuid) -> Result<Value> {
-    // The photo URL is resolved from cat_postcards rather than the stored payload so
+async fn load_scene(pool: &PgPool, girl_id: Uuid) -> Result<Value> {
+    // The photo URL is resolved from travel_postcards rather than the stored payload so
     // a renewed tmpfile link is what the page shows.
     if let Some((scene, current_url)) = sqlx::query_as::<_, (Value, Option<String>)>(
         r#"SELECT m.payload, p.url
-           FROM cat_messages m
-           LEFT JOIN cat_postcards p
-             ON p.source_key = 'travel:' || m.cat_id::text || ':scene:' || (m.payload->>'scene_key')
-           WHERE m.cat_id = $1 AND m.payload ? 'scene_key'
+           FROM travel_messages m
+           LEFT JOIN travel_postcards p
+             ON p.source_key = 'travel:' || m.girl_id::text || ':scene:' || (m.payload->>'scene_key')
+           WHERE m.girl_id = $1 AND m.payload ? 'scene_key'
            ORDER BY m.created_at DESC
            LIMIT 1"#,
     )
-    .bind(cat_id)
+    .bind(girl_id)
     .fetch_optional(pool)
     .await?
     {
@@ -1929,9 +1935,9 @@ async fn load_scene(pool: &PgPool, cat_id: Uuid) -> Result<Value> {
         }));
     }
     let payload = sqlx::query_scalar::<_, Value>(
-        "SELECT payload FROM cat_world_briefs WHERE cat_id = $1 AND status = 'ok' ORDER BY day DESC LIMIT 1",
+        "SELECT payload FROM travel_world_briefs WHERE girl_id = $1 AND status = 'ok' ORDER BY day DESC LIMIT 1",
     )
-    .bind(cat_id)
+    .bind(girl_id)
     .fetch_optional(pool)
     .await?;
     Ok(payload
@@ -1950,7 +1956,7 @@ async fn load_scene(pool: &PgPool, cat_id: Uuid) -> Result<Value> {
 async fn trip_view(pool: &PgPool, trip: TripRow) -> Result<Value> {
     let postcard_url = match trip.postcard_id {
         Some(postcard_id) => {
-            sqlx::query_scalar::<_, String>("SELECT url FROM cat_postcards WHERE id = $1")
+            sqlx::query_scalar::<_, String>("SELECT url FROM travel_postcards WHERE id = $1")
                 .bind(postcard_id)
                 .fetch_optional(pool)
                 .await?
@@ -1959,7 +1965,7 @@ async fn trip_view(pool: &PgPool, trip: TripRow) -> Result<Value> {
     };
     Ok(json!({
         "id": trip.id,
-        "cat_id": trip.cat_id,
+        "girl_id": trip.girl_id,
         "news_item_id": trip.news_item_id,
         "day": trip.day,
         "status": trip.status,
@@ -2085,8 +2091,8 @@ mod tests {
 
     #[test]
     fn scene_direction_includes_the_scene_hint() {
-        let cat_id = Uuid::from_u128(42);
-        let home = fallback_scene(cat_id, 1, false);
+        let girl_id = Uuid::from_u128(42);
+        let home = fallback_scene(girl_id, 1, false);
         assert!(!scene_direction(&home).contains("海风"));
 
         let longest = SceneNarrative {

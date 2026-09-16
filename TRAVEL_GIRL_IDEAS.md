@@ -62,8 +62,8 @@
 | --- | --- | --- |
 | 三叶草（货币） | **好奇心**：来自用户真实阅读（卡片停留、点开原文、切换主题） | 首页阅读信号（6.1） |
 | 便当 / 护身符 / 道具 | **行囊**：相机→图片新闻，笔记本→案例，地图→全球事件，望远镜→研判导向的"远见之旅"，毛线球→随机 | 主题权重 |
-| 说走就走、归期不定 | 出发由旅行女孩主动计划，**归来由服务端时间决定**（约 90–180 分钟），途中不可见 | `cat_trips.returns_at`（5.2） |
-| 明信片（真实地标） | **明信片**：由真实新闻生成的画面 + 一段猫写的日记 + 一个核实过的事实 + 原文链接 | `cat_image.rs` + 日记生成 |
+| 说走就走、归期不定 | 出发由旅行女孩主动计划，**归来由服务端时间决定**（约 90–180 分钟），途中不可见 | `travel_trips.returns_at`（5.2） |
+| 明信片（真实地标） | **明信片**：由真实新闻生成的画面 + 一段猫写的日记 + 一个核实过的事实 + 原文链接 | `travel_image.rs` + 日记生成 |
 | 土特产 | **纪念品**：由 tags 派生（"一枚 Wayve 车贴"、"一小袋京都抹茶"） | `tags` |
 | 蜗牛 / 蜜蜂 / 乌龟来访 | **同路猫**：同一天去了同一"地方 / 事件"的其他用户的猫 | 旅程聚合（7.1） |
 | 在家削木头、看书、打盹 | **空闲行为状态机**：看窗、舔毛、伸懒腰、读报、打盹 | 前端（4.2） |
@@ -80,8 +80,8 @@
 - `pages/travel/index.html`：舞台（天空、房间、旅行女孩形象、思想气泡、场景说明）、来信卡片、三项底部导航、toast、dialog。
 - `pages/travel/travel.js` 三个边界（文件头注释写得很清楚）：
   - `NewsBridge.todayLetter()`：请求 `/digest?limit=30`（`travel.js:31`），把所有主题条目摊平，按"有图优先，其次 importance"排序取第一条（`travel.js:42-47`）；失败回退 `DEMO_LETTER`。
-  - `CatScene`：`setLetter` / `react` / `showToast`；`react` 通过移除再添加 `is-reacting` 触发一次弹跳。
-  - `CatShell`：旅行女孩状态、新闻来信、阅读记录、旅迹墙和图鉴由服务端自动驱动；页面只提供观察、阅读和查看记录的入口。
+  - `TravelScene`：`setLetter` / `react` / `showToast`；`react` 通过移除再添加 `is-reacting` 触发一次弹跳。
+  - `TravelShell`：旅行女孩状态、新闻来信、阅读记录、旅迹墙和图鉴由服务端自动驱动；页面只提供观察、阅读和查看记录的入口。
 - `pages/travel/travel.css`：暖纸色系；猫 4 秒无限漂浮、7 秒眨眼；云漂移；≤820px 单列；`prefers-reduced-motion` 已处理；`color-scheme: light`（`:2`）。
 - 旅行女孩身份、旅程、来信和成长记录由服务端持久化；刷新页面会重新读取当前状态。
 
@@ -89,7 +89,7 @@
 
 - 由 `settle_one` 和 `refresh_expiring` 内部调用 `generate_for_owner`，不对外暴露图片生成路由。
 - 流程：旅程结算任务查找 NEWS 条目 → 组装保持旅行女孩身份的提示词 → GPT Image（按 quality 选 flare / sunburst 模型）→ 失败切 Grok → 再失败用新闻原图 → 再失败用内置 SVG 模板 → 上传 tmpfile → 写入旅程明信片。浏览器只读取已经归来的媒体。
-- `Idempotency-Key = travel-cat:{cat}:{item}`，用于上游生成请求的幂等复用。
+- `Idempotency-Key = travel-girl:{girl}:{item}`，用于上游生成请求的幂等复用。
 - `safe_purpose` 是白名单词表（`:174-182`），防注入做得对。
 - `read_limited`、tmpfile 回链同源校验（`:412-418`）都很稳。
 - 生成结果写入旅程明信片记录，归来后由旅行女孩自动带回。
@@ -101,7 +101,7 @@
 
 ### 2.4 数据与配置
 
-- M0–M4 已新增 `cats`、`cat_adoption_drafts`、`cat_growth_events`、`cat_accessory_unlocks`、`cat_memories`、`cat_reading_daily`、`cat_personality_snapshots`、`cat_world_briefs`、`cat_trips`、`cat_postcards`、`cat_encounters` 和 `cat_encounter_members`；真正的分享页、丰富日记和地点选题策略仍按后续阶段增加。
+- M0–M4 已新增 `travel_girls`、`travel_adoption_drafts`、`travel_growth_events`、`travel_accessory_unlocks`、`travel_memories`、`travel_reading_daily`、`travel_personality_snapshots`、`travel_world_briefs`、`travel_trips`、`travel_postcards`、`travel_encounters` 和 `travel_encounter_members`；真正的分享页、丰富日记和地点选题策略仍按后续阶段增加。
 - 新增配置 `TRAVEL_IMAGE_MODEL / TRAVEL_IMAGE_GENERATION_TIMEOUT_SECS`（`src/config.rs`）；图片分辨率和比例由服务端固定为高质量默认值；`TMPFILE_*` 从可选改为必填（这会影响所有部署，包括本地 compose，见 3.11）。
 
 ---
@@ -116,7 +116,7 @@
   1. 按套餐配额：Free 每日 1 次旅程、Pro 每日 3 次（与 `PlanLimits` 放在一起，`src/auth.rs:43-58`），并写进 `/api/me` 的 usage。
   2. 图片生成绑定"旅程归来"（第 5 节），一趟旅程最多一张图。
   3. **按身份复用**：同一只猫和同一条新闻只生成一张身份一致的明信片，落库复用；多人相遇的合影由 encounter 共享。这样不会把第一只猫的外观错误复用给其他猫。
-  4. 给猫单独一个小信号量（例如 1），不要和抓取抢 `run_slots`；再加一个每日预算熔断（复用 `runs.cost_ticks` 的记录方式，把用量写进 `cat_trips`）。
+  4. 给猫单独一个小信号量（例如 1），不要和抓取抢 `run_slots`；再加一个每日预算熔断（复用 `runs.cost_ticks` 的记录方式，把用量写进 `travel_trips`）。
 
 ### 3.2 旅程归来异步体验 —— 已实现
 
@@ -127,7 +127,7 @@
 ### 3.3 手机上看不到明信片 —— 已修复
 
 - 评审起点：≤480px 时来信图片被整体隐藏；生成成功后 `setLetter` 把 `hidden=false`，但 CSS 仍然 `display:none`，用户只看到一条 toast "旅行照片已经寄回来了"，却看不到照片。这是最重要的奖励在最主要的设备上消失。
-- 处理：移除小屏幕对 `.cat-letter__photo` 的强制隐藏，手机端现在可以正常看到来信图片；后续相册仍可增加翻面交互。
+- 处理：移除小屏幕对 `.girl-letter__photo` 的强制隐藏，手机端现在可以正常看到来信图片；后续相册仍可增加翻面交互。
 
 ### 3.4 首页入口徽标永远不亮 —— 低（bug）
 
@@ -137,7 +137,7 @@
 ### 3.5 来信选择没有"语气"过滤 —— 高（产品与品牌风险）
 
 - 位置：`travel.js:42-47`（有图优先 → importance）。
-- 现状：因为只有 𝐏 条目带图（`runner.rs:483,498`），来信几乎总是一条图片新闻；𝐏 与 Events 的 brief 明确包含灾害、公共安全、冲突（`0001_initial.sql:288`、`0006_image_news.sql:12`）。猫"开心地去旅行"到地震、战争现场，是错位甚至冒犯的。生成层面的 "Do not depict graphic events"（`cat_image.rs:167`）只保护画面，不保护选题。
+- 现状：因为只有 𝐏 条目带图（`runner.rs:483,498`），来信几乎总是一条图片新闻；𝐏 与 Events 的 brief 明确包含灾害、公共安全、冲突（`0001_initial.sql:288`、`0006_image_news.sql:12`）。猫"开心地去旅行"到地震、战争现场，是错位甚至冒犯的。生成层面的 "Do not depict graphic events"（`travel_image.rs:167`）只保护画面，不保护选题。
 - 建议：选题挪到服务端并加语气标注（8.2），对 `somber` 类新闻启用**守夜模式**：猫不出行，而是在家读报、点一盏灯，日记庄重克制，并仍给出原文链接。这比"直接排除"更有意义——它承认真实世界有重量，也让猫有了性格深度。
 
 ### 3.6 没有地点字段：一只"旅行"的猫没有目的地 —— 高（结构性）
@@ -158,17 +158,17 @@
 
 ### 3.9 生成结果不持久，相册无从建立 —— 已部分修复
 
-- 评审起点：`cat_image.rs:137-151` 只返回 URL；tmpfile 默认 36 小时过期（生产建议 32 天）。
-- 建议：明信片落库（`cat_postcards` / `cat_trips`），沿用 `media::startup_sync` 的续期模式（`media.rs:278`）在维护循环里续期即将过期的明信片；tmpfile 失效时回退到共享底图或模板。
+- 评审起点：`travel_image.rs:137-151` 只返回 URL；tmpfile 默认 36 小时过期（生产建议 32 天）。
+- 建议：明信片落库（`travel_postcards` / `travel_trips`），沿用 `media::startup_sync` 的续期模式（`media.rs:278`）在维护循环里续期即将过期的明信片；tmpfile 失效时回退到共享底图或模板。
 - 处理：M2 已把归来明信片与旅程结果落库，普通明信片按旅行女孩身份和新闻条目使用 `source_key` 复用；续期、真正相册查询和多媒体回退仍在后续阶段。
 
 ### 3.10 提示词：身份锚很好，但缺少"可变槽位"和"无文字"约束 —— 低
 
-- 位置：`cat_image.rs:165-172`。
+- 位置：`travel_image.rs:165-172`。
 - 做得好的：提示词已经有固定身份锚；M0 后改为读取服务端保存的身份快照（毛色、眼睛、印记和初始配饰）保证跨场景身份一致；"news facts only as inspiration"、禁止真人 / 商标 / 政治 / 血腥。
 - 建议：
   - 增加 "no text, no letters, no captions or watermarks inside the image"，否则模型会把新闻标题渲染进图里，且前端叠加图注时会打架。
-  - 身份锚必须来自 `cats.identity` 与 `cats.initial_accessories`，初始配饰不能被提示词替换；成长解锁的配饰作为追加槽位（帽子、挎包、相机、眼镜——见 6.4），再叠加"时段与天气槽"（黄昏 / 雨天 / 雪）。
+  - 身份锚必须来自 `travel_girls.identity` 与 `travel_girls.initial_accessories`，初始配饰不能被提示词替换；成长解锁的配饰作为追加槽位（帽子、挎包、相机、眼镜——见 6.4），再叠加"时段与天气槽"（黄昏 / 雨天 / 雪）。
   - 语气槽：`joyful / curious / serious` 对应不同的画面气质；`somber` 不生成旅途图，生成"家中窗边的灯"。
   - 如果采用共享底图，提示词中就不该含用户特有信息，个性化留给文字层。
 
@@ -192,11 +192,11 @@
 
 ### 3.14 测试 —— 低
 
-- `cat_image.rs` 有 3 个纯函数测试；选题逻辑在客户端，没有测试。选题挪到服务端后，"语气过滤"、"守夜模式触发"、"未去过优先"、"配额"都应有单元测试；这些是花钱与品牌相关的逻辑。
+- `travel_image.rs` 有 3 个纯函数测试；选题逻辑在客户端，没有测试。选题挪到服务端后，"语气过滤"、"守夜模式触发"、"未去过优先"、"配额"都应有单元测试；这些是花钱与品牌相关的逻辑。
 
 ### 3.15 做得好的地方（值得保留）
 
-- 三个边界（NewsBridge / CatScene / CatShell）与注释里的"未来 TravelEvent 服务"设想，是正确的方向。
+- 三个边界（NewsBridge / TravelScene / TravelShell）与注释里的"未来 TravelEvent 服务"设想，是正确的方向。
 - 回退链（GPT → Grok → 原图 → 模板）保证"永远有一张卡"。
 - `safe_purpose` 白名单、`sanitize_fragment`、`read_limited`、tmpfile 回链同源校验、`Idempotency-Key`。
 - 首页入口极克制：一个会呼吸的小图标，徽标默认隐藏。
@@ -208,10 +208,10 @@
 
 ### 4.1 从"一张 SVG"到"一个有骨骼的角色"
 
-现在的 SVG（`cat/index.html:49-63`）是平铺的 path，只有眼睛有动画。建议重组为可驱动的骨骼：
+现在的 SVG（`girl/index.html:49-63`）是平铺的 path，只有眼睛有动画。建议重组为可驱动的骨骼：
 
 ```
-g#cat
+g#girl
 ├─ g#tail        (transform-origin 在尾根；3 段串联、相位递延，甩起来才像尾巴)
 ├─ g#body
 │   ├─ path.body / path.chest
@@ -261,7 +261,7 @@ g#cat
 - **时间**：窗外天光按真实时钟变化（黎明 / 白天 / 黄昏 / 夜）。有了 `location` 字段后，猫在旅途中"寄回"的场景可以用**目的地**的日出日落——用经纬度纯数学计算，不需要任何 API。
 - **天气**（可选）：Open-Meteo 免费无 key，但受 CSP 限制需服务端代理并缓存（每城市每小时一次）。窗外下雨、飘雪、起雾，猫的行为权重随之变化（下雨天更爱打盹）。
 - **季节与节气**：房间里的植物、窗外颜色随季节；节气 / 节日有极小的装饰（中秋一枚月亮、春节一个红包），低成本高情感。
-- **猫在不在家**：猫出门时，行李箱从房间消失（`cat-suitcase` 已经是独立元素），窗台上留一张便条；这是 4.5 的核心。
+- **猫在不在家**：猫出门时，行李箱从房间消失（`girl-suitcase` 已经是独立元素），窗台上留一张便条；这是 4.5 的核心。
 
 ### 4.5 缺席的力量：空窝的设计
 
@@ -314,7 +314,7 @@ home ──(调度器准备 / 出发)──> away ──(returns_at 到期)─�
 
 ### 5.2 各阶段
 
-- **出发**：旅行女孩根据性格、记忆和当天新闻自动选择 0–3 件行囊道具（影响主题权重，不决定结果）→ 服务端选题（语气过滤 → 用户偏好 → 未去过优先 → 少量随机）→ 创建 `cat_trips`，`returns_at` 在约 90–180 分钟内随机 → 主人只看到旅行女孩已经出发。
+- **出发**：旅行女孩根据性格、记忆和当天新闻自动选择 0–3 件行囊道具（影响主题权重，不决定结果）→ 服务端选题（语气过滤 → 用户偏好 → 未去过优先 → 少量随机）→ 创建 `travel_trips`，`returns_at` 在约 90–180 分钟内随机 → 主人只看到旅行女孩已经出发。
 - **旅途**：空窝 + 便条 + 途中来信。主人只需看看旅行女孩留下的痕迹——没有反馈也是反馈。
 - **归来结算**（服务端，幂等）：
   1. 明信片：先查该猫和该新闻是否已有身份一致的底图；没有则生成一张并落库；失败走回退链。多人相遇的合影单独按 encounter 共享。
@@ -355,7 +355,7 @@ home ──(调度器准备 / 出发)──> away ──(returns_at 到期)─�
 | 翻到历史日期 | `loadOlder` | 探索欲 |
 | 语言切换 | 已有 | 双语倾向 |
 
-- 匿名用户：只在本地累计（guest cat）。
+- 匿名用户：只在本地累计（guest girl）。
 - 登录用户：每 30 秒或 `pagehide` 时用 `sendBeacon` 批量上报 `POST /api/travel/events`；服务端**只存聚合**（按天的 tag 计数、主题计数）以及用于"记忆"的 item_id 集合（可一键清除）。不存逐条阅读时间线。
 
 当前 M3 接口先采用较小的服务端闭环：同一只猫在同一天对同一条新闻只产生一个成长步；`open/view` 信号保留在该事件的 payload 中，重复请求只返回幂等结果。这样阅读信号可以继续扩展，但不会因为重复打开或查看同一条新闻重复解锁成长内容。
@@ -424,7 +424,7 @@ home ──(调度器准备 / 出发)──> away ──(returns_at 到期)─�
 ### 7.1 同路猫（Fellow travellers）
 
 - 明信片背面显示"今天还有 12 只猫来过这里"，并列出若干旅行女孩的名字、外观标记和一句固定短语（"这里的风很大"、"我在这儿丢了一根胡须"）。
-- 数据由 `cat_encounters` 和 `cat_encounter_members` 表记录，按 `(news_item_id 或 location, day)` 聚合；成员数量不限制为两只。
+- 数据由 `travel_encounters` 和 `travel_encounter_members` 表记录，按 `(news_item_id 或 location, day)` 聚合；成员数量不限制为两只。
 - 这是最自然的社交原语：**"同一天读同一件事的人"**。旅行女孩相遇由系统产生，不需要用户先建立关系。
 
 ### 7.2 合影（`safe_purpose` 词表里已经有"社交合影"）
@@ -462,7 +462,7 @@ home ──(调度器准备 / 出发)──> away ──(returns_at 到期)─�
 
 ```sql
 -- 领养预览由服务端保存随机种子；确认接口只接受 draft_id。
-CREATE TABLE cat_adoption_drafts (
+CREATE TABLE travel_adoption_drafts (
     user_id          BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     id               UUID NOT NULL UNIQUE,
     identity_version TEXT NOT NULL,
@@ -470,9 +470,9 @@ CREATE TABLE cat_adoption_drafts (
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 第一阶段每个账户一只主猫。匿名访客的 guest cat 只存在于 localStorage。
+-- 第一阶段每个账户一只主猫。匿名访客的 guest girl 只存在于 localStorage。
 -- name 可以修改；identity / initial_accessories 只在领养确认事务中写入。
-CREATE TABLE cats (
+CREATE TABLE travel_girls (
     id                   UUID PRIMARY KEY,
     owner_user_id        BIGINT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
     name                 TEXT NOT NULL,
@@ -491,30 +491,30 @@ CREATE TABLE cats (
 -- 改名和 last_seen_at 使用独立 UPDATE；成长事件只允许 INSERT。
 
 -- 成长只追加事件；阶段、性格和解锁内容由这些事件计算或幂等更新。
-CREATE TABLE cat_growth_events (
+CREATE TABLE travel_growth_events (
     id          UUID PRIMARY KEY,
-    cat_id      UUID NOT NULL REFERENCES cats(id) ON DELETE CASCADE,
+    travel_id      UUID NOT NULL REFERENCES travel_girls(id) ON DELETE CASCADE,
     event_type  TEXT NOT NULL,
     source_key  TEXT NOT NULL,
     payload     JSONB NOT NULL DEFAULT '{}',
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (cat_id, event_type, source_key)
+    UNIQUE (travel_id, event_type, source_key)
 );
-CREATE INDEX cat_growth_events_cat_idx ON cat_growth_events (cat_id, created_at DESC);
+CREATE INDEX travel_growth_events_travel_idx ON travel_growth_events (travel_id, created_at DESC);
 
 -- 初始配饰不可替换；成长配饰只能新增解锁记录。
-CREATE TABLE cat_accessory_unlocks (
-    cat_id       UUID NOT NULL REFERENCES cats(id) ON DELETE CASCADE,
+CREATE TABLE travel_accessory_unlocks (
+    travel_id       UUID NOT NULL REFERENCES travel_girls(id) ON DELETE CASCADE,
     accessory_id TEXT NOT NULL,
-    source_event UUID REFERENCES cat_growth_events(id) ON DELETE SET NULL,
+    source_event UUID REFERENCES travel_growth_events(id) ON DELETE SET NULL,
     unlocked_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (cat_id, accessory_id)
+    PRIMARY KEY (travel_id, accessory_id)
 );
 
 -- 一趟旅程。归来结算写 postcard_id / diary / souvenir。
-CREATE TABLE cat_trips (
+CREATE TABLE travel_trips (
     id            UUID PRIMARY KEY,
-    cat_id        UUID NOT NULL REFERENCES cats(id) ON DELETE CASCADE,
+    travel_id        UUID NOT NULL REFERENCES travel_girls(id) ON DELETE CASCADE,
     news_item_id  UUID REFERENCES items(id) ON DELETE SET NULL,
     day           DATE NOT NULL,
     status        TEXT NOT NULL,               -- packing|away|vigil|returned_unread|home
@@ -529,12 +529,12 @@ CREATE TABLE cat_trips (
     souvenir      JSONB,
     cost_ticks    BIGINT NOT NULL DEFAULT 0
 );
-CREATE INDEX cat_trips_due_idx ON cat_trips (returns_at) WHERE status = 'away';
-CREATE INDEX cat_trips_cat_idx ON cat_trips (cat_id, departed_at DESC);
-CREATE INDEX cat_trips_same_day_idx ON cat_trips (news_item_id, day);   -- 同路猫
+CREATE INDEX travel_trips_due_idx ON travel_trips (returns_at) WHERE status = 'away';
+CREATE INDEX travel_trips_travel_idx ON travel_trips (travel_id, departed_at DESC);
+CREATE INDEX travel_trips_same_day_idx ON travel_trips (news_item_id, day);   -- 同路猫
 
--- 普通明信片按 cat + news 共享，保证身份一致；多人相遇合影按 encounter 共享。
-CREATE TABLE cat_postcards (
+-- 普通明信片按 girl + news 共享，保证身份一致；多人相遇合影按 encounter 共享。
+CREATE TABLE travel_postcards (
     id            UUID PRIMARY KEY,
     news_item_id  UUID,
     encounter_id  UUID,
@@ -548,28 +548,28 @@ CREATE TABLE cat_postcards (
 );
 
 -- 同一天、同一事件或同一地点的一次多人相遇。
-CREATE TABLE cat_encounters (
+CREATE TABLE travel_encounters (
     id           UUID PRIMARY KEY,
     world_key    TEXT NOT NULL,
     day          DATE NOT NULL,
     news_item_id UUID REFERENCES items(id) ON DELETE SET NULL,
     location     JSONB,
-    postcard_id  UUID REFERENCES cat_postcards(id) ON DELETE SET NULL,
+    postcard_id  UUID REFERENCES travel_postcards(id) ON DELETE SET NULL,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (world_key, day)
 );
 
-CREATE TABLE cat_encounter_members (
-    encounter_id UUID NOT NULL REFERENCES cat_encounters(id) ON DELETE CASCADE,
-    cat_id       UUID NOT NULL REFERENCES cats(id) ON DELETE CASCADE,
+CREATE TABLE travel_encounter_members (
+    encounter_id UUID NOT NULL REFERENCES travel_encounters(id) ON DELETE CASCADE,
+    travel_id       UUID NOT NULL REFERENCES travel_girls(id) ON DELETE CASCADE,
     phrase_id    TEXT,
     joined_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (encounter_id, cat_id)
+    PRIMARY KEY (encounter_id, travel_id)
 );
-CREATE INDEX cat_encounter_members_cat_idx ON cat_encounter_members (cat_id, joined_at DESC);
+CREATE INDEX travel_encounter_members_travel_idx ON travel_encounter_members (travel_id, joined_at DESC);
 
 -- 记忆：只存 id 与标签，不存时间线。
-CREATE TABLE cat_memories (
+CREATE TABLE travel_memories (
     user_id       BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     kind          TEXT NOT NULL,               -- item|tag|place
     key           TEXT NOT NULL,
@@ -579,7 +579,7 @@ CREATE TABLE cat_memories (
 );
 
 -- 阅读信号按天聚合。
-CREATE TABLE cat_reading_daily (
+CREATE TABLE travel_reading_daily (
     user_id   BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     day       DATE NOT NULL,
     topics    JSONB NOT NULL DEFAULT '{}',     -- {"x": 12, "p": 4}
@@ -618,7 +618,7 @@ CREATE TABLE cat_reading_daily (
 1. 配额（按套餐）。
 2. 共享底图（按新闻条目）。
 3. 每日预算熔断（超过阈值只发模板明信片，不发图）。
-   加上观测：`cat_trips.cost_ticks` 汇总进管理员状态行（与"今日成本"并列）。
+   加上观测：`travel_trips.cost_ticks` 汇总进管理员状态行（与"今日成本"并列）。
 
 ### 8.6 通知
 
@@ -636,7 +636,7 @@ CREATE TABLE cat_reading_daily (
 ### 8.8 前端结构建议
 
 - `travel.js` 拆成：`scene.js`（骨骼、状态机、心情）、`store.js`（本地状态 + 与服务端同步、guest→登录迁移）、`api.js`、`shell.js`。仍是原生 JS、无构建。
-- `/travel/` 首屏继续无鉴权可用（guest cat）；登录后用 `/api/travel/me` 水合。
+- `/travel/` 首屏继续无鉴权可用（guest girl）；登录后用 `/api/travel/me` 水合。
 - 首页 `app.js` 增加：阅读信号采集、爪印、入口徽标；三者都是纯增量，不动现有 feed 逻辑。
 
 ---
@@ -645,12 +645,12 @@ CREATE TABLE cat_reading_daily (
 
 | 阶段 | 内容 | 可观测的验收标准 |
 | --- | --- | --- |
-| **M0 领养与身份**（1–2 周） | `cats`；领养预览与确认；身份快照；可修改名字；初始配饰锁定；`cat_growth_events` 基础事件 | 每个账户只能确认一只主猫；确认后身份指纹和初始配饰不可变；改名不改变身份 |
+| **M0 领养与身份**（1–2 周） | `travel_girls`；领养预览与确认；身份快照；可修改名字；初始配饰锁定；`travel_growth_events` 基础事件 | 每个账户只能确认一只主猫；确认后身份指纹和初始配饰不可变；改名不改变身份 |
 | **M1 活着**（1–2 周） | 骨骼化 SVG、状态机、视线跟随、时段与睡眠、心情、词库；已修复 3.3 / 3.7，3.4 首页入口徽标待后续接入；服务端选题 + `tone` + `location` 字段 | 连续观察 60 秒至少看到 3 种不同动作；somber 新闻从不成为不合适的旅行目的地 |
-| **M2 离开与归来**（2–3 周） | `cat_trips / cat_postcards`；自主异步旅程与惰性结算；按猫身份复用明信片；日记；相册落库与续期；配额；邮件通知 | 调度器自动出发；同一只猫和同一条新闻只生成一张身份一致的底图；归来后 24 小时内打开率 |
+| **M2 离开与归来**（2–3 周） | `travel_trips / travel_postcards`；自主异步旅程与惰性结算；按猫身份复用明信片；日记；相册落库与续期；配额；邮件通知 | 调度器自动出发；同一只猫和同一条新闻只生成一张身份一致的底图；归来后 24 小时内打开率 |
 | **M3 记忆与成长**（2 周） | 已接入阅读信号、新闻语气/地点、记忆聚合、追加式配饰解锁、相册/图鉴/相遇查询；后续补性格回响、世界天气、每趟一个词 | 身份快照无变化；成长事件可重放且幂等；图鉴条目增长曲线 |
 | **M4 旅行女孩性格与世界领读**（2–3 周） | 性格投影、每日重要 / 兴趣 / 探索三条领读、事实与观点分层、X 语境隔离、每日快照与周期性反思 | 旅行女孩能解释新闻、表达稳定观点、提出继续了解建议；性格不会因单日刷新闻突然改变 |
-| **M5 多猫共同世界**（2–3 周） | `cat_encounters / cat_encounter_members`；同路猫、多人合影、自动来访、漂流、分享页、首页爪印 | 一次相遇可包含多只猫；合影所有参与猫都能收到；不需要好友或社交开关 |
+| **M5 多猫共同世界**（2–3 周） | `travel_encounters / travel_encounter_members`；同路猫、多人合影、自动来访、漂流、分享页、首页爪印 | 一次相遇可包含多只猫；合影所有参与猫都能收到；不需要好友或社交开关 |
 
 每个阶段结束都应更新 `DESIGN.md`（增加"旅行女孩"一节）与 README 的接口清单。
 
@@ -659,7 +659,7 @@ CREATE TABLE cat_reading_daily (
 ## 10. 需要你拍板的问题
 
 1. **账户与猫的关系**：已确认第一阶段每个账户一只主猫，但"世界"（新闻、天气、同路猫）共享；后期家庭模式另行扩展。
-2. **匿名访客能玩到什么程度**？推荐 guest cat 完全本地、无图片生成、可以"看信"；登录 = 领养并迁移本地状态。
+2. **匿名访客能玩到什么程度**？推荐 guest girl 完全本地、无图片生成、可以"看信"；登录 = 领养并迁移本地状态。
 3. **沉重新闻怎么处理**：守夜模式还是直接排除？推荐守夜，给真实世界应有的重量，也让猫有深度。
 4. **是否接受"共享底图 + 文字个性化"**？这是成本可控的前提；代价是同一天同一新闻的明信片画面相同（合影反而因此成立）。
 5. **社交规则**：已确认社交默认开启，不提供拒绝、屏蔽或暂停入口；第一版使用固定短语和系统动作，不开放自由聊天。
@@ -739,8 +739,8 @@ CREATE TABLE cat_reading_daily (
 明信片提示词（在现有 `travel_prompt` 基础上）建议增补：
 - "No text, letters, captions, logos or watermarks anywhere in the image."
 - 时段与天气槽："Time of day: {dusk|morning|night}. Weather: {clear|rain|snow|fog}."
-- 配饰槽："The cat also wears {accessory}."（共享底图模式下不放个人配饰）
-- somber 时不生成旅途画面，改为："The cat sits by a window at home at night beside a small warm lamp, looking out quietly."
+- 配饰槽："The girl also wears {accessory}."（共享底图模式下不放个人配饰）
+- somber 时不生成旅途画面，改为："The girl sits by a window at home at night beside a small warm lamp, looking out quietly."
 
 ## 附录 D：本次评审核对过的关键位置
 
