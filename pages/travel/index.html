@@ -8,8 +8,8 @@
   <meta name="referrer" content="no-referrer">
   <title>旅行女孩 · 𝑮𝒊𝒓𝒍</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
-  <script src="/travel/initial.js?v=2"></script>
-  <link rel="stylesheet" href="/travel/travel.css?v=11">
+  <script src="/travel/initial.js?v=3"></script>
+  <link rel="stylesheet" href="/travel/travel.css?v=12">
 </head>
 <body class="travel-page">
   <main class="travel-shell" id="travelApp">
@@ -26,7 +26,7 @@
 
     <section class="travel-layout" aria-label="旅行女孩">
       <section class="travel-stage travel-stage--art" aria-label="旅居空间">
-        <img class="travel-latest-photo" id="travelLatestPhoto" alt="" aria-hidden="true" loading="eager">
+        <img class="travel-latest-photo" id="travelLatestPhoto" alt="旅行女孩的最新照片" loading="eager" decoding="async" fetchpriority="high">
         <div class="travel-companion is-identity-pending" id="travelCompanion" role="img" aria-label="旅行女孩正在旅途中">
           <div class="travel-girl-placeholder" aria-hidden="true"><span>TRAVEL GIRL</span></div>
           <span class="travel-thought" id="travelThought">今天的风，闻起来像远方。</span>
@@ -35,6 +35,10 @@
           <span class="travel-weather-dot"></span>
           <span id="travelSceneCaption">午后的窗边 · 适合整理行囊</span>
           <span class="travel-identity-meta" id="travelIdentityMeta" hidden></span>
+        </div>
+        <div class="travel-photo-status" id="travelPhotoStatus" role="status" aria-live="polite">
+          <span id="travelPhotoStatusText">正在读取她的近况…</span>
+          <button id="travelPhotoRetry" type="button" hidden>重新加载照片</button>
         </div>
       </section>
 
@@ -81,6 +85,6 @@
       <button class="travel-button travel-button--primary" id="dialogPrimary" type="button">知道了</button>
     </div>
   </dialog>
-  <script src="/travel/travel.js?v=11" defer></script>
+  <script src="/travel/travel.js?v=12" defer></script>
 </body>
 </html>

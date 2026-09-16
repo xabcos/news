@@ -33,17 +33,20 @@ const MESSAGE_LABELS = Object.freeze({
 });
 // Titles the backend stores that say nothing the card does not already say.
 const REDUNDANT_TITLES = new Set(["旅行女孩动态", "旅行女孩记录", "旅行女孩的一条记录"]);
+const VISUAL_VERSION = "asian-v1";
 
 const TravelScene = (() => {
   const elements = {
     stage: document.querySelector(".travel-stage"),
     companion: document.querySelector("#travelCompanion"),
-    realisticImage: document.querySelector("#travelRealisticImage"),
     latestPhoto: document.querySelector("#travelLatestPhoto"),
     thought: document.querySelector("#travelThought"),
     caption: document.querySelector("#travelSceneCaption"),
     identityMeta: document.querySelector("#travelIdentityMeta"),
     toast: document.querySelector("#travelToast"),
+    photoStatus: document.querySelector("#travelPhotoStatus"),
+    photoStatusText: document.querySelector("#travelPhotoStatusText"),
+    photoRetry: document.querySelector("#travelPhotoRetry"),
   };
   let toastTimer;
   let idleTimer;
@@ -56,7 +59,7 @@ const TravelScene = (() => {
   let displayedPhotoUrl = "";
   let photoLoadToken = 0;
   let photoSwapTimer;
-  const IDLE_ACTIONS = ["blink", "look", "tail", "stretch"];
+  const IDLE_ACTIONS = ["blink", "look", "stretch"];
   const ACTIVITY_GLYPHS = Object.freeze({
     observe: "⌁", packing: "⌂", reading: "✉", wandering: "↝", stretching: "⌒",
     sleeping: "☾", daydreaming: "·",
@@ -172,6 +175,7 @@ const TravelScene = (() => {
 
   function setIdentity(identity, accessories) {
     if (!identity) return;
+    elements.companion.classList.remove("is-identity-pending");
     const identityKey = JSON.stringify([identity.name_seed, identity.hair, identity.skin_tone, identity.silhouette, identity.style, identity.signature, (accessories || []).map((item) => item.id)]);
     ["hair", "skin_tone", "silhouette", "style"].forEach((key) => {
       const value = identity[key];
@@ -226,6 +230,12 @@ const TravelScene = (() => {
     delete document.documentElement.dataset.travelPhotoPending;
   }
 
+  function photoStatus(message, retry = false) {
+    elements.photoStatus.hidden = !message;
+    elements.photoStatusText.textContent = message;
+    elements.photoRetry.hidden = !retry;
+  }
+
   function stopPhotoSwap() {
     window.clearTimeout(photoSwapTimer);
     photoSwapTimer = undefined;
@@ -238,8 +248,11 @@ const TravelScene = (() => {
     photoLoadToken += 1;
     stopPhotoSwap();
     elements.stage.classList.remove("has-latest-photo");
+    elements.latestPhoto.removeAttribute("src");
+    elements.companion.classList.remove("is-identity-pending");
     settlePhotoPending();
     rememberPhoto(travelId, "");
+    photoStatus(travelId ? "正在准备她的第一张照片，完成后会自动显示。" : "登录后，开启她的旅途。");
   }
 
   // Shows one photo: the newest the travel has. `alternates` is only a failure chain —
@@ -253,6 +266,7 @@ const TravelScene = (() => {
     if (nextUrl === lastPhotoUrl) return;
     const previousDisplayedUrl = displayedPhotoUrl;
     lastPhotoUrl = nextUrl;
+    photoStatus("正在加载她的照片…");
     const token = ++photoLoadToken;
     // While the travel is still hidden on first paint, keep it hidden until the photo
     // has loaded; a travel that is already visible is cross-faded once the photo arrives.
@@ -272,6 +286,7 @@ const TravelScene = (() => {
         elements.stage.classList.remove("is-photo-transitioning");
         settlePhotoPending();
         rememberPhoto(travelId, nextUrl);
+        photoStatus("");
       };
       if (previousDisplayedUrl && previousDisplayedUrl !== nextUrl && elements.stage.classList.contains("has-latest-photo")) {
         elements.stage.classList.add("is-photo-transitioning");
@@ -290,6 +305,7 @@ const TravelScene = (() => {
         return;
       }
       clearLatestPhoto(travelId);
+      photoStatus("照片暂时加载失败，可以重新加载。", true);
     };
     preload.src = nextUrl;
   }
@@ -382,16 +398,15 @@ const TravelShell = (() => {
       : derivePresence(nextState.girl);
     const trip = nextState.girl.current_trip;
     TravelScene.setPresence(presence, trip);
-    const travelId = nextState.girl.id;
+    const travelId = `${nextState.girl.id}:${VISUAL_VERSION}`;
     const scene = nextState.scene || nextState.girl.scene || trip?.scene;
     TravelScene.setScene(scene, presence, trip);
     const messages = Array.isArray(nextState.messages) ? nextState.messages : null;
     // Messages arrive newest first, so the head of this list is the latest photo and the
     // rest only stand in when a link has expired.
     const photos = [...new Set([
-      ...(messages || []).map((message) => message.payload?.postcard_url),
+      ...(messages || []).filter((message) => message.payload?.visual_version === VISUAL_VERSION).map((message) => message.payload?.postcard_url),
       scene?.photo_url,
-      trip?.postcard_url,
       // /api/travel/state carries no messages; until /api/travel/home answers, fall back to
       // the photo this browser last showed for this same travel.
       messages ? "" : TravelScene.rememberedPhotoFor(travelId),
@@ -546,6 +561,7 @@ const TravelShell = (() => {
       adoptionPreview = null;
       closeDialog();
       TravelScene.react("旅行女孩来到你的旅居空间了。", "我会记住我们的第一次相遇。 ");
+      await loadHome();
     } catch (error) {
       if (error.status === 409) {
         adoptionPreview = null;
@@ -593,6 +609,7 @@ const TravelShell = (() => {
   }
 
   function bind() {
+    document.querySelector("#travelPhotoRetry")?.addEventListener("click", () => loadHome());
     document.querySelectorAll("[data-journal-filter]").forEach((button) => {
       button.addEventListener("click", () => {
         document.querySelectorAll("[data-journal-filter]").forEach((item) => {
@@ -649,7 +666,7 @@ const TravelShell = (() => {
     await loadTravelState();
     window.setInterval(() => {
       if (document.visibilityState === "visible" && authState === "authenticated" && travelState?.adopted) loadHome();
-    }, 60_000);
+    }, 15_000);
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible" && authState === "authenticated" && travelState?.adopted) loadHome();
     });

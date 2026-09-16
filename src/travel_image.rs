@@ -1,9 +1,8 @@
 //! Server-side travel image generation for the persistent travel companion.
 //!
 //! NEWS remains the source of locations and source photographs. This module turns one
-//! stored story and one adopted identity into a generated travel or life-scene photo. The primary GPT Image 2.5
-//! provider is followed by the ZAI Router Grok image provider, then a sourced NEWS
-//! photograph or a small SVG card keeps the trip usable when both providers fail.
+//! stored story and one fixed identity into a Grok travel or life-scene photo.
+//! Successful portraits from the current visual version provide identity references.
 
 use crate::{
     error::{AppError, Result},
@@ -21,6 +20,11 @@ use uuid::Uuid;
 const MAX_PROMPT_FRAGMENT: usize = 360;
 const MAX_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 const DEFAULT_QUALITY: &str = "medium";
+pub(crate) const VISUAL_VERSION: &str = "asian-v1";
+
+pub(crate) fn postcard_key(girl_id: Uuid, news_item_id: Uuid) -> String {
+    format!("travel:{girl_id}:news:{news_item_id}-{VISUAL_VERSION}")
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -145,7 +149,7 @@ pub(crate) async fn generate_for_owner(
         .as_deref()
         .filter(|key| !key.is_empty())
         .map(|key| format!("travel:{}:scene:{}", girl.id, sanitize_fragment(key)))
-        .unwrap_or_else(|| format!("travel:{}:news:{}", girl.id, item.id));
+        .unwrap_or_else(|| postcard_key(girl.id, item.id));
     let mut cache_transaction = state.pool.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
         .bind(&source_key)
@@ -175,9 +179,9 @@ pub(crate) async fn generate_for_owner(
         request.scene_key.is_some(),
     );
     let anchor_url = sqlx::query_scalar::<_, String>(
-        "SELECT url FROM travel_postcards WHERE source_key LIKE $1 ORDER BY created_at ASC LIMIT 1",
+        "SELECT url FROM travel_postcards WHERE source_key LIKE $1 AND provider = 'grok_image' AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY created_at ASC LIMIT 1",
     )
-    .bind(format!("travel:{}:%", girl.id))
+    .bind(format!("travel:{}:%-{VISUAL_VERSION}", girl.id))
     .fetch_optional(&state.pool)
     .await?
     .filter(|url| url::Url::parse(url).is_ok_and(|value| media::is_public_https_url(&value)));
@@ -400,6 +404,11 @@ fn travel_prompt(
 }
 
 fn identity_description(identity: &Value, accessories: &Value) -> String {
+    let age = identity
+        .get("age")
+        .and_then(Value::as_u64)
+        .unwrap_or(24)
+        .clamp(22, 28);
     let hair = identity
         .get("hair")
         .and_then(Value::as_str)
@@ -429,7 +438,7 @@ fn identity_description(identity: &Value, accessories: &Value) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "the adopted initial accessories".into());
     format!(
-        "an adult young woman with hair {hair}, skin tone {skin}, silhouette {silhouette}, fashion style {style}, and signature accessories {accessory_names}"
+        "a beautiful, youthful and radiant {age}-year-old adult East Asian woman, with a distinct East Asian face, expressive dark brown eyes, hair {hair}, skin tone {skin}, silhouette {silhouette}, fashion style {style}, and signature accessories {accessory_names}. Keep her unmistakably East Asian in every image, with natural facial detail and a lively, charming presence"
     )
 }
 
@@ -450,6 +459,12 @@ async fn call_grok(
     idempotency_key: &str,
     anchor_url: Option<&str>,
 ) -> std::result::Result<GeneratedAsset, ProviderFailure> {
+    let (operation, body) = grok_request(model, prompt, anchor_url);
+    let value = call_provider(state, "grok_image", operation, &body, idempotency_key).await?;
+    parse_asset(&value, "grok_image", model, state).await
+}
+
+fn grok_request(model: &str, prompt: &str, anchor_url: Option<&str>) -> (&'static str, Value) {
     let mut body = json!({
         "model": model,
         "prompt": prompt,
@@ -459,20 +474,22 @@ async fn call_grok(
         "response_format": "b64_json"
     });
     if let Some(anchor_url) = anchor_url {
-        body["images"] = json!([{ "url": anchor_url }]);
+        body["image"] = json!({ "url": anchor_url });
+        ("edits", body)
+    } else {
+        ("generations", body)
     }
-    let value = call_provider(state, "grok_image", &body, idempotency_key).await?;
-    parse_asset(&value, "grok_image", model, "image/jpeg", state).await
 }
 
 async fn call_provider(
     state: &AppState,
     provider: &'static str,
+    operation: &str,
     body: &Value,
     idempotency_key: &str,
 ) -> std::result::Result<Value, ProviderFailure> {
     let endpoint = format!(
-        "{}/v1/images/generations",
+        "{}/v1/images/{operation}",
         state.config.ai_base_url.as_str().trim_end_matches('/')
     );
     let request = state
@@ -517,7 +534,6 @@ async fn parse_asset(
     value: &Value,
     provider: &'static str,
     model: &str,
-    default_content_type: &'static str,
     state: &AppState,
 ) -> std::result::Result<GeneratedAsset, ProviderFailure> {
     let entry = value
@@ -539,9 +555,13 @@ async fn parse_asset(
                 message: "image bytes are empty or too large".into(),
             });
         }
+        let content_type = generated_content_type(&bytes).ok_or_else(|| ProviderFailure {
+            provider,
+            message: "upstream returned an unsupported image format".into(),
+        })?;
         return Ok(GeneratedAsset {
             bytes,
-            content_type: default_content_type,
+            content_type,
             provider,
             model: model.into(),
         });
@@ -574,9 +594,13 @@ async fn parse_asset(
                 message: "downloaded image is empty or too large".into(),
             });
         }
+        let content_type = generated_content_type(&bytes).ok_or_else(|| ProviderFailure {
+            provider,
+            message: "downloaded asset is not a supported image".into(),
+        })?;
         return Ok(GeneratedAsset {
             bytes,
-            content_type: default_content_type,
+            content_type,
             provider,
             model: model.into(),
         });
@@ -585,6 +609,18 @@ async fn parse_asset(
         provider,
         message: "upstream image has neither b64_json nor url".into(),
     })
+}
+
+fn generated_content_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        Some("image/webp")
+    } else {
+        None
+    }
 }
 
 async fn read_limited(
@@ -737,7 +773,54 @@ fn xml_escape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{quality, safe_purpose, sanitize_fragment, xml_escape};
+    use super::{
+        generated_content_type, grok_request, identity_description, postcard_key, quality,
+        safe_purpose, sanitize_fragment, xml_escape,
+    };
+
+    #[test]
+    fn existing_and_new_identities_render_as_adult_asian_women() {
+        let existing = identity_description(&serde_json::json!({}), &serde_json::json!([]));
+        assert!(existing.contains("24-year-old adult East Asian woman"));
+        let young = identity_description(&serde_json::json!({"age": 22}), &serde_json::json!([]));
+        assert!(young.contains("22-year-old adult East Asian woman"));
+        let key = postcard_key(uuid::Uuid::nil(), uuid::Uuid::nil());
+        assert!(key.ends_with("-asian-v1"));
+    }
+
+    #[test]
+    fn reference_photos_use_the_edit_endpoint() {
+        let (operation, body) = grok_request("grok-imagine-image-quality", "portrait", None);
+        assert_eq!(operation, "generations");
+        assert!(body.get("image").is_none());
+        let (operation, body) = grok_request(
+            "grok-imagine-image-quality",
+            "another scene",
+            Some("https://example.test/portrait.png"),
+        );
+        assert_eq!(operation, "edits");
+        assert_eq!(body["image"]["url"], "https://example.test/portrait.png");
+        assert_eq!(body["resolution"], "2k");
+        assert_eq!(body["aspect_ratio"], "2:3");
+    }
+
+    #[test]
+    fn image_types_follow_bytes_instead_of_provider_defaults() {
+        assert_eq!(
+            generated_content_type(b"\x89PNG\r\n\x1a\ncontent"),
+            Some("image/png")
+        );
+        assert_eq!(
+            generated_content_type(b"\xff\xd8\xffcontent"),
+            Some("image/jpeg")
+        );
+        assert_eq!(
+            generated_content_type(b"RIFF1234WEBPcontent"),
+            Some("image/webp")
+        );
+        assert_eq!(generated_content_type(b"<html>Forbidden</html>"), None);
+        assert_eq!(generated_content_type(b""), None);
+    }
 
     #[test]
     fn accepts_supported_quality_values() {

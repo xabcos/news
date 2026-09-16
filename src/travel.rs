@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
-const IDENTITY_VERSION: &str = "travel-girl-v1";
+const IDENTITY_VERSION: &str = "travel-girl-asian-v2";
 const TRAVEL_NARRATIVE_PROMPT_VERSION: &str = "travel-girl-narrative-v2";
 const MAX_TRAVEL_TEXT_CHARS: usize = 700;
 const MAX_SCENE_HINT_CHARS: usize = 240;
@@ -530,7 +530,7 @@ pub(crate) async fn confirm(
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
-        "INSERT INTO travel_autonomy_state (girl_id, next_trip_at) VALUES ($1, NOW() + INTERVAL '6 hours') ON CONFLICT (girl_id) DO NOTHING",
+        "INSERT INTO travel_autonomy_state (girl_id, next_trip_at, next_scene_at) VALUES ($1, NOW() + INTERVAL '6 hours', NOW()) ON CONFLICT (girl_id) DO NOTHING",
     )
     .bind(girl.id)
     .execute(&mut *transaction)
@@ -543,7 +543,7 @@ pub(crate) async fn confirm(
     .bind(format!("welcome:{}", girl.id))
     .bind(json!({
         "title": "欢迎来到旅居空间",
-        "text": format!("{}记住了你们第一次相遇。接下来，它会自己生活、拍下新的动态照片，也会去图片新闻里的地点旅行。", girl.name),
+        "text": format!("{}记住了你们第一次相遇。接下来，她会自己生活、拍下新的动态照片，也会去图片新闻里的地点旅行。", girl.name),
     }))
     .execute(&mut *transaction)
     .await?;
@@ -553,6 +553,9 @@ pub(crate) async fn confirm(
         .await?;
     transaction.commit().await?;
 
+    if let Err(error) = autonomous_tick(&state).await {
+        tracing::warn!(%error, "initial travel photo deferred to scheduler");
+    }
     Ok(Json(travel_view(&state.pool, girl).await?))
 }
 
@@ -879,7 +882,7 @@ async fn auto_scene(state: &AppState, girl_id: Uuid) -> Result<()> {
     .bind(girl_id)
     .fetch_one(&state.pool)
     .await?;
-    let source_id = sqlx::query_scalar::<_, Uuid>(
+    let source_id = sqlx::query_scalar::<_, Option<Uuid>>(
         r#"SELECT COALESCE(
                  (SELECT news_item_id FROM travel_trips
                   WHERE girl_id = $1 AND status IN ('away', 'settling')
@@ -893,6 +896,7 @@ async fn auto_scene(state: &AppState, girl_id: Uuid) -> Result<()> {
     .bind(girl_id)
     .fetch_optional(&state.pool)
     .await?
+    .flatten()
     .ok_or_else(|| AppError::ServiceUnavailable("暂时没有可供旅行女孩出发的图片新闻".into()))?;
     let news = sqlx::query_as::<_, SceneNews>(
         "SELECT title, summary, source, tags, tone, image, location FROM items WHERE id = $1",
@@ -909,6 +913,7 @@ async fn auto_scene(state: &AppState, girl_id: Uuid) -> Result<()> {
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
     let bucket = Utc::now().timestamp().div_euclid(4 * 3600);
+    let scene_key = format!("{bucket}-{}", crate::travel_image::VISUAL_VERSION);
     let (scene, directed_by) =
         match generate_scene_narrative(state, girl_id, bucket, in_trip, &news).await {
             Some(scene) => (scene, "ai"),
@@ -919,7 +924,7 @@ async fn auto_scene(state: &AppState, girl_id: Uuid) -> Result<()> {
         quality: Some("medium".into()),
         purpose: Some("四小时旅行女孩动态照片".into()),
         creative_direction: Some(scene_direction(&scene)),
-        scene_key: Some(format!("{bucket}")),
+        scene_key: Some(scene_key.clone()),
     };
     let generated = crate::travel_image::generate_for_owner(
         state,
@@ -928,7 +933,7 @@ async fn auto_scene(state: &AppState, girl_id: Uuid) -> Result<()> {
         false,
     )
     .await?;
-    let dedupe = format!("scene:{girl_id}:{bucket}");
+    let dedupe = format!("scene:{girl_id}:{scene_key}");
     record_message(
         &state.pool,
         girl_id,
@@ -938,7 +943,8 @@ async fn auto_scene(state: &AppState, girl_id: Uuid) -> Result<()> {
         json!({
             "title": "旅行女孩动态",
             "text": scene.text_zh,
-            "scene_key": bucket,
+            "scene_key": scene_key,
+            "visual_version": crate::travel_image::VISUAL_VERSION,
             "activity": scene.activity,
             "mood": scene.mood,
             "prop": scene.prop,
@@ -955,10 +961,10 @@ async fn auto_scene(state: &AppState, girl_id: Uuid) -> Result<()> {
     .bind(Uuid::new_v4())
     .bind(girl_id)
     .bind(&dedupe)
-    .bind(json!({ "scene_key": bucket, "news_item_id": source_id }))
+    .bind(json!({ "scene_key": scene_key, "news_item_id": source_id }))
     .execute(&state.pool)
     .await?;
-    let mut memories = vec![("scene", bucket.to_string(), scene.text_zh)];
+    let mut memories = vec![("scene", scene_key, scene.text_zh)];
     if let Some(location) = location.filter(|value| !value.trim().is_empty()) {
         memories.push(("place", location.clone(), location));
     }
@@ -1510,7 +1516,7 @@ async fn settle_one(state: &AppState, trip_id: Uuid) -> Result<()> {
     let mut postcard_id = None;
     let mut settlement_error = None;
     if let Some(news_item_id) = trip.news_item_id {
-        let source_key = format!("travel:{}:news:{}", trip.girl_id, news_item_id);
+        let source_key = crate::travel_image::postcard_key(trip.girl_id, news_item_id);
         let existing = sqlx::query_scalar::<_, Uuid>(
             "SELECT id FROM travel_postcards WHERE source_key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
         )
@@ -1594,6 +1600,7 @@ async fn settle_one(state: &AppState, trip_id: Uuid) -> Result<()> {
         Some(trip.id),
         json!({
             "title": "旅行女孩回来了",
+            "visual_version": crate::travel_image::VISUAL_VERSION,
             "text": diary["zh"],
             "trip_id": trip.id,
             "postcard_id": postcard_id,
@@ -1915,10 +1922,12 @@ async fn load_scene(pool: &PgPool, girl_id: Uuid) -> Result<Value> {
            LEFT JOIN travel_postcards p
              ON p.source_key = 'travel:' || m.girl_id::text || ':scene:' || (m.payload->>'scene_key')
            WHERE m.girl_id = $1 AND m.payload ? 'scene_key'
+             AND m.payload->>'visual_version' = $2
            ORDER BY m.created_at DESC
            LIMIT 1"#,
     )
     .bind(girl_id)
+    .bind(crate::travel_image::VISUAL_VERSION)
     .fetch_optional(pool)
     .await?
     {
@@ -2040,6 +2049,8 @@ fn identity_preview(version: &str, seed: &[u8]) -> IdentityPreview {
         },
         identity: json!({
             "kind": "travel_girl",
+            "heritage": "East Asian",
+            "age": 22 + usize::from(digest[6]) % 5,
             "name_seed": names[usize::from(digest[0]) % names.len()],
             "hair": hairs[usize::from(digest[1]) % hairs.len()],
             "skin_tone": skin_tones[usize::from(digest[2]) % skin_tones.len()],
@@ -2115,6 +2126,8 @@ mod tests {
         let first = identity_preview(IDENTITY_VERSION, &seed);
         let second = identity_preview(IDENTITY_VERSION, &seed);
         assert_eq!(first.identity, second.identity);
+        assert_eq!(first.identity["heritage"], "East Asian");
+        assert!((22..=26).contains(&first.identity["age"].as_u64().unwrap()));
         assert_eq!(first.initial_accessories, second.initial_accessories);
         assert_eq!(
             identity_fingerprint(
