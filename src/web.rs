@@ -12,6 +12,12 @@ use tower_http::{services::ServeDir, trace::TraceLayer};
 use url::Url;
 
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
+/// Comfortably above any real file name under `pages/`, but well under the OS's
+/// `NAME_MAX` (255 bytes). Scanners probing for encoding-confusion cache bugs send a
+/// single path segment far longer than that; without this guard it reaches the
+/// `ServeDir` fallback, which fails the filesystem lookup with ENAMETOOLONG and
+/// tower-http logs that as a 500.
+const MAX_PATH_SEGMENT_BYTES: usize = 200;
 const HTTP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const STATIC_MAX_AGE: &str = "public, max-age=300";
 const HTML_MAX_AGE: &str = "public, max-age=60";
@@ -54,6 +60,7 @@ pub(crate) fn router(state: AppState) -> Router {
                 .precompressed_gzip()
                 .append_index_html_on_directories(true),
         )
+        .layer(middleware::from_fn(reject_oversized_path))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -62,6 +69,18 @@ pub(crate) fn router(state: AppState) -> Router {
         .layer(middleware::from_fn(security_headers))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+async fn reject_oversized_path(request: Request, next: Next) -> Response {
+    if path_too_long(request.uri().path()) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    next.run(request).await
+}
+
+fn path_too_long(path: &str) -> bool {
+    path.split('/')
+        .any(|segment| segment.len() > MAX_PATH_SEGMENT_BYTES)
 }
 
 async fn api_not_found() -> Response {
@@ -304,7 +323,16 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
-    use super::origin_matches;
+    use super::{origin_matches, path_too_long};
+
+    #[test]
+    fn path_too_long_flags_a_single_oversized_segment() {
+        assert!(!path_too_long("/cat/assets/photo.png"));
+        assert!(!path_too_long(&format!("/{}", "a".repeat(200))));
+        assert!(path_too_long(&format!("/{}", "a".repeat(201))));
+        // A long total path made of short segments is fine; the OS limit is per-segment.
+        assert!(!path_too_long(&"/a".repeat(200)));
+    }
 
     #[test]
     fn origin_matching_only_relaxes_loopback_hosts_in_dev() {
