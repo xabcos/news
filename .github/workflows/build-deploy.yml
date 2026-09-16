@@ -43,6 +43,8 @@ jobs:
           platforms: linux/amd64
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
           tags: |
             ${{ secrets.DOCKER_HUB_USERNAME }}/${{ github.event.repository.name }}:${{ env.VERSION }}-rust
             ${{ secrets.DOCKER_HUB_USERNAME }}/${{ github.event.repository.name }}:${{ env.CI_DATE }}-rust
@@ -61,6 +63,5 @@ jobs:
           script: |
             set -e
             cd /home/ywgx/1/${{ github.event.repository.name }}
-            docker-compose pull
-            docker-compose up -d
-            docker image prune --all --force;docker system prune -a --volumes -f;docker system prune -a -f
+            docker-compose pull news
+            docker-compose up -d --no-deps --pull never news
