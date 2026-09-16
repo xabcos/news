@@ -2074,8 +2074,8 @@ fn identity_fingerprint(
 
 fn stage_for_events(events: i64) -> &'static str {
     match events {
-        0..=3 => "kitten",
-        4..=8 => "young",
+        0..=3 => "new_friend",
+        4..=8 => "explorer",
         9..=20 => "traveler",
         _ => "old_friend",
     }
@@ -2149,8 +2149,8 @@ mod tests {
 
     #[test]
     fn stages_are_derived_from_event_count() {
-        assert_eq!(stage_for_events(1), "kitten");
-        assert_eq!(stage_for_events(4), "young");
+        assert_eq!(stage_for_events(1), "new_friend");
+        assert_eq!(stage_for_events(4), "explorer");
         assert_eq!(stage_for_events(9), "traveler");
         assert_eq!(stage_for_events(21), "old_friend");
     }
