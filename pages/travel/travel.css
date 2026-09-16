@@ -39,8 +39,8 @@ a { text-decoration: none; }
 html[data-travel-initial-presence="home_sleeping"] .travel-stage--art:not([data-presence]) { background-image: url("/travel/assets/room/room-night.webp"); }
 .travel-stage--art[data-presence="home_sleeping"] { background-image: url("/travel/assets/room/room-night.webp"); }
 .travel-stage--art[data-weather="rain"] { background-image: url("/travel/assets/room/room-rain.webp"); }
-/* Grok travel portraits use a tall composition so the complete figure and location remain visible. */
-.travel-stage.has-latest-photo { height: auto; width: min(100%, 44rem, calc(100svh - 9rem)); margin-inline: auto; aspect-ratio: 2 / 3; }
+/* Preserve the director's portrait, square or landscape composition. */
+.travel-stage.has-latest-photo { height: auto; width: min(100%, 44rem, calc((100svh - 9rem) * var(--travel-photo-ratio, .666667))); margin-inline: auto; aspect-ratio: var(--travel-photo-ratio, .666667); }
 
 .travel-companion { --travel-shift-x: 0rem; --travel-shift-y: 0rem; --travel-rotate: 0deg; --travel-scale: 1; position: absolute; z-index: 2; right: 24%; bottom: 8%; width: min(52%, 19rem); min-width: 12rem; aspect-ratio: 1 / 1.18; animation: travel-float 4s ease-in-out infinite; transition: opacity .18s ease; }
 .travel-companion.is-identity-pending { opacity: 0; }
@@ -50,7 +50,7 @@ html[data-travel-initial-presence="home_sleeping"] .travel-stage--art:not([data-
 .travel-girl-placeholder { display: grid; width: 100%; height: 100%; place-items: end center; padding-bottom: 18%; border-radius: 48% 48% 18% 18%; background: linear-gradient(160deg, rgba(255,245,240,.96), rgba(215,184,186,.9) 52%, rgba(103,119,147,.9)); box-shadow: 0 1rem 2rem rgba(66,48,55,.2); color: rgba(255,255,255,.86); font-size: .68rem; font-weight: 800; letter-spacing: .22em; text-shadow: 0 .1rem .4rem rgba(45,35,43,.3); }
 .travel-girl-placeholder::before { content: ""; position: absolute; top: 11%; width: 35%; aspect-ratio: 1; border-radius: 50%; background: #f1b496; box-shadow: 0 -.35rem 0 1.2rem #513e58; }
 .travel-companion { aspect-ratio: 1; }
-.travel-latest-photo { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; object-fit: cover; object-position: center; opacity: 0; transition: opacity .35s ease; }
+.travel-latest-photo { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; object-fit: contain; object-position: center; opacity: 0; transition: opacity .35s ease; }
 .travel-stage.has-latest-photo .travel-latest-photo { opacity: 1; }
 .travel-stage.has-latest-photo.is-photo-transitioning .travel-latest-photo { opacity: 0; }
 .travel-stage.has-latest-photo .travel-companion { opacity: 0; pointer-events: none; }

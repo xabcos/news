@@ -188,9 +188,8 @@ const TravelScene = (() => {
     if (identityKey === lastIdentityKey) return;
     lastIdentityKey = identityKey;
     const identityLabel = [
-      identity.name_seed || "独特名字",
-      identity.hair || "独特发型",
-      identity.style || "旅行风格",
+      identity.name_seed || "旅行女孩",
+      identity.appearance_summary || "属于她自己的面容与气质",
     ].join(" · ");
     const accessoryLabel = (accessories || []).map((item) => item.name).filter(Boolean).join("、");
     if (elements.identityMeta) {
@@ -248,6 +247,7 @@ const TravelScene = (() => {
     photoLoadToken += 1;
     stopPhotoSwap();
     elements.stage.classList.remove("has-latest-photo");
+    elements.stage.style.removeProperty("--travel-photo-ratio");
     elements.latestPhoto.removeAttribute("src");
     elements.companion.classList.remove("is-identity-pending");
     settlePhotoPending();
@@ -280,6 +280,7 @@ const TravelScene = (() => {
       if (token !== photoLoadToken) return;
       const applyPhoto = () => {
         if (token !== photoLoadToken) return;
+        elements.stage.style.setProperty("--travel-photo-ratio", String(preload.naturalWidth / preload.naturalHeight));
         elements.latestPhoto.src = nextUrl;
         displayedPhotoUrl = nextUrl;
         elements.stage.classList.add("has-latest-photo");
@@ -529,7 +530,7 @@ const TravelShell = (() => {
     const memories = data.memories || [];
     const memoryText = memories.slice(0, 12).map((memory) => `<span>${escapeHtml(memory.label || memory.memory_key)}</span>`).join("");
     const identity = travelState?.girl?.identity || {};
-    const identityText = [identity.name_seed, identity.hair, identity.style, identity.silhouette].filter(Boolean).join(" · ") || "旅行女孩的固定形象";
+    const identityText = [identity.name_seed, identity.appearance_summary].filter(Boolean).join(" · ") || "旅行女孩的固定形象";
     const signature = identity.signature ? `<small>身份签名 · ${escapeHtml(identity.signature)}</small>` : "";
     atlasGrid.innerHTML = `<article class="travel-atlas-card travel-atlas-card--identity"><strong>固定身份</strong><p>${escapeHtml(identityText)}</p>${signature}</article>
       <article class="travel-atlas-card"><strong>成长配饰 · ${accessories.length}</strong><p>${accessories.length ? accessories.map((item) => escapeHtml(item.name || item.id)).join(" · ") : "旅行女孩还在积攒自己的旅途"}</p></article>
