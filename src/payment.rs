@@ -17,13 +17,13 @@ use axum::{
     http::{HeaderMap, HeaderValue, header},
     response::{IntoResponse, Response},
 };
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Utc};
 use hmac::{Hmac, Mac};
 use qrcode::{QrCode, render::svg};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::Sha256;
-use sqlx::FromRow;
+use sqlx::{FromRow, PgPool};
 use std::time::Duration as StdDuration;
 use uuid::Uuid;
 
@@ -33,6 +33,8 @@ pub(crate) const PRO_PRICE_FEN: i64 = 9_900;
 pub(crate) const PRO_DURATION_DAYS: i32 = 31;
 const PAYMENT_CREATE_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 const PAYMENT_CLAIM_TTL: ChronoDuration = ChronoDuration::minutes(2);
+const ORDER_CLEANUP_BATCH_SIZE: i64 = 500;
+const ORDER_CLEANUP_MAX_BATCHES: usize = 20;
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub(crate) struct Plan {
@@ -202,7 +204,8 @@ pub(crate) async fn create_order(
         .await?;
     sqlx::query(
         "UPDATE orders SET status = 'closed', updated_at = NOW() \
-         WHERE user_id = $1 AND plan_code = $2 AND status = 'pending' AND expires_at <= NOW()",
+         WHERE user_id = $1 AND plan_code = $2 AND status = 'pending' \
+         AND (expires_at <= NOW() OR created_at <= NOW() - INTERVAL '1 hour')",
     )
     .bind(user_id)
     .bind(&plan.code)
@@ -319,7 +322,7 @@ pub(crate) async fn create_order(
     let saved_order = sqlx::query_as::<_, Order>(
         r#"
         UPDATE orders
-        SET payment = $2, expires_at = COALESCE($3, expires_at),
+        SET payment = $2, expires_at = LEAST(COALESCE($3, expires_at), created_at + INTERVAL '1 hour'),
             payment_started_at = NULL, updated_at = NOW()
         WHERE id = $1 AND status = 'pending' AND payment_started_at = $4
         RETURNING id, plan_code, out_trade_no, provider_trade_no,
@@ -453,12 +456,131 @@ pub(crate) async fn payment_webhook(
 async fn close_expired_orders(state: &AppState, user_id: i64) -> Result<()> {
     sqlx::query(
         "UPDATE orders SET status = 'closed', updated_at = NOW() \
-         WHERE user_id = $1 AND status = 'pending' AND expires_at <= NOW()",
+         WHERE user_id = $1 AND status = 'pending' \
+         AND (expires_at <= NOW() OR created_at <= NOW() - INTERVAL '1 hour')",
     )
     .bind(user_id)
     .execute(&state.pool)
     .await?;
     Ok(())
+}
+
+/// Runs independently of slow news/image maintenance and also when NEWS
+/// collection is disabled. The first interval tick performs startup catch-up.
+pub(crate) async fn maintenance_loop(pool: PgPool, timezone: chrono_tz::Tz) {
+    let mut interval = tokio::time::interval(StdDuration::from_secs(60));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut cleaned_day = None;
+    loop {
+        interval.tick().await;
+        match close_pending_orders(&pool).await {
+            Ok(closed) if closed > 0 => tracing::info!(closed, "expired unpaid orders closed"),
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "order closure deferred"),
+        }
+        let day = Utc::now().with_timezone(&timezone).date_naive();
+        if cleaned_day != Some(day) {
+            match cleanup_orders(&pool, day).await {
+                Ok(Some(deleted)) => {
+                    cleaned_day = Some(day);
+                    if deleted > 0 {
+                        tracing::info!(deleted, %day, "daily closed-order cleanup completed");
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%error, "daily order cleanup deferred"),
+            }
+        }
+    }
+}
+
+async fn close_pending_orders(pool: &PgPool) -> Result<u64> {
+    let mut total = 0;
+    for _ in 0..ORDER_CLEANUP_MAX_BATCHES {
+        let closed = sqlx::query(
+            r#"WITH expired AS (
+                   SELECT id FROM orders
+                   WHERE status='pending' AND paid_at IS NULL
+                     AND created_at <= NOW() - INTERVAL '1 hour'
+                   ORDER BY created_at,id LIMIT $1 FOR UPDATE SKIP LOCKED
+               )
+               UPDATE orders SET status='closed',updated_at=NOW()
+               WHERE id IN (SELECT id FROM expired)"#,
+        )
+        .bind(ORDER_CLEANUP_BATCH_SIZE)
+        .execute(pool)
+        .await?
+        .rows_affected();
+        total += closed;
+        if closed < ORDER_CLEANUP_BATCH_SIZE as u64 {
+            break;
+        }
+    }
+    Ok(total)
+}
+
+/// The date marker and deletion commit together. A second process or restart
+/// observes the completed day, while a failed transaction can retry safely.
+async fn cleanup_orders(pool: &PgPool, day: NaiveDate) -> Result<Option<u64>> {
+    let mut tx = pool.begin().await?;
+    let locked: bool = sqlx::query_scalar(
+        "SELECT pg_try_advisory_xact_lock(hashtextextended('news:order_cleanup',0))",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if !locked {
+        return Ok(None);
+    }
+    let last_day = sqlx::query_scalar::<_, NaiveDate>(
+        "SELECT last_completed_day FROM maintenance_state WHERE task='order_cleanup'",
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    if last_day.is_some_and(|previous| previous >= day) {
+        return Ok(Some(0));
+    }
+    let mut total = 0;
+    for _ in 0..ORDER_CLEANUP_MAX_BATCHES {
+        let ids = sqlx::query_scalar::<_, i64>(
+            r#"SELECT o.id FROM orders o
+               WHERE o.status='closed' AND o.paid_at IS NULL
+                 AND o.created_at <= NOW() - INTERVAL '1 hour'
+                 AND NOT EXISTS (SELECT 1 FROM payment_events e
+                     WHERE e.out_trade_no=o.out_trade_no AND e.status='paid')
+               ORDER BY o.created_at,o.id LIMIT $1
+               FOR UPDATE OF o SKIP LOCKED"#,
+        )
+        .bind(ORDER_CLEANUP_BATCH_SIZE)
+        .fetch_all(&mut *tx)
+        .await?;
+        if ids.is_empty() {
+            break;
+        }
+        sqlx::query(
+            r#"INSERT INTO payment_events(event_key,out_trade_no,user_id,status,payload)
+               SELECT 'closed:'||out_trade_no,out_trade_no,user_id,'closed',
+                   jsonb_build_object('plan_code',plan_code,'amount_fen',amount_fen,
+                       'duration_days',duration_days,'created_at',created_at,'expires_at',expires_at)
+               FROM orders WHERE id=ANY($1)
+               ON CONFLICT(event_key) DO NOTHING"#,
+        )
+        .bind(&ids).execute(&mut *tx).await?;
+        let deleted = sqlx::query(
+            "DELETE FROM orders WHERE id=ANY($1) AND status='closed' AND paid_at IS NULL",
+        )
+        .bind(&ids)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        total += deleted;
+        if ids.len() < ORDER_CLEANUP_BATCH_SIZE as usize {
+            break;
+        }
+    }
+    sqlx::query("INSERT INTO maintenance_state(task,last_completed_day) VALUES('order_cleanup',$1) ON CONFLICT(task) DO UPDATE SET last_completed_day=EXCLUDED.last_completed_day")
+        .bind(day).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(Some(total))
 }
 
 async fn load_user_order(state: &AppState, user_id: i64, out_trade_no: &str) -> Result<Order> {
@@ -475,7 +597,7 @@ async fn load_user_order(state: &AppState, user_id: i64, out_trade_no: &str) -> 
     .bind(out_trade_no)
     .fetch_optional(&state.pool)
     .await?
-    .ok_or_else(|| AppError::NotFound("订单不存在".into()))
+    .ok_or_else(|| AppError::NotFound("订单不存在或已过期清理，请重新发起支付".into()))
 }
 
 async fn load_order(state: &AppState, order_id: i64) -> Result<Order> {
@@ -565,21 +687,16 @@ async fn apply_payment_event(
     request: &PaymentWebhookRequest,
     payload: Value,
 ) -> Result<(Option<DateTime<Utc>>, bool)> {
-    let event_key = format!("paid:{}", request.out_trade_no);
-    let mut transaction = state.pool.begin().await?;
-    // Use the same per-user lock as order creation so a delayed webhook cannot
-    // race a second tab that is preparing the same pending order.
-    let user_id =
-        sqlx::query_scalar::<_, i64>("SELECT user_id FROM orders WHERE out_trade_no = $1")
-            .bind(&request.out_trade_no)
-            .fetch_optional(&mut *transaction)
-            .await?
-            .ok_or_else(|| AppError::NotFound("订单不存在".into()))?;
-    sqlx::query("SELECT pg_advisory_xact_lock($1)")
-        .bind(user_id)
-        .execute(&mut *transaction)
-        .await?;
-    let order = sqlx::query_as::<_, PaymentOrder>(
+    let (user_id, pro_until, duplicate) = settle_payment(&state.pool, request, payload).await?;
+    crate::topics::wake_personal_topics(state, user_id, crate::auth::PRO_LIMITS.max_topics).await?;
+    Ok((pro_until, duplicate))
+}
+
+async fn lock_payment_order(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    out_trade_no: &str,
+) -> Result<Option<PaymentOrder>> {
+    Ok(sqlx::query_as::<_, PaymentOrder>(
         r#"
         SELECT id, user_id, plan_code, amount_fen,
                duration_days, status, paid_at
@@ -588,10 +705,51 @@ async fn apply_payment_event(
         FOR UPDATE
         "#,
     )
-    .bind(&request.out_trade_no)
-    .fetch_optional(&mut *transaction)
-    .await?
-    .ok_or_else(|| AppError::NotFound("订单不存在".into()))?;
+    .bind(out_trade_no)
+    .fetch_optional(&mut **transaction)
+    .await?)
+}
+
+async fn settle_payment(
+    pool: &PgPool,
+    request: &PaymentWebhookRequest,
+    payload: Value,
+) -> Result<(i64, Option<DateTime<Utc>>, bool)> {
+    let event_key = format!("paid:{}", request.out_trade_no);
+    let mut transaction = pool.begin().await?;
+    // Use the same per-user lock as order creation so a delayed webhook cannot
+    // race a second tab that is preparing the same pending order.
+    let user_id =
+        sqlx::query_scalar::<_, i64>("SELECT user_id FROM orders WHERE out_trade_no = $1 UNION ALL SELECT user_id FROM payment_events WHERE event_key = 'closed:' || $1 AND status = 'closed' LIMIT 1")
+            .bind(&request.out_trade_no)
+            .fetch_optional(&mut *transaction)
+            .await?
+            .ok_or_else(|| AppError::NotFound("订单不存在".into()))?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await?;
+    let order = match lock_payment_order(&mut transaction, &request.out_trade_no).await? {
+        Some(order) => order,
+        None => {
+            // Cleanup removes checkout/QR details, but a signed delayed payment may
+            // reconstruct its immutable purchase terms from the minimal closure event.
+            sqlx::query(
+                r#"INSERT INTO orders(user_id,plan_code,out_trade_no,amount_fen,duration_days,status,created_at,expires_at)
+                   SELECT user_id,payload->>'plan_code',out_trade_no,
+                       (payload->>'amount_fen')::bigint,(payload->>'duration_days')::integer,'closed',
+                       (payload->>'created_at')::timestamptz,(payload->>'expires_at')::timestamptz
+                   FROM payment_events e
+                   WHERE e.event_key='closed:'||$1 AND e.user_id=$2 AND e.status='closed'
+                     AND NOT EXISTS(SELECT 1 FROM orders o WHERE o.out_trade_no=$1)
+                   ON CONFLICT(out_trade_no) DO NOTHING"#,
+            )
+            .bind(&request.out_trade_no).bind(user_id).execute(&mut *transaction).await?;
+            lock_payment_order(&mut transaction, &request.out_trade_no)
+                .await?
+                .ok_or_else(|| AppError::NotFound("订单不存在".into()))?
+        }
+    };
     if order.plan_code != "pro"
         || order.amount_fen != PRO_PRICE_FEN
         || order.duration_days != PRO_DURATION_DAYS
@@ -606,19 +764,13 @@ async fn apply_payment_event(
         .fetch_one(&mut *transaction)
         .await?;
         transaction.commit().await?;
-        crate::topics::wake_personal_topics(
-            state,
-            order.user_id,
-            crate::auth::PRO_LIMITS.max_topics,
-        )
-        .await?;
-        return Ok((pro_until, true));
+        return Ok((order.user_id, pro_until, true));
     }
 
     let inserted = sqlx::query_scalar::<_, i64>(
         r#"
-        INSERT INTO payment_events (event_key, out_trade_no, status, payload)
-        VALUES ($1, $2, 'paid', $3)
+        INSERT INTO payment_events (event_key, out_trade_no, status, payload, user_id)
+        VALUES ($1, $2, 'paid', $3, $4)
         ON CONFLICT (event_key) DO NOTHING
         RETURNING id
         "#,
@@ -626,6 +778,7 @@ async fn apply_payment_event(
     .bind(&event_key)
     .bind(&request.out_trade_no)
     .bind(payload)
+    .bind(order.user_id)
     .fetch_optional(&mut *transaction)
     .await?;
     if inserted.is_none() {
@@ -636,13 +789,7 @@ async fn apply_payment_event(
         .fetch_one(&mut *transaction)
         .await?;
         transaction.commit().await?;
-        crate::topics::wake_personal_topics(
-            state,
-            order.user_id,
-            crate::auth::PRO_LIMITS.max_topics,
-        )
-        .await?;
-        return Ok((pro_until, true));
+        return Ok((order.user_id, pro_until, true));
     }
 
     let now = Utc::now();
@@ -654,11 +801,13 @@ async fn apply_payment_event(
     .await?;
     let base = current.filter(|expires| *expires > now).unwrap_or(now);
     let pro_until = base + ChronoDuration::days(i64::from(order.duration_days));
-    sqlx::query("UPDATE users SET pro_until = $2 WHERE id = $1")
-        .bind(order.user_id)
-        .bind(pro_until)
-        .execute(&mut *transaction)
-        .await?;
+    let pro_until = sqlx::query_scalar::<_, DateTime<Utc>>(
+        "UPDATE users SET pro_until = $2 WHERE id = $1 RETURNING pro_until",
+    )
+    .bind(order.user_id)
+    .bind(pro_until)
+    .fetch_one(&mut *transaction)
+    .await?;
     sqlx::query(
         r#"
         UPDATE orders
@@ -673,12 +822,13 @@ async fn apply_payment_event(
     .bind(order.paid_at.unwrap_or(now))
     .execute(&mut *transaction)
     .await?;
-    transaction.commit().await?;
-    // Topics retained while the account was on Free may have no due slot.
-    // Wake the first eight so the scheduler notices the newly active plan.
-    crate::topics::wake_personal_topics(state, order.user_id, crate::auth::PRO_LIMITS.max_topics)
+    sqlx::query("DELETE FROM payment_events WHERE event_key='closed:'||$1 AND user_id=$2")
+        .bind(&request.out_trade_no)
+        .bind(order.user_id)
+        .execute(&mut *transaction)
         .await?;
-    Ok((Some(pro_until), false))
+    transaction.commit().await?;
+    Ok((order.user_id, Some(pro_until), false))
 }
 
 fn ensure_payment_enabled(state: &AppState) -> Result<()> {
@@ -761,7 +911,7 @@ fn truncate_for_log(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{HmacSha256, PRO_DURATION_DAYS, PRO_PRICE_FEN, fen_amount_input, new_out_trade_no};
+    use super::*;
     use hmac::Mac;
 
     #[test]
@@ -804,5 +954,141 @@ mod tests {
                 .verify_slice(&hex::decode("00").expect("hex"))
                 .is_err()
         );
+    }
+
+    async fn fixture_owner(pool: &PgPool) -> i64 {
+        sqlx::query_scalar("INSERT INTO users(email) VALUES($1) RETURNING id")
+            .bind(format!("payment-{}@example.test", Uuid::new_v4()))
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn fixture_order(pool: &PgPool, user: i64, age_minutes: i64, status: &str) -> String {
+        let number = new_out_trade_no();
+        sqlx::query("INSERT INTO orders(user_id,plan_code,out_trade_no,amount_fen,duration_days,status,created_at,paid_at,payment) VALUES($1,'pro',$2,9900,31,$3,NOW()-($4*INTERVAL '1 minute'),CASE WHEN $3='paid' THEN NOW() END,'{\"code_url\":\"private-checkout-data\"}')")
+            .bind(user).bind(&number).bind(status).bind(age_minutes).execute(pool).await.unwrap();
+        number
+    }
+
+    async fn order_status(pool: &PgPool, number: &str) -> Option<String> {
+        sqlx::query_scalar("SELECT status FROM orders WHERE out_trade_no=$1")
+            .bind(number)
+            .fetch_optional(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an explicitly named disposable PostgreSQL database"]
+    async fn postgres_daily_order_cleanup_preserves_late_payments_and_idempotency() {
+        let url = std::env::var("NEWS_PAYMENT_TEST_DATABASE_URL").expect("disposable database URL");
+        let pool = PgPool::connect(&url).await.unwrap();
+        let database: String = sqlx::query_scalar("SELECT current_database()")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(database.starts_with("news_payment_audit_"));
+        let day = Utc::now().date_naive();
+        let user = fixture_owner(&pool).await;
+        let overdue = fixture_order(&pool, user, 61, "pending").await;
+        let fresh = fixture_order(&pool, user, 59, "pending").await;
+        let closed = fixture_order(&pool, user, 70, "closed").await;
+        let recent_closed = fixture_order(&pool, user, 30, "closed").await;
+        let paid = fixture_order(&pool, user, 90, "paid").await;
+        let recorded_payment = fixture_order(&pool, user, 90, "closed").await;
+        sqlx::query("INSERT INTO payment_events(event_key,out_trade_no,user_id,status,payload) VALUES($1,$2,$3,'paid','{}')")
+            .bind(format!("paid:{recorded_payment}")).bind(&recorded_payment).bind(user).execute(&pool).await.unwrap();
+        assert_eq!(close_pending_orders(&pool).await.unwrap(), 1);
+        assert_eq!(
+            order_status(&pool, &overdue).await.as_deref(),
+            Some("closed")
+        );
+        assert_eq!(
+            order_status(&pool, &fresh).await.as_deref(),
+            Some("pending")
+        );
+        assert_eq!(cleanup_orders(&pool, day).await.unwrap(), Some(2));
+        assert!(order_status(&pool, &overdue).await.is_none());
+        assert!(order_status(&pool, &closed).await.is_none());
+        assert_eq!(order_status(&pool, &paid).await.as_deref(), Some("paid"));
+        assert_eq!(
+            order_status(&pool, &recorded_payment).await.as_deref(),
+            Some("closed")
+        );
+        assert_eq!(
+            order_status(&pool, &recent_closed).await.as_deref(),
+            Some("closed")
+        );
+        let receipt: Value =
+            sqlx::query_scalar("SELECT payload FROM payment_events WHERE event_key=$1")
+                .bind(format!("closed:{overdue}"))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(receipt.get("payment").is_none());
+        assert!(receipt.get("code_url").is_none());
+
+        let later = fixture_order(&pool, user, 61, "pending").await;
+        assert_eq!(close_pending_orders(&pool).await.unwrap(), 1);
+        let restarted = PgPool::connect(&url).await.unwrap();
+        assert_eq!(cleanup_orders(&restarted, day).await.unwrap(), Some(0));
+        assert_eq!(order_status(&pool, &later).await.as_deref(), Some("closed"));
+        assert_eq!(
+            cleanup_orders(&restarted, day + ChronoDuration::days(1))
+                .await
+                .unwrap(),
+            Some(1)
+        );
+        restarted.close().await;
+
+        let request = PaymentWebhookRequest {
+            out_trade_no: overdue.clone(),
+            provider_trade_no: Some("test-provider".into()),
+            status: "paid".into(),
+        };
+        let (_, granted, duplicate) = settle_payment(&pool, &request, json!({"status":"paid"}))
+            .await
+            .unwrap();
+        assert!(!duplicate);
+        assert_eq!(order_status(&pool, &overdue).await.as_deref(), Some("paid"));
+        let (_, repeated, duplicate) = settle_payment(&pool, &request, json!({"status":"paid"}))
+            .await
+            .unwrap();
+        assert!(duplicate);
+        assert_eq!(granted, repeated);
+        let closed_events: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM payment_events WHERE event_key=$1")
+                .bind(format!("closed:{overdue}"))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(closed_events, 0);
+
+        // Either cleanup or the callback may lock first. The account must get
+        // exactly one grant and a durable paid order in both cases.
+        for index in 2..10 {
+            let user = fixture_owner(&pool).await;
+            let number = fixture_order(&pool, user, 61, "closed").await;
+            let request = PaymentWebhookRequest {
+                out_trade_no: number.clone(),
+                provider_trade_no: None,
+                status: "paid".into(),
+            };
+            let (cleaned, settled) = tokio::join!(
+                cleanup_orders(&pool, day + ChronoDuration::days(index)),
+                settle_payment(&pool, &request, json!({"status":"paid"})),
+            );
+            cleaned.unwrap();
+            let (_, granted, duplicate) = settled.unwrap();
+            assert!(!duplicate);
+            assert_eq!(order_status(&pool, &number).await.as_deref(), Some("paid"));
+            let (_, again, duplicate) = settle_payment(&pool, &request, json!({"status":"paid"}))
+                .await
+                .unwrap();
+            assert!(duplicate);
+            assert_eq!(granted, again);
+        }
+        pool.close().await;
     }
 }

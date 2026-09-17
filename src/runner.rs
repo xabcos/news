@@ -29,6 +29,10 @@ const CLEANUP_MAX_BATCHES: usize = 20;
 /// Starts the scheduler (unless disabled) and the maintenance loop.
 pub fn spawn(state: AppState) -> JoinSet<()> {
     let mut tasks = JoinSet::new();
+    tasks.spawn(crate::payment::maintenance_loop(
+        state.pool.clone(),
+        state.config.timezone,
+    ));
     if state.config.scheduler_enabled {
         tasks.spawn(schedule_loop(state.clone()));
         tasks.spawn(maintenance_loop(state));

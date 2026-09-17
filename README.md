@@ -143,6 +143,8 @@ GET    /api/travel/media/{id}         # 私有纪念照；共同合影仅参与�
 
 Pro 订单固定为 ¥99 / 31 天，通过 YPay 的 store-token 接口创建微信 Native 订单。YPay 租户使用 webhook fulfillment，回调地址为 `https://xabcnews.com/api/webhooks/payment`，并将租户密钥与 `PAYMENT_WEBHOOK_SECRET` 保持一致；服务端只接受固定 Pro 金额，回调验签后延长 `users.pro_until`。
 
+未支付订单创建满 1 小时后自动转为 `closed`，独立任务每分钟检查，不依赖用户打开订单页。订单的二维码有效期仍遵循支付网关返回的时间。已关闭且创建满 1 小时的未支付订单每天清理一次，按 `NEWS_TIMEZONE` 的日期计算；服务启动时补做当日尚未执行的清理，数据库保存完成日期，同日重启不会重复执行。已付款订单和支付事件保留。清理时会删除订单详情、二维码等支付载荷，只在支付事件表留下账户、订单号和购买条款；签名有效的延迟成功回调可据此恢复订单并开通权益，重复回调不会重复延长套餐。
+
 `/api/plans` 返回套餐列表和 `checkout_enabled`；未配置完整 YPay 三项时，个人页会保留套餐说明但不显示可点击的升级按钮。
 
 ## 与行 · 𝑨𝒍𝒐𝒏𝒈
@@ -225,12 +227,21 @@ make release-check   # fmt、test、clippy、全部 JS 语法、compose 配置
 
 单元测试覆盖工作台角色边界、调度计算、URL 规范化与指纹、标题相似度、条目校验、真实 Responses 返回样例（`tests/fixtures/`）的解析、ETag/304，以及人物创建参数、图片解码与原件保留、档案完整性和共同事件校验。
 
-需要 PostgreSQL 的共同世界集成测试默认 `ignored`。仅为它创建独立、可丢弃的数据库，名称必须以 `along_world_audit_` 开头，并预先应用全部 migrations；不要使用开发主库或生产数据库。通过专用环境变量传入测试 DSN：
+需要 PostgreSQL 的旅伴集成测试默认 `ignored`。仅为它创建独立、可丢弃的数据库，名称必须以 `along_world_audit_` 开头，并预先应用全部 migrations；不要使用开发主库或生产数据库。通过专用环境变量传入测试 DSN：
 
 ```bash
-ALONG_WORLD_TEST_DATABASE_URL='<独立测试数据库 DSN>' cargo test postgres_ -- --ignored --test-threads=1
+ALONG_WORLD_TEST_DATABASE_URL='<独立测试数据库 DSN>' cargo test postgres_shared_world -- --ignored --test-threads=1
+ALONG_WORLD_TEST_DATABASE_URL='<独立测试数据库 DSN>' cargo test postgres_adoption -- --ignored --test-threads=1
 ```
 
 测试会写入人物、不可变原图、关系和共享记忆夹具，验证默认私密、并发认领与双方事件提交，以及缺少永久肖像的旧旅伴仍能读取状态。结束后可移除整个专用测试数据库；不要通过绕过不可变约束来清理常规数据库。
+
+支付清理集成测试使用另一份已应用全部 migrations 的独立数据库，名称须以 `news_payment_audit_` 开头：
+
+```bash
+NEWS_PAYMENT_TEST_DATABASE_URL='<独立测试数据库 DSN>' cargo test postgres_daily_order_cleanup -- --ignored --test-threads=1
+```
+
+该测试验证一小时关单边界、每天仅清理一次、同日重启、已支付记录保护、清理后的延迟付款以及清理与付款并发时的幂等性。
 
 与行上传入口需反向代理允许 70 MiB 加 multipart 开销；站点模板仅对 `/api/travel/adoption/preview` 设置 `client_max_body_size 80m`，其他 API 仍保持小请求限制。已有服务器配置也需同步该精确路由。可在运行容器中执行 `docker exec news ./news archivecheck` 只读检查独立身份档案（不会连接数据库或运行迁移）。
