@@ -730,7 +730,7 @@ const TravelShell = (() => {
     if (submitting || travelState?.adopted || authState !== "authenticated") return;
     if (!createForm.elements.gender.value) { setOnboardingError("先选择想遇见的他或她。"); return; }
     if (sourceValue() === "photos" && (!selectedPhotos.length || !document.querySelector("#alongConsent").checked)) {
-      setOnboardingError("请选择 1–7 张照片，并确认有权使用这些成年人物的照片。");
+      setOnboardingError("请选择 1–7 张照片，并确认你有权使用这些照片。");
       return;
     }
     stopDraftPolling();
