@@ -17,7 +17,8 @@ use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use sqlx::FromRow;
+use sqlx::{FromRow, PgPool};
+use std::path::Path;
 use uuid::Uuid;
 
 const MAX_PROMPT_FRAGMENT: usize = 360;
@@ -231,7 +232,7 @@ async fn generate_with_lease(
     ).bind(source_key).fetch_optional(&state.pool).await? {
         return Ok(cached_response(item, cached));
     }
-    let assets = crate::travel_assets::companion_assets(state, companion.id).await?;
+    let assets = crate::travel_assets::companion_assets(&state.pool, companion.id).await?;
     let references = if let Some(portrait) = assets
         .iter()
         .find(|a| a.role == "portrait" && a.ordinal == 0)
@@ -313,7 +314,7 @@ async fn generate_with_lease(
         sqlx::query("INSERT INTO travel_identity_assets(id,companion_id,role,ordinal,content_type,image_content_type,original_bytes,image_bytes,sha256,provenance) VALUES($1,$2,'portrait',0,$3,$3,$4,$4,$5,$6) ON CONFLICT DO NOTHING")
             .bind(Uuid::new_v4()).bind(companion.id).bind(generated.content_type).bind(&generated.bytes).bind(checksum)
             .bind(json!({"model":generated.model,"origin":"first_life_portrait"})).execute(&state.pool).await?;
-        archive_companion(state, companion.id).await?;
+        archive_companion(&state.pool, &state.config.travel_archive_dir, companion.id).await?;
     }
     let media_id = if request.scene_key.is_none() {
         let id = Uuid::new_v4();
@@ -517,7 +518,7 @@ pub(crate) async fn generate_shared_photo(
         .bind(id)
         .fetch_one(&state.pool)
         .await?;
-        let assets = crate::travel_assets::companion_assets(state, *id).await?;
+        let assets = crate::travel_assets::companion_assets(&state.pool, *id).await?;
         let portrait = assets
             .iter()
             .find(|asset| asset.role == "portrait" && asset.ordinal == 0)
@@ -555,30 +556,30 @@ pub(crate) async fn generate_shared_photo(
     Ok(json!({"url":format!("/api/travel/media/{id}"),"asset_id":id,"expires_at":null}))
 }
 
-async fn archive_companion(state: &AppState, id: Uuid) -> Result<()> {
+async fn archive_companion(pool: &PgPool, directory: &Path, id: Uuid) -> Result<()> {
     let (identity, accessories) = sqlx::query_as::<_, (Value, Value)>(
         "SELECT identity,initial_accessories FROM travel_companions WHERE id=$1",
     )
     .bind(id)
-    .fetch_one(&state.pool)
+    .fetch_one(pool)
     .await?;
-    let assets = crate::travel_assets::companion_assets(state, id).await?;
+    let assets = crate::travel_assets::companion_assets(pool, id).await?;
     let originals = assets
         .iter()
         .map(|asset| asset.archive())
         .collect::<Vec<_>>();
     crate::travel_archive::write_identity_archive(
-        &state.config.travel_archive_dir,
+        directory,
         id,
         &identity,
         &accessories,
         &originals,
     )
     .await?;
-    crate::travel_archive::verify_identity_archive(&state.config.travel_archive_dir, id).await?;
-    sqlx::query("UPDATE travel_companions SET identity_archive_at=NOW() WHERE id=$1")
+    crate::travel_archive::verify_identity_archive(directory, id).await?;
+    sqlx::query("UPDATE travel_companions SET identity_archive_at=NOW(),identity_archive_error=NULL WHERE id=$1")
         .bind(id)
-        .execute(&state.pool)
+        .execute(pool)
         .await?;
     Ok(())
 }
@@ -587,8 +588,10 @@ pub(crate) async fn archive_pending_identities(state: &AppState) -> Result<()> {
     let ids=sqlx::query_scalar::<_,Uuid>("SELECT c.id FROM travel_companions c WHERE identity_archive_at IS NULL AND identity_archive_error IS NULL AND EXISTS(SELECT 1 FROM travel_identity_assets a WHERE a.companion_id=c.id AND a.role='portrait') ORDER BY adopted_at LIMIT 2")
         .fetch_all(&state.pool).await?;
     for id in ids {
-        if let Err(error) = archive_companion(state, id).await {
-            if error.to_string().contains("既有身份档案与本次内容不同") {
+        if let Err(error) =
+            archive_companion(&state.pool, &state.config.travel_archive_dir, id).await
+        {
+            if matches!(error, AppError::ArchiveConflict) {
                 sqlx::query("UPDATE travel_companions SET identity_archive_error=$2 WHERE id=$1 AND identity_archive_at IS NULL")
                     .bind(id).bind("archive_conflict").execute(&state.pool).await?;
                 tracing::error!(companion_id=%id,"permanent identity archive conflicts with database; automatic retry disabled");
@@ -598,6 +601,42 @@ pub(crate) async fn archive_pending_identities(state: &AppState) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Explicit recovery of suspended archives after a migration or restoration.
+/// Disk content is verified against the database before a flag can be cleared.
+/// This command starts no schedulers, generates no images and runs no migrations.
+pub async fn reconcile_identity_archives(config: &crate::config::Config) -> Result<usize> {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&config.database_url)
+        .await?;
+    let ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM travel_companions WHERE identity_archive_error='archive_conflict' ORDER BY adopted_at",
+    )
+    .fetch_all(&pool)
+    .await?;
+    let mut verified = 0;
+    let mut remaining = 0;
+    for id in ids {
+        match archive_companion(&pool, &config.travel_archive_dir, id).await {
+            Ok(()) => verified += 1,
+            Err(error) => {
+                tracing::warn!(companion_id=%id,%error,"identity archive remains suspended");
+                remaining += 1;
+            }
+        }
+    }
+    pool.close().await;
+    if remaining > 0 {
+        return Err(AppError::Internal(
+            format!(
+                "已核验并恢复 {verified} 份档案，另有 {remaining} 份未通过核验，错误标记已保留"
+            )
+            .into(),
+        ));
+    }
+    Ok(verified)
 }
 
 async fn renew_archived_postcard(

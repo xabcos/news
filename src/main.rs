@@ -27,6 +27,12 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    if std::env::args().nth(1).as_deref() == Some("archivereconcile") {
+        let count = news::travel_image::reconcile_identity_archives(&Config::from_env()?).await?;
+        println!("Verified and reconciled {count} suspended Along identity archives");
+        return Ok(());
+    }
+
     let state = AppState::new(Config::from_env()?).await?;
     // Refreshing expired images can involve several upstream requests. Start it in the
     // background so a slow tmpfile or news source never delays the HTTP listener.

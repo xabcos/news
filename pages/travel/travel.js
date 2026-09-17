@@ -368,6 +368,7 @@ const TravelShell = (() => {
   let draftEpoch = 0;
   let draftTimer;
   let activeDraftId = null;
+  let activeRequestId = null;
   let submitting = false;
   let confirming = false;
   let portraitLoaded = false;
@@ -576,6 +577,7 @@ const TravelShell = (() => {
     stopDraftPolling();
     adoptionPreview = null;
     activeDraftId = null;
+    activeRequestId = null;
     portraitLoaded = false;
     portrait.removeAttribute("src");
     showOnboarding();
@@ -645,6 +647,11 @@ const TravelShell = (() => {
     if (epoch !== draftEpoch || travelState?.adopted) return;
     if (!draft || draft.status === "empty") {
       editMeeting();
+      return;
+    }
+    if (activeRequestId && draft.request_id !== activeRequestId) {
+      stopDraftPolling();
+      showWaiting("这次创建尚未确认，或初遇已在其他页面更新。请返回调整后重新提交。");
       return;
     }
     if (activeDraftId && draft.draft_id && activeDraftId !== draft.draft_id) {
@@ -741,12 +748,14 @@ const TravelShell = (() => {
     stopDraftPolling();
     const epoch = draftEpoch;
     activeDraftId = null;
+    activeRequestId = crypto.randomUUID();
     adoptionPreview = null;
     setOnboardingError();
     submitting = true;
     updateCreateState();
     document.querySelector("#alongBackToEdit").disabled = true;
     const body = new FormData();
+    body.set("request_id", activeRequestId);
     body.set("source", sourceValue());
     if (sourceValue() !== "photos") body.set("gender", createForm.elements.gender.value);
     body.set("name", document.querySelector("#alongName").value.trim());
@@ -817,6 +826,7 @@ const TravelShell = (() => {
         showOnboarding();
         stopDraftPolling();
         activeDraftId = null;
+        activeRequestId = null;
         if (data.draft && data.draft.status !== "empty") applyDraft(data.draft, draftEpoch);
         updateCreateState();
       } else {
@@ -862,8 +872,9 @@ const TravelShell = (() => {
     document.querySelector("#alongSharedEvents").innerHTML = events.length ? events.map((event) => {
       const names = (event.participants || []).map((person) => person.name).filter(Boolean).join(" · ");
       const photo = event.photo?.url;
+      const place = event.location?.name || event.location?.country || "";
       const pending = event.status === "photo_failed" ? "共同经历已珍藏，合影暂未完成。" : "共同经历已珍藏，合影正在准备。";
-      return `<article class="travel-journal-card along-shared-card">${photo ? `<div class="travel-journal-card__photo" data-photo-frame><img src="${escapeHtml(photo)}" alt="${escapeHtml(names)}的共同旅行合影" loading="lazy"></div>` : `<div class="along-photo-pending">${pending}</div>`}<div class="travel-journal-card__kind">${escapeHtml(names)}</div><h3>${escapeHtml(event.story?.title || "共同的旅途")}</h3><p>${escapeHtml(event.story?.text_zh || event.story?.activity || "这一刻，成为了彼此的共同回忆。")}</p><time datetime="${escapeHtml(event.happened_at)}">${escapeHtml([event.location, relativeTime(event.happened_at)].filter(Boolean).join(" · "))}</time></article>`;
+      return `<article class="travel-journal-card along-shared-card">${photo ? `<div class="travel-journal-card__photo" data-photo-frame><img src="${escapeHtml(photo)}" alt="${escapeHtml(names)}的共同旅行合影" loading="lazy"></div>` : `<div class="along-photo-pending">${pending}</div>`}<div class="travel-journal-card__kind">${escapeHtml(names)}</div><h3>${escapeHtml(event.story?.title || "共同的旅途")}</h3><p>${escapeHtml(event.story?.text_zh || event.story?.activity || "这一刻，成为了彼此的共同回忆。")}</p><time datetime="${escapeHtml(event.happened_at)}">${escapeHtml([place, relativeTime(event.happened_at)].filter(Boolean).join(" · "))}</time></article>`;
     }).join("") : '<div class="travel-empty">下一次相遇，或许就在下一段旅途。</div>';
     bindPhotoFallback(document.querySelector("#alongSharedEvents"));
   }

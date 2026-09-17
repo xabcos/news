@@ -242,7 +242,7 @@ fn compare_existing(directory: &Path, companion_id: Uuid, expected: &Manifest) -
     // be unchanged.  `read_verified_archive` has already checked each
     // archive filename, size and digest against its own manifest.
     if !equivalent_manifest(&existing, expected) {
-        return Err(invalid("既有身份档案与本次内容不同，拒绝覆盖"));
+        return Err(AppError::ArchiveConflict);
     }
     Ok(())
 }
@@ -547,7 +547,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(
+        assert!(matches!(
             write_identity_archive(
                 &root.0,
                 companion,
@@ -555,9 +555,9 @@ mod tests {
                 &json!([]),
                 &assets
             )
-            .await
-            .is_err()
-        );
+            .await,
+            Err(AppError::ArchiveConflict)
+        ));
         // Asset UUIDs belong to database rows and may change during a
         // restore.  Identical original/reference bytes still describe the
         // same permanent identity and must not trigger a rewrite.

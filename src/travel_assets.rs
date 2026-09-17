@@ -13,7 +13,7 @@ use axum::{
 use image::{ImageDecoder, ImageFormat, ImageReader, Limits, codecs::jpeg::JpegEncoder};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sqlx::FromRow;
+use sqlx::{FromRow, PgPool};
 use std::io::Cursor;
 use uuid::Uuid;
 
@@ -123,9 +123,9 @@ impl IdentityAsset {
     }
 }
 
-pub(crate) async fn companion_assets(state: &AppState, id: Uuid) -> Result<Vec<IdentityAsset>> {
+pub(crate) async fn companion_assets(pool: &PgPool, id: Uuid) -> Result<Vec<IdentityAsset>> {
     let rows=sqlx::query_as::<_,IdentityAsset>("SELECT id,role,ordinal,content_type,image_content_type,original_bytes,image_bytes,sha256 FROM travel_identity_assets WHERE companion_id=$1 ORDER BY CASE role WHEN 'portrait' THEN 0 ELSE 1 END,ordinal")
-        .bind(id).fetch_all(&state.pool).await?;
+        .bind(id).fetch_all(pool).await?;
     verify_assets(&rows)?;
     Ok(rows)
 }

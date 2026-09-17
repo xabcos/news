@@ -36,6 +36,8 @@ pub enum AppError {
     ServiceUnavailable(Cow<'static, str>),
     #[error("{0}")]
     Internal(Cow<'static, str>),
+    #[error("既有身份档案与数据库内容不同，拒绝覆盖")]
+    ArchiveConflict,
     #[error(transparent)]
     Sqlx(#[from] sqlx::Error),
     #[error(transparent)]
@@ -64,6 +66,7 @@ impl AppError {
             }
             Self::Config(_)
             | Self::Internal(_)
+            | Self::ArchiveConflict
             | Self::Sqlx(_)
             | Self::Migrate(_)
             | Self::Json(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -74,6 +77,7 @@ impl AppError {
         match self {
             Self::Config(_)
             | Self::Internal(_)
+            | Self::ArchiveConflict
             | Self::Sqlx(_)
             | Self::Migrate(_)
             | Self::Redis(_)

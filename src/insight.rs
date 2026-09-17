@@ -648,7 +648,7 @@ async fn execute(state: &AppState, window_start: DateTime<Utc>) -> Result<Comple
     };
     let body = json!({
         "model": state.config.ai_insight_model,
-        "reasoning": { "effort": reasoning_effort(&state.config.ai_insight_model) },
+        "reasoning": { "effort": "xhigh" },
         "store": false,
         "tools": tools,
         "tool_choice": "auto",
@@ -677,16 +677,6 @@ async fn execute(state: &AppState, window_start: DateTime<Utc>) -> Result<Comple
         usage,
         payload: stored,
     })
-}
-
-fn reasoning_effort(model: &str) -> &'static str {
-    if model.starts_with("grok") {
-        "xhigh"
-    } else {
-        // The production relay currently accepts xhigh for the GPT insight
-        // route and rejects max, even though some model docs list max.
-        "xhigh"
-    }
 }
 
 fn research_citations(reply: &Value) -> Vec<InsightResearchSource> {
@@ -986,7 +976,7 @@ fn clip(value: &str, max: usize) -> String {
 mod tests {
     use super::{
         InsightAnalysis, InsightCache, InsightSignal, InsightSource, cited_sources, daily_average,
-        percent_change, reasoning_effort, research_citations,
+        percent_change, research_citations,
     };
     use crate::digest::Rendered;
     use chrono::Utc;
@@ -1084,12 +1074,6 @@ mod tests {
         let sources = research_citations(&reply);
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].title, "Data");
-    }
-
-    #[test]
-    fn selects_reasoning_effort_for_model_family() {
-        assert_eq!(reasoning_effort("grok-4.6"), "xhigh");
-        assert_eq!(reasoning_effort("gpt-6-astra"), "xhigh");
     }
 
     #[test]
