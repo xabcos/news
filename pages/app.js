@@ -206,6 +206,18 @@ async function loadCatalog() {
   }
 }
 
+// Logged-in tabs come from /api/me/feed, which the insight path does not otherwise call.
+async function personalCatalog(signal) {
+  try {
+    const payload = await fetchJson(`/api/me/feed?limit=1`, { signal });
+    return { topics: payload.topics || [], expired: false };
+  } catch (error) {
+    if (error.name === "AbortError") throw error;
+    if ([401, 403].includes(error.status)) return { topics: null, expired: true };
+    return { topics: null, expired: false };
+  }
+}
+
 function search(extra = {}) {
   const params = new URLSearchParams();
   if (state.topic) params.set("topic", state.topic);
@@ -389,8 +401,20 @@ async function loadInsight(silent = false) {
     setStatus("");
   }
   try {
-    const payload = await fetchJson("/insight", { signal });
+    const needCatalog = state.personal && !state.topics.length;
+    const [payload, catalog] = await Promise.all([
+      fetchJson("/insight", { signal }),
+      needCatalog ? personalCatalog(signal) : Promise.resolve(null),
+    ]);
     if (epoch !== state.epoch) return;
+    if (catalog?.expired) {
+      clearViewerRole();
+      state.personal = false;
+      await loadCatalog();
+    } else if (catalog?.topics) {
+      state.topics = catalog.topics;
+      renderTabs();
+    }
     if (silent
       && payload.insight?.generated_at
       && payload.insight.generated_at === state.insight?.generated_at) {
