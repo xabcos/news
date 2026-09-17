@@ -14,7 +14,7 @@ use crate::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{DateTime, Utc};
 use reqwest::multipart::{Form, Part};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool};
@@ -30,20 +30,16 @@ pub(crate) fn postcard_key(companion_id: Uuid, news_item_id: Uuid) -> String {
     format!("travel:{companion_id}:news:{news_item_id}-{VISUAL_VERSION}")
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug)]
 pub(crate) struct GenerateRequest {
     pub(crate) news_item_id: Uuid,
-    #[serde(default)]
     pub(crate) purpose: Option<String>,
     /// Internal, server-generated creative direction. It is never accepted from
     /// an untrusted client and is bounded again before entering the prompt.
-    #[serde(default)]
     pub(crate) creative_direction: Option<String>,
     /// Internal scene bucket used by the autonomous life loop. Including it in the
     /// cache key lets one story produce many distinct life photos without replacing
     /// the trip's canonical postcard.
-    #[serde(default)]
     pub(crate) scene_key: Option<String>,
 }
 
@@ -52,7 +48,6 @@ struct NewsRow {
     id: Uuid,
     title: String,
     summary: String,
-    url: String,
     source: String,
     tone: String,
     location: Option<Value>,
@@ -67,26 +62,11 @@ struct CompanionIdentityRow {
     gender: String,
 }
 
+/// Internal result used by scene updates and trip settlement.
 #[derive(Debug, FromRow)]
-struct CachedPostcard {
-    provider: String,
-    model: String,
-    url: String,
-    expires_at: Option<DateTime<Utc>>,
-    creative_plan: Value,
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct GenerateResponse {
-    pub(crate) status: &'static str,
-    pub(crate) provider: &'static str,
-    pub(crate) model: String,
+pub(crate) struct GeneratedPhoto {
+    #[sqlx(rename = "url")]
     pub(crate) image_url: String,
-    pub(crate) expires_at: Option<DateTime<Utc>>,
-    pub(crate) news_item_id: Uuid,
-    pub(crate) source_url: String,
-    pub(crate) source: String,
-    pub(crate) title: String,
     pub(crate) creative_plan: Value,
 }
 
@@ -125,7 +105,7 @@ pub(crate) async fn generate_for_owner(
     owner_user_id: i64,
     request: &GenerateRequest,
     force_refresh: bool,
-) -> Result<GenerateResponse> {
+) -> Result<GeneratedPhoto> {
     let _permit = state
         .travel_image_slots
         .clone()
@@ -133,7 +113,7 @@ pub(crate) async fn generate_for_owner(
         .map_err(|_| AppError::TooManyRequests("当前生成任务较多，请稍后重试".into()))?;
 
     let item = sqlx::query_as::<_, NewsRow>(
-        "SELECT items.id, items.title, items.summary, items.url, items.source, items.tone, items.location, items.image FROM items JOIN topics ON topics.id = items.topic_id WHERE items.id = $1 AND items.hidden = FALSE AND (topics.owner_user_id IS NULL OR topics.owner_user_id = $2)",
+        "SELECT items.id, items.title, items.summary, items.source, items.tone, items.location, items.image FROM items JOIN topics ON topics.id = items.topic_id WHERE items.id = $1 AND items.hidden = FALSE AND (topics.owner_user_id IS NULL OR topics.owner_user_id = $2)",
     )
     .bind(request.news_item_id)
     .bind(owner_user_id)
@@ -161,15 +141,15 @@ pub(crate) async fn generate_for_owner(
         .execute(&mut *cache_transaction)
         .await?;
     if !force_refresh
-        && let Some(cached) = sqlx::query_as::<_, CachedPostcard>(
-            "SELECT provider, model, url, expires_at, creative_plan FROM travel_postcards WHERE source_key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+        && let Some(cached) = sqlx::query_as::<_, GeneratedPhoto>(
+            "SELECT url, creative_plan FROM travel_postcards WHERE source_key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
         )
         .bind(&source_key)
         .fetch_optional(&mut *cache_transaction)
         .await?
         {
             cache_transaction.commit().await?;
-            return Ok(cached_response(&item, cached));
+            return Ok(cached);
         }
     // Release the database connection before the provider and tmpfile calls. The
     // advisory lock above only protects the short cache check; the final
@@ -231,19 +211,18 @@ async fn generate_with_lease(
     source_key: &str,
     purpose: &str,
     force_refresh: bool,
-) -> Result<GenerateResponse> {
+) -> Result<GeneratedPhoto> {
     // Recheck after the lease acquisition, since another worker may have finished
     // between our initial cache read and acquiring the lease.
-    if !force_refresh && let Some(cached) = sqlx::query_as::<_, CachedPostcard>(
-        "SELECT provider, model, url, expires_at, creative_plan FROM travel_postcards WHERE source_key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+    if !force_refresh && let Some(cached) = sqlx::query_as::<_, GeneratedPhoto>(
+        "SELECT url, creative_plan FROM travel_postcards WHERE source_key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
     ).bind(source_key).fetch_optional(&state.pool).await? {
-        return Ok(cached_response(item, cached));
+        return Ok(cached);
     }
     let references = crate::travel_assets::companion_references(&state.pool, companion.id).await?;
     let mut effective_identity = companion.identity.clone();
     effective_identity["gender"] = json!(companion.gender);
-    if force_refresh && let Some(renewed) = renew_archived_postcard(state, item, source_key).await?
-    {
+    if force_refresh && let Some(renewed) = renew_archived_postcard(state, source_key).await? {
         return Ok(renewed);
     }
     let renewal_plan = if force_refresh {
@@ -327,7 +306,7 @@ async fn generate_with_lease(
             expires_at: None,
         }
     } else {
-        publish_asset(state, &generated).await?
+        publish_asset(state, &generated.bytes, generated.content_type).await?
     };
     let mut write_transaction = state.pool.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
@@ -335,15 +314,15 @@ async fn generate_with_lease(
         .execute(&mut *write_transaction)
         .await?;
     if !force_refresh
-        && let Some(cached) = sqlx::query_as::<_, CachedPostcard>(
-            "SELECT provider, model, url, expires_at, creative_plan FROM travel_postcards WHERE source_key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+        && let Some(cached) = sqlx::query_as::<_, GeneratedPhoto>(
+            "SELECT url, creative_plan FROM travel_postcards WHERE source_key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
         )
         .bind(source_key)
         .fetch_optional(&mut *write_transaction)
         .await?
         {
             write_transaction.commit().await?;
-            return Ok(cached_response(item, cached));
+            return Ok(cached);
         }
     sqlx::query(
         r#"
@@ -375,16 +354,8 @@ async fn generate_with_lease(
     .execute(&mut *write_transaction)
     .await?;
     write_transaction.commit().await?;
-    Ok(GenerateResponse {
-        status: status_for_provider(generated.provider),
-        provider: generated.provider,
-        model: generated.model,
+    Ok(GeneratedPhoto {
         image_url: published.url,
-        expires_at: published.expires_at,
-        news_item_id: item.id,
-        source_url: item.url.clone(),
-        source: item.source.clone(),
-        title: item.title.clone(),
         creative_plan: serde_json::to_value(plan)?,
     })
 }
@@ -623,62 +594,26 @@ pub async fn reconcile_identity_archives(config: &crate::config::Config) -> Resu
     Ok(verified)
 }
 
-async fn renew_archived_postcard(
-    state: &AppState,
-    item: &NewsRow,
-    key: &str,
-) -> Result<Option<GenerateResponse>> {
-    let row=sqlx::query_as::<_,(Vec<u8>,String,String,Value)>("SELECT a.image_bytes,a.content_type,p.model,p.creative_plan FROM travel_postcards p JOIN travel_media_assets a ON a.id=p.media_asset_id WHERE p.source_key=$1")
+async fn renew_archived_postcard(state: &AppState, key: &str) -> Result<Option<GeneratedPhoto>> {
+    let row=sqlx::query_as::<_,(Vec<u8>,String,Value)>("SELECT a.image_bytes,a.content_type,p.creative_plan FROM travel_postcards p JOIN travel_media_assets a ON a.id=p.media_asset_id WHERE p.source_key=$1")
         .bind(key).fetch_optional(&state.pool).await?;
-    let Some((bytes, content_type, model, creative_plan)) = row else {
+    let Some((bytes, content_type, creative_plan)) = row else {
         return Ok(None);
     };
     let mime = generated_content_type(&bytes)
         .filter(|mime| *mime == content_type)
         .ok_or_else(|| AppError::Internal("纪念照片校验失败".into()))?;
-    let published = publish_asset(
-        state,
-        &GeneratedAsset {
-            bytes,
-            content_type: mime,
-            provider: "gpt_image",
-            model: model.clone(),
-        },
-    )
-    .await?;
+    let published = publish_asset(state, &bytes, mime).await?;
     sqlx::query("UPDATE travel_postcards SET url=$2,expires_at=$3 WHERE source_key=$1")
         .bind(key)
         .bind(&published.url)
         .bind(published.expires_at)
         .execute(&state.pool)
         .await?;
-    Ok(Some(GenerateResponse {
-        status: "generated",
-        provider: "gpt_image",
-        model,
+    Ok(Some(GeneratedPhoto {
         image_url: published.url,
-        expires_at: published.expires_at,
-        news_item_id: item.id,
-        source_url: item.url.clone(),
-        source: item.source.clone(),
-        title: item.title.clone(),
         creative_plan,
     }))
-}
-
-fn cached_response(item: &NewsRow, cached: CachedPostcard) -> GenerateResponse {
-    GenerateResponse {
-        status: status_for_provider(&cached.provider),
-        provider: provider_for_response(&cached.provider),
-        model: cached.model,
-        image_url: cached.url,
-        expires_at: cached.expires_at,
-        news_item_id: item.id,
-        source_url: item.url.clone(),
-        source: item.source.clone(),
-        title: item.title.clone(),
-        creative_plan: cached.creative_plan,
-    }
 }
 
 pub(crate) async fn refresh_expiring(state: &AppState) -> Result<()> {
@@ -742,24 +677,6 @@ pub(crate) async fn refresh_expiring(state: &AppState) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn provider_for_response(provider: &str) -> &'static str {
-    match provider {
-        "gpt_image" => "gpt_image",
-        "grok_image" => "grok_image",
-        "news_source" => "news_source",
-        "template" => "template",
-        _ => "cached",
-    }
-}
-
-fn status_for_provider(provider: &str) -> &'static str {
-    match provider {
-        "template" => "template_fallback",
-        "news_source" => "source_fallback",
-        _ => "generated",
-    }
 }
 
 fn news_context(item: &NewsRow) -> Value {
@@ -1091,12 +1008,16 @@ async fn read_limited(
     Ok(bytes)
 }
 
-async fn publish_asset(state: &AppState, asset: &GeneratedAsset) -> Result<PublishedAsset> {
+async fn publish_asset(
+    state: &AppState,
+    bytes: &[u8],
+    content_type: &str,
+) -> Result<PublishedAsset> {
     let base_url =
         state.config.tmpfile_base_url.as_ref().ok_or_else(|| {
             AppError::Config("TMPFILE_BASE_URL 必须配置后才能发布旅伴图片".into())
         })?;
-    upload_tmpfile(state, base_url, asset)
+    upload_tmpfile(state, base_url, bytes, content_type)
         .await
         .ok_or_else(|| AppError::ServiceUnavailable("旅行图片存储暂时不可用".into()))
 }
@@ -1104,18 +1025,18 @@ async fn publish_asset(state: &AppState, asset: &GeneratedAsset) -> Result<Publi
 async fn upload_tmpfile(
     state: &AppState,
     base_url: &url::Url,
-    asset: &GeneratedAsset,
+    bytes: &[u8],
+    content_type: &str,
 ) -> Option<PublishedAsset> {
-    let extension = match asset.content_type {
+    let extension = match content_type {
         "image/jpeg" => "jpg",
         "image/png" => "png",
-        "image/svg+xml" => "svg",
         _ => "webp",
     };
     let filename = format!("travel-companion-{}.{}", Uuid::new_v4(), extension);
-    let part = Part::bytes(asset.bytes.clone())
+    let part = Part::bytes(bytes.to_vec())
         .file_name(filename)
-        .mime_str(asset.content_type)
+        .mime_str(content_type)
         .ok()?;
     let endpoint = format!("{}/upload", base_url.as_str().trim_end_matches('/'));
     let mut request = state
@@ -1295,7 +1216,6 @@ mod tests {
             id: uuid::Uuid::nil(),
             title: "海边文化节".into(),
             summary: "当地市集".into(),
-            url: "https://example.test/story".into(),
             source: "test".into(),
             tone: "warm".into(),
             location: Some(serde_json::json!({"name": "厦门"})),

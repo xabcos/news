@@ -163,27 +163,16 @@ const TravelScene = (() => {
     if (normalized.thought && presence !== "home_sleeping") elements.thought.textContent = normalized.thought;
     if (activity || mood || prop) {
       const details = [normalized.activity, normalized.mood, normalized.prop].filter(Boolean).join(" · ");
-      elements.companion.setAttribute("data-scene-label", details);
       const presenceLabel = elements.stage.getAttribute("aria-label") || "旅伴正在生活";
       elements.stage.setAttribute("aria-label", `${presenceLabel}；${details}`);
       elements.companion.setAttribute("aria-description", details);
-    } else {
-      elements.companion.removeAttribute("data-scene-label");
     }
   }
 
   function setIdentity(identity, accessories) {
     if (!identity) return;
     elements.companion.classList.remove("is-identity-pending");
-    const identityKey = JSON.stringify([identity.name_seed, identity.hair, identity.skin_tone, identity.silhouette, identity.style, identity.signature, (accessories || []).map((item) => item.id)]);
-    ["hair", "skin_tone", "silhouette", "style"].forEach((key) => {
-      const value = identity[key];
-      if (value) elements.companion.dataset[key] = value;
-      else delete elements.companion.dataset[key];
-    });
-    const accent = (accessories || []).find((item) => item.id);
-    if (accent) elements.companion.dataset.accent = accent.id;
-    else delete elements.companion.dataset.accent;
+    const identityKey = JSON.stringify([identity.name_seed, identity.appearance_summary, identity.signature, (accessories || []).map((item) => [item.id, item.name])]);
     if (identityKey === lastIdentityKey) return;
     lastIdentityKey = identityKey;
     const identityLabel = [
@@ -195,7 +184,6 @@ const TravelScene = (() => {
       elements.identityMeta.textContent = `身份已锁定 · ${identityLabel}${accessoryLabel ? ` · ${accessoryLabel}` : ""}`;
       elements.identityMeta.hidden = false;
     }
-    if (identity.signature) elements.companion.dataset.identitySignature = identity.signature;
     elements.companion.setAttribute("data-identity-label", identityLabel);
     elements.companion.setAttribute("aria-description", identityLabel);
     elements.companion.setAttribute("aria-label", `${identityLabel}的旅伴`);

@@ -63,9 +63,8 @@ impl IdentityRequest {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 pub(crate) struct IdentityPreview {
-    pub(crate) identity_version: String,
     pub(crate) identity: Value,
     pub(crate) initial_accessories: Value,
 }
@@ -195,7 +194,6 @@ impl Persona {
         identity["signature"] = json!(hex::encode(&Sha256::digest(seed)[..6]));
         identity["identity_seed_version"] = json!(IDENTITY_VERSION);
         IdentityPreview {
-            identity_version: IDENTITY_VERSION.into(),
             identity,
             initial_accessories: json!([{"id": "personal_accessory", "name": self.accessory, "slot": "optional", "fixed": false}]),
         }

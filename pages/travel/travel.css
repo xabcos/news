@@ -5,10 +5,8 @@
   --travel-line: rgba(86, 65, 52, .16);
   --travel-paper: #f7f1e8;
   --travel-paper-deep: #ede1d1;
-  --travel-card: rgba(255, 252, 247, .88);
   --travel-accent: #b8674d;
   --travel-accent-dark: #8e4d3a;
-  --travel-gold: #b78643;
   --travel-green: #71806a;
   --travel-shadow: 0 1.5rem 4rem rgba(80, 56, 40, .14);
   font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
@@ -27,8 +25,7 @@ a { text-decoration: none; }
 .travel-page { overflow-x: hidden; overflow-y: auto; }
 .travel-shell { display: grid; min-height: 100svh; grid-template-rows: auto minmax(0, 1fr) auto auto; padding: 0 clamp(1rem, 3vw, 3rem) max(.7rem, env(safe-area-inset-bottom)); background: radial-gradient(circle at 12% 8%, rgba(255,255,255,.68), transparent 30rem), var(--travel-paper); }
 .travel-topbar { display: flex; height: 4.2rem; align-items: center; justify-content: space-between; gap: 1rem; max-width: 1180px; width: 100%; margin: 0 auto; }
-.travel-back { display: inline-flex; align-items: center; gap: .5rem; min-width: 0; }
-.travel-back { color: var(--travel-muted); font-size: .83rem; }
+.travel-back { display: inline-flex; align-items: center; gap: .5rem; min-width: 0; color: var(--travel-muted); font-size: .83rem; }
 .travel-back:hover { color: var(--travel-accent-dark); }
 .travel-back svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .travel-wordmark { display: flex; align-items: baseline; gap: .65rem; }
@@ -39,18 +36,16 @@ a { text-decoration: none; }
 .travel-stage { position: relative; height: clamp(28rem, calc(100svh - 10.5rem), 42rem); min-height: 0; overflow: hidden; border: 1px solid rgba(112,83,61,.13); border-radius: 2rem; background: linear-gradient(180deg, #bdd4d3 0%, #dbe3d6 46%, #d8b99b 46%, #caa685 100%); box-shadow: var(--travel-shadow); isolation: isolate; }
 .travel-stage--art { background-image: url("/travel/assets/room/room-day.webp"); background-size: cover; background-position: center; }
 html[data-travel-initial-presence="home_sleeping"] .travel-stage--art:not([data-presence]) { background-image: url("/travel/assets/room/room-night.webp"); }
-.travel-stage--art[data-presence="home_sleeping"] { background-image: url("/travel/assets/room/room-night.webp"); }
 .travel-stage--art[data-weather="rain"] { background-image: url("/travel/assets/room/room-rain.webp"); }
 /* Preserve the director's portrait, square or landscape composition. */
 .travel-stage.has-latest-photo { height: auto; width: min(100%, 44rem, calc((100svh - 9rem) * var(--travel-photo-ratio, .666667))); margin-inline: auto; aspect-ratio: var(--travel-photo-ratio, .666667); }
 
-.travel-companion { --travel-shift-x: 0rem; --travel-shift-y: 0rem; --travel-rotate: 0deg; --travel-scale: 1; position: absolute; z-index: 2; right: 24%; bottom: 8%; width: min(52%, 19rem); min-width: 12rem; aspect-ratio: 1 / 1.18; animation: travel-float 4s ease-in-out infinite; transition: opacity .18s ease; }
+.travel-companion { --travel-shift-x: 0rem; --travel-shift-y: 0rem; --travel-rotate: 0deg; --travel-scale: 1; position: absolute; z-index: 2; right: 24%; bottom: 8%; width: min(52%, 19rem); min-width: 12rem; aspect-ratio: 1; animation: travel-float 4s ease-in-out infinite; transition: opacity .18s ease; }
 .travel-companion.is-identity-pending { opacity: 0; }
 .travel-photo-status { position: absolute; z-index: 4; inset: auto 1rem 4rem; display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: .65rem; width: fit-content; max-width: calc(100% - 2rem); margin: auto; padding: .65rem 1rem; border-radius: .8rem; color: var(--travel-ink); background: rgba(255,252,247,.95); font-size: .8rem; text-align: center; }
 .travel-photo-status[hidden], .travel-photo-status button[hidden] { display: none; }
 .travel-photo-status button { padding: .4rem .65rem; border-radius: .45rem; color: #fff; background: var(--travel-accent-dark); }
 .travel-person-placeholder { display: grid; width: 100%; height: 100%; place-items: center; border-radius: 50%; background: radial-gradient(circle at 35% 28%, rgba(255,252,246,.92), rgba(230,203,164,.54) 52%, rgba(161,186,177,.45)); box-shadow: 0 1rem 3rem rgba(66,48,55,.1); color: var(--travel-accent-dark); font-size: 1.9rem; letter-spacing: .06em; }
-.travel-companion { aspect-ratio: 1; }
 .travel-latest-photo { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; object-fit: contain; object-position: center; opacity: 0; transition: opacity .35s ease; }
 .travel-stage.has-latest-photo .travel-latest-photo { opacity: 1; }
 .travel-stage.has-latest-photo.is-photo-transitioning .travel-latest-photo { opacity: 0; }
@@ -225,7 +220,6 @@ html[data-travel-photo-pending] .travel-companion, .travel-stage.is-photo-pendin
 
 @keyframes travel-float { 0%, 100% { transform: translate3d(var(--travel-shift-x), var(--travel-shift-y), 0) rotate(var(--travel-rotate)) scale(var(--travel-scale)); } 50% { transform: translate3d(var(--travel-shift-x), calc(var(--travel-shift-y) - .35rem), 0) rotate(var(--travel-rotate)) scale(var(--travel-scale)); } }
 @keyframes travel-reaction { 0% { transform: translateY(0) rotate(0); } 35% { transform: translateY(-.7rem) rotate(-2deg); } 70% { transform: translateY(.15rem) rotate(1deg); } 100% { transform: translateY(0) rotate(0); } }
-@keyframes travel-blink { 0%, 42%, 46%, 100% { transform: scaleY(1); } 44% { transform: scaleY(.1); } }
 @keyframes travel-idle-blink { 0%, 100% { transform: translateY(0) scaleY(1); } 35% { transform: translateY(-.05rem) scaleY(.985); } 55% { transform: translateY(0) scaleY(1); } }
 @keyframes travel-idle-look { 0%, 100% { transform: translateX(0) rotate(0); } 45% { transform: translateX(.3rem) rotate(1deg); } 75% { transform: translateX(-.12rem) rotate(-.4deg); } }
 @keyframes travel-idle-stretch { 0%, 100% { transform: translateY(0) scale(1); } 45% { transform: translateY(-.45rem) scale(1.025, .98); } 75% { transform: translateY(.06rem) scale(.99, 1.01); } }
