@@ -20,7 +20,7 @@ GET https://xabcnews.com/feed.xml?topic=ai
 - `/insight` 返回基于最近 24 小时 NEWS 内容的 `𝐀𝐈` 综合研判，默认每 2 小时更新一次，并读取最近 7 天内每天最后一份成功研判作为趋势分析上下文；输入会按公共主题均衡抽样，并附带主题、标签、重复传播和过去 7 日基线统计。资料不足时会按需调用网页搜索补充公开数据，并在 `research_sources` 返回实际使用的检索来源。研判生成趋势分析、关键数据、后续信号、商业与机遇、就业与技能、风险预警和观察方向；要点带证据强度与 A/B/C 证据等级。有可靠来源时返回一张热点主图、图注和来源链接，优先避开最近 32 小时用过的配图，候选耗尽时使用最久未用的一张。响应中的 `sources` 只包含被正文引用的新闻并保留原始 `index`，`source_indexes` 按它对应。
 - 每条包含 `title/summary`（中文）、`title_en/summary_en`、`url`、`source`、`published_at`、`first_seen_at`、`tags/tags_en`、`importance`（1–5）、`pinned`；图片新闻条目另带 `image`（tmpfile 图片地址、图注、来源文章与署名）。历史条目的 `tags_en` 可能为空。
 - 每个主题带 `revision`，供首页判断后台刷新是否需要重置该主题的分页。
-- 全部开放 CORS，带 `ETag` 与 `Cache-Control: public, max-age=60, stale-while-revalidate=300`，浏览器和 Cloudflare 都能直接复用；错误响应同样带 CORS 且 `no-store`。
+- 同一公开缓存版本使用稳定的 `generated_at`，主题、日期及游标筛选内容未变时可复用 ETag；内容更新、主题变更或日切时失效。全部开放 CORS，带 `ETag` 与 `Cache-Control: public, max-age=60, stale-while-revalidate=300`，浏览器和 Cloudflare 都能直接复用；错误响应同样带 CORS 且 `no-store`。
 
 ```json
 {"day":"2026-09-03","timezone":"Asia/Shanghai","generated_at":"…","topics":[{"id":"ai","name":"AI 行业动态","name_en":"AI Industry","description":"…","latest_day":"2026-09-03","updated_at":"…","revision":7,"total":14,"next":null,"items":[{"id":"…","title":"…","summary":"…","title_en":"…","summary_en":"…","url":"https://…","source":"Reuters","published_at":"…","first_seen_at":"…","tags":["OpenAI"],"tags_en":["OpenAI"],"importance":5,"pinned":false,"image":null}]}]}
@@ -35,6 +35,7 @@ GET https://xabcnews.com/feed.xml?topic=ai
 - **首页加载**：首屏数据并行请求，只有一轮网络往返；登录状态由登录时写入的可读 cookie `news_role` 判断，匿名访客不会请求任何私有接口。打开根路径时 `index.html` 里的 `<link rel="preload">` 让 `/digest?limit=12`、`/days`、`/topics` 随 HTML 一起出发，不等 `app.js`；带 `topic`/`day` 的深链和已登录账户用不到这三份预加载，会多出三次很小的请求。每个主题首屏 12 条，组尾有一个空的哨兵元素，进入视口即用 `next` 游标静默续拉 12 条；当天所有主题读完才加载前一天，读者快速滑过的主题由底部加载器按顺序补齐，浏览器滚动锚定保证页面不跳动。后台 5 分钟刷新按主题版本决定是否保留已加载内容；版本变化时从新首屏重新开始，隐藏条目随之消失、新置顶的浮到顶部。
 - **自动清理**：服务启动时和之后每小时分批清理数据；抓取运行记录保留 3 天，AI 研判历史保留 32 天，新闻条目按 `NEWS_RETENTION_DAYS` 保留，避免依赖外部定时任务。
 - **单实例**：内存快照只在本进程内失效，多实例部署会长期返回旧数据。
+- **媒体维护**：新闻图片同步与旅行照片续期由独立、串行的后台任务执行，慢上游不阻塞分钟维护。新闻同步有统一时间预算；旅行图片生成的总预算小于其数据库租约，超时后释放租约供后续重试。
 - **成本**：每次抓取约 $0.06–0.10（`usage.cost_in_usd_ticks`，1 tick = 1e-10 USD）。工作台的管理员运行记录按次显示 tokens、搜索次数和成本，以及今日合计。
 - **个人主题**：登录后首页保留公共主题，并追加当前账户启用的个人主题；`/me/` 负责管理个人主题。个人主题不会进入公共 digest；管理员主题仍是公共内容源。
 - **公共主题管理**：管理员在同一个 `/me/` 工作台编辑公共主题；打开 `𝐏` 后可直接修改“关注方向”（`brief`），也可调整名称、公开说明、抓取间隔、时间窗、模型、条数和启停状态。保存后会重新排程并刷新公共目录，主题 ID `p` 保持图片新闻行为。
@@ -52,7 +53,7 @@ cp .env.example .env   # 填写 DATABASE_URL、NEWS_ADMIN_EMAILS、AI_API_KEY、
 cargo run
 ```
 
-打开 `http://127.0.0.1:8788/`（公开页）、`http://127.0.0.1:8788/me/`（统一工作台）。`EMAIL_LOGIN_DEV_LINKS=true` 时登录响应直接给出一次性链接，只允许回环地址。`NEWS_SCHEDULER_ENABLED=false` 可以只读运行、不花钱。
+打开 `http://127.0.0.1:8788/`（公开页）、`http://127.0.0.1:8788/me/`（统一工作台）。`EMAIL_LOGIN_DEV_LINKS=true` 时登录响应直接给出一次性链接，只允许回环地址。`NEWS_SCHEDULER_ENABLED=false` 暂停自动新闻抓取、旅伴自主生成和 AI 照片续期，保留读取、档案及支付维护；主动发起的人物创建、领读或手动抓取仍按请求执行。
 
 完全容器化：`make docker-up-local`。
 
@@ -70,7 +71,7 @@ cargo run
 | `TRAVEL_ARCHIVE_DIR` | `data/along-archive` | 私有身份档案的独立磁盘副本；容器部署必须挂载持久卷 |
 | `AI_RESPONSES_TIMEOUT_SECS` | `900` | 新闻领读、旅行叙事等 Responses 请求超时 |
 | `NEWS_TIMEZONE` | `Asia/Shanghai` | 天边界与时间窗 |
-| `NEWS_SCHEDULER_ENABLED` | `true` | `false` 时只提供页面与 API |
+| `NEWS_SCHEDULER_ENABLED` | `true` | `false` 暂停自动内容生成，保留 API 和必要维护 |
 | `NEWS_FETCH_TIMEOUT_SECS` / `NEWS_MAX_CONCURRENT_RUNS` | `1800` / `2` | 新闻抓取、综合研判与 AI Agent 共用超时，默认为 30 分钟 |
 | `AI_INSIGHT_MODEL` / `AI_INSIGHT_INTERVAL_MINUTES` | `gpt-6-astra` / `120` | 综合研判模型与更新间隔 |
 | `NEWS_RETENTION_DAYS` | `128` | 新闻条目保留天数，超过期限自动清理 |
@@ -157,7 +158,7 @@ Pro 订单固定为 ¥99 / 31 天，通过 YPay 的 store-token 接口创建微�
 
 **永久身份与媒体。** 人物保存在 `travel_companions`，关联字段统一为 `companion_id`；原始上传照片与已确认初见图保存在 `travel_identity_assets`，数据库触发器保护已确认身份及原图不被常规更新、删除或清空。图片与文字模型升级不改变人物 UUID，也不按画面版本重新建立身份。历史人物与原始根图通过迁移保留，不建立旧表名或旧 `/api/cat/*` 的兼容层。后续图片继续参考人物自己的固定原图与补充参考，力求保持五官和身体特征；模型仍可能出现身份偏差，文本去重也不等于视觉人脸去重。
 
-普通个人动态继续上传到 `TMPFILE_BASE_URL` 的默认文件服务器；原始形象、初见预览和共同合影通过鉴权的私有 API 读取。合影只向参与人物的所属用户开放，即使知道图片地址，其他账户也不能读取。重要纪念照保存原始图片字节与校验值，媒体地址变化不通过 AI 重画历史照片。身份原件另有独立磁盘档案，部署与恢复要求见下文。
+普通个人动态继续上传到 `TMPFILE_BASE_URL` 的默认文件服务器；原始形象、初见预览和共同合影通过鉴权的私有 API 读取。合影只向参与人物的所属用户开放，即使知道图片地址，其他账户也不能读取。重要纪念照保存原始图片字节与校验值，通过私有地址直接读取，不额外创建未使用的公网副本；媒体地址变化不通过 AI 重画历史照片。身份原件另有独立磁盘档案，部署与恢复要求见下文。
 
 **动态生活与共同记忆。** 活跃旅伴约每 4 小时更新一次个人动态。AI 根据人物性格、当地时间、当前旅途、图片新闻的地点事件与图注、近期创作记录构思不同情节，再审阅选择；活动、穿搭、神情、正侧背面视角和光线开放变化。新闻作为背景参考，不把虚拟旅伴冒充为现实事件的参与者。默认 `TRAVEL_IMAGE_MODEL=gpt-image-2.5-flare`，`quality=high`；服务端按构图选择 1024×1536、1536×1024 或 1024×1024，初见照片采用面容清楚的竖向构图，不提供额外尺寸环境变量。
 
@@ -232,9 +233,10 @@ make release-check   # fmt、test、clippy、全部 JS 语法、compose 配置
 ```bash
 ALONG_WORLD_TEST_DATABASE_URL='<独立测试数据库 DSN>' cargo test postgres_shared_world -- --ignored --test-threads=1
 ALONG_WORLD_TEST_DATABASE_URL='<独立测试数据库 DSN>' cargo test postgres_adoption -- --ignored --test-threads=1
+ALONG_WORLD_TEST_DATABASE_URL='<独立测试数据库 DSN>' cargo test postgres_travel_reads -- --ignored --test-threads=1
 ```
 
-测试会写入人物、不可变原图、关系和共享记忆夹具，验证默认私密、并发认领与双方事件提交，以及缺少永久肖像的旧旅伴仍能读取状态。结束后可移除整个专用测试数据库；不要通过绕过不可变约束来清理常规数据库。
+测试会写入人物、不可变原图、关系和共享记忆夹具，验证默认私密、并发认领与双方事件提交，以及缺少永久肖像的旧旅伴仍能读取状态、配饰投影可修复、参考图选择与并发名额认领。结束后可移除整个专用测试数据库；不要通过绕过不可变约束来清理常规数据库。
 
 支付清理集成测试使用另一份已应用全部 migrations 的独立数据库，名称须以 `news_payment_audit_` 开头：
 

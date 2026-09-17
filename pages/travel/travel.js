@@ -353,6 +353,8 @@ const TravelShell = (() => {
   let authState = "unknown";
   let adoptionPreview = null;
   let journalItems = [];
+  const cardSignatures = new WeakMap();
+  let friendsHtml = null;
   const onboarding = document.querySelector("#alongOnboarding");
   const createForm = document.querySelector("#alongCreateForm");
   const waiting = document.querySelector("#alongWaiting");
@@ -498,19 +500,62 @@ const TravelShell = (() => {
 
   function bindPhotoFallback(container) {
     container.querySelectorAll("[data-photo-frame] img").forEach((image) => {
-      image.addEventListener("error", () => image.closest("[data-photo-frame]")?.remove(), { once: true });
+      image.addEventListener("error", () => {
+        const card = image.closest("[data-card-key]");
+        image.closest("[data-photo-frame]")?.remove();
+        // A transient failure may retry on the next poll without rebuilding
+        // successful images in the rest of the list.
+        if (card) cardSignatures.delete(card);
+      }, { once: true });
     });
   }
 
-  // The newest message is already the heading above the stage, so the list starts after it.
-  function renderMessages(messages) {
-    const rest = messages.slice(1);
-    if (!rest.length) {
-      messagePreview.innerHTML = `<div class="travel-empty">${messages.length ? "更早的旅迹还在路上。" : "旅伴正在慢慢生活，第一段旅迹还在路上。"}</div>`;
+  function renderCards(container, cards, emptyText) {
+    if (!cards.length) {
+      const html = `<div class="travel-empty">${escapeHtml(emptyText)}</div>`;
+      if (container.innerHTML !== html) container.innerHTML = html;
       return;
     }
-    messagePreview.innerHTML = rest.map((message) => cardHtml(message, "travel-message-card")).join("");
-    bindPhotoFallback(messagePreview);
+    const previous = new Map(Array.from(container.children).map((node) => [node.dataset.cardKey, node]));
+    const wanted = new Set();
+    cards.forEach((card, index) => {
+      const key = String(card.key);
+      wanted.add(key);
+      let node = previous.get(key);
+      if (!node || cardSignatures.get(node) !== card.signature) {
+        const template = document.createElement("template");
+        template.innerHTML = card.html();
+        const replacement = template.content.firstElementChild;
+        replacement.dataset.cardKey = key;
+        cardSignatures.set(replacement, card.signature);
+        bindPhotoFallback(replacement);
+        if (node) node.replaceWith(replacement);
+        node = replacement;
+      }
+      const atIndex = container.children[index];
+      if (atIndex !== node) container.insertBefore(node, atIndex || null);
+    });
+    Array.from(container.children).forEach((node) => {
+      if (!wanted.has(node.dataset.cardKey)) node.remove();
+    });
+    container.querySelectorAll("time[datetime]").forEach((time) => {
+      const label = [time.dataset.place, relativeTime(time.getAttribute("datetime"))].filter(Boolean).join(" · ");
+      if (time.textContent !== label) time.textContent = label;
+    });
+  }
+
+  function messageCard(message, block, extraClass = "") {
+    return {
+      key: message.id,
+      signature: JSON.stringify([messageView(message), message.created_at, block, extraClass]),
+      html: () => cardHtml(message, block, extraClass),
+    };
+  }
+
+  // The newest message is already the heading above the stage.
+  function renderMessages(messages) {
+    renderCards(messagePreview, messages.slice(1).map((message) => messageCard(message, "travel-message-card")),
+      messages.length ? "更早的旅迹还在路上。" : "旅伴正在慢慢生活，第一段旅迹还在路上。");
   }
 
   function renderJournal(items, filter = "all") {
@@ -518,14 +563,8 @@ const TravelShell = (() => {
       if (filter === "postcard") return item.kind === "postcard" || Boolean(item.payload?.postcard_url);
       return item.kind === filter;
     });
-    if (!visible.length) {
-      journalGrid.innerHTML = '<div class="travel-empty">这一类日志还没有记录。旅伴正在慢慢生活。</div>';
-      return;
-    }
-    journalGrid.innerHTML = visible
-      .map((message) => cardHtml(message, "travel-journal-card", message.kind === "postcard" ? " travel-journal-card--postcard" : ""))
-      .join("");
-    bindPhotoFallback(journalGrid);
+    renderCards(journalGrid, visible.map((message) => messageCard(message, "travel-journal-card",
+      message.kind === "postcard" ? " travel-journal-card--postcard" : "")), "这一类日志还没有记录。旅伴正在慢慢生活。");
   }
 
   function renderAtlas(data) {
@@ -865,18 +904,26 @@ const TravelShell = (() => {
     const toggle = document.querySelector("#alongSocialEnabled");
     if (!socialSaving) { toggle.checked = enabled; toggle.disabled = false; }
     const relationships = data.relationships || [];
-    document.querySelector("#alongFriends").innerHTML = relationships.length
+    const nextFriendsHtml = relationships.length
       ? `<h3>熟悉的朋友</h3><div class="along-friend-list">${relationships.map((friend) => `<article class="along-friend"><strong>${escapeHtml(friend.name || "一位朋友")}</strong><small>相遇 ${escapeHtml(friend.meetings || 1)} 次</small><p>${escapeHtml(friend.memory || "共同的回忆，还在慢慢积攒。")}</p></article>`).join("")}</div>` : "";
+    if (nextFriendsHtml !== friendsHtml) {
+      document.querySelector("#alongFriends").innerHTML = nextFriendsHtml;
+      friendsHtml = nextFriendsHtml;
+    }
     const events = data.shared_events || [];
     document.querySelector("#alongWorldStatus").textContent = enabled ? "世界已向新朋友敞开；相遇也有自己的时机。" : "当前只属于你们。开启自主结伴，遇见更多同行的人。";
-    document.querySelector("#alongSharedEvents").innerHTML = events.length ? events.map((event) => {
+    const cards = events.map((event) => {
       const names = (event.participants || []).map((person) => person.name).filter(Boolean).join(" · ");
       const photo = event.photo?.url;
       const place = event.location?.name || event.location?.country || "";
       const pending = event.status === "photo_failed" ? "共同经历已珍藏，合影暂未完成。" : "共同经历已珍藏，合影正在准备。";
-      return `<article class="travel-journal-card along-shared-card">${photo ? `<div class="travel-journal-card__photo" data-photo-frame><img src="${escapeHtml(photo)}" alt="${escapeHtml(names)}的共同旅行合影" loading="lazy"></div>` : `<div class="along-photo-pending">${pending}</div>`}<div class="travel-journal-card__kind">${escapeHtml(names)}</div><h3>${escapeHtml(event.story?.title || "共同的旅途")}</h3><p>${escapeHtml(event.story?.text_zh || event.story?.activity || "这一刻，成为了彼此的共同回忆。")}</p><time datetime="${escapeHtml(event.happened_at)}">${escapeHtml([place, relativeTime(event.happened_at)].filter(Boolean).join(" · "))}</time></article>`;
-    }).join("") : '<div class="travel-empty">下一次相遇，或许就在下一段旅途。</div>';
-    bindPhotoFallback(document.querySelector("#alongSharedEvents"));
+      return {
+        key: event.id,
+        signature: JSON.stringify([names, photo, place, pending, event.story, event.happened_at]),
+        html: () => `<article class="travel-journal-card along-shared-card">${photo ? `<div class="travel-journal-card__photo" data-photo-frame><img src="${escapeHtml(photo)}" alt="${escapeHtml(names)}的共同旅行合影" loading="lazy"></div>` : `<div class="along-photo-pending">${pending}</div>`}<div class="travel-journal-card__kind">${escapeHtml(names)}</div><h3>${escapeHtml(event.story?.title || "共同的旅途")}</h3><p>${escapeHtml(event.story?.text_zh || event.story?.activity || "这一刻，成为了彼此的共同回忆。")}</p><time datetime="${escapeHtml(event.happened_at)}" data-place="${escapeHtml(place)}">${escapeHtml([place, relativeTime(event.happened_at)].filter(Boolean).join(" · "))}</time></article>`,
+      };
+    });
+    renderCards(document.querySelector("#alongSharedEvents"), cards, "下一次相遇，或许就在下一段旅途。");
   }
 
   async function loadWorld() {

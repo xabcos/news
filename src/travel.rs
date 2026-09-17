@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool};
+use std::sync::Arc;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
 #[path = "travel_adoption.rs"]
@@ -49,6 +51,13 @@ struct CompanionRow {
 struct GrowthCount {
     event_type: String,
     count: i64,
+    progress: i64,
+}
+
+struct GrowthSummary {
+    progress: i64,
+    events: serde_json::Map<String, Value>,
+    accessories: Vec<Value>,
 }
 
 #[derive(Debug, FromRow)]
@@ -159,6 +168,7 @@ struct AlbumRow {
 struct UnlockRow {
     accessory_id: String,
     unlocked_at: DateTime<Utc>,
+    has_message: bool,
 }
 
 #[derive(Debug, FromRow)]
@@ -508,9 +518,9 @@ pub(crate) async fn album(State(state): State<AppState>, user: User) -> Result<J
 
 pub(crate) async fn atlas(State(state): State<AppState>, user: User) -> Result<Json<Value>> {
     let companion_id = companion_id_for_user(&state.pool, user.id).await?;
-    sync_accessory_unlocks(&state.pool, companion_id).await?;
+    let growth = load_growth(&state.pool, companion_id).await?;
     Ok(Json(json!({
-        "accessories": load_unlocks(&state.pool, companion_id).await?,
+        "accessories": growth.accessories,
         "memories": load_memories(&state.pool, companion_id).await?,
     })))
 }
@@ -525,46 +535,16 @@ pub(crate) async fn encounters(State(state): State<AppState>, user: User) -> Res
 /// Claims a small batch of autonomous travel_companions. Claims are persisted so multiple
 /// application instances cannot make the same companion travel twice.
 pub(crate) async fn autonomous_tick(state: &AppState) -> Result<()> {
-    let slots = state.travel_slots.available_permits().min(4);
-    if slots == 0 {
+    if !state.config.scheduler_enabled {
         return Ok(());
     }
-    let mut transaction = state.pool.begin().await?;
-    let travel_companions = sqlx::query_as::<_, AutoCompanion>(
-        r#"
-        SELECT a.companion_id
-        FROM travel_autonomy_state a
-        JOIN travel_companions c ON c.id = a.companion_id
-        WHERE (a.next_scene_at <= NOW() OR a.next_trip_at <= NOW())
-          AND (a.lease_until IS NULL OR a.lease_until < NOW())
-          AND NOT EXISTS (SELECT 1 FROM travel_world_settings w WHERE w.companion_id=c.id AND w.busy_until>NOW())
-          AND COALESCE(c.last_seen_at, c.adopted_at) >= NOW() - INTERVAL '48 hours'
-        ORDER BY LEAST(a.next_scene_at, a.next_trip_at)
-        LIMIT $1
-        FOR UPDATE OF a SKIP LOCKED
-        "#,
-    )
-    .bind(slots as i64)
-    .fetch_all(&mut *transaction)
-    .await?;
-    let mut claims = Vec::with_capacity(travel_companions.len());
-    for companion in travel_companions {
-        let token = Uuid::new_v4();
-        sqlx::query(
-            "UPDATE travel_autonomy_state SET lease_until = NOW() + INTERVAL '40 minutes', lease_token = $2, updated_at = NOW() WHERE companion_id = $1",
-        )
-        .bind(companion.companion_id)
-        .bind(token)
-        .execute(&mut *transaction)
-        .await?;
-        claims.push((companion.companion_id, token));
-    }
-    transaction.commit().await?;
-
-    for (companion_id, token) in claims {
-        let Ok(permit) = state.travel_slots.clone().try_acquire_owned() else {
-            break;
-        };
+    let claims = claim_autonomy(&state.pool, &state.travel_slots).await?;
+    for AutonomyClaim {
+        companion_id,
+        token,
+        permit,
+    } in claims
+    {
         let worker_state = state.clone();
         tokio::spawn(async move {
             let result = autonomous_one(&worker_state, companion_id).await;
@@ -582,6 +562,66 @@ pub(crate) async fn autonomous_tick(state: &AppState) -> Result<()> {
         });
     }
     Ok(())
+}
+
+struct AutonomyClaim {
+    companion_id: Uuid,
+    token: Uuid,
+    permit: OwnedSemaphorePermit,
+}
+
+async fn claim_autonomy(pool: &PgPool, slots: &Arc<Semaphore>) -> Result<Vec<AutonomyClaim>> {
+    let permits = reserve_travel_slots(slots);
+    if permits.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut transaction = pool.begin().await?;
+    let travel_companions = sqlx::query_as::<_, AutoCompanion>(
+        r#"
+        SELECT a.companion_id
+        FROM travel_autonomy_state a
+        JOIN travel_companions c ON c.id = a.companion_id
+        WHERE (a.next_scene_at <= NOW() OR a.next_trip_at <= NOW())
+          AND (a.lease_until IS NULL OR a.lease_until < NOW())
+          AND NOT EXISTS (SELECT 1 FROM travel_world_settings w WHERE w.companion_id=c.id AND w.busy_until>NOW())
+          AND COALESCE(c.last_seen_at, c.adopted_at) >= NOW() - INTERVAL '48 hours'
+        ORDER BY LEAST(a.next_scene_at, a.next_trip_at)
+        LIMIT $1
+        FOR UPDATE OF a SKIP LOCKED
+        "#,
+    )
+    .bind(permits.len() as i64)
+    .fetch_all(&mut *transaction)
+    .await?;
+    let mut claims = Vec::with_capacity(travel_companions.len());
+    for companion in travel_companions {
+        let token = Uuid::new_v4();
+        sqlx::query(
+            "UPDATE travel_autonomy_state SET lease_until = NOW() + INTERVAL '40 minutes', lease_token = $2, updated_at = NOW() WHERE companion_id = $1",
+        )
+        .bind(companion.companion_id)
+        .bind(token)
+        .execute(&mut *transaction)
+        .await?;
+        claims.push((companion.companion_id, token));
+    }
+    transaction.commit().await?;
+
+    Ok(claims
+        .into_iter()
+        .zip(permits)
+        .map(|((companion_id, token), permit)| AutonomyClaim {
+            companion_id,
+            token,
+            permit,
+        })
+        .collect())
+}
+
+fn reserve_travel_slots(slots: &Arc<Semaphore>) -> Vec<OwnedSemaphorePermit> {
+    (0..4)
+        .map_while(|_| slots.clone().try_acquire_owned().ok())
+        .collect()
 }
 
 async fn autonomous_one(state: &AppState, companion_id: Uuid) -> Result<()> {
@@ -688,7 +728,6 @@ async fn auto_scene(state: &AppState, companion_id: Uuid) -> Result<()> {
     let scene_key = format!("{bucket}-{}", crate::travel_image::VISUAL_VERSION);
     let request = crate::travel_image::GenerateRequest {
         news_item_id: source_id,
-        quality: Some("high".into()),
         purpose: Some("四小时旅伴动态照片".into()),
         creative_direction: Some(
             if in_trip {
@@ -1178,7 +1217,6 @@ async fn settle_one(state: &AppState, trip_id: Uuid) -> Result<()> {
         } else {
             let request = crate::travel_image::GenerateRequest {
                 news_item_id,
-                quality: Some("high".into()),
                 purpose: Some("回家纪念".into()),
                 creative_direction: narrative.as_ref().map(|value| value.scene_hint.clone()),
                 scene_key: None,
@@ -1290,13 +1328,12 @@ async fn companion_id_for_user(pool: &PgPool, user_id: i64) -> Result<Uuid> {
 
 pub(crate) async fn touch_companion(pool: &PgPool, companion_id: Uuid) -> Result<()> {
     sqlx::query(
-        "UPDATE travel_companions SET last_seen_at = NOW() WHERE id = $1 AND (last_seen_at IS NULL OR last_seen_at < NOW() - INTERVAL '30 minutes')",
-    )
-    .bind(companion_id)
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "INSERT INTO travel_autonomy_state (companion_id) VALUES ($1) ON CONFLICT (companion_id) DO NOTHING",
+        r#"WITH touched AS (
+               UPDATE travel_companions SET last_seen_at=NOW()
+               WHERE id=$1 AND (last_seen_at IS NULL OR last_seen_at < NOW()-INTERVAL '30 minutes')
+           )
+           INSERT INTO travel_autonomy_state(companion_id) VALUES($1)
+           ON CONFLICT(companion_id) DO NOTHING"#,
     )
     .bind(companion_id)
     .execute(pool)
@@ -1320,12 +1357,22 @@ const ACCESSORY_UNLOCKS: [(i64, &str, &str); 4] = [
     (20, "star_beret", "星星贝雷帽"),
 ];
 
-async fn sync_accessory_unlocks(pool: &PgPool, companion_id: Uuid) -> Result<()> {
-    let progress = growth_progress(pool, companion_id).await?;
+async fn sync_accessory_unlocks(
+    pool: &PgPool,
+    companion_id: Uuid,
+    progress: i64,
+    unlocks: &[UnlockRow],
+) -> Result<bool> {
+    let mut repaired = false;
     for (threshold, accessory_id, label) in ACCESSORY_UNLOCKS {
-        if progress < threshold {
+        if progress < threshold
+            || unlocks
+                .iter()
+                .any(|row| row.accessory_id == accessory_id && row.has_message)
+        {
             continue;
         }
+        repaired = true;
         let source_key = format!("accessory:{accessory_id}");
         let event_id = sqlx::query_scalar::<_, Uuid>(
             r#"
@@ -1369,53 +1416,63 @@ async fn sync_accessory_unlocks(pool: &PgPool, companion_id: Uuid) -> Result<()>
         )
         .await?;
     }
-    Ok(())
+    Ok(repaired)
 }
 
-async fn growth_progress(pool: &PgPool, companion_id: Uuid) -> Result<i64> {
-    Ok(sqlx::query_scalar::<_, i64>(
-        r#"
-        SELECT
-            (SELECT COUNT(*)::bigint
-             FROM travel_growth_events
-             WHERE companion_id = $1
-               AND event_type NOT IN ('accessory_unlocked', 'reading_opened')
-               AND event_type NOT LIKE 'care_%')
-          + (SELECT COUNT(DISTINCT (payload ->> 'day') || ':' || (payload ->> 'news_item_id'))::bigint
-             FROM travel_growth_events
-             WHERE companion_id = $1
-               AND event_type = 'reading_opened'
-               AND payload ? 'day'
-               AND payload ? 'news_item_id')
-        "#,
-    )
-    .bind(companion_id)
-    .fetch_one(pool)
-    .await?)
-}
-
-async fn load_unlocks(pool: &PgPool, companion_id: Uuid) -> Result<Vec<Value>> {
-    let rows = sqlx::query_as::<_, UnlockRow>(
-        "SELECT accessory_id, unlocked_at FROM travel_accessory_unlocks WHERE companion_id = $1 ORDER BY unlocked_at",
+async fn load_growth_counts(pool: &PgPool, companion_id: Uuid) -> Result<Vec<GrowthCount>> {
+    Ok(sqlx::query_as(
+        r#"SELECT event_type,COUNT(*)::bigint AS count,
+                  CASE WHEN event_type='accessory_unlocked' THEN 0
+                       WHEN event_type='reading_opened' THEN
+                           COUNT(DISTINCT (payload->>'day')||':'||(payload->>'news_item_id'))
+                           FILTER(WHERE payload ? 'day' AND payload ? 'news_item_id')
+                       ELSE COUNT(*) END::bigint AS progress
+           FROM travel_growth_events
+           WHERE companion_id=$1 AND event_type NOT LIKE 'care_%'
+           GROUP BY event_type ORDER BY event_type"#,
     )
     .bind(companion_id)
     .fetch_all(pool)
-    .await?;
-    Ok(rows
-        .into_iter()
-        .map(|row| {
-            let name = ACCESSORY_UNLOCKS
-                .iter()
-                .find(|(_, id, _)| *id == row.accessory_id)
-                .map(|(_, _, name)| *name)
-                .unwrap_or(&row.accessory_id);
-            json!({
-                "id": row.accessory_id,
-                "name": name,
-                "unlocked_at": row.unlocked_at,
+    .await?)
+}
+
+async fn load_unlock_rows(pool: &PgPool, companion_id: Uuid) -> Result<Vec<UnlockRow>> {
+    Ok(sqlx::query_as(
+        r#"SELECT u.accessory_id,u.unlocked_at,
+                  EXISTS(SELECT 1 FROM travel_messages m
+                      WHERE m.dedupe_key='growth:accessory:'||u.companion_id::text||':'||u.accessory_id) AS has_message
+           FROM travel_accessory_unlocks u WHERE u.companion_id=$1 ORDER BY u.unlocked_at"#,
+    ).bind(companion_id).fetch_all(pool).await?)
+}
+
+async fn load_growth(pool: &PgPool, companion_id: Uuid) -> Result<GrowthSummary> {
+    let mut counts = load_growth_counts(pool, companion_id).await?;
+    let mut unlocks = load_unlock_rows(pool, companion_id).await?;
+    let progress = counts.iter().map(|row| row.progress).sum();
+    if sync_accessory_unlocks(pool, companion_id, progress, &unlocks).await? {
+        // Reload only when repairing a missing projection. This includes newly
+        // inserted unlock events and any concurrent repair's original timestamp.
+        counts = load_growth_counts(pool, companion_id).await?;
+        unlocks = load_unlock_rows(pool, companion_id).await?;
+    }
+    Ok(GrowthSummary {
+        progress: counts.iter().map(|row| row.progress).sum(),
+        events: counts
+            .into_iter()
+            .map(|row| (row.event_type, json!(row.count)))
+            .collect(),
+        accessories: unlocks
+            .into_iter()
+            .map(|row| {
+                let name = ACCESSORY_UNLOCKS
+                    .iter()
+                    .find(|(_, id, _)| *id == row.accessory_id)
+                    .map(|(_, _, name)| *name)
+                    .unwrap_or(&row.accessory_id);
+                json!({"id":row.accessory_id,"name":name,"unlocked_at":row.unlocked_at})
             })
-        })
-        .collect())
+            .collect(),
+    })
 }
 
 async fn load_memories(pool: &PgPool, companion_id: Uuid) -> Result<Vec<Value>> {
@@ -1486,18 +1543,7 @@ async fn load_encounters(pool: &PgPool, companion_id: Uuid) -> Result<Vec<Value>
 }
 
 async fn travel_view(pool: &PgPool, companion: CompanionRow) -> Result<Value> {
-    sync_accessory_unlocks(pool, companion.id).await?;
-    let counts = sqlx::query_as::<_, GrowthCount>(
-        "SELECT event_type, COUNT(*)::bigint AS count FROM travel_growth_events WHERE companion_id = $1 AND event_type NOT LIKE 'care_%' GROUP BY event_type ORDER BY event_type",
-    )
-    .bind(companion.id)
-    .fetch_all(pool)
-    .await?;
-    let total_events = growth_progress(pool, companion.id).await?;
-    let events = counts
-        .into_iter()
-        .map(|item| (item.event_type, json!(item.count)))
-        .collect::<serde_json::Map<String, Value>>();
+    let growth = load_growth(pool, companion.id).await?;
     let current_trip = sqlx::query_as::<_, TripRow>(
         r#"
         SELECT id, companion_id, news_item_id, day, status, pack, tone, location, departed_at,
@@ -1517,19 +1563,20 @@ async fn travel_view(pool: &PgPool, companion: CompanionRow) -> Result<Value> {
         None => None,
     };
     let encounters = load_encounters(pool, companion.id).await?;
-    let unlocked_accessories = load_unlocks(pool, companion.id).await?;
     let memories = load_memories(pool, companion.id).await?;
     let portrait_url = sqlx::query_scalar::<_, Uuid>(
         "SELECT id FROM travel_identity_assets WHERE companion_id = $1 AND role = 'portrait' ORDER BY ordinal LIMIT 1",
     ).bind(companion.id).fetch_optional(pool).await?;
-    let scene = load_scene(pool, companion.id).await.unwrap_or_else(|_| {
-        json!({
-            "action": "observe",
-            "emotion": "好奇",
-            "bubble": "我正在想一件小事。",
-            "prop": "小笔记本"
-        })
-    });
+    let scene = load_scene(pool, companion.id, portrait_url)
+        .await
+        .unwrap_or_else(|_| {
+            json!({
+                "action": "observe",
+                "emotion": "好奇",
+                "bubble": "我正在想一件小事。",
+                "prop": "小笔记本"
+            })
+        });
     Ok(json!({
         "id": companion.id,
         "name": companion.name,
@@ -1538,15 +1585,15 @@ async fn travel_view(pool: &PgPool, companion: CompanionRow) -> Result<Value> {
         "identity": companion.identity,
         "portrait_url": portrait_url.map(|id| format!("/api/travel/identity/assets/{id}")),
         "initial_accessories": companion.initial_accessories,
-        "unlocked_accessories": unlocked_accessories,
+        "unlocked_accessories": growth.accessories,
         "memories": memories,
         "adopted_at": companion.adopted_at,
         "name_updated_at": companion.name_updated_at,
         "last_seen_at": companion.last_seen_at,
         "growth": {
-            "stage": stage_for_events(total_events),
-            "event_count": total_events,
-            "events": events,
+            "stage": stage_for_events(growth.progress),
+            "event_count": growth.progress,
+            "events": growth.events,
         },
         "current_trip": current_trip,
         "encounters": encounters,
@@ -1557,7 +1604,7 @@ async fn travel_view(pool: &PgPool, companion: CompanionRow) -> Result<Value> {
 /// Read the latest AI-directed activity from the durable daily brief.  The
 /// brief is already cached in JSONB, so this projection remains cheap and
 /// deterministic for every home page request.
-async fn load_scene(pool: &PgPool, companion_id: Uuid) -> Result<Value> {
+async fn load_scene(pool: &PgPool, companion_id: Uuid, portrait: Option<Uuid>) -> Result<Value> {
     // The photo URL is resolved from travel_postcards rather than the stored payload so
     // a renewed tmpfile link is what the page shows.
     if let Some((scene, current_url)) = sqlx::query_as::<_, (Value, Option<String>)>(
@@ -1587,8 +1634,10 @@ async fn load_scene(pool: &PgPool, companion_id: Uuid) -> Result<Value> {
             "photo_url": photo_url,
         }));
     }
-    if let Some(asset_id)=sqlx::query_scalar::<_,Uuid>("SELECT id FROM travel_identity_assets WHERE companion_id=$1 AND role='portrait' ORDER BY ordinal LIMIT 1").bind(companion_id).fetch_optional(pool).await? {
-        return Ok(json!({"action":"observe","emotion":"好奇","bubble":"从今天起，一起看世界。","photo_url":format!("/api/travel/identity/assets/{asset_id}")}));
+    if let Some(asset_id) = portrait {
+        return Ok(
+            json!({"action":"observe","emotion":"好奇","bubble":"从今天起，一起看世界。","photo_url":format!("/api/travel/identity/assets/{asset_id}")}),
+        );
     }
     let payload = sqlx::query_scalar::<_, Value>(
         "SELECT payload FROM travel_world_briefs WHERE companion_id = $1 AND status = 'ok' ORDER BY day DESC LIMIT 1",
@@ -1674,7 +1723,7 @@ pub async fn verify_identity_archives(config: &crate::config::Config) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use super::stage_for_events;
+    use super::*;
 
     #[test]
     fn stages_are_derived_from_event_count() {
@@ -1682,5 +1731,149 @@ mod tests {
         assert_eq!(stage_for_events(4), "explorer");
         assert_eq!(stage_for_events(9), "traveler");
         assert_eq!(stage_for_events(21), "old_friend");
+    }
+
+    async fn fixture_companion(pool: &PgPool) -> (Uuid, i64) {
+        let id = Uuid::new_v4();
+        let owner = sqlx::query_scalar("INSERT INTO users(email) VALUES($1) RETURNING id")
+            .bind(format!("travel-runtime-{id}@example.test"))
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO travel_companions(id,owner_user_id,name,identity_version,identity_seed,identity_fingerprint,identity,initial_accessories) VALUES($1,$2,'旅伴','runtime-test',$3,$3,'{}','[]')")
+            .bind(id).bind(owner).bind(id.as_bytes().repeat(2)).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO travel_autonomy_state(companion_id) VALUES($1)")
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+        (id, owner)
+    }
+
+    async fn fixture_asset(pool: &PgPool, id: Uuid, role: &str, ordinal: i16, reference: u8) {
+        let original = vec![42_u8; 4096];
+        sqlx::query("INSERT INTO travel_identity_assets(id,companion_id,role,ordinal,content_type,image_content_type,original_bytes,image_bytes,sha256) VALUES($1,$2,$3,$4,'image/png','image/jpeg',$5,$6,sha256($5))")
+            .bind(Uuid::new_v4()).bind(id).bind(role).bind(ordinal).bind(original).bind(vec![reference])
+            .execute(pool).await.unwrap();
+    }
+
+    async fn release_claims(pool: &PgPool, claims: Vec<AutonomyClaim>) {
+        for claim in claims {
+            sqlx::query("UPDATE travel_autonomy_state SET lease_token=NULL,lease_until=NULL WHERE companion_id=$1 AND lease_token=$2")
+                .bind(claim.companion_id).bind(claim.token).execute(pool).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an explicitly named disposable PostgreSQL database"]
+    async fn postgres_travel_reads_repair_projections_and_reserve_capacity_before_claims() {
+        let url = std::env::var("ALONG_WORLD_TEST_DATABASE_URL").expect("disposable database URL");
+        let pool = PgPool::connect(&url).await.unwrap();
+        let database: String = sqlx::query_scalar("SELECT current_database()")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(database.starts_with("along_world_audit_"));
+        let (id, owner) = fixture_companion(&pool).await;
+        for ordinal in 0..3 {
+            fixture_asset(&pool, id, "source", ordinal, ordinal as u8).await;
+        }
+        let sources = crate::travel_assets::companion_references(&pool, id)
+            .await
+            .unwrap();
+        assert_eq!(
+            sources.iter().map(|s| s.bytes.clone()).collect::<Vec<_>>(),
+            vec![vec![0], vec![1], vec![2]]
+        );
+        fixture_asset(&pool, id, "portrait", 0, 77).await;
+        let fixed = crate::travel_assets::companion_references(&pool, id)
+            .await
+            .unwrap();
+        assert_eq!(fixed.len(), 1);
+        assert_eq!(fixed[0].bytes, vec![77]);
+        assert_eq!(fixed[0].content_type, "image/jpeg");
+        assert_eq!(
+            crate::travel_assets::companion_assets(&pool, id)
+                .await
+                .unwrap()
+                .len(),
+            4
+        );
+
+        sqlx::query("INSERT INTO travel_growth_events(id,companion_id,event_type,source_key,payload) SELECT gen_random_uuid(),$1,'scene_generated','scene:'||g,'{}' FROM generate_series(1,20) g")
+            .bind(id).execute(&pool).await.unwrap();
+        for (kind, key, payload) in [
+            (
+                "reading_opened",
+                "read-1",
+                json!({"day":"2026-09-17","news_item_id":"same-news"}),
+            ),
+            (
+                "reading_opened",
+                "read-2",
+                json!({"day":"2026-09-17","news_item_id":"same-news"}),
+            ),
+            ("reading_opened", "legacy-incomplete", json!({})),
+            ("care_played", "legacy-care", json!({})),
+        ] {
+            sqlx::query("INSERT INTO travel_growth_events(id,companion_id,event_type,source_key,payload) VALUES($1,$2,$3,$4,$5)")
+                .bind(Uuid::new_v4()).bind(id).bind(kind).bind(key).bind(payload).execute(&pool).await.unwrap();
+        }
+        let first = load_growth(&pool, id).await.unwrap();
+        assert_eq!(first.progress, 21);
+        assert_eq!(first.events["reading_opened"], 3);
+        assert_eq!(first.events["accessory_unlocked"], 4);
+        assert!(!first.events.contains_key("care_played"));
+        let again = load_growth(&pool, id).await.unwrap();
+        assert_eq!(first.accessories, again.accessories);
+        assert_eq!(first.events, again.events);
+        sqlx::query("DELETE FROM travel_messages WHERE dedupe_key=$1")
+            .bind(format!("growth:accessory:{id}:travel_cap"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM travel_accessory_unlocks WHERE companion_id=$1 AND accessory_id='field_camera'")
+            .bind(id).execute(&pool).await.unwrap();
+        let repaired = load_growth(&pool, id).await.unwrap();
+        assert_eq!(repaired.events, first.events);
+        assert_eq!(repaired.accessories.len(), 4);
+        assert!(
+            load_unlock_rows(&pool, id)
+                .await
+                .unwrap()
+                .iter()
+                .all(|row| row.has_message)
+        );
+        let view = travel_view(&pool, load_companion(&pool, owner).await.unwrap().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(view["growth"]["event_count"], 21);
+        assert_eq!(view["portrait_url"], view["scene"]["photo_url"]);
+
+        for _ in 0..4 {
+            fixture_companion(&pool).await;
+        }
+        let slots = Arc::new(Semaphore::new(4));
+        let busy = slots.clone().acquire_many_owned(3).await.unwrap();
+        let one = claim_autonomy(&pool, &slots).await.unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(slots.available_permits(), 0);
+        assert!(claim_autonomy(&pool, &slots).await.unwrap().is_empty());
+        release_claims(&pool, one).await;
+        drop(busy);
+        let (a, b) = tokio::join!(claim_autonomy(&pool, &slots), claim_autonomy(&pool, &slots));
+        let claims = a.unwrap().into_iter().chain(b.unwrap()).collect::<Vec<_>>();
+        assert_eq!(claims.len(), 4);
+        assert_eq!(slots.available_permits(), 0);
+        let mut ids = claims
+            .iter()
+            .map(|claim| claim.companion_id)
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 4);
+        release_claims(&pool, claims).await;
+        assert_eq!(slots.available_permits(), 4);
+        pool.close().await;
     }
 }

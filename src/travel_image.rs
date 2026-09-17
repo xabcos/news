@@ -35,8 +35,6 @@ pub(crate) fn postcard_key(companion_id: Uuid, news_item_id: Uuid) -> String {
 pub(crate) struct GenerateRequest {
     pub(crate) news_item_id: Uuid,
     #[serde(default)]
-    pub(crate) quality: Option<String>,
-    #[serde(default)]
     pub(crate) purpose: Option<String>,
     /// Internal, server-generated creative direction. It is never accepted from
     /// an untrusted client and is bounded again before entering the prompt.
@@ -150,7 +148,6 @@ pub(crate) async fn generate_for_owner(
     .await?
     .ok_or_else(|| AppError::Conflict("请先确定旅伴身份".into()))?;
 
-    let _quality = quality(&request.quality)?;
     let purpose = safe_purpose(request.purpose.as_deref());
     let source_key = request
         .scene_key
@@ -194,16 +191,26 @@ pub(crate) async fn generate_for_owner(
     if claimed.rows_affected() == 0 {
         return Err(AppError::TooManyRequests("照片正在生成，请稍后查看".into()));
     }
-    let result = generate_with_lease(
-        state,
-        request,
-        &item,
-        &companion,
-        &source_key,
-        &purpose,
-        force_refresh,
+    // Bound provider retries as well as individual requests. Always release the
+    // durable lease on timeout, before another worker can reclaim it.
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs((lease_seconds - 60) as u64),
+        generate_with_lease(
+            state,
+            request,
+            &item,
+            &companion,
+            &source_key,
+            &purpose,
+            force_refresh,
+        ),
     )
-    .await;
+    .await
+    .unwrap_or_else(|_| {
+        Err(AppError::ServiceUnavailable(
+            "照片准备超时，稍后会重试".into(),
+        ))
+    });
     if let Err(error) = sqlx::query(
         "UPDATE travel_companions SET image_lease_token = NULL, image_lease_until = NULL WHERE id = $1 AND image_lease_token = $2",
     )
@@ -232,19 +239,7 @@ async fn generate_with_lease(
     ).bind(source_key).fetch_optional(&state.pool).await? {
         return Ok(cached_response(item, cached));
     }
-    let assets = crate::travel_assets::companion_assets(&state.pool, companion.id).await?;
-    let references = if let Some(portrait) = assets
-        .iter()
-        .find(|a| a.role == "portrait" && a.ordinal == 0)
-    {
-        vec![portrait.reference()]
-    } else {
-        assets
-            .iter()
-            .filter(|a| a.role == "source")
-            .map(|a| a.reference())
-            .collect::<Vec<_>>()
-    };
+    let references = crate::travel_assets::companion_references(&state.pool, companion.id).await?;
     let mut effective_identity = companion.identity.clone();
     effective_identity["gender"] = json!(companion.gender);
     if force_refresh && let Some(renewed) = renew_archived_postcard(state, item, source_key).await?
@@ -326,16 +321,7 @@ async fn generate_with_lease(
         None
     };
     let published = if let Some(id) = media_id {
-        // A keepsake's permanent authenticated URL never depends on news retention
-        // or on the optional public mirror's expiration date.
-        if let Ok(mirror) = publish_asset(state, &generated).await {
-            sqlx::query("UPDATE travel_media_assets SET public_url=$2,expires_at=$3 WHERE id=$1")
-                .bind(id)
-                .bind(mirror.url)
-                .bind(mirror.expires_at)
-                .execute(&state.pool)
-                .await?;
-        }
+        // Saved bytes back the permanent authenticated URL directly.
         PublishedAsset {
             url: format!("/api/travel/media/{id}"),
             expires_at: None,
@@ -518,12 +504,10 @@ pub(crate) async fn generate_shared_photo(
         .bind(id)
         .fetch_one(&state.pool)
         .await?;
-        let assets = crate::travel_assets::companion_assets(&state.pool, *id).await?;
-        let portrait = assets
-            .iter()
-            .find(|asset| asset.role == "portrait" && asset.ordinal == 0)
+        let portrait = crate::travel_assets::portrait_reference(&state.pool, *id)
+            .await?
             .ok_or_else(|| AppError::ServiceUnavailable("旅伴的固定形象还未准备完成".into()))?;
-        references.push(portrait.reference());
+        references.push(portrait);
         let mut identity = companion.identity;
         identity["gender"] = json!(companion.gender);
         descriptions.push(json!({"reference_image":index+1,"companion_id":id,"appearance":identity_description(&identity,&companion.initial_accessories)}));
@@ -719,7 +703,6 @@ pub(crate) async fn refresh_expiring(state: &AppState) -> Result<()> {
     for (owner_id, news_item_id) in rows {
         let request = GenerateRequest {
             news_item_id,
-            quality: Some("high".into()),
             purpose: Some("旅迹墙照片续期".into()),
             creative_direction: None,
             scene_key: None,
@@ -728,15 +711,12 @@ pub(crate) async fn refresh_expiring(state: &AppState) -> Result<()> {
             tracing::debug!(%error, %news_item_id, "companion postcard refresh deferred");
         }
     }
-    let scenes = sqlx::query_as::<_, (i64, Uuid, String, Option<bool>)>(
-        r#"SELECT c.owner_user_id, p.news_item_id, p.source_key,
-                  NULL::boolean
+    let scenes = sqlx::query_as::<_, (i64, Uuid, String)>(
+        r#"SELECT c.owner_user_id, p.news_item_id, p.source_key
            FROM travel_postcards p
            JOIN travel_companions c ON c.id = split_part(p.source_key, ':', 2)::uuid
            JOIN items i ON i.id = p.news_item_id
            JOIN topics t ON t.id = i.topic_id
-           LEFT JOIN travel_messages m
-             ON m.companion_id = c.id AND m.payload->>'scene_key' = split_part(p.source_key, ':', 4)
            WHERE p.source_key LIKE 'travel:%:scene:%'
              AND p.expires_at > NOW()
              AND p.expires_at <= NOW() + INTERVAL '6 hours'
@@ -747,13 +727,12 @@ pub(crate) async fn refresh_expiring(state: &AppState) -> Result<()> {
     )
     .fetch_all(&state.pool)
     .await?;
-    for (owner_id, news_item_id, source_key, _companion) in scenes {
+    for (owner_id, news_item_id, source_key) in scenes {
         let scene_key = source_key
             .split_once(":scene:")
             .map(|(_, key)| key.to_owned());
         let request = GenerateRequest {
             news_item_id,
-            quality: Some("high".into()),
             purpose: Some("四小时动态照片续期".into()),
             creative_direction: Some("保持生活主题，但改变光线、动作和镜头细节。".into()),
             scene_key,
@@ -780,17 +759,6 @@ fn status_for_provider(provider: &str) -> &'static str {
         "template" => "template_fallback",
         "news_source" => "source_fallback",
         _ => "generated",
-    }
-}
-
-fn quality(value: &Option<String>) -> Result<&str> {
-    let value = value.as_deref().unwrap_or(DEFAULT_QUALITY).trim();
-    if matches!(value, "low" | "medium" | "high" | "xhigh" | "max" | "auto") {
-        Ok(value)
-    } else {
-        Err(AppError::BadRequest(
-            "quality 必须是 low、medium、high、xhigh、max 或 auto".into(),
-        ))
     }
 }
 
@@ -936,7 +904,7 @@ fn gpt_request(
             .text("prompt", prompt.to_owned())
             .text("n", "1")
             .text("size", size.to_owned())
-            .text("quality", "high")
+            .text("quality", DEFAULT_QUALITY)
             .text("output_format", "png");
         for (index, reference) in references.iter().enumerate() {
             let extension = match reference.content_type.as_str() {
@@ -961,7 +929,7 @@ fn gpt_request(
             .post(format!("{base}/v1/images/generations"))
             .json(&json!({
                 "model": model, "prompt": prompt, "n": 1, "size": size,
-                "quality": "high", "output_format": "png",
+                "quality": DEFAULT_QUALITY, "output_format": "png",
             })))
     }
 }
@@ -1223,7 +1191,7 @@ fn sanitize_fragment(value: &str) -> String {
 mod tests {
     use super::{
         NewsRow, ReferenceImage, generated_content_type, gpt_request, identity_description,
-        postcard_key, quality, safe_purpose, sanitize_fragment, travel_prompt,
+        postcard_key, safe_purpose, sanitize_fragment, travel_prompt,
     };
 
     #[test]
@@ -1373,12 +1341,6 @@ mod tests {
         );
         assert_eq!(generated_content_type(b"<html>Forbidden</html>"), None);
         assert_eq!(generated_content_type(b""), None);
-    }
-
-    #[test]
-    fn accepts_supported_quality_values() {
-        assert_eq!(quality(&Some("xhigh".into())).unwrap(), "xhigh");
-        assert!(quality(&Some("ultra".into())).is_err());
     }
 
     #[test]

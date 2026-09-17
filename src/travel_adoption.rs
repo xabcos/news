@@ -246,12 +246,7 @@ async fn prepare_first_meeting(
     seed: &[u8],
     specification: &crate::travel_identity::IdentityRequest,
 ) -> Result<()> {
-    let assets = crate::travel_assets::draft_assets(state, draft_id).await?;
-    let references = assets
-        .iter()
-        .filter(|a| a.role == "source")
-        .map(|a| a.reference())
-        .collect::<Vec<_>>();
+    let references = crate::travel_assets::draft_references(&state.pool, draft_id).await?;
     let preview =
         crate::travel_identity::generate_identity(state, seed, specification, &references).await?;
     let updated=sqlx::query("UPDATE travel_adoption_drafts SET identity=$2,initial_accessories=$3,stage='portrait' WHERE id=$1")

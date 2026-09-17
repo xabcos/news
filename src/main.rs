@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use news::{config::Config, error::Result, media, runner, state::AppState, web};
+use news::{config::Config, error::Result, runner, state::AppState, web};
 use tracing_subscriber::{EnvFilter, fmt};
 
 #[tokio::main]
@@ -34,20 +34,8 @@ async fn main() -> Result<()> {
     }
 
     let state = AppState::new(Config::from_env()?).await?;
-    // Refreshing expired images can involve several upstream requests. Start it in the
-    // background so a slow tmpfile or news source never delays the HTTP listener.
-    let startup_sync = tokio::spawn({
-        let state = state.clone();
-        async move {
-            if let Err(error) = media::startup_sync(&state).await {
-                tracing::warn!(%error, "image startup sync failed; continuing with available assets");
-            }
-        }
-    });
     let mut background = runner::spawn(state.clone());
     let result = web::serve(state).await;
-    startup_sync.abort();
-    let _ = startup_sync.await;
     background.shutdown().await;
     result
 }

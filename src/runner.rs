@@ -19,7 +19,7 @@ use uuid::Uuid;
 const TICK: Duration = Duration::from_secs(30);
 const TICK_ERROR_LOG_INTERVAL: Duration = Duration::from_secs(300);
 const MAINTENANCE_TICK: Duration = Duration::from_secs(60);
-const CLEANUP_EVERY_TICKS: u32 = 60;
+const HOUSEKEEPING_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const KNOWN_LIMIT: i64 = 80;
 const RUN_RETENTION_DAYS: i64 = 3;
 const INSIGHT_RETENTION_DAYS: i64 = 32;
@@ -33,6 +33,7 @@ pub fn spawn(state: AppState) -> JoinSet<()> {
         state.pool.clone(),
         state.config.timezone,
     ));
+    tasks.spawn(media_refresh_loop(state.clone()));
     if state.config.scheduler_enabled {
         tasks.spawn(schedule_loop(state.clone()));
         tasks.spawn(maintenance_loop(state));
@@ -666,58 +667,61 @@ async fn defer_after_finish_error(state: &AppState, topic_id: &str) {
     }
 }
 
-/// Every minute: roll the day over when the local date changes; hourly: prune old data and
-/// expire authentication rows. The initial prune makes a restart sufficient to catch up.
+/// One serial worker owns all media refreshes. Slow providers cannot stall the
+/// minute maintenance loop or overlap another refresh from this process.
+async fn media_refresh_loop(state: AppState) {
+    let mut interval = tokio::time::interval(HOUSEKEEPING_INTERVAL);
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut startup = true;
+    loop {
+        interval.tick().await;
+        if let Err(error) = media::startup_sync(&state).await {
+            tracing::warn!(%error, "news image refresh deferred");
+        }
+        // Preserve startup's cheap news-only sync. Travel renewal may generate
+        // images, so it follows the automatic-generation switch as well.
+        if !startup
+            && state.config.scheduler_enabled
+            && let Err(error) = crate::travel_image::refresh_expiring(&state).await
+        {
+            tracing::warn!(%error, "travel image refresh deferred");
+        }
+        startup = false;
+    }
+}
+
+/// Lightweight maintenance and generation claims run every minute. Housekeeping
+/// uses elapsed time so a skipped tick cannot postpone cleanup indefinitely.
 async fn maintenance_loop(state: AppState) {
     let mut interval = tokio::time::interval(MAINTENANCE_TICK);
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut day = state.digest.today();
-    let mut ticks = 0_u32;
-    if let Err(error) = prune(&state, day).await {
-        tracing::warn!(%error, "initial data pruning failed");
-    }
-    if let Err(error) = crate::travel::settle_due(&state).await {
-        tracing::warn!(%error, "initial travel companion settlement failed");
-    }
-    if let Err(error) = crate::travel_world::tick(&state).await {
-        tracing::warn!(%error,"Along world tick deferred");
-    }
-    if let Err(error) = crate::travel_image::archive_pending_identities(&state).await {
-        tracing::warn!(%error,"Along original archive pending");
-    }
-    if let Err(error) = crate::travel::autonomous_tick(&state).await {
-        tracing::warn!(%error, "initial autonomous travel tick failed");
-    }
+    let mut next_cleanup = Instant::now();
     loop {
         interval.tick().await;
-        if let Err(error) = crate::travel::settle_due(&state).await {
-            tracing::warn!(%error, "travel companion settlement failed");
-        }
-        if let Err(error) = crate::travel_world::tick(&state).await {
-            tracing::warn!(%error,"Along world tick deferred");
-        }
-        if let Err(error) = crate::travel_image::archive_pending_identities(&state).await {
-            tracing::warn!(%error,"Along original archive pending");
-        }
-        if let Err(error) = crate::travel::autonomous_tick(&state).await {
-            tracing::warn!(%error, "autonomous travel tick failed");
-        }
-        ticks += 1;
         let today = state.digest.today();
         if today != day {
             day = today;
             state.digest.rollover();
         }
-        if ticks >= CLEANUP_EVERY_TICKS {
-            ticks = 0;
-            if let Err(error) = media::startup_sync(&state).await {
-                tracing::warn!(%error, "scheduled image refresh failed");
+        if state.config.scheduler_enabled {
+            if let Err(error) = crate::travel::settle_due(&state).await {
+                tracing::warn!(%error, "travel companion settlement failed");
             }
-            if let Err(error) = crate::travel_image::refresh_expiring(&state).await {
-                tracing::warn!(%error, "scheduled travel image refresh failed");
+            if let Err(error) = crate::travel_world::tick(&state).await {
+                tracing::warn!(%error, "Along world tick deferred");
             }
+            if let Err(error) = crate::travel::autonomous_tick(&state).await {
+                tracing::warn!(%error, "autonomous travel tick failed");
+            }
+        }
+        if let Err(error) = crate::travel_image::archive_pending_identities(&state).await {
+            tracing::warn!(%error, "Along original archive pending");
+        }
+        if Instant::now() >= next_cleanup {
+            next_cleanup = Instant::now() + HOUSEKEEPING_INTERVAL;
             if let Err(error) = prune(&state, today).await {
-                tracing::warn!(%error, "scheduled data pruning failed");
+                tracing::warn!(%error, "data pruning failed");
             }
             if let Err(error) = auth::cleanup(&state).await {
                 tracing::warn!(%error, "failed to clean expired authentication records");

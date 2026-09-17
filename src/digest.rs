@@ -188,6 +188,9 @@ struct Inner {
     archive: RwLock<HashMap<DaysKey, Arc<Rendered>>>,
     /// Bumped by every write. A load that began before a write must not be stored after it.
     generation: AtomicU64,
+    /// Stable render time for one public data generation, including filtered
+    /// pages that are not kept in the bounded hot-response cache.
+    generated_at: RwLock<DateTime<Utc>>,
     /// Serializes cache misses and explicit refreshes. Without this small
     /// critical section, two concurrent refreshes could both observe a newer
     /// generation and leave Redis with neither snapshot.
@@ -212,6 +215,7 @@ impl DigestCache {
             hot: RwLock::default(),
             archive: RwLock::default(),
             generation: AtomicU64::new(0),
+            generated_at: RwLock::new(Utc::now()),
             cache_write: tokio::sync::Mutex::new(()),
         }))
     }
@@ -419,6 +423,7 @@ impl DigestCache {
 
     /// Drops every pre-rendered body. Runs under the same writes that invalidate snapshots.
     fn forget_rendered(&self) {
+        *write(&self.0.generated_at) = Utc::now();
         write(&self.0.hot).clear();
         write(&self.0.archive).clear();
     }
@@ -491,6 +496,7 @@ impl DigestCache {
             return Ok(hit);
         }
         let generation = self.0.generation.load(Ordering::Acquire);
+        let generated_at = *read(&self.0.generated_at);
         let (topics, selected) = self.selected(topic)?;
         let mut latest = Vec::with_capacity(selected.len());
         for &index in &selected {
@@ -507,7 +513,7 @@ impl DigestCache {
         let body = DigestBody {
             day,
             timezone: self.0.tz.name(),
-            generated_at: Utc::now(),
+            generated_at,
             topics: selected
                 .iter()
                 .zip(&latest)
@@ -1223,11 +1229,40 @@ fn escape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cursor, PublicItem, Rendered, Snapshot, conditional, entity_tag, escape, page};
+    use super::{
+        Cursor, DigestCache, PublicItem, Rendered, Snapshot, conditional, entity_tag, escape, page,
+        read, write,
+    };
     use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use chrono::{Duration, TimeZone, Utc};
     use uuid::Uuid;
+
+    #[test]
+    fn rollover_expires_old_snapshots_and_changes_the_render_epoch() {
+        let cache = DigestCache::new(chrono_tz::Asia::Shanghai);
+        let yesterday = cache.yesterday();
+        let old_day = yesterday.pred_opt().unwrap();
+        let old_render_time = Utc::now() - Duration::days(1);
+        *write(&cache.0.generated_at) = old_render_time;
+        write(&cache.0.days).insert(
+            ("topic".into(), old_day),
+            std::sync::Arc::new(Snapshot::default()),
+        );
+        write(&cache.0.days).insert(
+            ("topic".into(), yesterday),
+            std::sync::Arc::new(Snapshot::default()),
+        );
+        write(&cache.0.hot).insert(
+            12,
+            std::sync::Arc::new(Rendered::new("old response".into())),
+        );
+        cache.rollover();
+        assert!(!read(&cache.0.days).contains_key(&("topic".into(), old_day)));
+        assert!(read(&cache.0.days).contains_key(&("topic".into(), yesterday)));
+        assert!(read(&cache.0.hot).is_empty());
+        assert!(*read(&cache.0.generated_at) > old_render_time);
+    }
 
     /// Items are told apart by `importance`; `published_at` grows with `n`, so higher `n`
     /// is newer and sorts first among unpinned items.

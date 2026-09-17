@@ -21,7 +21,7 @@ pub(crate) const MAX_REFERENCES: usize = 7;
 pub(crate) const MAX_UPLOAD_BYTES: usize = 10 * 1024 * 1024;
 pub(crate) const MAX_UPLOAD_BODY: usize = MAX_REFERENCES * MAX_UPLOAD_BYTES + 64 * 1024;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, FromRow)]
 pub(crate) struct ReferenceImage {
     pub(crate) bytes: Vec<u8>,
     pub(crate) content_type: String,
@@ -103,12 +103,6 @@ pub(crate) struct IdentityAsset {
     pub(crate) sha256: Vec<u8>,
 }
 impl IdentityAsset {
-    pub(crate) fn reference(&self) -> ReferenceImage {
-        ReferenceImage {
-            bytes: self.image_bytes.clone(),
-            content_type: self.image_content_type.clone(),
-        }
-    }
     pub(crate) fn archive(&self) -> ArchiveAsset {
         ArchiveAsset {
             id: self.id,
@@ -129,11 +123,25 @@ pub(crate) async fn companion_assets(pool: &PgPool, id: Uuid) -> Result<Vec<Iden
     verify_assets(&rows)?;
     Ok(rows)
 }
-pub(crate) async fn draft_assets(state: &AppState, id: Uuid) -> Result<Vec<IdentityAsset>> {
-    let rows=sqlx::query_as::<_,IdentityAsset>("SELECT id,role,ordinal,content_type,image_content_type,original_bytes,image_bytes,sha256 FROM travel_identity_assets WHERE draft_id=$1 ORDER BY CASE role WHEN 'portrait' THEN 0 ELSE 1 END,ordinal")
-        .bind(id).fetch_all(&state.pool).await?;
-    verify_assets(&rows)?;
-    Ok(rows)
+// Original bytes are validated on ingestion, frozen by database constraints,
+// and fully checked when confirming or archiving. Generation only needs the
+// normalized references; it must not load every private original into memory.
+pub(crate) async fn portrait_reference(pool: &PgPool, id: Uuid) -> Result<Option<ReferenceImage>> {
+    Ok(sqlx::query_as("SELECT image_bytes AS bytes,image_content_type AS content_type FROM travel_identity_assets WHERE companion_id=$1 AND role='portrait' AND ordinal=0")
+        .bind(id).fetch_optional(pool).await?)
+}
+
+pub(crate) async fn companion_references(pool: &PgPool, id: Uuid) -> Result<Vec<ReferenceImage>> {
+    if let Some(portrait) = portrait_reference(pool, id).await? {
+        return Ok(vec![portrait]);
+    }
+    Ok(sqlx::query_as("SELECT image_bytes AS bytes,image_content_type AS content_type FROM travel_identity_assets WHERE companion_id=$1 AND role='source' ORDER BY ordinal")
+        .bind(id).fetch_all(pool).await?)
+}
+
+pub(crate) async fn draft_references(pool: &PgPool, id: Uuid) -> Result<Vec<ReferenceImage>> {
+    Ok(sqlx::query_as("SELECT image_bytes AS bytes,image_content_type AS content_type FROM travel_identity_assets WHERE draft_id=$1 AND role='source' ORDER BY ordinal")
+        .bind(id).fetch_all(pool).await?)
 }
 pub(crate) fn verify_assets(assets: &[IdentityAsset]) -> Result<()> {
     for asset in assets {

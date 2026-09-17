@@ -384,8 +384,11 @@ pub async fn startup_sync(state: &AppState) -> Result<()> {
         let Ok(image) = serde_json::from_value::<NewsImage>(value) else {
             continue;
         };
-        let Some(image) = mirror_image(state, image).await else {
-            continue;
+        let image = match tokio::time::timeout_at(deadline.into(), mirror_image(state, image)).await
+        {
+            Ok(Some(image)) => image,
+            Ok(None) => continue,
+            Err(_) => break,
         };
         let value = serde_json::to_value(image)?;
         if row.image.as_ref() == Some(&value) {
@@ -422,8 +425,11 @@ pub async fn startup_sync(state: &AppState) -> Result<()> {
         let Ok(image) = serde_json::from_value::<NewsImage>(value) else {
             continue;
         };
-        let Some(image) = mirror_image(state, image).await else {
-            continue;
+        let image = match tokio::time::timeout_at(deadline.into(), mirror_image(state, image)).await
+        {
+            Ok(Some(image)) => image,
+            Ok(None) => continue,
+            Err(_) => break,
         };
         let value = serde_json::to_value(image)?;
         if payload.get("cover") == Some(&value) {
@@ -478,8 +484,11 @@ pub async fn startup_sync(state: &AppState) -> Result<()> {
         let Ok(image) = serde_json::from_value::<NewsImage>(value) else {
             continue;
         };
-        let Some(image) = mirror_image(state, image).await else {
-            continue;
+        let image = match tokio::time::timeout_at(deadline.into(), mirror_image(state, image)).await
+        {
+            Ok(Some(image)) => image,
+            Ok(None) => continue,
+            Err(_) => break,
         };
         let value = serde_json::to_value(image)?;
         if source.get("image") == Some(&value) {
