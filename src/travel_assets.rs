@@ -10,7 +10,7 @@ use axum::{
     extract::{Path, State},
     http::{Response, header},
 };
-use image::{ImageDecoder, ImageFormat, ImageReader, Limits, codecs::jpeg::JpegEncoder};
+use image::{ImageDecoder, ImageFormat, ImageReader, Limits, codecs::jpeg::JpegEncoder, imageops};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool};
@@ -132,11 +132,47 @@ pub(crate) async fn portrait_reference(pool: &PgPool, id: Uuid) -> Result<Option
 }
 
 pub(crate) async fn companion_references(pool: &PgPool, id: Uuid) -> Result<Vec<ReferenceImage>> {
-    if let Some(portrait) = portrait_reference(pool, id).await? {
-        return Ok(vec![portrait]);
+    let sources = sqlx::query_as("SELECT image_bytes AS bytes,image_content_type AS content_type FROM travel_identity_assets WHERE companion_id=$1 AND role='source' ORDER BY ordinal")
+        .bind(id).fetch_all(pool).await?;
+    // Source photos already show the person in different poses. Keep them as
+    // identity clues and do not send the first-meeting scene as an edit canvas.
+    if sources.len() >= 2 {
+        return Ok(sources);
     }
-    Ok(sqlx::query_as("SELECT image_bytes AS bytes,image_content_type AS content_type FROM travel_identity_assets WHERE companion_id=$1 AND role='source' ORDER BY ordinal")
-        .bind(id).fetch_all(pool).await?)
+    if sources.len() == 1 {
+        return Ok(vec![appearance_lock(&sources[0])]);
+    }
+    if let Some(portrait) = portrait_reference(pool, id).await? {
+        return Ok(vec![appearance_lock(&portrait)]);
+    }
+    Ok(vec![])
+}
+
+/// Crop a tall scenic portrait down to head-and-shoulders so later edits cannot
+/// copy the original stance, outfit or background. Square or wide images pass through.
+pub(crate) fn appearance_lock(reference: &ReferenceImage) -> ReferenceImage {
+    let Ok(img) = image::load_from_memory(&reference.bytes) else {
+        return reference.clone();
+    };
+    let width = img.width();
+    let height = img.height();
+    if width < 256 || height < 256 || height <= width + width / 5 {
+        return reference.clone();
+    }
+    let crop_height = ((height as f32) * 0.5).round() as u32;
+    let crop_height = crop_height.clamp(256, height);
+    let rgb = imageops::crop_imm(&img.to_rgb8(), 0, 0, width, crop_height).to_image();
+    let mut encoded = Vec::new();
+    if JpegEncoder::new_with_quality(&mut encoded, 92)
+        .encode_image(&rgb)
+        .is_err()
+    {
+        return reference.clone();
+    }
+    ReferenceImage {
+        bytes: encoded,
+        content_type: "image/jpeg".into(),
+    }
 }
 
 pub(crate) async fn draft_references(pool: &PgPool, id: Uuid) -> Result<Vec<ReferenceImage>> {
@@ -249,5 +285,36 @@ mod tests {
             .write_to(&mut data, ImageFormat::Png)
             .unwrap();
         assert!(normalize_upload(data.into_inner()).is_err());
+    }
+
+    #[test]
+    fn appearance_lock_crops_tall_portraits_and_keeps_square_frames() {
+        fn png(width: u32, height: u32) -> Vec<u8> {
+            let mut data = Cursor::new(Vec::new());
+            image::DynamicImage::new_rgb8(width, height)
+                .write_to(&mut data, ImageFormat::Png)
+                .unwrap();
+            data.into_inner()
+        }
+        let tall = appearance_lock(&ReferenceImage {
+            bytes: png(400, 600),
+            content_type: "image/png".into(),
+        });
+        let cropped = image::load_from_memory(&tall.bytes).unwrap();
+        assert_eq!(cropped.width(), 400);
+        assert_eq!(cropped.height(), 300);
+        assert_eq!(tall.content_type, "image/jpeg");
+        let square = appearance_lock(&ReferenceImage {
+            bytes: png(400, 400),
+            content_type: "image/png".into(),
+        });
+        let kept = image::load_from_memory(&square.bytes).unwrap();
+        assert_eq!(kept.width(), 400);
+        assert_eq!(kept.height(), 400);
+        let garbage = appearance_lock(&ReferenceImage {
+            bytes: vec![7, 7, 7],
+            content_type: "image/jpeg".into(),
+        });
+        assert_eq!(garbage.bytes, vec![7, 7, 7]);
     }
 }
