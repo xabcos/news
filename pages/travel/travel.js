@@ -589,7 +589,9 @@ const TravelShell = (() => {
   function updateCreateState() {
     const needsPhotos = sourceValue() === "photos";
     sourcePhotos.hidden = !needsPhotos;
-    createButton.disabled = submitting || !createForm.elements.gender.value
+    document.querySelector("#alongGenderSection").hidden = needsPhotos;
+    createButton.disabled = submitting
+      || (!needsPhotos && !createForm.elements.gender.value)
       || (needsPhotos && (!selectedPhotos.length || !document.querySelector("#alongConsent").checked));
     document.querySelector("#alongPhotoCount").textContent = `${selectedPhotos.length} / 7 张`;
     uploadInput.disabled = selectedPhotos.length >= 7 || submitting;
@@ -728,7 +730,10 @@ const TravelShell = (() => {
   async function createMeeting(event) {
     event.preventDefault();
     if (submitting || travelState?.adopted || authState !== "authenticated") return;
-    if (!createForm.elements.gender.value) { setOnboardingError("先选择想遇见的他或她。"); return; }
+    if (sourceValue() !== "photos" && !createForm.elements.gender.value) {
+      setOnboardingError("先选择想遇见的他或她。");
+      return;
+    }
     if (sourceValue() === "photos" && (!selectedPhotos.length || !document.querySelector("#alongConsent").checked)) {
       setOnboardingError("请选择 1–7 张照片，并确认你有权使用这些照片。");
       return;
@@ -743,7 +748,7 @@ const TravelShell = (() => {
     document.querySelector("#alongBackToEdit").disabled = true;
     const body = new FormData();
     body.set("source", sourceValue());
-    body.set("gender", createForm.elements.gender.value);
+    if (sourceValue() !== "photos") body.set("gender", createForm.elements.gender.value);
     body.set("name", document.querySelector("#alongName").value.trim());
     body.set("description", document.querySelector("#alongDescription").value.trim());
     if (sourceValue() === "photos") {

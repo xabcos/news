@@ -659,7 +659,12 @@ pub(crate) async fn confirm(
     .bind(fingerprint)
     .bind(identity)
     .bind(&draft.initial_accessories)
-    .bind(draft.creation_spec["gender"].as_str().unwrap_or("female"))
+    .bind(
+        identity["gender"]
+            .as_str()
+            .or_else(|| draft.creation_spec["gender"].as_str())
+            .unwrap_or("female"),
+    )
     .fetch_optional(&mut *transaction)
     .await;
     let companion = match companion {
