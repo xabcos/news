@@ -12,7 +12,6 @@ pub struct Config {
     pub(crate) database_max_connections: u32,
     pub(crate) migrations_dir: PathBuf,
     pub(crate) pages_dir: PathBuf,
-    pub(crate) travel_archive_dir: PathBuf,
     pub(crate) public_base_url: Url,
     pub(crate) session_cookie_name: String,
     pub(crate) session_ttl: Duration,
@@ -36,9 +35,6 @@ pub struct Config {
     pub(crate) ai_api_key: String,
     pub(crate) ai_default_model: String,
     pub(crate) ai_insight_model: String,
-    pub(crate) ai_response_timeout: Duration,
-    pub(crate) travel_image_model: String,
-    pub(crate) travel_image_generation_timeout: Duration,
     pub(crate) ai_insight_interval_minutes: u64,
     pub(crate) timezone: Tz,
     pub(crate) fetch_timeout: Duration,
@@ -162,19 +158,6 @@ impl Config {
                 "AI_INSIGHT_INTERVAL_MINUTES 必须在 30 到 1440 分钟之间".into(),
             ));
         }
-        let ai_response_timeout_secs = parse_env("AI_RESPONSES_TIMEOUT_SECS", 900_u64)?;
-        if !(120..=1800).contains(&ai_response_timeout_secs) {
-            return Err(AppError::Config(
-                "AI_RESPONSES_TIMEOUT_SECS 必须在 120 到 1800 秒之间".into(),
-            ));
-        }
-        let travel_image_generation_timeout_secs =
-            parse_env("TRAVEL_IMAGE_GENERATION_TIMEOUT_SECS", 900_u64)?;
-        if !(15..=900).contains(&travel_image_generation_timeout_secs) {
-            return Err(AppError::Config(
-                "TRAVEL_IMAGE_GENERATION_TIMEOUT_SECS 必须在 15 到 900 秒之间".into(),
-            ));
-        }
         let timezone = env_value("NEWS_TIMEZONE", "Asia/Shanghai")
             .parse::<Tz>()
             .map_err(|_| AppError::Config("NEWS_TIMEZONE 必须是有效的 IANA 时区".into()))?;
@@ -210,21 +193,12 @@ impl Config {
             ));
         }
 
-        let archive_path = PathBuf::from(env_value("TRAVEL_ARCHIVE_DIR", "data/along-archive"));
-        let travel_archive_dir = if archive_path.is_absolute() {
-            archive_path
-        } else {
-            std::env::current_dir()
-                .map_err(|_| AppError::Config("无法确定档案路径".into()))?
-                .join(archive_path)
-        };
         Ok(Self {
             bind_addr,
             database_url,
             database_max_connections,
             migrations_dir: PathBuf::from(env_value("MIGRATIONS_DIR", "migrations")),
             pages_dir: PathBuf::from(env_value("PAGES_DIR", "pages")),
-            travel_archive_dir,
             public_base_url,
             session_cookie_name,
             session_ttl: Duration::from_secs(session_days * 24 * 60 * 60),
@@ -246,11 +220,6 @@ impl Config {
             ai_api_key,
             ai_default_model: env_value("AI_DEFAULT_MODEL", "grok-4.6"),
             ai_insight_model: env_value("AI_INSIGHT_MODEL", "gpt-6-astra"),
-            ai_response_timeout: Duration::from_secs(ai_response_timeout_secs),
-            travel_image_model: env_value("TRAVEL_IMAGE_MODEL", "gpt-image-2.5-flare"),
-            travel_image_generation_timeout: Duration::from_secs(
-                travel_image_generation_timeout_secs,
-            ),
             ai_insight_interval_minutes,
             timezone,
             fetch_timeout: Duration::from_secs(fetch_timeout_secs),

@@ -1,7 +1,4 @@
-use crate::{
-    auth, digest, error::Result, payment, state::AppState, topics, travel, travel_assets,
-    travel_guide, travel_world,
-};
+use crate::{auth, digest, error::Result, payment, state::AppState, topics};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Request, State},
@@ -35,29 +32,6 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/api/auth/email/consume", post(auth::consume_email_login))
         .route("/api/auth/logout", post(auth::logout))
         .route("/api/me", get(auth::me))
-        .route("/api/travel/state", get(travel::state))
-        .route("/api/travel/home", get(travel::home))
-        .route(
-            "/api/travel/adoption/preview",
-            get(travel::draft_status)
-                .post(travel::preview)
-                .layer(DefaultBodyLimit::max(travel_assets::MAX_UPLOAD_BODY)),
-        )
-        .route("/api/travel/adoption/confirm", post(travel::confirm))
-        .route(
-            "/api/travel/identity/assets/{id}",
-            get(travel_assets::identity_image),
-        )
-        .route("/api/travel/media/{id}", get(travel_assets::media_image))
-        .route("/api/travel/world", get(travel_world::world))
-        .route("/api/travel/world/settings", post(travel_world::settings))
-        .route("/api/travel/reading", post(travel::reading))
-        .route("/api/travel/guide", get(travel_guide::today))
-        .route("/api/travel/trips", get(travel::list_trips))
-        .route("/api/travel/journal", get(travel::journal))
-        .route("/api/travel/album", get(travel::album))
-        .route("/api/travel/atlas", get(travel::atlas))
-        .route("/api/travel/encounters", get(travel::encounters))
         .route("/api/plans", get(payment::list_plans))
         .route(
             "/api/orders",
@@ -395,7 +369,7 @@ mod tests {
 
     #[test]
     fn path_too_long_flags_a_single_oversized_segment() {
-        assert!(!path_too_long("/travel/assets/photo.png"));
+        assert!(!path_too_long("/assets/photo.png"));
         assert!(!path_too_long(&format!("/{}", "a".repeat(200))));
         assert!(path_too_long(&format!("/{}", "a".repeat(201))));
         // A long total path made of short segments is fine; the OS limit is per-segment.

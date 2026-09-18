@@ -1,2 +1,0 @@
-ALTER TABLE topics
-    ADD COLUMN feed_revision BIGINT NOT NULL DEFAULT 0;

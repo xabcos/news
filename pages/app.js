@@ -47,7 +47,7 @@ const storage = (() => {
 
 const TEXT = {
   zh: {
-    locale: "zh-CN", lang: "EN", travelPortal: "与行", travelPortalAria: "进入与行", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", today: "今天", top: "重要",
+    locale: "zh-CN", lang: "EN", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", today: "今天", top: "重要",
     fresh: "NEW", failed: "加载失败", retry: "重试",
     empty: "这一天还没有内容", latest: "查看最近有内容的一天",
     space: "工作台", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
@@ -59,7 +59,7 @@ const TEXT = {
     items: (n) => `${n} 条`,
   },
   en: {
-    locale: "en", lang: "中文", travelPortal: "𝑨𝒍𝒐𝒏𝒈", travelPortalAria: "Open Along", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", today: "Today", top: "Top",
+    locale: "en", lang: "中文", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", today: "Today", top: "Top",
     fresh: "NEW", failed: "Failed to load", retry: "Retry",
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
     space: "𝑾𝒐𝒓𝒌𝒔𝒑𝒂𝒄𝒆", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
@@ -93,7 +93,7 @@ const state = {
 storage.setItem("news.lastVisit", String(Date.now()));
 
 const el = {
-  topbar: $("#topbar"), tabs: $("#tabs"), lang: $("#langToggle"), me: $("#meLink"), travelPortal: $("#travelPortal"),
+  topbar: $("#topbar"), tabs: $("#tabs"), lang: $("#langToggle"), me: $("#meLink"),
   shell: $(".shell"), status: $("#status"), digest: $("#digest"), loadMore: $("#loadMore"),
   backToTop: $("#backToTop"),
 };
@@ -684,9 +684,6 @@ function applyLang() {
   document.documentElement.lang = t().locale;
   el.lang.textContent = t().lang;
   el.me.textContent = t().space;
-  el.travelPortal.querySelector(".travel-portal__label").textContent = t().travelPortal;
-  el.travelPortal.setAttribute("aria-label", t().travelPortalAria);
-  el.travelPortal.title = t().travelPortal;
   el.backToTop.setAttribute("aria-label", t().backToTop);
   el.backToTop.title = t().backToTop;
   updateHistoryLoader();

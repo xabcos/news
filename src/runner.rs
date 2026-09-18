@@ -578,8 +578,8 @@ async fn execute(state: &AppState, topic: &Topic, run_id: Uuid) -> Result<Comple
     let mut tx = state.pool.begin().await?;
     for item in items {
         sqlx::query(
-            "INSERT INTO items (id, topic_id, day, fingerprint, title, summary, title_en, summary_en, url, source, published_at, tags, tags_en, importance, first_run_id, image, tone, location) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) ON CONFLICT DO NOTHING",
+            "INSERT INTO items (id, topic_id, day, fingerprint, title, summary, title_en, summary_en, url, source, published_at, tags, tags_en, importance, first_run_id, image) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) ON CONFLICT DO NOTHING",
         )
         .bind(Uuid::new_v4())
         .bind(&topic.id)
@@ -597,8 +597,6 @@ async fn execute(state: &AppState, topic: &Topic, run_id: Uuid) -> Result<Comple
         .bind(item.importance)
         .bind(run_id)
         .bind(item.image.map(serde_json::to_value).transpose()?)
-        .bind(&item.tone)
-        .bind(item.location.as_ref().map(serde_json::to_value).transpose()?)
         .execute(&mut *tx)
         .await?;
         new += 1;
@@ -737,7 +735,6 @@ async fn defer_after_finish_error(state: &AppState, topic_id: &str) {
 async fn media_refresh_loop(state: AppState) {
     let mut interval = tokio::time::interval(HOUSEKEEPING_INTERVAL);
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut startup = true;
     loop {
         tokio::select! {
             _ = state.shutdown.cancelled() => break,
@@ -746,15 +743,6 @@ async fn media_refresh_loop(state: AppState) {
         if let Err(error) = media::startup_sync(&state).await {
             tracing::warn!(%error, "news image refresh deferred");
         }
-        // Preserve startup's cheap news-only sync. Travel renewal may generate
-        // images, so it follows the automatic-generation switch as well.
-        if !startup
-            && state.config.scheduler_enabled
-            && let Err(error) = crate::travel_image::refresh_expiring(&state).await
-        {
-            tracing::warn!(%error, "travel image refresh deferred");
-        }
-        startup = false;
     }
 }
 
@@ -774,20 +762,6 @@ async fn maintenance_loop(state: AppState) {
         if today != day {
             day = today;
             state.digest.rollover();
-        }
-        if state.config.scheduler_enabled {
-            if let Err(error) = crate::travel::settle_due(&state).await {
-                tracing::warn!(%error, "travel companion settlement failed");
-            }
-            if let Err(error) = crate::travel_world::tick(&state).await {
-                tracing::warn!(%error, "Along world tick deferred");
-            }
-            if let Err(error) = crate::travel::autonomous_tick(&state).await {
-                tracing::warn!(%error, "autonomous travel tick failed");
-            }
-        }
-        if let Err(error) = crate::travel_image::archive_pending_identities(&state).await {
-            tracing::warn!(%error, "Along original archive pending");
         }
         if Instant::now() >= next_cleanup {
             next_cleanup = Instant::now() + HOUSEKEEPING_INTERVAL;

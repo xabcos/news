@@ -10,7 +10,7 @@ RUN cargo fetch --locked
 COPY src ./src
 RUN --mount=type=cache,id=news-target,target=/app/target,sharing=locked \
     cargo build --locked --release && \
-    cp target/release/news /tmp/news && mkdir -m 0700 /tmp/along-archive
+    cp target/release/news /tmp/news
 
 # Precompressed variants are served by ServeDir::precompressed_gzip at zero runtime cost.
 COPY pages ./pages
@@ -23,11 +23,9 @@ WORKDIR /home/nonroot
 COPY --from=builder /tmp/news ./news
 COPY migrations ./migrations
 COPY --from=builder /app/pages ./pages
-COPY --chown=65532:65532 --from=builder /tmp/along-archive ./along-archive
 
 ENV BIND_ADDR=0.0.0.0:8788 \
     MIGRATIONS_DIR=/home/nonroot/migrations \
-    PAGES_DIR=/home/nonroot/pages \
-    TRAVEL_ARCHIVE_DIR=/home/nonroot/along-archive
+    PAGES_DIR=/home/nonroot/pages
 EXPOSE 8788
 ENTRYPOINT ["./news"]

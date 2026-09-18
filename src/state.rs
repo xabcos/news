@@ -158,15 +158,6 @@ pub struct AppState {
     in_flight: Arc<Mutex<HashSet<String>>>,
     /// One process-wide budget shared by scheduled and manual runs.
     pub(crate) run_slots: Arc<Semaphore>,
-    /// Autonomous travel companion work has its own bounded budget so it cannot starve NEWS.
-    pub(crate) travel_slots: Arc<Semaphore>,
-    /// Image generation is even more expensive than text; keep it isolated
-    /// from both NEWS collection and the autonomous planner.
-    pub(crate) travel_image_slots: Arc<Semaphore>,
-    pub(crate) travel_identity_slots: Arc<Semaphore>,
-    /// A settlement worker may wait on this slot without blocking the minute
-    /// maintenance loop itself.
-    pub(crate) travel_settle_slots: Arc<Semaphore>,
     /// Cancels scheduler and detached workers before process shutdown.
     pub(crate) shutdown: CancellationToken,
     workers: Arc<WorkerGroup>,
@@ -224,10 +215,6 @@ impl AppState {
             config: Arc::new(config),
             in_flight: Arc::default(),
             run_slots: Arc::new(Semaphore::new(max_concurrent_runs)),
-            travel_slots: Arc::new(Semaphore::new(4)),
-            travel_image_slots: Arc::new(Semaphore::new(3)),
-            travel_identity_slots: Arc::new(Semaphore::new(2)),
-            travel_settle_slots: Arc::new(Semaphore::new(1)),
             shutdown: CancellationToken::new(),
             workers: Arc::new(WorkerGroup::default()),
             metrics: Arc::new(Metrics::default()),
