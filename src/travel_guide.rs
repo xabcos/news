@@ -214,8 +214,21 @@ pub(crate) async fn today(State(state): State<AppState>, user: User) -> Result<R
     }
 
     let worker_state = state.clone();
-    tokio::spawn(async move {
-        if let Err(error) = finish_generation(&worker_state, companion_id, day).await {
+    state.spawn_worker(async move {
+        let result = tokio::select! {
+            _ = worker_state.shutdown.cancelled() => {
+                let _ = sqlx::query(
+                    "UPDATE travel_world_briefs SET status = 'failed', finished_at = NOW(), error = '服务关闭，中断本次领读' WHERE companion_id = $1 AND day = $2 AND status = 'running'",
+                )
+                .bind(companion_id)
+                .bind(day)
+                .execute(&worker_state.pool)
+                .await;
+                Err(AppError::ServiceUnavailable("服务正在关闭".into()))
+            }
+            result = finish_generation(&worker_state, companion_id, day) => result,
+        };
+        if let Err(error) = result {
             tracing::warn!(%error, %companion_id, %day, "travel companion guide generation failed");
         }
         drop(permit);

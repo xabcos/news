@@ -66,6 +66,13 @@ impl User {
         self.pro_until.is_some_and(|until| until > Utc::now())
     }
 
+    /// Personal fetch tasks are a Pro feature. Existing Free tasks remain
+    /// readable and runnable for accounts that still have one after the
+    /// entitlement change; creation is checked separately by the topic API.
+    pub(crate) fn can_create_personal_topic(&self) -> bool {
+        self.is_pro()
+    }
+
     pub(crate) fn plan(&self) -> &'static str {
         if self.is_pro() { "pro" } else { "free" }
     }
@@ -710,5 +717,17 @@ mod tests {
         assert_eq!(FREE_LIMITS.min_interval_minutes, 512);
         assert_eq!(PRO_LIMITS.max_topics, 4);
         assert_eq!(PRO_LIMITS.min_interval_minutes, 64);
+    }
+
+    #[test]
+    fn only_pro_accounts_can_create_personal_topics() {
+        let free = super::User {
+            id: 1,
+            email: "free@example.com".into(),
+            status: true,
+            role: "user".into(),
+            pro_until: None,
+        };
+        assert!(!free.can_create_personal_topic());
     }
 }

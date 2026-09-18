@@ -23,7 +23,7 @@ use std::{
     collections::HashMap,
     fmt::Write as _,
     sync::{
-        Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
+        Arc, Mutex as StdMutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -192,9 +192,23 @@ struct Inner {
     /// pages that are not kept in the bounded hot-response cache.
     generated_at: RwLock<DateTime<Utc>>,
     /// Serializes cache misses and explicit refreshes. Without this small
-    /// critical section, two concurrent refreshes could both observe a newer
-    /// generation and leave Redis with neither snapshot.
+    /// critical section, invalidation operations could race while replacing the
+    /// topic catalogue or pruning archive data.
     cache_write: tokio::sync::Mutex<()>,
+    /// Cache misses for different topics do not need to block each other. These
+    /// locks are per topic rather than per day so archive requests cannot grow
+    /// the lock map without bound.
+    topic_writes: StdMutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    memory_hits: AtomicU64,
+    redis_hits: AtomicU64,
+    database_loads: AtomicU64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CacheStats {
+    pub(crate) memory_hits: u64,
+    pub(crate) redis_hits: u64,
+    pub(crate) database_loads: u64,
 }
 
 fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
@@ -217,7 +231,31 @@ impl DigestCache {
             generation: AtomicU64::new(0),
             generated_at: RwLock::new(Utc::now()),
             cache_write: tokio::sync::Mutex::new(()),
+            topic_writes: StdMutex::default(),
+            memory_hits: AtomicU64::new(0),
+            redis_hits: AtomicU64::new(0),
+            database_loads: AtomicU64::new(0),
         }))
+    }
+
+    fn topic_write(&self, topic: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self
+            .0
+            .topic_writes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        locks
+            .entry(topic.to_owned())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+
+    pub(crate) fn stats(&self) -> CacheStats {
+        CacheStats {
+            memory_hits: self.0.memory_hits.load(Ordering::Relaxed),
+            redis_hits: self.0.redis_hits.load(Ordering::Relaxed),
+            database_loads: self.0.database_loads.load(Ordering::Relaxed),
+        }
     }
 
     pub fn today(&self) -> NaiveDate {
@@ -276,21 +314,26 @@ impl DigestCache {
     ) -> Result<Arc<Snapshot>> {
         let key = (topic.to_owned(), day);
         if let Some(hit) = read(&self.0.days).get(&key).cloned() {
+            self.0.memory_hits.fetch_add(1, Ordering::Relaxed);
             return Ok(hit);
         }
-        let _cache_guard = self.0.cache_write.lock().await;
+        let topic_guard = self.topic_write(topic);
+        let _cache_guard = topic_guard.lock().await;
         // Another miss may have filled memory while this request waited for
         // the writer section.
         if let Some(hit) = read(&self.0.days).get(&key).cloned() {
+            self.0.memory_hits.fetch_add(1, Ordering::Relaxed);
             return Ok(hit);
         }
         let generation = self.0.generation.load(Ordering::Acquire);
         let snapshot = match redis_get(state, topic, day).await {
             Some(mut snapshot) => {
+                self.0.redis_hits.fetch_add(1, Ordering::Relaxed);
                 snapshot.normalize();
                 snapshot
             }
             None => {
+                self.0.database_loads.fetch_add(1, Ordering::Relaxed);
                 let snapshot = load(state, topic, day).await?;
                 // A write may have invalidated this read while it was in
                 // flight.  Do not repopulate Redis with the old snapshot.
@@ -313,7 +356,8 @@ impl DigestCache {
     /// Rebuilds one topic-day from PostgreSQL after a write and pushes it through Redis
     /// into memory.
     pub async fn refresh(&self, state: &AppState, topic: &str, day: NaiveDate) -> Result<()> {
-        let _cache_guard = self.0.cache_write.lock().await;
+        let topic_guard = self.topic_write(topic);
+        let _cache_guard = topic_guard.lock().await;
         let visible = sqlx::query_scalar::<_, bool>(
             "SELECT enabled FROM topics WHERE id = $1 AND owner_user_id IS NULL",
         )
@@ -343,6 +387,8 @@ impl DigestCache {
     }
 
     pub async fn forget_topic(&self, state: &AppState, topic: &str) {
+        let topic_guard = self.topic_write(topic);
+        let _topic_guard = topic_guard.lock().await;
         let _cache_guard = self.0.cache_write.lock().await;
         self.forget_topic_locked(state, topic).await;
     }
@@ -463,6 +509,19 @@ impl DigestCache {
             }
         }
         Ok(rendered)
+    }
+
+    /// Returns typed public day counts for private-feed assembly. The rendered response is
+    /// already cached by `(topic, limit)`, so authenticated pages do not rescan public items.
+    pub(crate) async fn day_counts(
+        &self,
+        state: &AppState,
+        topic: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<DayCount>> {
+        let rendered = self.days(state, topic, limit).await?;
+        let payload: CachedDays = serde_json::from_slice(&rendered.body)?;
+        Ok(payload.days)
     }
 
     fn selected(&self, topic: Option<&str>) -> Result<(Arc<Vec<TopicMeta>>, Vec<usize>)> {
@@ -750,10 +809,15 @@ struct DaysQuery {
     limit: Option<i64>,
 }
 
-#[derive(Debug, Serialize, FromRow)]
-struct DayCount {
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub(crate) struct DayCount {
     day: NaiveDate,
     count: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct CachedDays {
+    days: Vec<DayCount>,
 }
 
 /// The small catalogue used by the authenticated home page. It intentionally contains
@@ -776,6 +840,12 @@ struct PersonalDayStats {
     topic_id: String,
     total: i64,
     updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, FromRow)]
+struct PersonalItemsRow {
+    topic_id: String,
+    items: serde_json::Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -859,11 +929,9 @@ async fn days(
 /// authenticated home page is a personalized view of the public feed, not a replacement
 /// for it.
 ///
-/// This deliberately bypasses `DigestCache`: its Redis and in-memory keys are shared by
-/// the public catalogue, so putting an owner dimension there would make a small feature
-/// surprisingly easy to leak across accounts. The combined selection is small (the public
-/// catalogue plus at most eight personal topics on Pro) and cheap to read directly from
-/// PostgreSQL with a private, no-store response.
+/// Public topics are read through `DigestCache`; only the current user's personal topics are
+/// queried from PostgreSQL. This keeps the authenticated view private without rescanning the
+/// public catalogue on every request.
 async fn me_feed(
     State(state): State<AppState>,
     user: User,
@@ -873,6 +941,12 @@ async fn me_feed(
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let after = cursor_from(&query)?;
     let cards = personal_topic_cards(&state, user.id).await?;
+    let public_ids = state
+        .digest
+        .topics()
+        .iter()
+        .map(|topic| topic.id.clone())
+        .collect::<std::collections::HashSet<_>>();
 
     // `/api/me/feed?topic=...` is a view over the public catalogue plus the caller's
     // enabled topics. An id outside that set is reported as not found; private topics owned
@@ -887,28 +961,87 @@ async fn me_feed(
         None => (0..cards.len()).collect(),
     };
 
-    let days = personal_days(&state, user.id, query.topic.as_deref()).await?;
+    let selected_public = query
+        .topic
+        .as_deref()
+        .is_some_and(|id| public_ids.contains(id));
+    let include_public = query.topic.is_none() || selected_public;
+    let include_private = query.topic.is_none() || !selected_public;
+    let public_days = if include_public {
+        state
+            .digest
+            .day_counts(&state, query.topic.as_deref(), MAX_DAYS)
+            .await?
+    } else {
+        Vec::new()
+    };
+    let private_days = if include_private {
+        personal_days(&state, user.id, query.topic.as_deref()).await?
+    } else {
+        Vec::new()
+    };
+    let mut day_counts = HashMap::<NaiveDate, i64>::new();
+    for entry in public_days.into_iter().chain(private_days) {
+        *day_counts.entry(entry.day).or_default() += entry.count;
+    }
+    let mut days = day_counts
+        .into_iter()
+        .map(|(day, count)| DayCount { day, count })
+        .collect::<Vec<_>>();
+    days.sort_by_key(|entry| std::cmp::Reverse(entry.day));
+    days.truncate(MAX_DAYS as usize);
     // As with `/digest`, an omitted day means the newest day that has content in the
     // selection.  An explicit empty day is retained so the UI can render its empty state.
     let selected_day = query.day.or_else(|| days.first().map(|entry| entry.day));
-    let stats = match selected_day {
-        Some(day) => personal_day_stats(&state, user.id, query.topic.as_deref(), day).await?,
-        None => Vec::new(),
+    let private_stats = if include_private {
+        match selected_day {
+            Some(day) => personal_day_stats(&state, user.id, query.topic.as_deref(), day).await?,
+            None => Vec::new(),
+        }
+    } else {
+        Vec::new()
     };
-    let stats = stats
+    let mut stats = private_stats
         .into_iter()
         .map(|entry| (entry.topic_id.clone(), entry))
-        .collect::<std::collections::HashMap<_, _>>();
+        .collect::<HashMap<_, _>>();
+
+    let private_topic_ids = selected
+        .iter()
+        .filter_map(|index| {
+            let id = &cards[*index].id;
+            (!public_ids.contains(id)).then(|| id.clone())
+        })
+        .collect::<Vec<_>>();
+    let private_items = match selected_day {
+        Some(day) if !private_topic_ids.is_empty() => {
+            personal_items(&state, user.id, &private_topic_ids, day, limit, after).await?
+        }
+        _ => HashMap::new(),
+    };
 
     let mut digest_topics = Vec::with_capacity(selected.len());
     for index in selected {
         let card = &cards[index];
         let ((items, next), total, updated_at) = match selected_day {
-            Some(day) => (
-                personal_items(&state, user.id, &card.id, day, limit, after).await?,
-                stats.get(&card.id).map_or(0, |entry| entry.total),
-                stats.get(&card.id).and_then(|entry| entry.updated_at),
-            ),
+            Some(day) if selected_public || public_ids.contains(&card.id) => {
+                let snapshot = state.digest.snapshot(&state, &card.id, day).await?;
+                let (items, next) = page(&snapshot.items, after, limit);
+                (
+                    (items.to_vec(), next),
+                    snapshot.items.len() as i64,
+                    snapshot.updated_at,
+                )
+            }
+            Some(_) => {
+                let (items, next) = private_items.get(&card.id).cloned().unwrap_or_default();
+                let entry = stats.remove(&card.id);
+                (
+                    (items, next),
+                    entry.as_ref().map_or(0, |stats| stats.total),
+                    entry.and_then(|stats| stats.updated_at),
+                )
+            }
             None => ((Vec::new(), None), 0, None),
         };
         digest_topics.push(PersonalTopicDigest {
@@ -943,7 +1076,29 @@ async fn me_feed(
 }
 
 async fn personal_topic_cards(state: &AppState, user_id: i64) -> Result<Vec<PersonalTopicCard>> {
-    Ok(sqlx::query_as::<_, PersonalTopicCard>(
+    // The HTTP listener starts before the asynchronous cache warm-up. A first authenticated
+    // request must still see public topics if it wins that startup race.
+    if state.digest.topics().is_empty() {
+        state.digest.reload_topics(state).await?;
+    }
+    let mut cards = Vec::new();
+    for topic in state.digest.topics().iter() {
+        let snapshot = state
+            .digest
+            .snapshot(state, &topic.id, state.digest.today())
+            .await?;
+        cards.push(PersonalTopicCard {
+            id: topic.id.clone(),
+            name: topic.name.clone(),
+            name_en: topic.name_en.clone(),
+            description: topic.description.clone(),
+            latest_day: state.digest.latest_day(state, &topic.id).await?,
+            today_count: snapshot.items.len() as i64,
+            updated_at: snapshot.updated_at,
+            revision: snapshot.revision,
+        });
+    }
+    let personal = sqlx::query_as::<_, PersonalTopicCard>(
         r#"
         SELECT
             topics.id,
@@ -959,17 +1114,18 @@ async fn personal_topic_cards(state: &AppState, user_id: i64) -> Result<Vec<Pers
           ON items.topic_id = topics.id
          AND NOT items.hidden
         WHERE topics.enabled
-          AND (topics.owner_user_id IS NULL OR topics.owner_user_id = $1)
+          AND topics.owner_user_id = $1
         GROUP BY topics.id, topics.name, topics.name_en, topics.description,
                  topics.owner_user_id, topics.sort_weight, topics.created_at, topics.feed_revision
-        ORDER BY topics.owner_user_id NULLS FIRST,
-                 topics.sort_weight, topics.created_at, topics.id
+        ORDER BY topics.created_at, topics.id
         "#,
     )
     .bind(user_id)
     .bind(state.digest.today())
     .fetch_all(&state.pool)
-    .await?)
+    .await?;
+    cards.extend(personal);
+    Ok(cards)
 }
 
 async fn personal_days(
@@ -983,7 +1139,7 @@ async fn personal_days(
         FROM items
         JOIN topics ON topics.id = items.topic_id
         WHERE topics.enabled
-          AND (topics.owner_user_id IS NULL OR topics.owner_user_id = $1)
+          AND topics.owner_user_id = $1
           AND NOT items.hidden
           AND ($2::text IS NULL OR items.topic_id = $2)
         GROUP BY items.day
@@ -1012,7 +1168,7 @@ async fn personal_day_stats(
         FROM items
         JOIN topics ON topics.id = items.topic_id
         WHERE topics.enabled
-          AND (topics.owner_user_id IS NULL OR topics.owner_user_id = $1)
+          AND topics.owner_user_id = $1
           AND NOT items.hidden
           AND items.day = $2
           AND ($3::text IS NULL OR items.topic_id = $3)
@@ -1029,49 +1185,68 @@ async fn personal_day_stats(
 async fn personal_items(
     state: &AppState,
     user_id: i64,
-    topic: &str,
+    topics: &[String],
     day: NaiveDate,
     limit: usize,
     after: Option<Cursor>,
-) -> Result<(Vec<PublicItem>, Option<String>)> {
+) -> Result<HashMap<String, (Vec<PublicItem>, Option<String>)>> {
+    if topics.is_empty() {
+        return Ok(HashMap::new());
+    }
     // One row beyond the page tells whether a `next` cursor is due. The row comparison is
     // the SQL form of `Cursor`'s ordering; undated items compare as -infinity, as NULLS LAST
     // does for the ORDER BY.
     let fetch = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
-    let mut items = sqlx::query_as::<_, PublicItem>(
+    let rows = sqlx::query_as::<_, PersonalItemsRow>(
         r#"
-        SELECT items.id,
-               items.title,
-               items.summary,
-               items.title_en,
-               items.summary_en,
-               items.url,
-               items.source,
-               items.published_at,
-               items.first_seen_at,
-               items.tags,
-               items.tags_en,
-               items.importance,
-               items.pinned,
-               items.image
-        FROM items
-        JOIN topics ON topics.id = items.topic_id
-        WHERE items.topic_id = $1
-          AND (topics.owner_user_id IS NULL OR topics.owner_user_id = $2)
-          AND topics.enabled
-          AND items.day = $3
-          AND NOT items.hidden
-          AND ($5::boolean IS NULL OR
-               (items.pinned, COALESCE(items.published_at, '-infinity'::timestamptz), items.first_seen_at, items.id)
-               < ($5, COALESCE($6, '-infinity'::timestamptz), $7, $8))
-        ORDER BY items.pinned DESC,
-                 items.published_at DESC NULLS LAST,
-                 items.first_seen_at DESC,
-                 items.id DESC
-        LIMIT $4
+        SELECT selected.topic_id,
+               COALESCE(
+                   jsonb_agg(item.payload ORDER BY item.pinned DESC, item.published_at DESC NULLS LAST, item.first_seen_at DESC, item.id DESC)
+                       FILTER (WHERE item.id IS NOT NULL),
+                   '[]'::jsonb
+               ) AS items
+        FROM unnest($1::text[]) AS selected(topic_id)
+        LEFT JOIN LATERAL (
+            SELECT items.id,
+                   items.pinned,
+                   items.published_at,
+                   items.first_seen_at,
+                   jsonb_build_object(
+                       'id', items.id,
+                       'title', items.title,
+                       'summary', items.summary,
+                       'title_en', items.title_en,
+                       'summary_en', items.summary_en,
+                       'url', items.url,
+                       'source', items.source,
+                       'published_at', items.published_at,
+                       'first_seen_at', items.first_seen_at,
+                       'tags', items.tags,
+                       'tags_en', items.tags_en,
+                       'importance', items.importance,
+                       'pinned', items.pinned,
+                       'image', items.image
+                   ) AS payload
+            FROM items
+            JOIN topics ON topics.id = items.topic_id
+            WHERE items.topic_id = selected.topic_id
+              AND topics.owner_user_id = $2
+              AND topics.enabled
+              AND items.day = $3
+              AND NOT items.hidden
+              AND ($5::boolean IS NULL OR
+                   (items.pinned, COALESCE(items.published_at, '-infinity'::timestamptz), items.first_seen_at, items.id)
+                   < ($5, COALESCE($6, '-infinity'::timestamptz), $7, $8))
+            ORDER BY items.pinned DESC,
+                     items.published_at DESC NULLS LAST,
+                     items.first_seen_at DESC,
+                     items.id DESC
+            LIMIT $4
+        ) AS item ON TRUE
+        GROUP BY selected.topic_id
         "#,
     )
-    .bind(topic)
+    .bind(topics)
     .bind(user_id)
     .bind(day)
     .bind(fetch)
@@ -1081,14 +1256,19 @@ async fn personal_items(
     .bind(after.map(|cursor| cursor.id))
     .fetch_all(&state.pool)
     .await?;
-    for item in &mut items {
-        item.image = public_image(item.image.take());
+    let mut result = HashMap::with_capacity(rows.len());
+    for row in rows {
+        let mut items = serde_json::from_value::<Vec<PublicItem>>(row.items)?;
+        for item in &mut items {
+            item.image = public_image(item.image.take());
+        }
+        let next = (items.len() > limit).then(|| {
+            items.truncate(limit);
+            Cursor::of(&items[limit - 1]).encode()
+        });
+        result.insert(row.topic_id, (items, next));
     }
-    let next = (items.len() > limit).then(|| {
-        items.truncate(limit);
-        Cursor::of(&items[limit - 1]).encode()
-    });
-    Ok((items, next))
+    Ok(result)
 }
 
 /// Keep renewal metadata server-side. The public contract needs only the temporary display

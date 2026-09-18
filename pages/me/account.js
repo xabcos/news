@@ -14,11 +14,7 @@ export function createAccount(session, onChanged) {
   let creatingOrder = false;
 
   $("#accountButton").addEventListener("click", () => {
-    openDialog(dialog);
-    update();
-    void withBusy($("#accountButton"), null, async () => {
-      await Promise.all([onChanged(), loadPlans(), loadOrders()]);
-    });
+    void withBusy($("#accountButton"), null, openAccount);
   }, { signal: session.controller.signal });
   $("#refreshOrdersButton").addEventListener("click", () => withBusy($("#refreshOrdersButton"), null, loadOrders), { signal: session.controller.signal });
   dialog.addEventListener("close", stopPayment, { signal: session.controller.signal });
@@ -28,6 +24,18 @@ export function createAccount(session, onChanged) {
       schedulePayment(paymentVersion);
     }
   }, { signal: session.controller.signal });
+
+  async function openAccount() {
+    if (!active) return;
+    openDialog(dialog);
+    update();
+    await Promise.all([onChanged(), loadPlans(), loadOrders()]);
+  }
+
+  async function promptUpgrade() {
+    try { await openAccount(); }
+    catch (error) { if (active) reportError(error); }
+  }
 
   function update() {
     if (!active) return;
@@ -40,6 +48,7 @@ export function createAccount(session, onChanged) {
     }
     summary.append(node("p", "", `主题 ${usage.topic_count} / ${user.limits.max_topics} · 今日运行 ${usage.runs_today} / ${user.limits.daily_run_cap}`),
       node("p", "muted", `最短间隔 ${user.limits.min_interval_minutes} 分钟 · 用量于 ${formatTime(usage.reset_at, timezone)} 重置`));
+    if (user.plan !== "pro") summary.append(node("p", "muted", "新建个人抓取任务需要 Pro 套餐"));
     $("#accountSummary").replaceChildren(summary);
     if (offeredPlan !== user.plan) renderPlans();
   }
@@ -234,6 +243,7 @@ export function createAccount(session, onChanged) {
 
   return {
     update,
+    promptUpgrade,
     destroy() { active = false; ordersVersion += 1; stopPayment(); },
   };
 }

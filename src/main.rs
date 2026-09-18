@@ -34,7 +34,7 @@ async fn main() -> Result<()> {
     }
 
     let state = AppState::new(Config::from_env()?).await?;
-    let mut background = runner::spawn(state.clone());
+    let background = runner::spawn(state.clone());
     let result = web::serve(state).await;
     background.shutdown().await;
     result

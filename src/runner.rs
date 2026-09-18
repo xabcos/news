@@ -14,6 +14,7 @@ use std::{
 };
 use tokio::sync::OwnedSemaphorePermit;
 use tokio::{task::JoinSet, time::MissedTickBehavior};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 const TICK: Duration = Duration::from_secs(30);
@@ -25,29 +26,60 @@ const RUN_RETENTION_DAYS: i64 = 3;
 const INSIGHT_RETENTION_DAYS: i64 = 32;
 const CLEANUP_BATCH_SIZE: i64 = 500;
 const CLEANUP_MAX_BATCHES: usize = 20;
+const BACKGROUND_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Starts the scheduler (unless disabled) and the maintenance loop.
-pub fn spawn(state: AppState) -> JoinSet<()> {
+/// Starts the scheduler (unless disabled) and the maintenance loop. Detached workers are
+/// registered in `AppState` so shutdown can cancel and join them before the process exits.
+pub fn spawn(state: AppState) -> BackgroundTasks {
+    let background_state = state.clone();
     let mut tasks = JoinSet::new();
     tasks.spawn(crate::payment::maintenance_loop(
         state.pool.clone(),
         state.config.timezone,
+        state.shutdown.clone(),
     ));
     tasks.spawn(media_refresh_loop(state.clone()));
     if state.config.scheduler_enabled {
         tasks.spawn(schedule_loop(state.clone()));
-        tasks.spawn(maintenance_loop(state));
+        tasks.spawn(maintenance_loop(state.clone()));
     } else {
         // Read-only mode still clears stale running markers from a previous
         // process, so the workspace does not remain stuck on "running".
+        let recovery_state = state.clone();
         tasks.spawn(async move {
-            if let Err(error) = recover(&state).await {
+            if let Err(error) = recover(&recovery_state).await {
                 tracing::error!(%error, "failed to recover scheduler state");
             }
-            maintenance_loop(state).await;
+            maintenance_loop(recovery_state).await;
         });
     }
-    tasks
+    BackgroundTasks {
+        tasks,
+        shutdown: background_state.shutdown.clone(),
+        workers: background_state,
+    }
+}
+
+pub struct BackgroundTasks {
+    tasks: JoinSet<()>,
+    shutdown: CancellationToken,
+    workers: AppState,
+}
+
+impl BackgroundTasks {
+    pub async fn shutdown(mut self) {
+        self.shutdown.cancel();
+        let roots_finished = tokio::time::timeout(BACKGROUND_SHUTDOWN_TIMEOUT, async {
+            while self.tasks.join_next().await.is_some() {}
+        })
+        .await
+        .is_ok();
+        if !roots_finished {
+            self.tasks.abort_all();
+            while self.tasks.join_next().await.is_some() {}
+        }
+        self.workers.shutdown_workers().await;
+    }
 }
 
 async fn schedule_loop(state: AppState) {
@@ -58,7 +90,10 @@ async fn schedule_loop(state: AppState) {
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut last_tick_error: Option<(String, Instant)> = None;
     loop {
-        interval.tick().await;
+        tokio::select! {
+            _ = state.shutdown.cancelled() => break,
+            _ = interval.tick() => {}
+        }
         match tick(&state).await {
             Ok(()) => last_tick_error = None,
             Err(error) => {
@@ -274,7 +309,7 @@ pub(crate) async fn start(
             return Err(error);
         }
     };
-    tokio::spawn(run(state.clone(), topic, run_id, started_at, permit));
+    state.spawn_worker(run(state.clone(), topic, run_id, started_at, permit));
     Ok(run_id)
 }
 
@@ -402,13 +437,21 @@ async fn run(
     _permit: OwnedSemaphorePermit,
 ) {
     let clock = Instant::now();
-    let outcome =
-        match tokio::time::timeout(state.config.fetch_timeout, execute(&state, &topic, run_id))
-            .await
-        {
-            Ok(outcome) => outcome,
-            Err(_) => Err(AppError::Internal("抓取超时".into())),
-        };
+    let outcome = tokio::select! {
+        _ = state.shutdown.cancelled() => {
+            if let Err(error) = interrupt_run(&state, &topic.id, run_id, started_at).await {
+                tracing::warn!(%error, topic = %topic.id, "failed to record cancelled run");
+            }
+            state.in_flight().remove(&topic.id);
+            return;
+        }
+        outcome = tokio::time::timeout(state.config.fetch_timeout, execute(&state, &topic, run_id)) => {
+            match outcome {
+                Ok(outcome) => outcome,
+                Err(_) => Err(AppError::Internal("抓取超时".into())),
+            }
+        }
+    };
     let failure = outcome.as_ref().err().map(ToString::to_string);
     match finish(
         &state,
@@ -436,6 +479,28 @@ async fn run(
         Err(error) => tracing::error!(topic = %topic.id, %error, "failed to record run"),
     }
     state.in_flight().remove(&topic.id);
+}
+
+async fn interrupt_run(
+    state: &AppState,
+    topic_id: &str,
+    run_id: Uuid,
+    started_at: DateTime<Utc>,
+) -> Result<()> {
+    let mut transaction = state.pool.begin().await?;
+    sqlx::query("UPDATE runs SET status = 'interrupted', finished_at = NOW() WHERE id = $1")
+        .bind(run_id)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query(
+        "UPDATE topics SET last_run_at = $2, last_status = 'interrupted', consecutive_failures = consecutive_failures + 1 WHERE id = $1",
+    )
+    .bind(topic_id)
+    .bind(started_at)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(())
 }
 
 struct Completed {
@@ -674,7 +739,10 @@ async fn media_refresh_loop(state: AppState) {
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut startup = true;
     loop {
-        interval.tick().await;
+        tokio::select! {
+            _ = state.shutdown.cancelled() => break,
+            _ = interval.tick() => {}
+        }
         if let Err(error) = media::startup_sync(&state).await {
             tracing::warn!(%error, "news image refresh deferred");
         }
@@ -698,7 +766,10 @@ async fn maintenance_loop(state: AppState) {
     let mut day = state.digest.today();
     let mut next_cleanup = Instant::now();
     loop {
-        interval.tick().await;
+        tokio::select! {
+            _ = state.shutdown.cancelled() => break,
+            _ = interval.tick() => {}
+        }
         let today = state.digest.today();
         if today != day {
             day = today;

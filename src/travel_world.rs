@@ -304,8 +304,17 @@ pub(crate) async fn tick(state: &AppState) -> Result<()> {
     .await?;
     if let Some((event, token)) = claim_photo(&state.pool).await? {
         let worker = state.clone();
-        tokio::spawn(async move {
-            if let Err(error) = photograph(&worker, &event, token).await {
+        worker.clone().spawn_worker(async move {
+            let result = tokio::select! {
+                _ = worker.shutdown.cancelled() => {
+                    let ids = [event.first_companion_id, event.second_companion_id];
+                    let _ = release_photo_participants(&worker.pool, &ids, token).await;
+                    let _ = defer_photo(&worker.pool, event.id, token, true).await;
+                    Err(AppError::ServiceUnavailable("服务正在关闭".into()))
+                }
+                result = photograph(&worker, &event, token) => result,
+            };
+            if let Err(error) = result {
                 tracing::warn!(%error, event_id = %event.id, "shared photograph deferred");
             }
             drop(permit);
@@ -316,13 +325,15 @@ pub(crate) async fn tick(state: &AppState) -> Result<()> {
         return Ok(());
     };
     let worker = state.clone();
-    tokio::spawn(async move {
-        let result = tokio::time::timeout(
-            Duration::from_secs(180),
-            propose_and_commit(&worker, &candidate, event_id, token),
-        )
-        .await;
-        if !matches!(result, Ok(Ok(()))) {
+    worker.clone().spawn_worker(async move {
+        let result = tokio::select! {
+            _ = worker.shutdown.cancelled() => None,
+            result = tokio::time::timeout(
+                Duration::from_secs(180),
+                propose_and_commit(&worker, &candidate, event_id, token),
+            ) => Some(result),
+        };
+        if !matches!(result, Some(Ok(Ok(())))) {
             tracing::warn!(event_id = %event_id, "shared meeting proposal could not be committed");
             let _ = sqlx::query(
                 "UPDATE travel_shared_events SET status = 'declined', error = '这次相遇暂未成行', lease_token = NULL, lease_until = NULL, updated_at = NOW() WHERE id = $1 AND status = 'proposing' AND lease_token = $2",

@@ -4,7 +4,7 @@
 
 生产地址：`https://xabcnews.com`，工作台 `/me/`，虚拟旅伴「与行 · 𝑨𝒍𝒐𝒏𝒈」入口 `/travel/`。设计说明见 [`DESIGN.md`](DESIGN.md)。
 
-套餐只有两档：`free` 最多 1 个主题、最短 512 分钟；`pro` 最多 4 个主题、最短 64 分钟，微信支付 ¥99 开通 31 天（每日运行上限分别为 12 次和 48 次）。
+套餐只有两档：`free` 可查看和使用已有个人主题，但不能新建抓取任务；`pro` 最多 4 个主题、最短 64 分钟，微信支付 ¥99 开通 31 天（每日运行上限分别为 12 次和 48 次）。
 
 ## 公共 API
 
@@ -39,7 +39,7 @@ GET https://xabcnews.com/feed.xml?topic=ai
 - **成本**：每次抓取约 $0.06–0.10（`usage.cost_in_usd_ticks`，1 tick = 1e-10 USD）。工作台的管理员运行记录按次显示 tokens、搜索次数和成本，以及今日合计。
 - **个人主题**：登录后首页保留公共主题，并追加当前账户启用的个人主题；`/me/` 负责管理个人主题。个人主题不会进入公共 digest；管理员主题仍是公共内容源。
 - **公共主题管理**：管理员在同一个 `/me/` 工作台编辑公共主题；打开 `𝐏` 后可直接修改“关注方向”（`brief`），也可调整名称、公开说明、抓取间隔、时间窗、模型、条数和启停状态。保存后会重新排程并刷新公共目录，主题 ID `p` 保持图片新闻行为。
-- **个人排程**：个人主题默认每天 06:00–24:00 运行，用户只需设置抓取间隔；Free/Pro 的最短间隔分别为 512/64 分钟。
+- **个人排程**：个人主题默认每天 06:00–24:00 运行，用户只需设置抓取间隔；Free 不能新建个人抓取任务，已有任务的最短间隔为 512 分钟，Pro 的最短间隔为 64 分钟。
 - **访问统计**：公共首页通过同源 `stats.js` 向 Stats 发送匿名页面访问；查询参数、锚点、主题切换和无限下拉不会重复计数。统计失败不影响页面使用，工作台不接入统计。
 - **页面广播**：公共首页复用 Broadcast 的 `feed_news?mode=sequence`；没有有效消息时通知条自动隐藏。
 - **图片新闻**：公共主题 `p`（显示为 `𝐏`）紧跟 `𝐗`，按两列响应式图片卡片展示全球热点、X 热帖和美图热图（包括人物写真、美女与时尚街拍）。允许来源明确标注的 AI 生成图；占位图、默认缩略图和过小图片会被丢弃。采集到的 HTTPS 图片由 NEWS 服务端上传到 `TMPFILE_BASE_URL/upload`，页面只加载返回的 `direct_link`；启动时会重新同步最近一周的图片和已有主图，旧图片失效时卡片自动退回文字内容。tmpfile 默认有效期为 36 小时，生产环境建议按需要将其 `FILE_EXPIRATION` 调整到 32 天。
@@ -107,6 +107,7 @@ DELETE /api/admin/topics/{id}     POST   /api/admin/topics/{id}/run
 GET    /api/admin/topics/{id}/runs?limit=50
 GET    /api/admin/topics/{id}/items?day=YYYY-MM-DD
 PATCH  /api/admin/items/{id}      DELETE /api/admin/items/{id}
+GET    /api/admin/metrics
 
 GET    /api/plans                 GET    /api/orders
 POST   /api/orders                GET    /api/orders/{out_trade_no}
@@ -136,7 +137,9 @@ GET    /api/travel/media/{id}         # 私有纪念照；共同合影仅参与�
 
 个人主题的 `GET /api/me/topics/{id}/items` 在省略 `day` 时返回该主题最近有内容的一天；传入 `day=YYYY-MM-DD` 可查看指定日期。
 
-登录后首页使用 `GET /api/me/feed` 读取公共主题和当前账户启用的个人主题。响应包含 `topics`（主题卡片）、`days`（所选主题有内容的日期，最新优先）以及与公共 `/digest` 同形的 `digest`；`topic`、`day`、`limit`、`after` 与 `next` 的语义与公共接口一致。该响应按会话隔离并始终 `no-store`，不会进入公共 Redis 或内存缓存；个人条目仍只会在当前账户的响应中出现。
+Free 用户可以查看和使用已有个人主题；`POST /api/me/topics` 创建新主题需要有效 Pro 套餐。工作台仍展示新建表单和当前用量，提交时会引导购买 Pro。
+
+登录后首页使用 `GET /api/me/feed` 读取公共主题和当前账户启用的个人主题。响应包含 `topics`（主题卡片）、`days`（所选主题有内容的日期，最新优先）以及与公共 `/digest` 同形的 `digest`；`topic`、`day`、`limit`、`after` 与 `next` 的语义与公共接口一致。该响应按会话隔离并始终 `no-store`，公共部分复用只读缓存，个人条目仍只会在当前账户的响应中出现。
 
 登录发送频率限制与 broadcast 相同：同一邮箱 60 秒内不重发，10 分钟内最多 3 次，全站 60 秒内最多 120 次。
 
@@ -176,6 +179,8 @@ docker-compose up -d
 ```
 
 数据库会按顺序自动执行 `migrations/` 中的 migration。新部署使用空数据库；已有部署在完整备份后顺序升级，保留现有账户、人物、原图与旅迹，不重建数据库或持久卷，也不修改已执行迁移文件。发布只更新 `news` 服务，避免重启无关服务或清理数据卷。
+
+`GET /api/admin/metrics` 需要管理员会话，返回进程内 HTTP 请求总数、错误数、活动请求数、延迟均值/最大值、PostgreSQL 连接池使用情况，以及 digest 内存/Redis/数据库读取计数。计数器在进程重启后归零；它用于快速定位趋势，长期监控应由外部系统定期采集。
 
 ### 身份档案与恢复验证
 

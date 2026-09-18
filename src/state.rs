@@ -8,10 +8,14 @@ use redis::aio::{ConnectionManager, ConnectionManagerConfig};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::{
     collections::HashSet,
+    future::Future,
+    sync::atomic::{AtomicU64, Ordering},
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::Duration,
 };
 use tokio::sync::Semaphore;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use url::Url;
 
 const DATABASE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -21,6 +25,125 @@ const REDIS_CONNECTION_TIMEOUT: Duration = Duration::from_secs(3);
 const REDIS_RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
 const REDIS_MAX_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const REDIS_CONNECTION_RETRIES: usize = 3;
+const WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Process-local request counters. They intentionally avoid endpoint labels so a malformed
+/// path cannot grow an unbounded metrics map; the admin endpoint exposes the aggregate view.
+#[derive(Default)]
+pub(crate) struct Metrics {
+    active_requests: AtomicU64,
+    total_requests: AtomicU64,
+    error_requests: AtomicU64,
+    total_duration_us: AtomicU64,
+    max_duration_us: AtomicU64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MetricsSnapshot {
+    pub(crate) active_requests: u64,
+    pub(crate) total_requests: u64,
+    pub(crate) error_requests: u64,
+    pub(crate) total_duration_us: u64,
+    pub(crate) max_duration_us: u64,
+}
+
+impl Metrics {
+    pub(crate) fn request_started(&self) {
+        self.active_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn request_finished(&self, status: u16, elapsed: Duration) {
+        self.active_requests.fetch_sub(1, Ordering::Relaxed);
+        self.total_requests.fetch_add(1, Ordering::Relaxed);
+        if status >= 400 {
+            self.error_requests.fetch_add(1, Ordering::Relaxed);
+        }
+        let duration_us = elapsed.as_micros().min(u128::from(u64::MAX)) as u64;
+        self.total_duration_us
+            .fetch_add(duration_us, Ordering::Relaxed);
+        let mut current = self.max_duration_us.load(Ordering::Relaxed);
+        while duration_us > current {
+            match self.max_duration_us.compare_exchange_weak(
+                current,
+                duration_us,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    pub(crate) fn snapshot(&self) -> MetricsSnapshot {
+        MetricsSnapshot {
+            active_requests: self.active_requests.load(Ordering::Relaxed),
+            total_requests: self.total_requests.load(Ordering::Relaxed),
+            error_requests: self.error_requests.load(Ordering::Relaxed),
+            total_duration_us: self.total_duration_us.load(Ordering::Relaxed),
+            max_duration_us: self.max_duration_us.load(Ordering::Relaxed),
+        }
+    }
+}
+
+struct WorkerGroupState {
+    closed: bool,
+    handles: Vec<JoinHandle<()>>,
+}
+
+/// Tracks detached application workers and gives them a bounded shutdown window. Finished
+/// handles are discarded when new work is registered, so a busy service does not accumulate
+/// one join handle per historical run.
+pub(crate) struct WorkerGroup {
+    state: Mutex<WorkerGroupState>,
+}
+
+impl Default for WorkerGroup {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(WorkerGroupState {
+                closed: false,
+                handles: Vec::new(),
+            }),
+        }
+    }
+}
+
+impl WorkerGroup {
+    fn spawn<F>(&self, future: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let handle = tokio::spawn(future);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.handles.retain(|handle| !handle.is_finished());
+        if state.closed {
+            handle.abort();
+        } else {
+            state.handles.push(handle);
+        }
+    }
+
+    async fn shutdown(&self) {
+        let handles = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            state.closed = true;
+            std::mem::take(&mut state.handles)
+        };
+        let started = tokio::time::Instant::now();
+        while started.elapsed() < WORKER_SHUTDOWN_TIMEOUT
+            && handles.iter().any(|handle| !handle.is_finished())
+        {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        for handle in handles {
+            if !handle.is_finished() {
+                handle.abort();
+            }
+            let _ = handle.await;
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -44,6 +167,10 @@ pub struct AppState {
     /// A settlement worker may wait on this slot without blocking the minute
     /// maintenance loop itself.
     pub(crate) travel_settle_slots: Arc<Semaphore>,
+    /// Cancels scheduler and detached workers before process shutdown.
+    pub(crate) shutdown: CancellationToken,
+    workers: Arc<WorkerGroup>,
+    pub(crate) metrics: Arc<Metrics>,
 }
 
 impl AppState {
@@ -101,8 +228,22 @@ impl AppState {
             travel_image_slots: Arc::new(Semaphore::new(3)),
             travel_identity_slots: Arc::new(Semaphore::new(2)),
             travel_settle_slots: Arc::new(Semaphore::new(1)),
+            shutdown: CancellationToken::new(),
+            workers: Arc::new(WorkerGroup::default()),
+            metrics: Arc::new(Metrics::default()),
         };
         Ok(state)
+    }
+
+    pub(crate) fn spawn_worker<F>(&self, future: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.workers.spawn(future);
+    }
+
+    pub(crate) async fn shutdown_workers(&self) {
+        self.workers.shutdown().await;
     }
 
     pub(crate) fn in_flight(&self) -> MutexGuard<'_, HashSet<String>> {
@@ -170,7 +311,8 @@ fn redis_url(addr: &str, password: Option<&str>, db: i64) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::redis_url;
+    use super::{Metrics, redis_url};
+    use std::time::Duration;
 
     #[test]
     fn builds_redis_urls_and_escapes_passwords() {
@@ -182,5 +324,20 @@ mod tests {
             redis_url("cache:6379", Some("s@fe/pass"), 2).expect("valid URL"),
             "redis://:s%40fe%2Fpass@cache:6379/2"
         );
+    }
+
+    #[test]
+    fn records_request_counts_and_latency_bounds() {
+        let metrics = Metrics::default();
+        metrics.request_started();
+        metrics.request_finished(200, Duration::from_millis(2));
+        metrics.request_started();
+        metrics.request_finished(503, Duration::from_millis(5));
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.active_requests, 0);
+        assert_eq!(snapshot.total_requests, 2);
+        assert_eq!(snapshot.error_requests, 1);
+        assert!(snapshot.total_duration_us >= 7_000);
+        assert!(snapshot.max_duration_us >= 5_000);
     }
 }

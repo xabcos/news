@@ -541,6 +541,11 @@ async fn create_topic(
     ApiJson(request): ApiJson<CreateTopic>,
     scope: TopicScope,
 ) -> Result<(StatusCode, Json<Topic>)> {
+    if !scope.is_public() && !user.can_create_personal_topic() {
+        return Err(AppError::Forbidden(
+            "创建抓取任务需要 Pro 套餐，请先购买".into(),
+        ));
+    }
     let f = request.fields;
     let name = f
         .name

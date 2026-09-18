@@ -10,7 +10,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{any, get, post},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tower_http::{services::ServeDir, trace::TraceLayer};
 use url::Url;
 
@@ -65,6 +65,7 @@ pub(crate) fn router(state: AppState) -> Router {
         )
         .route("/api/orders/{out_trade_no}", get(payment::get_order))
         .route("/api/orders/{out_trade_no}/qr.svg", get(payment::order_qr))
+        .route("/api/admin/metrics", get(admin_metrics))
         .route("/api/webhooks/payment", post(payment::payment_webhook))
         .merge(topics::router())
         .merge(digest::router())
@@ -81,9 +82,57 @@ pub(crate) fn router(state: AppState) -> Router {
             state.clone(),
             validate_origin,
         ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            observe_metrics,
+        ))
         .layer(middleware::from_fn(security_headers))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+async fn observe_metrics(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    state.metrics.request_started();
+    let started = Instant::now();
+    let response = next.run(request).await;
+    state
+        .metrics
+        .request_finished(response.status().as_u16(), started.elapsed());
+    response
+}
+
+async fn admin_metrics(
+    State(state): State<AppState>,
+    user: auth::User,
+) -> Result<Json<serde_json::Value>> {
+    auth::require_admin(&user)?;
+    let requests = state.metrics.snapshot();
+    let cache = state.digest.stats();
+    let average_duration_us = requests.total_duration_us / requests.total_requests.max(1);
+    let pool_size = state.pool.size();
+    let pool_idle = state.pool.num_idle();
+    let pool_busy = usize::try_from(pool_size)
+        .unwrap_or(usize::MAX)
+        .saturating_sub(pool_idle);
+    Ok(Json(serde_json::json!({
+        "requests": {
+            "active": requests.active_requests,
+            "total": requests.total_requests,
+            "errors": requests.error_requests,
+            "average_duration_us": average_duration_us,
+            "max_duration_us": requests.max_duration_us,
+        },
+        "database": {
+            "size": pool_size,
+            "idle": pool_idle,
+            "busy": pool_busy,
+        },
+        "digest_cache": {
+            "memory_hits": cache.memory_hits,
+            "redis_hits": cache.redis_hits,
+            "database_loads": cache.database_loads,
+        },
+    })))
 }
 
 async fn reject_oversized_path(request: Request, next: Next) -> Response {
@@ -275,8 +324,12 @@ pub async fn serve(state: AppState) -> Result<()> {
     let (shutdown_sender, shutdown_receiver) = tokio::sync::watch::channel(false);
     let mut graceful_shutdown = shutdown_receiver.clone();
     let mut shutdown_deadline = shutdown_receiver;
+    let worker_shutdown = state.shutdown.clone();
     let signal_task = tokio::spawn(async move {
         shutdown_signal().await;
+        // Stop scheduling and cancel detached provider calls while existing HTTP requests
+        // drain, so the process shutdown budget is shared by both layers.
+        worker_shutdown.cancel();
         let _ = shutdown_sender.send(true);
     });
     let server = std::future::IntoFuture::into_future(

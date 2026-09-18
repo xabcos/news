@@ -217,8 +217,11 @@ pub(crate) async fn preview(
             .bind(&upload.original).bind(&upload.reference.bytes).bind(&upload.checksum).bind(json!({"origin":"user_upload","consent":"authorized_subject"})).execute(&mut *tx).await?;
     }
     tx.commit().await?;
-    tokio::spawn(async move {
-        let outcome = prepare_first_meeting(&state, draft_id, &seed, &specification).await;
+    state.clone().spawn_worker(async move {
+        let outcome = tokio::select! {
+            _ = state.shutdown.cancelled() => Err(AppError::ServiceUnavailable("服务正在关闭".into())),
+            outcome = prepare_first_meeting(&state, draft_id, &seed, &specification) => outcome,
+        };
         if let Err(error) = outcome {
             tracing::warn!(draft_id=%draft_id,"Along first meeting was not completed");
             let public_error = match error {

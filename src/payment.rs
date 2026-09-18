@@ -25,6 +25,7 @@ use serde_json::{Value, json};
 use sha2::Sha256;
 use sqlx::{FromRow, PgPool};
 use std::time::Duration as StdDuration;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -467,12 +468,19 @@ async fn close_expired_orders(state: &AppState, user_id: i64) -> Result<()> {
 
 /// Runs independently of slow news/image maintenance and also when NEWS
 /// collection is disabled. The first interval tick performs startup catch-up.
-pub(crate) async fn maintenance_loop(pool: PgPool, timezone: chrono_tz::Tz) {
+pub(crate) async fn maintenance_loop(
+    pool: PgPool,
+    timezone: chrono_tz::Tz,
+    shutdown: CancellationToken,
+) {
     let mut interval = tokio::time::interval(StdDuration::from_secs(60));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut cleaned_day = None;
     loop {
-        interval.tick().await;
+        tokio::select! {
+            _ = shutdown.cancelled() => break,
+            _ = interval.tick() => {}
+        }
         match close_pending_orders(&pool).await {
             Ok(closed) if closed > 0 => tracing::info!(closed, "expired unpaid orders closed"),
             Ok(_) => {}

@@ -546,8 +546,20 @@ pub(crate) async fn autonomous_tick(state: &AppState) -> Result<()> {
     } in claims
     {
         let worker_state = state.clone();
-        tokio::spawn(async move {
-            let result = autonomous_one(&worker_state, companion_id).await;
+        worker_state.clone().spawn_worker(async move {
+            let result = tokio::select! {
+                _ = worker_state.shutdown.cancelled() => {
+                    let _ = sqlx::query(
+                        "UPDATE travel_autonomy_state SET lease_until = NULL, lease_token = NULL, updated_at = NOW() WHERE companion_id = $1 AND lease_token = $2",
+                    )
+                    .bind(companion_id)
+                    .bind(token)
+                    .execute(&worker_state.pool)
+                    .await;
+                    return;
+                }
+                result = autonomous_one(&worker_state, companion_id) => result,
+            };
             if let Err(error) = result {
                 tracing::warn!(%error, %companion_id, "autonomous companion worker failed");
             }
@@ -1078,8 +1090,12 @@ pub(crate) async fn settle_due(state: &AppState) -> Result<()> {
         let Ok(permit) = state.travel_settle_slots.clone().try_acquire_owned() else {
             break;
         };
-        tokio::spawn(async move {
-            if let Err(error) = settle_one(&worker_state, id).await {
+        worker_state.clone().spawn_worker(async move {
+            let result = tokio::select! {
+                _ = worker_state.shutdown.cancelled() => return,
+                result = settle_one(&worker_state, id) => result,
+            };
+            if let Err(error) = result {
                 tracing::warn!(%error, %id, "travel companion trip settlement failed");
                 let attempts =
                     sqlx::query_scalar::<_, i32>("SELECT attempts FROM travel_trips WHERE id = $1")

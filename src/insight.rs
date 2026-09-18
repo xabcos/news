@@ -326,7 +326,7 @@ pub(crate) async fn tick(state: &AppState) -> Result<()> {
         drop(permit);
         return Err(error.into());
     }
-    tokio::spawn(run(state.clone(), run_id, window_start, now, permit));
+    state.spawn_worker(run(state.clone(), run_id, window_start, now, permit));
     Ok(())
 }
 
@@ -507,12 +507,15 @@ async fn run(
     started_at: DateTime<Utc>,
     _permit: tokio::sync::OwnedSemaphorePermit,
 ) {
-    let outcome =
-        match tokio::time::timeout(state.config.fetch_timeout, execute(&state, window_start)).await
-        {
-            Ok(outcome) => outcome,
-            Err(_) => Err(AppError::Internal("AI 研判超时".into())),
-        };
+    let outcome = tokio::select! {
+        _ = state.shutdown.cancelled() => Err(AppError::Internal("AI 研判因服务关闭而中断".into())),
+        outcome = tokio::time::timeout(state.config.fetch_timeout, execute(&state, window_start)) => {
+            match outcome {
+                Ok(outcome) => outcome,
+                Err(_) => Err(AppError::Internal("AI 研判超时".into())),
+            }
+        }
+    };
     let status = if outcome.is_ok() { "ok" } else { "failed" };
     if let Err(error) = finish(&state, run_id, started_at, outcome).await {
         tracing::error!(%error, status, "failed to record AI insight");

@@ -233,11 +233,33 @@ function message(id, text) {
   element.classList.toggle("hidden", !text);
 }
 
+function canCreatePersonalTopic(s) {
+  return s.admin || s.user.plan === "pro";
+}
+
+function updateEditorPlanState(s) {
+  const topic = s.editing;
+  const canCreate = canCreatePersonalTopic(s);
+  const minimum = s.admin ? 15 : s.user.limits.min_interval_minutes;
+  $("#topicInterval").min = String(minimum);
+  $("#intervalHint").textContent = s.admin
+    ? "最短 15 分钟 · 结束时间早于开始时间表示跨午夜"
+    : !canCreate && !topic
+      ? `可先配置任务，购买 Pro 后创建 · 最短 ${minimum} 分钟`
+      : `${s.user.plan === "pro" ? "Pro" : "Free"} 最短 ${minimum} 分钟 · 结束时间早于开始时间表示跨午夜`;
+  $("#saveTopicButton").textContent = !topic && !s.admin && !canCreate ? "购买 Pro 后创建" : "保存主题";
+}
+
 function renderTopics(s) {
   $("#statusLine").textContent = s.admin
     ? `${s.users?.active_7d ?? 0}/${s.users?.registered ?? 0} · 今日 ${s.today.runs} 次 · ${cost(s.today.cost_ticks)}`
     : `今日运行 ${s.today.runs} / ${s.user.limits.daily_run_cap}`;
-  $("#newTopicButton").disabled = !s.admin && s.topics.length >= s.user.limits.max_topics;
+  const canCreate = canCreatePersonalTopic(s);
+  const newTopicButton = $("#newTopicButton");
+  newTopicButton.disabled = !s.admin && canCreate && s.topics.length >= s.user.limits.max_topics;
+  newTopicButton.textContent = !s.admin && !canCreate ? "＋ 新建主题（Pro）" : "＋ 新建主题";
+  newTopicButton.title = !s.admin && !canCreate ? "购买 Pro 后创建抓取任务" : "";
+  updateEditorPlanState(s);
   message("topicsMessage", s.topics.length ? "" : "还没有主题，创建一个你关心的方向。");
   $("#topicList").replaceChildren(...s.topics.map((topic) => {
     const row = node("li", "topic-row");
@@ -359,7 +381,9 @@ async function loadRuns(s) {
 
 function openEditor(topic = null) {
   const s = session;
-  if (!s || (!topic && !s.admin && s.topics.length >= s.user.limits.max_topics)) return;
+  if (!s) return;
+  const canCreate = canCreatePersonalTopic(s);
+  if (!topic && !s.admin && canCreate && s.topics.length >= s.user.limits.max_topics) return;
   s.editing = topic;
   form.reset();
   message("topicFormMessage", "");
@@ -379,12 +403,9 @@ function openEditor(topic = null) {
   for (const key of ["name", "brief", "id", "interval_minutes", ...publicFields, ...numericFields]) form.elements.namedItem(key).value = values[key];
   $("#topicId").readOnly = Boolean(topic);
   $("#topicEnabled").checked = topic?.enabled ?? true;
-  $("#topicInterval").min = String(minimum);
-  $("#intervalHint").textContent = s.admin
-    ? "最短 15 分钟 · 结束时间早于开始时间表示跨午夜"
-    : `${s.user.plan === "pro" ? "Pro" : "Free"} 最短 ${minimum} 分钟 · 结束时间早于开始时间表示跨午夜`;
   $("#scheduleTimezone").textContent = `排程时区：${s.timezone} · 结束早于开始表示运行到次日`;
   $("#weekdays").querySelectorAll("input").forEach((input) => { input.checked = (topic?.weekdays || [1, 2, 3, 4, 5]).includes(Number(input.value)); });
+  updateEditorPlanState(s);
   openDialog($("#topicDialog"));
   $("#topicName").focus();
 }
@@ -411,12 +432,22 @@ function saveTopic(event) {
     if (!s.editing && data.get("id").trim()) body.id = data.get("id").trim();
   }
   const topic = s.editing;
+  if (!topic && !s.admin && !canCreatePersonalTopic(s)) {
+    if (s.account?.promptUpgrade) void s.account.promptUpgrade();
+    else message("topicFormMessage", "创建抓取任务需要 Pro 套餐，请先购买");
+    return;
+  }
   void withBusy($("#saveTopicButton"), "保存中…", async () => {
     message("topicFormMessage", "");
     let saved;
     try {
       saved = await s.request(`${s.base}/topics${topic ? `/${encodeURIComponent(topic.id)}` : ""}`, { method: topic ? "PATCH" : "POST", body });
     } catch (error) {
+      if (!topic && !s.admin && error.status === 403) {
+        if (s.account?.promptUpgrade) void s.account.promptUpgrade();
+        else if (session === s) message("topicFormMessage", error.message);
+        return;
+      }
       if (session === s) message("topicFormMessage", error.message);
       return;
     }
