@@ -1000,7 +1000,7 @@ async fn execute(
     ensure_distinct_cover(&mut analysis, &sources, &recent_cover_urls);
     let research_sources = selected_research_sources(&mut analysis, citations);
     let article_images = selected_article_images(&analysis, &sources);
-    append_article_images(&mut analysis, &article_images);
+    append_wechat_images(&mut analysis, &article_images);
     append_article_sources(&mut analysis, &sources, &research_sources, &article_images);
     let articles = InsightArticles {
         wechat: analysis.wechat_article.clone(),
@@ -1148,13 +1148,12 @@ fn current_article_images(
     images
 }
 
-fn append_article_images(analysis: &mut InsightAnalysis, images: &[InsightArticleImage]) {
+fn append_wechat_images(analysis: &mut InsightAnalysis, images: &[InsightArticleImage]) {
     if images.is_empty() {
         return;
     }
     let markdown = markdown_image_block(images);
     analysis.wechat_article = format!("{}\n\n{}", analysis.wechat_article.trim_end(), markdown);
-    analysis.x_article = format!("{}\n\n{}", analysis.x_article.trim_end(), markdown);
 }
 
 fn markdown_image_block(images: &[InsightArticleImage]) -> String {
@@ -1166,8 +1165,8 @@ fn markdown_image_block(images: &[InsightArticleImage]) -> String {
 }
 
 /// Keeps the generated copy self-contained. The model writes the editorial prose;
-/// the server appends verified media and source links so a copied article remains
-/// ready to publish and auditable.
+/// the server appends verified media to the Markdown article and source links to
+/// both copies so the text remains ready to publish and auditable.
 fn append_article_sources(
     analysis: &mut InsightAnalysis,
     sources: &[InsightSource],
@@ -1339,9 +1338,9 @@ fn instructions() -> &'static str {
 6. 已收集材料足够时不要检索。确需核验时最多 6 次，优先官方公告、监管机构、统计数据、财报、研究报告和一手报道。research_source_urls 只填写本次实际使用且出现在检索引用中的 HTTPS URL，不要填写输入新闻本身的 URL；没有检索就返回空数组。没有可靠资料时不要补猜。
 7. wealth、employment、risks、actions 同样相对上一份更新：方向仍成立就用当前证据重写，不再成立则替换或留空。wealth 表示“商业与机遇”。每条说明一个可能产生价值的方向：kind 取 business、income、industry 或 asset_watch；horizon 取 0-3m、3-12m 或 12m+；summary 用自然语言说明事实、价值链和成立逻辑；beneficiaries 写可能受益的角色或环节；entry 写可理解的切入方式；watch 写接下来要观察的信号；risk 写主要限制或失效条件。它们是基于证据的机会假设，不是收益承诺。employment 关注岗位、技能与行业迁移；risks 关注经济、政策、冲突、灾害和生活风险；actions 给出未来 24–72 小时可以观察、核验或尝试的事项。每组最多 3 条，通常 1–2 条，证据不足可以为空，跨组避免重复。
 8. 区分事实、推断和前瞻。保留关键数字、时间、适用条件和数据边界。每个要点引用有效的 source_indexes；changes_source_indexes 引用支持趋势正文的输入新闻。confidence 为 1–5，表示证据强度，不表示收益概率。evidence_grade 取 A、B 或 C，只填 JSON 字段，不要写进正文：A 为官方/一手且有交叉验证，B 为单个权威来源或可靠二手报道，C 为早期线索或单一社区信号；资料不足时用 C。source_indexes 只用于输入新闻，检索资料使用 research_source_urls；正文不要出现来源编号、脚注或 URL。不得保证收益、给出个性化买卖指令或确定性人生结论。
-9. cover_source_index 从带 image 的输入新闻中选一张最能解释本期主线的照片；只要输入中存在已验证图片，就必须选择一张，优先避开最近 32 小时使用过的配图。只有输入完全没有合适图片时才返回 null。只返回来源索引，不生成图片 URL 或无法核实的画面描述。成稿字段中不要写“配图建议”或自行编造图片地址；系统会把已验证图片作为两份稿件中的标准 Markdown 图片提供。
-10. 生成两个可直接复制的中文 Markdown 成稿字段。两份稿件的第一行都必须是包含“XAI 简报”和当日日期的一级标题。wechat_article 是公众号 Markdown 长文，约 1200–1800 个中文字，正文使用自然的段落和二级小标题，包含导语、5–8 条当日核心事实的连贯叙述、名为“趋势分析”的深度段落，以及“值得继续观察”的结尾。x_article 是 X Articles Markdown 稿，约 600–1000 个中文字，节奏更紧，使用清晰的 Markdown 段落和小标题，保留最重要的事实、因果解释和趋势判断。两份稿件都不要写来源编号、免责声明或元话语，不要自行添加 URL 或标签堆砌；系统会在正文后加入经过验证的 Markdown 图片语法和参考来源。两份稿件都必须基于当前输入重新写作，不能互相简单缩写，也不能编造新闻中没有的事实。
-11. 中文自然流畅，英文事实一致且独立润色。两个成稿字段使用标准 Markdown，其余字段正文使用纯文本，不加 HTML。每一项都必须根据当前输入重新撰写。"#
+9. cover_source_index 从带 image 的输入新闻中选一张最能解释本期主线的照片；只要输入中存在已验证图片，就必须选择一张，优先避开最近 32 小时使用过的配图。只有输入完全没有合适图片时才返回 null。只返回来源索引，不生成图片 URL 或无法核实的画面描述。成稿字段中不要写“配图建议”或自行编造图片地址；系统只会把已验证图片作为公众号 Markdown 图片提供，X Articles 的配图在工作台单独展示。
+10. 生成两个可直接复制的中文成稿字段。两份稿件的第一行都必须是包含“XAI 简报”和当日日期的标题。wechat_article 是公众号 Markdown 长文，约 1200–1800 个中文字：第一行使用一级标题，正文使用自然的段落和二级小标题，包含导语、5–8 条当日核心事实的连贯叙述、名为“趋势分析”的深度段落，以及“值得继续观察”的结尾。x_article 是 X Articles 纯文本稿，约 600–1000 个中文字，使用自然段落和清晰的小标题，节奏更紧，保留最重要的事实、因果解释和趋势判断；不要输出 Markdown 标记、来源编号、URL、图片语法或标签堆砌。两份稿件都不要写免责声明或元话语，不要自行添加 URL；系统会在公众号正文后加入经过验证的 Markdown 图片语法，X Articles 正文保持纯文本，配图由工作台单独提供。两份稿件都必须基于当前输入重新写作，不能互相简单缩写，也不能编造新闻中没有的事实。
+11. 中文自然流畅，英文事实一致且独立润色。wechat_article 使用标准 Markdown，x_article 使用纯文本，其余字段正文也使用纯文本，不加 HTML。每一项都必须根据当前输入重新撰写。"#
 }
 
 fn selected_cover(analysis: &InsightAnalysis, sources: &[InsightSource]) -> Option<NewsImage> {
