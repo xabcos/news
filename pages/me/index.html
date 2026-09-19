@@ -9,8 +9,8 @@
   <meta name="referrer" content="no-referrer">
   <title>𝑵𝒆𝒘𝒔 · 工作台</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
-  <link rel="stylesheet" href="/styles.css?v=a732d8e">
-  <link rel="stylesheet" href="/me/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=xai-brief-v4">
+  <link rel="stylesheet" href="/me/styles.css?v=xai-brief-v4">
 </head>
 <body>
   <main class="workspace-shell">
@@ -43,6 +43,27 @@
         <div class="workspace-title"><h1 id="workspaceTitle">主题</h1><p id="statusLine" class="muted small" role="status"></p></div>
         <button id="newTopicButton" class="button button-primary" type="button" disabled>＋ 新建主题</button>
       </div>
+      <section id="briefingPanel" class="panel briefing-panel hidden" aria-labelledby="briefingTitle">
+        <div class="panel-heading">
+          <div><h2 id="briefingTitle">XAI 简报</h2><p id="briefingMeta" class="muted small" role="status"></p></div>
+          <button id="refreshBriefingButton" class="button button-quiet button-small" type="button">刷新</button>
+        </div>
+        <p id="briefingMessage" class="empty-state hidden" role="status"></p>
+        <div class="briefing-actions">
+          <button id="runBriefingButton" class="button button-primary" type="button">立即生成</button>
+        </div>
+        <div id="briefingImages" class="briefing-images hidden" aria-label="简报配图"></div>
+        <div id="briefingDrafts" class="briefing-drafts hidden">
+          <div class="briefing-draft">
+            <div class="briefing-draft-heading"><h3>公众号稿</h3><button id="copyWechatButton" class="button button-quiet button-small" type="button">复制</button></div>
+            <textarea id="wechatDraft" readonly aria-label="公众号稿"></textarea>
+          </div>
+          <div class="briefing-draft">
+            <div class="briefing-draft-heading"><h3>X Articles 稿</h3><button id="copyXButton" class="button button-quiet button-small" type="button">复制</button></div>
+            <textarea id="xDraft" readonly aria-label="X Articles 稿"></textarea>
+          </div>
+        </div>
+      </section>
       <section class="panel topics-panel" aria-label="主题列表">
         <div class="panel-heading"><h2>主题</h2><button id="refreshButton" class="button button-quiet button-small" type="button">刷新</button></div>
         <p id="topicsMessage" class="empty-state hidden" role="status"></p><ul id="topicList" class="topic-list"></ul>
@@ -120,6 +141,6 @@
     <div class="dialog-actions"><button class="button button-quiet" type="button" data-close-dialog>取消</button><button id="confirmActionButton" class="button button-danger" type="button">确认删除</button></div>
   </dialog>
   <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
-  <script src="/me/app.js" type="module"></script>
+  <script src="/me/app.js?v=xai-brief-v4" type="module"></script>
 </body>
 </html>

@@ -1,4 +1,4 @@
-use crate::{auth, digest, error::Result, payment, state::AppState, topics};
+use crate::{auth, digest, error::Result, insight, payment, state::AppState, topics};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Request, State},
@@ -40,6 +40,10 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/api/orders/{out_trade_no}", get(payment::get_order))
         .route("/api/orders/{out_trade_no}/qr.svg", get(payment::order_qr))
         .route("/api/admin/metrics", get(admin_metrics))
+        .route(
+            "/api/admin/insight",
+            get(insight::admin_latest).post(insight::admin_run),
+        )
         .route("/api/webhooks/payment", post(payment::payment_webhook))
         .merge(topics::router())
         .merge(digest::router())

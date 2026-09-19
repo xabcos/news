@@ -51,8 +51,8 @@ const TEXT = {
     fresh: "NEW", failed: "加载失败", retry: "重试",
     empty: "这一天还没有内容", latest: "查看最近有内容的一天",
     space: "工作台", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
-    backToTop: "回到顶部", insightEmpty: "𝐀𝐈 将在首次分析完成后显示。",
-    changes: "趋势分析", dataSignals: "关键数据", watchSignals: "后续信号", coverSource: "原文", wealth: "商业与机遇", employment: "就业与技能",
+    backToTop: "回到顶部", insightEmpty: "XAI 简报将在今日生成后显示。", insightLabel: "XAI 简报",
+    hotspots: "关注热点", changes: "趋势分析", dataSignals: "关键数据", watchSignals: "后续信号", coverSource: "原文", wealth: "商业与机遇", employment: "就业与技能",
     risks: "风险预警", actions: "观察方向", researchSources: "数据来源",
     kind: "类型", horizon: "时间", beneficiaries: "受益者", entry: "切入方式", watch: "观察信号", risk: "主要风险",
     confidence: (n, grade) => `证据强度 ${n}/5${grade ? ` · 证据 ${grade}` : ""}`, sources: "来源",
@@ -63,8 +63,8 @@ const TEXT = {
     fresh: "NEW", failed: "Failed to load", retry: "Retry",
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
     space: "𝑾𝒐𝒓𝒌𝒔𝒑𝒂𝒄𝒆", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
-    backToTop: "Back to top", insightEmpty: "𝐀𝐈 will appear after its first analysis.",
-    changes: "Trend analysis", dataSignals: "Key data", watchSignals: "Signals ahead", coverSource: "Source", wealth: "Business & opportunities", employment: "Employment & skills",
+    backToTop: "Back to top", insightEmpty: "XAI Brief will appear after today's edition is generated.", insightLabel: "XAI Brief",
+    hotspots: "Focus topics", changes: "Trend analysis", dataSignals: "Key data", watchSignals: "Signals ahead", coverSource: "Source", wealth: "Business & opportunities", employment: "Employment & skills",
     risks: "Risk alerts", actions: "What to watch", researchSources: "Data sources",
     kind: "Type", horizon: "Horizon", beneficiaries: "Who may benefit", entry: "Entry path", watch: "Signals to watch", risk: "Main risk",
     confidence: (n, grade) => `Evidence ${n}/5${grade ? ` · Grade ${grade}` : ""}`, sources: "Sources",
@@ -693,6 +693,9 @@ function renderTabs() {
   // The visual feed gets a wider desktop canvas while every other topic keeps the
   // narrow reading measure. This class also updates when navigating between tabs.
   document.body.classList.toggle("p-topic", state.topic === "p");
+  document.title = state.topic === INSIGHT_ID
+    ? `𝑵𝒆𝒘𝒔 · ${state.lang === "en" ? "XAI Brief" : "XAI 简报"}`
+    : "𝑵𝒆𝒘𝒔";
   const tabs = [
     { id: "", label: t().all },
     { id: INSIGHT_ID, label: t().insight },
@@ -766,17 +769,22 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
   section.className = "insight";
   const heading = document.createElement("div");
   heading.className = "insight-heading";
+  const briefingDate = insight.briefing_day
+    ? `${t().insightLabel} · ${formatDay(insight.briefing_day, insight.timezone)}`
+    : t().insightLabel;
   const title = document.createElement("h2");
   title.textContent = pick(insight, "headline");
   heading.append(title);
   section.append(heading);
-  if (insight.cover?.url) section.append(insightCover(insight.cover));
+  if (insight.images?.length) section.append(renderInsightGallery(insight.images));
+  else if (insight.cover?.url) section.append(insightCover(insight.cover));
   const overview = document.createElement("p");
   overview.className = "insight-lead";
   overview.append(insightText(pick(insight, "overview")));
   section.append(overview);
   // The server sends only cited news sources, keyed by their original index.
   const sources = new Map((insight.sources || []).map((source) => [source.index, source]));
+  section.append(...renderInsightHotspots(t().hotspots, insight.sources || [], briefingDate));
   const changes = insightParagraph(
     t().changes,
     pick(insight, "changes"),
@@ -808,6 +816,68 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
       document.scrollingElement.scrollTop = scrollTop;
     }));
   }
+}
+
+function renderInsightHotspots(label, sources, dateText) {
+  const items = sources.slice(0, 8);
+  if (!items.length) return [];
+  const section = document.createElement("section");
+  section.className = "group insight-group insight-hotspots";
+  const heading = document.createElement("div");
+  heading.className = "group-title";
+  heading.append(document.createElement("h2"));
+  heading.firstElementChild.textContent = label;
+  const date = document.createElement("span");
+  date.className = "insight-date insight-hotspots-date muted small";
+  date.textContent = dateText;
+  heading.append(date);
+  section.append(heading, ...items.map((source) => {
+    const article = document.createElement("article");
+    article.className = "item insight-hotspot";
+    const title = sourceLink(source.url, pick(source, "title"), pick(source, "summary"));
+    const heading = document.createElement("h3");
+    heading.className = "item-title";
+    if (title) heading.append(title);
+    else heading.textContent = pick(source, "title");
+    const summary = document.createElement("p");
+    summary.className = "item-summary";
+    summary.textContent = pick(source, "summary");
+    const meta = document.createElement("div");
+    meta.className = "item-meta muted small";
+    meta.textContent = `${source.source || hostOf(source.url)} · ${relativeTime(source.first_seen_at)}`;
+    article.append(heading, summary, meta);
+    return article;
+  }));
+  return [section];
+}
+
+function renderInsightGallery(images) {
+  const gallery = document.createElement("div");
+  gallery.className = `insight-gallery${images.length === 1 ? " is-single" : images.length === 2 ? " is-two" : ""}`;
+  gallery.append(...images.map((image) => {
+    const figure = document.createElement("figure");
+    figure.className = "insight-gallery-item";
+    const link = sourceLink(image.source_url || image.url, "");
+    if (link) {
+      link.className = "insight-gallery-media";
+      const img = document.createElement("img");
+      img.src = image.url;
+      img.alt = pick(image, "caption");
+      img.loading = "lazy";
+      img.decoding = "async";
+      img.referrerPolicy = "no-referrer";
+      img.addEventListener("error", () => figure.remove(), { once: true });
+      link.append(img);
+      figure.append(link);
+    }
+    const caption = document.createElement("figcaption");
+    caption.append(span(pick(image, "caption"), "insight-caption"), span(` · ${image.credit} · `, "muted small"));
+    const source = sourceLink(image.source_url, `${t().coverSource} ↗`);
+    if (source) caption.append(source);
+    figure.append(caption);
+    return figure;
+  }));
+  return gallery;
 }
 
 function insightCover(cover) {

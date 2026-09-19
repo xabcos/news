@@ -457,50 +457,142 @@ pub async fn startup_sync(state: &AppState) -> Result<()> {
         let Some(mut payload) = row.payload else {
             continue;
         };
-        let Some(index) = payload
+        let mut indexes = Vec::new();
+        if let Some(index) = payload
             .get("analysis")
             .and_then(|analysis| analysis.get("cover_source_index"))
             .and_then(Value::as_u64)
             .and_then(|index| usize::try_from(index).ok())
-        else {
-            continue;
-        };
-        let Some(sources) = payload.get_mut("sources").and_then(Value::as_array_mut) else {
-            continue;
-        };
-        let Some(source) = sources
-            .iter_mut()
-            .find(|source| source.get("index").and_then(Value::as_u64) == Some(index as u64))
-        else {
-            continue;
-        };
-        let Some(value) = source
-            .get("image")
-            .cloned()
-            .filter(|value| !value.is_null())
-        else {
-            continue;
-        };
-        let Ok(image) = serde_json::from_value::<NewsImage>(value) else {
-            continue;
-        };
-        let image = match tokio::time::timeout_at(deadline.into(), mirror_image(state, image)).await
         {
-            Ok(Some(image)) => image,
-            Ok(None) => continue,
-            Err(_) => break,
-        };
-        let value = serde_json::to_value(image)?;
-        if source.get("image") == Some(&value) {
+            indexes.push(index);
+        }
+        if let Some(images) = payload
+            .get("articles")
+            .and_then(|articles| articles.get("images"))
+            .and_then(Value::as_array)
+        {
+            indexes.extend(
+                images
+                    .iter()
+                    .filter_map(|image| image.get("index").and_then(Value::as_u64))
+                    .filter_map(|index| usize::try_from(index).ok()),
+            );
+        }
+        if payload.get("sources").and_then(Value::as_array).is_none() {
             continue;
         }
-        source["image"] = value;
-        sqlx::query("UPDATE ai_insights SET payload = $2 WHERE id = $1")
-            .bind(row.id)
-            .bind(payload)
-            .execute(&state.pool)
-            .await?;
-        insight_changed = true;
+        if indexes.is_empty() {
+            indexes.extend(
+                payload
+                    .get("sources")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|source| source.get("image").is_some_and(|image| !image.is_null()))
+                    .filter_map(|source| source.get("index").and_then(Value::as_u64))
+                    .filter_map(|index| usize::try_from(index).ok())
+                    .take(3),
+            );
+        }
+        indexes.sort_unstable();
+        indexes.dedup();
+        let mut payload_changed = false;
+        for index in indexes {
+            let Some(value) = payload
+                .get("sources")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .find(|source| source.get("index").and_then(Value::as_u64) == Some(index as u64))
+                .and_then(|source| source.get("image"))
+                .cloned()
+                .filter(|value| !value.is_null())
+            else {
+                continue;
+            };
+            let old_url = value.get("url").and_then(Value::as_str).map(str::to_owned);
+            let Ok(image) = serde_json::from_value::<NewsImage>(value) else {
+                continue;
+            };
+            let image =
+                match tokio::time::timeout_at(deadline.into(), mirror_image(state, image)).await {
+                    Ok(Some(image)) => image,
+                    Ok(None) => continue,
+                    Err(_) => break,
+                };
+            let value = serde_json::to_value(image)?;
+            let unchanged = payload
+                .get("sources")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .find(|source| source.get("index").and_then(Value::as_u64) == Some(index as u64))
+                .and_then(|source| source.get("image"))
+                == Some(&value);
+            if unchanged {
+                continue;
+            }
+            if let Some(sources) = payload.get_mut("sources").and_then(Value::as_array_mut)
+                && let Some(source) = sources.iter_mut().find(|source| {
+                    source.get("index").and_then(Value::as_u64) == Some(index as u64)
+                })
+            {
+                source["image"] = value.clone();
+            }
+            if let Some(images) = payload
+                .get_mut("articles")
+                .and_then(|articles| articles.get_mut("images"))
+                .and_then(Value::as_array_mut)
+            {
+                for article_image in images {
+                    if article_image.get("index").and_then(Value::as_u64) == Some(index as u64) {
+                        if let Some(url) = value.get("url") {
+                            article_image["url"] = url.clone();
+                        }
+                        if let Some(source_url) = value.get("source_url") {
+                            article_image["source_url"] = source_url.clone();
+                        }
+                        if let Some(caption) = value.get("caption") {
+                            article_image["caption"] = caption.clone();
+                        }
+                        if let Some(caption_en) = value.get("caption_en") {
+                            article_image["caption_en"] = caption_en.clone();
+                        }
+                        if let Some(credit) = value.get("credit") {
+                            article_image["credit"] = credit.clone();
+                        }
+                    }
+                }
+            }
+            if let (Some(old_url), Some(new_url)) =
+                (old_url.as_deref(), value.get("url").and_then(Value::as_str))
+            {
+                for key in ["wechat", "x"] {
+                    if let Some(article) = payload
+                        .get_mut("articles")
+                        .and_then(|articles| articles.get_mut(key))
+                        .and_then(|value| value.as_str())
+                    {
+                        let updated = article.replace(old_url, new_url);
+                        if let Some(slot) = payload
+                            .get_mut("articles")
+                            .and_then(|articles| articles.get_mut(key))
+                        {
+                            *slot = Value::String(updated);
+                        }
+                    }
+                }
+            }
+            payload_changed = true;
+        }
+        if payload_changed {
+            sqlx::query("UPDATE ai_insights SET payload = $2 WHERE id = $1")
+                .bind(row.id)
+                .bind(payload)
+                .execute(&state.pool)
+                .await?;
+            insight_changed = true;
+        }
     }
     for (topic, day) in changed_topics {
         state.digest.refresh(state, &topic, day).await?;

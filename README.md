@@ -12,7 +12,7 @@ GET /days?topic=x&limit=30
 GET /feed.xml?topic=ai
 ```
 
-省略 `topic` 返回全部公共主题，省略 `day` 返回最近有内容的一天。`limit` 为 1–128，响应中的 `next` 游标用于继续分页。条目包含中英文标题和摘要、URL、来源、发布时间、收录时间、标签、重要性、置顶状态以及可选图片。公共响应带稳定的 `generated_at`、ETag、CORS 和短期缓存；私有响应不缓存。
+省略 `topic` 返回全部公共主题，省略 `day` 返回最近有内容的一天。`limit` 为 1–128，响应中的 `next` 游标用于继续分页。条目包含中英文标题和摘要、URL、来源、发布时间、收录时间、标签、重要性、置顶状态以及可选图片。`/insight` 返回最新的 XAI 简报公开稿；公众号和 X Articles 中文稿只通过管理员工作台读取。公共响应带稳定的 `generated_at`、ETag、CORS 和短期缓存；私有响应不缓存。
 
 ## 公共主题
 
@@ -29,6 +29,8 @@ GET /feed.xml?topic=ai
 | `codex` | Codex 使用体验、容量故障与开发者反馈 |
 
 主题提示词同时提供中文和英文方向，抓取时要求具体事实、可靠来源、事件去重和明确的时间信息。`x` 负责跨行业概览，厂商、开源项目、故障和应用案例分别由专门主题覆盖。
+
+首页顶部的 `AI` 标签进入每日 **XAI 简报**。系统每天按 `NEWS_TIMEZONE` 的 20:30 截止生成一份中文编辑稿，内容窗口从前一天 20:30 延续到本期截止；管理员也可以在工作台点击立即生成，生成内容只使用已经采集的新闻。工作台会提供公众号稿、X Articles 稿和配图的复制入口，同一天的新成功结果会替换旧结果。
 
 ## 本地运行
 
@@ -53,9 +55,9 @@ cargo run
 | `NEWS_ADMIN_EMAILS` | – | 管理员邮箱，逗号分隔 |
 | `AI_API_KEY` | – | Responses API 密钥；启用调度时必填 |
 | `AI_BASE_URL` / `AI_DEFAULT_MODEL` | `https://api.zairouter.com` / `grok-4.6` | 新闻抓取接口和默认模型 |
-| `AI_INSIGHT_MODEL` / `AI_INSIGHT_INTERVAL_MINUTES` | `gpt-6-astra` / `120` | 综合研判模型和间隔 |
+| `AI_INSIGHT_MODEL` | `gpt-6-astra` | XAI 简报模型；每日按 `NEWS_TIMEZONE` 20:30 生成 |
 | `NEWS_TIMEZONE` | `Asia/Shanghai` | 日期边界和时间窗时区 |
-| `NEWS_SCHEDULER_ENABLED` | `true` | 是否启用自动抓取和研判 |
+| `NEWS_SCHEDULER_ENABLED` | `true` | 是否启用自动抓取和每日 XAI 简报 |
 | `NEWS_FETCH_TIMEOUT_SECS` / `NEWS_MAX_CONCURRENT_RUNS` | `1800` / `2` | 抓取超时和并发上限 |
 | `NEWS_RETENTION_DAYS` | `128` | 新闻保留天数 |
 | `TMPFILE_BASE_URL` / `TMPFILE_API_KEY` | 必填 | 图片转存接口及密钥 |
@@ -79,6 +81,7 @@ GET    /api/admin/status             GET    /api/admin/topics
 POST   /api/admin/topics             PATCH  /api/admin/topics/{id}
 DELETE /api/admin/topics/{id}        POST   /api/admin/topics/{id}/run
 GET    /api/admin/metrics
+GET    /api/admin/insight            POST   /api/admin/insight
 
 GET    /api/plans                    GET    /api/orders
 POST   /api/orders                   GET    /api/orders/{out_trade_no}
@@ -97,7 +100,7 @@ docker compose config >/dev/null
 docker compose up -d
 ```
 
-启动时执行 `migrations/0001_initial.sql`，创建 NEWS 数据库、套餐目录和公共主题目录。新环境启动后，调度器会按照主题配置开始抓取。
+启动时按顺序执行 `migrations/` 中的迁移，创建 NEWS 数据库、套餐目录和公共主题目录。新环境启动后，调度器会按照主题配置开始抓取，并在每天 20:30 生成 XAI 简报。
 
 ## 验证
 

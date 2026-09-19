@@ -2,17 +2,17 @@
 
 ## 产品边界
 
-NEWS 负责公共和个人新闻主题、定时抓取、去重、摘要、图片新闻、综合研判、账户和支付。浏览器不持有 AI 密钥；匿名请求只读取公共内容，登录请求由服务端按账户和角色授权。
+NEWS 负责公共和个人新闻主题、定时抓取、去重、摘要、图片新闻、每日 XAI 简报、账户和支付。浏览器不持有 AI 密钥；匿名请求只读取公共内容，登录请求由服务端按账户和角色授权。
 
 ## 数据模型
 
-核心表为 `users`、`sessions`、`email_login_tokens`、`topics`、`runs`、`items`、`ai_insights`、`plans`、`orders`、`payment_events`、`maintenance_state` 和 `user_metrics`。主题通过 `owner_user_id` 区分公共和个人数据；新闻条目按主题、日期和 URL 指纹去重；订单保存创建时的价格和套餐条款。
+核心表为 `users`、`sessions`、`email_login_tokens`、`topics`、`runs`、`items`、`ai_insights`、`plans`、`orders`、`payment_events`、`maintenance_state` 和 `user_metrics`。`ai_insights.briefing_day` 标记本地日报日期，生成结果的公开分析、公众号稿和 X Articles 稿保存在 payload 中。主题通过 `owner_user_id` 区分公共和个人数据；新闻条目按主题、日期和 URL 指纹去重；订单保存创建时的价格和套餐条款。
 
-公共主题按职责分为跨行业概览、视觉内容、中国 AI、OpenAI、Anthropic、GitHub 开源、全球事件、应用案例和 Codex 运维信号。专门主题承接自己的来源和事件，跨行业主题避免重复收录。
+公共主题按职责分为跨行业概览、视觉内容、中国 AI、OpenAI、Anthropic、GitHub 开源、全球事件、应用案例和 Codex 运维信号。`/insight` 是每日 20:30 发布的 XAI 简报，使用前一天 20:30 到本期截止之间已采集的内容生成公开编辑稿，并在管理员工作台提供公众号稿、X Articles 稿和配图的复制入口；同一时区同一天只保留最后一次成功生成。专门主题承接自己的来源和事件，跨行业主题避免重复收录。
 
 ## 路由边界
 
-公共读取包括 `/digest`、`/topics`、`/days`、`/insight` 和 `/feed.xml`。账户路由位于 `/api/auth/*`、`/api/me/*`，管理员路由位于 `/api/admin/*`。支付使用 `/api/plans`、`/api/orders*` 和 `/api/webhooks/payment`。未知 `/api` 路由统一返回 JSON 404，静态页面由服务端托管。
+公共读取包括 `/digest`、`/topics`、`/days`、`/insight` 和 `/feed.xml`。账户路由位于 `/api/auth/*`、`/api/me/*`，管理员路由位于 `/api/admin/*`；管理员可通过 `/api/admin/insight` 查看或立即生成当天的 XAI 简报稿件。支付使用 `/api/plans`、`/api/orders*` 和 `/api/webhooks/payment`。未知 `/api` 路由统一返回 JSON 404，静态页面由服务端托管。
 
 ## 调度和数据流
 
@@ -30,7 +30,7 @@ PostgreSQL 事务写入 items 和 runs
 刷新 Redis、内存快照和 ETag
 ```
 
-图片转存放在事务外，避免慢上游长时间占用数据库连接。综合研判独立读取最近新闻和近期成功研判，成功结果写入 `ai_insights`。后台任务在关闭时先取消外部请求，再等待有限的清理窗口。
+图片转存放在事务外，避免慢上游长时间占用数据库连接。每日简报独立读取前一日 20:30 到本期截止之间的新闻和近期成功简报；若错过上一版，调度器先补最近缺失的版次。成功结果写入 `ai_insights`；手动生成与定时生成共享同一并发锁，新的成功结果会替换同一时区同一天的旧结果。后台任务在关闭时先取消外部请求，再等待有限的清理窗口。
 
 ## 缓存和 HTTP
 
@@ -42,7 +42,7 @@ PostgreSQL 事务写入 items 和 runs
 
 ## 部署和初始数据库
 
-应用监听容器内 `8788`，Compose 只绑定宿主机回环地址，由 Nginx 提供域名入口。启动时执行 `migrations/0001_initial.sql`，创建完整 NEWS schema、套餐目录和公共主题目录。
+应用监听容器内 `8788`，Compose 只绑定宿主机回环地址，由 Nginx 提供域名入口。启动时按顺序执行 `migrations/` 中的迁移，创建 NEWS schema、套餐目录和公共主题目录。
 
 ## 验证
 
