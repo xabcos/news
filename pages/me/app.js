@@ -62,7 +62,6 @@ function bindEvents() {
   }));
   $("#newTopicButton").addEventListener("click", () => openEditor());
   $("#refreshButton").addEventListener("click", () => withBusy($("#refreshButton"), null, () => refresh(session)));
-  $("#refreshBriefingButton").addEventListener("click", () => withBusy($("#refreshBriefingButton"), null, () => loadBriefing(session)));
   $("#runBriefingButton").addEventListener("click", () => {
     const control = $("#runBriefingButton");
     void withBusy(control, "生成中…", () => runBriefing(session)).then(() => {
@@ -326,43 +325,9 @@ function copyBriefingDraft(id, buttonId) {
   const value = $(`#${id}`).value;
   if (!value) return;
   void withBusy($(`#${buttonId}`), "复制中…", async () => {
-    const images = session?.briefing?.images || [];
-    if (images.length && navigator.clipboard?.write && window.ClipboardItem) {
-      const html = draftHtml(value, images);
-      try {
-        await navigator.clipboard.write([
-          new ClipboardItem({
-            "text/plain": new Blob([value], { type: "text/plain" }),
-            "text/html": new Blob([html], { type: "text/html" }),
-          }),
-        ]);
-      } catch {
-        await navigator.clipboard.writeText(value);
-      }
-    } else {
-      await navigator.clipboard.writeText(value);
-    }
+    await navigator.clipboard.writeText(value);
     toast("稿件已复制");
   });
-}
-
-function draftHtml(text, images) {
-  const escaped = text.replace(/[&<>"']/gu, (value) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;",
-  }[value]));
-  const body = escaped.split(/\n{2,}/u).map((paragraph) => `<p>${paragraph.replace(/\n/gu, "<br>")}</p>`).join("");
-  const media = images.map((image) => {
-    const url = safeUrl(image.url);
-    if (!url) return "";
-    return `<figure><img src="${escapeHtml(url)}" alt="${escapeHtml(image.caption || "简报配图")}"><figcaption>${escapeHtml(image.caption || "")}</figcaption></figure>`;
-  }).join("");
-  return `${body}${media}`;
-}
-
-function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/gu, (entry) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;",
-  }[entry]));
 }
 
 function message(id, text) {

@@ -8,7 +8,7 @@ NEWS 负责公共和个人新闻主题、定时抓取、去重、摘要、图片
 
 核心表为 `users`、`sessions`、`email_login_tokens`、`topics`、`runs`、`items`、`ai_insights`、`plans`、`orders`、`payment_events`、`maintenance_state` 和 `user_metrics`。`ai_insights.briefing_day` 标记本地日报日期，生成结果的公开分析、公众号稿和 X Articles 稿保存在 payload 中。主题通过 `owner_user_id` 区分公共和个人数据；新闻条目按主题、日期和 URL 指纹去重；订单保存创建时的价格和套餐条款。
 
-公共主题按职责分为跨行业概览、视觉内容、中国 AI、OpenAI、Anthropic、GitHub 开源、全球事件、应用案例和 Codex 运维信号。`/insight` 是每日 20:30 发布的 XAI 简报，使用前一天 20:30 到本期截止之间已采集的内容生成公开编辑稿，并在管理员工作台提供公众号稿、X Articles 稿和配图的复制入口；同一时区同一天只保留最后一次成功生成。专门主题承接自己的来源和事件，跨行业主题避免重复收录。
+公共主题按职责分为跨行业概览、视觉内容、中国 AI、OpenAI、Anthropic、GitHub 开源、全球事件、应用案例和 Codex 运维信号。`/insight` 是每日 20:30 发布的 XAI 简报，使用前一天 20:30 到本期截止之间已采集的内容生成公开编辑稿，并在管理员工作台提供公众号 Markdown 稿、X Articles Markdown 稿和配图的复制入口；同一时区同一天只保留最后一次成功生成。专门主题承接自己的来源和事件，跨行业主题避免重复收录。
 
 ## 路由边界
 

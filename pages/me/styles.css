@@ -70,7 +70,6 @@ fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
 #scheduleTimezone { margin: -.5rem 0 1rem; }
 #itemsDay { width: auto; max-width: 10rem; padding: .3rem .5rem; font-size: .8rem; }
 .form-message { color: var(--danger); font-size: .85rem; }
-.briefing-actions { display: flex; gap: .5rem; margin-bottom: 1rem; }
 .briefing-images { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; margin-bottom: 1rem; }
 .briefing-images.is-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .briefing-image { min-width: 0; margin: 0; }

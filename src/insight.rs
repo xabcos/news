@@ -616,8 +616,8 @@ pub(crate) async fn admin_latest(
             &stored.articles.x
         };
         briefing["headline"] = json!(stored.analysis.headline);
-        briefing["wechat_article"] = json!(article_with_images(wechat, &images));
-        briefing["x_article"] = json!(article_with_images(x_article, &images));
+        briefing["wechat_article"] = json!(wechat);
+        briefing["x_article"] = json!(x_article);
         briefing["images"] = json!(images);
     }
     Ok(Json(json!({ "briefing": briefing })))
@@ -1149,44 +1149,25 @@ fn current_article_images(
 }
 
 fn append_article_images(analysis: &mut InsightAnalysis, images: &[InsightArticleImage]) {
-    analysis.wechat_article = article_with_images(&analysis.wechat_article, images);
-    analysis.x_article = article_with_images(&analysis.x_article, images);
+    if images.is_empty() {
+        return;
+    }
+    let markdown = markdown_image_block(images);
+    analysis.wechat_article = format!("{}\n\n{}", analysis.wechat_article.trim_end(), markdown);
+    analysis.x_article = format!("{}\n\n{}", analysis.x_article.trim_end(), markdown);
 }
 
-fn article_with_images(text: &str, images: &[InsightArticleImage]) -> String {
-    if images.is_empty() {
-        return text.to_owned();
-    }
-    let source_start = text.find("\n\n参考来源");
-    let image_start = text.find("\n\n配图建议");
-    let base_end = [image_start, source_start]
-        .into_iter()
-        .flatten()
-        .min()
-        .unwrap_or(text.len());
-    let base = &text[..base_end];
-    let sources = source_start.map_or("", |start| &text[start..]);
-    let lines = images
+fn markdown_image_block(images: &[InsightArticleImage]) -> String {
+    images
         .iter()
-        .enumerate()
-        .map(|(index, image)| {
-            format!(
-                "{}. {}（{}）\n图片地址：{}\n原文：{}",
-                index + 1,
-                image.caption,
-                image.credit,
-                image.url,
-                image.source_url
-            )
-        })
-        .collect::<Vec<_>>();
-    let suffix = format!("\n\n配图建议\n{}", lines.join("\n"));
-    format!("{}{}{}", base.trim_end(), suffix, sources)
+        .map(|image| format!("![{}]({})", image.caption.replace(']', "\\]"), image.url))
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// Keeps the generated copy self-contained. The model writes the editorial prose;
-/// the server appends links from the verified source set so a copied article still
-/// gives readers a compact, auditable reference list.
+/// the server appends verified media and source links so a copied article remains
+/// ready to publish and auditable.
 fn append_article_sources(
     analysis: &mut InsightAnalysis,
     sources: &[InsightSource],
@@ -1358,9 +1339,9 @@ fn instructions() -> &'static str {
 6. 已收集材料足够时不要检索。确需核验时最多 6 次，优先官方公告、监管机构、统计数据、财报、研究报告和一手报道。research_source_urls 只填写本次实际使用且出现在检索引用中的 HTTPS URL，不要填写输入新闻本身的 URL；没有检索就返回空数组。没有可靠资料时不要补猜。
 7. wealth、employment、risks、actions 同样相对上一份更新：方向仍成立就用当前证据重写，不再成立则替换或留空。wealth 表示“商业与机遇”。每条说明一个可能产生价值的方向：kind 取 business、income、industry 或 asset_watch；horizon 取 0-3m、3-12m 或 12m+；summary 用自然语言说明事实、价值链和成立逻辑；beneficiaries 写可能受益的角色或环节；entry 写可理解的切入方式；watch 写接下来要观察的信号；risk 写主要限制或失效条件。它们是基于证据的机会假设，不是收益承诺。employment 关注岗位、技能与行业迁移；risks 关注经济、政策、冲突、灾害和生活风险；actions 给出未来 24–72 小时可以观察、核验或尝试的事项。每组最多 3 条，通常 1–2 条，证据不足可以为空，跨组避免重复。
 8. 区分事实、推断和前瞻。保留关键数字、时间、适用条件和数据边界。每个要点引用有效的 source_indexes；changes_source_indexes 引用支持趋势正文的输入新闻。confidence 为 1–5，表示证据强度，不表示收益概率。evidence_grade 取 A、B 或 C，只填 JSON 字段，不要写进正文：A 为官方/一手且有交叉验证，B 为单个权威来源或可靠二手报道，C 为早期线索或单一社区信号；资料不足时用 C。source_indexes 只用于输入新闻，检索资料使用 research_source_urls；正文不要出现来源编号、脚注或 URL。不得保证收益、给出个性化买卖指令或确定性人生结论。
-9. cover_source_index 从带 image 的输入新闻中选一张最能解释本期主线的照片；只要输入中存在已验证图片，就必须选择一张，优先避开最近 32 小时使用过的配图。只有输入完全没有合适图片时才返回 null。只返回来源索引，不生成图片 URL 或无法核实的画面描述。系统会从已验证图片中为两份稿件补充一至三张配图建议。
-10. 生成两个可直接复制的中文成稿字段。两份稿件的第一行都必须是包含“XAI 简报”和当日日期的有信息量标题。wechat_article 是公众号长文，约 1200–1800 个中文字，包含标题、导语、5–8 条当日核心事实的连贯叙述、标题为“趋势分析”的深度段落，以及“值得继续观察”的结尾；不要写来源编号、URL、免责声明或元话语，不要照抄 overview/changes。x_article 是 X Articles 中文稿，约 600–1000 个中文字，节奏更紧，保留最重要的事实、因果解释和趋势判断，适合网页文章阅读；不要写来源编号、URL 或标签堆砌。两份稿件都必须基于当前输入重新写作，不能互相简单缩写，也不能编造新闻中没有的事实。
-11. 中文自然流畅，英文事实一致且独立润色。所有字段按 JSON Schema 输出，网页字段正文使用纯文本，不加 Markdown 标题（两个成稿字段可使用清晰的纯文本分段和小标题）。每一项都必须根据当前输入重新撰写。"#
+9. cover_source_index 从带 image 的输入新闻中选一张最能解释本期主线的照片；只要输入中存在已验证图片，就必须选择一张，优先避开最近 32 小时使用过的配图。只有输入完全没有合适图片时才返回 null。只返回来源索引，不生成图片 URL 或无法核实的画面描述。成稿字段中不要写“配图建议”或自行编造图片地址；系统会把已验证图片作为两份稿件中的标准 Markdown 图片提供。
+10. 生成两个可直接复制的中文 Markdown 成稿字段。两份稿件的第一行都必须是包含“XAI 简报”和当日日期的一级标题。wechat_article 是公众号 Markdown 长文，约 1200–1800 个中文字，正文使用自然的段落和二级小标题，包含导语、5–8 条当日核心事实的连贯叙述、名为“趋势分析”的深度段落，以及“值得继续观察”的结尾。x_article 是 X Articles Markdown 稿，约 600–1000 个中文字，节奏更紧，使用清晰的 Markdown 段落和小标题，保留最重要的事实、因果解释和趋势判断。两份稿件都不要写来源编号、免责声明或元话语，不要自行添加 URL 或标签堆砌；系统会在正文后加入经过验证的 Markdown 图片语法和参考来源。两份稿件都必须基于当前输入重新写作，不能互相简单缩写，也不能编造新闻中没有的事实。
+11. 中文自然流畅，英文事实一致且独立润色。两个成稿字段使用标准 Markdown，其余字段正文使用纯文本，不加 HTML。每一项都必须根据当前输入重新撰写。"#
 }
 
 fn selected_cover(analysis: &InsightAnalysis, sources: &[InsightSource]) -> Option<NewsImage> {
@@ -1588,8 +1569,9 @@ fn clip(value: &str, max: usize) -> String {
 mod tests {
     use super::{
         InsightAnalysis, InsightArticleImage, InsightCache, InsightHistoryRow, InsightSignal,
-        InsightSource, article_with_images, cited_sources, daily_average, insight_task,
-        instructions, percent_change, prepare_history, research_citations, strip_citation_fields,
+        InsightSource, cited_sources, daily_average, insight_task, instructions,
+        markdown_image_block, percent_change, prepare_history, research_citations,
+        strip_citation_fields,
     };
     use crate::digest::Rendered;
     use chrono::{NaiveDate, Utc};
@@ -1671,20 +1653,29 @@ mod tests {
     }
 
     #[test]
-    fn refreshing_article_images_keeps_the_source_appendix() {
-        let image = InsightArticleImage {
-            index: 1,
-            url: "https://cdn.example.com/new.jpg".into(),
-            source_url: "https://example.com/story".into(),
-            caption: "A verified image".into(),
-            caption_en: "A verified image".into(),
-            credit: "Desk".into(),
-        };
-        let text = "正文\n\n配图建议\n旧图片地址\n\n参考来源\n- 原文：https://example.com/story";
-        let refreshed = article_with_images(text, &[image]);
-        assert!(refreshed.contains("https://cdn.example.com/new.jpg"));
-        assert!(refreshed.contains("参考来源"));
-        assert!(refreshed.contains("https://example.com/story"));
+    fn formats_verified_images_as_markdown() {
+        let images = vec![
+            InsightArticleImage {
+                index: 1,
+                url: "https://cdn.example.com/one.jpg".into(),
+                source_url: "https://example.com/one".into(),
+                caption: "图一]说明".into(),
+                caption_en: String::new(),
+                credit: "Desk".into(),
+            },
+            InsightArticleImage {
+                index: 2,
+                url: "https://cdn.example.com/two.jpg".into(),
+                source_url: "https://example.com/two".into(),
+                caption: "图二".into(),
+                caption_en: String::new(),
+                credit: "Desk".into(),
+            },
+        ];
+        assert_eq!(
+            markdown_image_block(&images),
+            "![图一\\]说明](https://cdn.example.com/one.jpg)\n\n![图二](https://cdn.example.com/two.jpg)"
+        );
     }
 
     #[test]
