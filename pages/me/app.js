@@ -262,14 +262,14 @@ async function loadBriefing(s) {
 function renderBriefing(s) {
   const briefing = s.briefing;
   if (!briefing) {
-    message("briefingMessage", "还没有生成过 XAI 简报。");
-    $("#briefingMeta").textContent = "每日 20:30 自动生成，也可以立即生成";
+    message("briefingMessage", "还没有生成过 XAI 日报。");
+    $("#briefingMeta").textContent = "每日 6:30 开始采集，完成后生成日报；也可重新生成最近一期";
     $("#briefingDrafts").classList.add("hidden");
     $("#runBriefingButton").disabled = false;
     renderBriefingImages([]);
     return;
   }
-  const labels = { running: "生成中", ok: "已完成", failed: "失败", interrupted: "已中断" };
+  const labels = { running: "采集与生成中", ok: "已完成", failed: "失败", interrupted: "已中断" };
   const day = briefing.briefing_day || "";
   const time = briefing.finished_at || briefing.started_at;
   const hasDraft = Boolean(briefing.wechat_article || briefing.x_article);
@@ -296,12 +296,21 @@ function renderBriefingImages(images) {
     if (url) {
       const img = node("img");
       img.src = url;
-      img.alt = image.caption || "简报配图";
+      img.alt = image.caption || "日报配图";
       img.loading = "lazy";
       img.referrerPolicy = "no-referrer";
       card.append(img);
     }
-    const caption = node("figcaption", "briefing-image-caption", image.caption || "简报配图");
+    const label = image.cover ? "封面" : "正文配图";
+    const caption = node("figcaption", "briefing-image-caption", `${label}${image.archived ? " · 资料图" : ""} · ${image.caption || "日报配图"}`);
+    const origin = safeUrl(image.source_url);
+    if (origin) {
+      const source = node("a", "briefing-image-source", `${image.credit || "图片来源"} ↗`);
+      source.href = origin;
+      source.target = "_blank";
+      source.rel = "noopener noreferrer";
+      caption.append(source);
+    }
     const actions = node("div", "briefing-image-actions");
     if (url) {
       actions.append(button("复制图片地址", async () => {
@@ -317,7 +326,7 @@ function renderBriefingImages(images) {
 async function runBriefing(s) {
   if (!s || session !== s || !s.admin) return;
   await s.request("/api/admin/insight", { method: "POST" });
-  toast("XAI 简报已开始生成，完成后会自动刷新");
+  toast("XAI 日报已开始生成，完成后会自动刷新");
   await loadBriefing(s);
 }
 
@@ -325,8 +334,20 @@ function copyBriefingDraft(id, buttonId) {
   const value = $(`#${id}`).value;
   if (!value) return;
   void withBusy($(`#${buttonId}`), "复制中…", async () => {
-    await navigator.clipboard.writeText(value);
-    toast("稿件已复制");
+    const text = value.replace(/\r\n?/g, "\n").replace(/\n[ \t]*\n(?:[ \t]*\n)+/g, "\n\n").trim();
+    const html = id === "xDraft" ? session?.briefing?.x_html : "";
+    if (html && typeof ClipboardItem !== "undefined" && navigator.clipboard.write) {
+      try {
+        await navigator.clipboard.write([new ClipboardItem({
+          "text/plain": new Blob([text], { type: "text/plain" }),
+          "text/html": new Blob([html], { type: "text/html" }),
+        })]);
+        toast("已复制排版稿，可直接粘贴到 X Articles");
+        return;
+      } catch { /* Some browsers only allow plain-text clipboard writes. */ }
+    }
+    await navigator.clipboard.writeText(text);
+    toast(html ? "已复制纯文本稿" : "稿件已复制");
   });
 }
 

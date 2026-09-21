@@ -1,4 +1,5 @@
 use crate::error::{AppError, Result};
+use chrono::NaiveTime;
 use chrono_tz::Tz;
 use sqlx::postgres::PgConnectOptions;
 use std::{collections::HashSet, env, net::SocketAddr, path::PathBuf, time::Duration};
@@ -36,6 +37,7 @@ pub struct Config {
     pub(crate) ai_default_model: String,
     pub(crate) ai_insight_model: String,
     pub(crate) timezone: Tz,
+    pub(crate) briefing_time: NaiveTime,
     pub(crate) fetch_timeout: Duration,
     pub(crate) max_concurrent_runs: usize,
     pub(crate) scheduler_enabled: bool,
@@ -154,6 +156,9 @@ impl Config {
         let timezone = env_value("NEWS_TIMEZONE", "Asia/Shanghai")
             .parse::<Tz>()
             .map_err(|_| AppError::Config("NEWS_TIMEZONE 必须是有效的 IANA 时区".into()))?;
+        let briefing_time =
+            NaiveTime::parse_from_str(&env_value("NEWS_BRIEFING_TIME", "06:30"), "%H:%M")
+                .map_err(|_| AppError::Config("NEWS_BRIEFING_TIME 必须是 HH:MM 格式".into()))?;
         let fetch_timeout_secs = parse_env("NEWS_FETCH_TIMEOUT_SECS", 1800_u64)?;
         if !(30..=1800).contains(&fetch_timeout_secs) {
             return Err(AppError::Config(
@@ -214,6 +219,7 @@ impl Config {
             ai_default_model: env_value("AI_DEFAULT_MODEL", "grok-4.6"),
             ai_insight_model: env_value("AI_INSIGHT_MODEL", "gpt-6-astra"),
             timezone,
+            briefing_time,
             fetch_timeout: Duration::from_secs(fetch_timeout_secs),
             max_concurrent_runs,
             scheduler_enabled,

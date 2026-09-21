@@ -127,3 +127,4 @@ fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
   .briefing-drafts { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) { .dot.running { animation: none; } }
+.briefing-image-source { display: block; margin-top: .4rem; font-size: .78rem; }

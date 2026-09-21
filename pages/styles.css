@@ -454,6 +454,13 @@ p { margin-top: 0; }
   .public.p-topic .digest { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 
+.insight-story-number { margin-right: .65rem; color: var(--primary-strong); font-variant-numeric: tabular-nums; }
+.insight-story-status { display: inline-block; margin-right: .5rem; padding: .12rem .4rem; border-radius: .3rem; background: var(--surface-soft); color: var(--muted); font-size: .72rem; font-weight: 500; vertical-align: middle; }
+.insight-picture-title { display: block; margin-bottom: .4rem; color: var(--text); font-weight: 600; }
+.insight-change p { white-space: pre-line; }
+.insight-references { margin: 0; padding-left: 1.5rem; color: var(--muted); font-size: .82rem; line-height: 1.65; overflow-wrap: anywhere; }
+.insight-references li + li { margin-top: .35rem; }
+
 /* ---------- dark, motion, responsive ---------- */
 
 @media (prefers-color-scheme: dark) {

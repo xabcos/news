@@ -1,7 +1,7 @@
 use crate::{
     auth::{self, PlanLimits},
     error::{AppError, Result},
-    fetch::{self, Known},
+    fetch::{self, Known, NewsWindow},
     insight, media,
     state::AppState,
     topics::{self, Topic},
@@ -247,6 +247,7 @@ async fn today_runs(state: &AppState, topic: &Topic) -> Result<i64> {
 /// Claims due topics up to the free concurrency slots and starts them. Claiming clears
 /// `next_run_at`, so a topic cannot be picked twice; the run reschedules it on completion.
 async fn tick(state: &AppState) -> Result<()> {
+    insight::tick(state).await?;
     let slots = state.run_slots.available_permits();
     if slots == 0 {
         return Ok(());
@@ -256,6 +257,7 @@ async fn tick(state: &AppState) -> Result<()> {
         WITH due AS (
             SELECT id FROM topics
             WHERE enabled AND next_run_at <= NOW()
+              AND ($2 OR owner_user_id IS NOT NULL)
             ORDER BY next_run_at
             LIMIT $1
             FOR UPDATE SKIP LOCKED
@@ -265,6 +267,7 @@ async fn tick(state: &AppState) -> Result<()> {
         "#,
     )
     .bind(slots as i64)
+    .bind(!insight::is_running(state))
     .fetch_all(&state.pool)
     .await?;
     for topic in due {
@@ -279,8 +282,74 @@ async fn tick(state: &AppState) -> Result<()> {
             }
         }
     }
-    insight::tick(state).await?;
     Ok(())
+}
+
+/// Each completed topic is checkpointed by cutoff, so a retry only collects missing topics.
+/// The coordinator holds no semaphore permit; even a single-slot deployment can progress.
+pub(crate) async fn collect_briefing(state: &AppState, window: NewsWindow) -> Result<()> {
+    let topics = sqlx::query_as::<_, Topic>(
+        "SELECT * FROM topics WHERE enabled AND owner_user_id IS NULL
+         AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.topic_id = topics.id
+                         AND triggered_by = 'briefing' AND status = 'ok' AND window_end = $1)
+         ORDER BY sort_weight, id",
+    )
+    .bind(window.end)
+    .fetch_all(&state.pool)
+    .await?;
+    let mut jobs = JoinSet::new();
+    for topic in topics {
+        let state = state.clone();
+        jobs.spawn(async move {
+            let id = topic.id.clone();
+            (id, collect_topic(&state, &topic, window).await)
+        });
+    }
+    let mut failures = Vec::new();
+    while let Some(result) = jobs.join_next().await {
+        match result {
+            Ok((id, Err(error))) => failures.push(format!("{id}: {error}")),
+            Err(error) => failures.push(error.to_string()),
+            Ok((_, Ok(()))) => {}
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(AppError::Internal(
+            format!("日报补采待重试：{}", failures.join("；")).into(),
+        ))
+    }
+}
+
+async fn collect_topic(state: &AppState, topic: &Topic, window: NewsWindow) -> Result<()> {
+    let permit = tokio::select! {
+        _ = state.shutdown.cancelled() => return Err(AppError::Internal("日报采集已中断".into())),
+        permit = state.run_slots.clone().acquire_owned() =>
+            permit.map_err(|_| AppError::Internal("调度器已关闭".into()))?,
+    };
+    if !state.in_flight().insert(topic.id.clone()) {
+        return Err(AppError::Conflict("主题正在采集中".into()));
+    }
+    let run_id = Uuid::new_v4();
+    let started_at = Utc::now();
+    let registered = register_run(state, topic, run_id, started_at, "briefing", Some(window)).await;
+    let topic = match registered {
+        Ok(topic) => topic,
+        Err(error) => {
+            state.in_flight().remove(&topic.id);
+            return Err(error);
+        }
+    };
+    run(
+        state.clone(),
+        topic,
+        run_id,
+        started_at,
+        permit,
+        Some(window),
+    )
+    .await
 }
 
 /// Registers a run and spawns the fetch. One run per topic at a time.
@@ -301,7 +370,7 @@ pub(crate) async fn start(
     let run_id = Uuid::new_v4();
     let started_at = Utc::now();
     let topic_id = topic.id.clone();
-    let registered = register_run(state, topic, run_id, started_at, triggered_by).await;
+    let registered = register_run(state, topic, run_id, started_at, triggered_by, None).await;
     let topic = match registered {
         Ok(topic) => topic,
         Err(error) => {
@@ -309,7 +378,10 @@ pub(crate) async fn start(
             return Err(error);
         }
     };
-    state.spawn_worker(run(state.clone(), topic, run_id, started_at, permit));
+    let worker_state = state.clone();
+    state.spawn_worker(async move {
+        let _ = run(worker_state, topic, run_id, started_at, permit, None).await;
+    });
     Ok(run_id)
 }
 
@@ -322,6 +394,7 @@ async fn register_run(
     run_id: Uuid,
     started_at: DateTime<Utc>,
     triggered_by: &'static str,
+    window: Option<NewsWindow>,
 ) -> Result<Topic> {
     let mut transaction = state.pool.begin().await?;
     if let Some(owner_user_id) = requested.owner_user_id {
@@ -337,6 +410,9 @@ async fn register_run(
         .ok_or_else(|| AppError::NotFound("主题不存在".into()))?;
     if !topic.enabled {
         return Err(AppError::Conflict("该主题已停用".into()));
+    }
+    if topic.last_status.as_deref() == Some("running") {
+        return Err(AppError::Conflict("该主题正在抓取中".into()));
     }
     let limits = if let Some(owner_user_id) = topic.owner_user_id {
         let pro_until = sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
@@ -379,7 +455,9 @@ async fn register_run(
         topic.consecutive_failures,
         limits.min_interval_minutes,
     );
-    if let Some(last) = topic.last_run_at {
+    if let Some(last) = topic.last_run_at
+        && triggered_by != "briefing"
+    {
         let elapsed = (Utc::now() - last).num_minutes();
         if elapsed < interval {
             return Err(AppError::TooManyRequests(
@@ -409,13 +487,14 @@ async fn register_run(
         return Err(AppError::TooManyRequests("今日运行次数已达到上限".into()));
     }
     sqlx::query(
-        "INSERT INTO runs (id, topic_id, triggered_by, status, started_at, model) VALUES ($1, $2, $3, 'running', $4, $5)",
+        "INSERT INTO runs (id, topic_id, triggered_by, status, started_at, model, window_end) VALUES ($1, $2, $3, 'running', $4, $5, $6)",
     )
     .bind(run_id)
     .bind(&topic.id)
     .bind(triggered_by)
     .bind(started_at)
     .bind(&topic.model)
+    .bind(window.map(|window| window.end))
     .execute(&mut *transaction)
     .await?;
     // Reserve the cadence before releasing the row lock. This also prevents a
@@ -435,7 +514,8 @@ async fn run(
     run_id: Uuid,
     started_at: DateTime<Utc>,
     _permit: OwnedSemaphorePermit,
-) {
+    window: Option<NewsWindow>,
+) -> Result<()> {
     let clock = Instant::now();
     let outcome = tokio::select! {
         _ = state.shutdown.cancelled() => {
@@ -443,9 +523,12 @@ async fn run(
                 tracing::warn!(%error, topic = %topic.id, "failed to record cancelled run");
             }
             state.in_flight().remove(&topic.id);
-            return;
+            return Err(AppError::Internal("采集已中断".into()));
         }
-        outcome = tokio::time::timeout(state.config.fetch_timeout, execute(&state, &topic, run_id)) => {
+        outcome = tokio::time::timeout(state.config.fetch_timeout, execute(&state, &topic, run_id, window.unwrap_or(NewsWindow {
+            start: started_at - ChronoDuration::hours(i64::from(topic.lookback_hours)),
+            end: started_at,
+        }))) => {
             match outcome {
                 Ok(outcome) => outcome,
                 Err(_) => Err(AppError::Internal("抓取超时".into())),
@@ -453,7 +536,7 @@ async fn run(
         }
     };
     let failure = outcome.as_ref().err().map(ToString::to_string);
-    match finish(
+    let recorded = finish(
         &state,
         &topic.id,
         topic.owner_user_id.is_none(),
@@ -461,9 +544,9 @@ async fn run(
         started_at,
         outcome,
     )
-    .await
-    {
-        Ok(()) => match failure {
+    .await;
+    match &recorded {
+        Ok(()) => match &failure {
             Some(error) => tracing::warn!(
                 topic = %topic.id,
                 %error,
@@ -479,6 +562,11 @@ async fn run(
         Err(error) => tracing::error!(topic = %topic.id, %error, "failed to record run"),
     }
     state.in_flight().remove(&topic.id);
+    recorded?;
+    match failure {
+        Some(error) => Err(AppError::Internal(error.into())),
+        None => Ok(()),
+    }
 }
 
 async fn interrupt_run(
@@ -515,7 +603,12 @@ struct Completed {
 }
 
 /// Fetches, validates, deduplicates against the last two days and stores the new stories.
-async fn execute(state: &AppState, topic: &Topic, run_id: Uuid) -> Result<Completed> {
+async fn execute(
+    state: &AppState,
+    topic: &Topic,
+    run_id: Uuid,
+    window: NewsWindow,
+) -> Result<Completed> {
     let today = state.digest.today();
     let yesterday = today.pred_opt().expect("date in range");
     let known = sqlx::query_as::<_, Known>(
@@ -526,13 +619,12 @@ async fn execute(state: &AppState, topic: &Topic, run_id: Uuid) -> Result<Comple
     .bind(KNOWN_LIMIT)
     .fetch_all(&state.pool)
     .await?;
-    let mut fetched = fetch::fetch(state, topic, &known).await?;
+    let mut fetched = fetch::fetch(state, topic, &known, window).await?;
     // Existing 𝐗 runs carry a single cover in their payload. Mirror it before the
     // payload is persisted so the insight pipeline never needs to load a source image
     // directly from a browser.
     media::mirror_payload_cover(state, &mut fetched.payload).await;
 
-    let cutoff = Utc::now() - ChronoDuration::hours(i64::from(topic.lookback_hours) + 12);
     let mut fingerprints = known
         .iter()
         .map(|item| item.fingerprint.clone())
@@ -546,7 +638,9 @@ async fn execute(state: &AppState, topic: &Topic, run_id: Uuid) -> Result<Comple
     let mut items = Vec::new();
     let mut duplicate_fingerprints = Vec::new();
     for candidate in fetched.candidates {
-        let Some(mut item) = fetch::validate(candidate, cutoff) else {
+        let Some(mut item) = fetch::validate(candidate, window.start)
+            .filter(|item| item.published_at.is_none_or(|at| window.contains(at)))
+        else {
             dropped += 1;
             continue;
         };

@@ -12,6 +12,7 @@ use reqwest::{
 };
 use serde::Deserialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
 use url::Url;
 use uuid::Uuid;
@@ -130,6 +131,7 @@ pub(crate) async fn mirror_image(state: &AppState, mut image: NewsImage) -> Opti
         tracing::debug!(url = %origin, size = bytes.len(), "news image is too small or likely a placeholder");
         return None;
     }
+    image.content_hash = Some(hex::encode(Sha256::digest(&bytes)));
 
     let extension = extension_for(content_type);
     let filename = format!("news-{}.{}", Uuid::new_v4(), extension);
@@ -481,7 +483,7 @@ pub async fn startup_sync(state: &AppState) -> Result<()> {
         if payload.get("sources").and_then(Value::as_array).is_none() {
             continue;
         }
-        if indexes.is_empty() {
+        if indexes.is_empty() && payload["analysis"]["hotspots"].is_null() {
             indexes.extend(
                 payload
                     .get("sources")

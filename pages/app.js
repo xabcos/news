@@ -51,8 +51,8 @@ const TEXT = {
     fresh: "NEW", failed: "加载失败", retry: "重试",
     empty: "这一天还没有内容", latest: "查看最近有内容的一天",
     space: "工作台", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
-    backToTop: "回到顶部", insightEmpty: "XAI 简报将在今日生成后显示。", insightLabel: "XAI 简报",
-    hotspots: "关注热点", changes: "趋势分析", dataSignals: "关键数据", watchSignals: "后续信号", coverSource: "原文", wealth: "商业与机遇", employment: "就业与技能",
+    backToTop: "回到顶部", insightEmpty: "XAI 日报将在今日生成后显示。", insightLabel: "XAI 日报",
+    hotspots: "今日热点", gossip: "AI 圈热议", pictures: "图片新闻", references: "参考来源", archive: "资料图", changes: "趋势分析", dataSignals: "关键数据", watchSignals: "后续观察", coverSource: "原文", wealth: "商业与机遇", employment: "就业与技能",
     risks: "风险预警", actions: "观察方向", researchSources: "数据来源",
     kind: "类型", horizon: "时间", beneficiaries: "受益者", entry: "切入方式", watch: "观察信号", risk: "主要风险",
     confidence: (n, grade) => `证据强度 ${n}/5${grade ? ` · 证据 ${grade}` : ""}`, sources: "来源",
@@ -63,8 +63,8 @@ const TEXT = {
     fresh: "NEW", failed: "Failed to load", retry: "Retry",
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
     space: "𝑾𝒐𝒓𝒌𝒔𝒑𝒂𝒄𝒆", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
-    backToTop: "Back to top", insightEmpty: "XAI Brief will appear after today's edition is generated.", insightLabel: "XAI Brief",
-    hotspots: "Focus topics", changes: "Trend analysis", dataSignals: "Key data", watchSignals: "Signals ahead", coverSource: "Source", wealth: "Business & opportunities", employment: "Employment & skills",
+    backToTop: "Back to top", insightEmpty: "XAI Daily will appear after today's edition is generated.", insightLabel: "XAI Daily",
+    hotspots: "Today’s headlines", gossip: "AI buzz", pictures: "In pictures", references: "References", archive: "Archive photo", changes: "Trend analysis", dataSignals: "Key data", watchSignals: "Signals ahead", coverSource: "Source", wealth: "Business & opportunities", employment: "Employment & skills",
     risks: "Risk alerts", actions: "What to watch", researchSources: "Data sources",
     kind: "Type", horizon: "Horizon", beneficiaries: "Who may benefit", entry: "Entry path", watch: "Signals to watch", risk: "Main risk",
     confidence: (n, grade) => `Evidence ${n}/5${grade ? ` · Grade ${grade}` : ""}`, sources: "Sources",
@@ -694,7 +694,7 @@ function renderTabs() {
   // narrow reading measure. This class also updates when navigating between tabs.
   document.body.classList.toggle("p-topic", state.topic === "p");
   document.title = state.topic === INSIGHT_ID
-    ? `𝑵𝒆𝒘𝒔 · ${state.lang === "en" ? "XAI Brief" : "XAI 简报"}`
+    ? `𝑵𝒆𝒘𝒔 · ${state.lang === "en" ? "XAI Daily" : "XAI 日报"}`
     : "𝑵𝒆𝒘𝒔";
   const tabs = [
     { id: "", label: t().all },
@@ -774,33 +774,39 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
     : t().insightLabel;
   const title = document.createElement("h2");
   title.textContent = pick(insight, "headline");
-  heading.append(title);
+  heading.append(span(briefingDate, "insight-date muted small"), title);
   section.append(heading);
-  if (insight.images?.length) section.append(renderInsightGallery(insight.images));
-  else if (insight.cover?.url) section.append(insightCover(insight.cover));
-  const overview = document.createElement("p");
-  overview.className = "insight-lead";
-  overview.append(insightText(pick(insight, "overview")));
-  section.append(overview);
-  // The server sends only cited news sources, keyed by their original index.
+  // Only explicitly selected, current stories lead a new daily edition.
   const sources = new Map((insight.sources || []).map((source) => [source.index, source]));
-  section.append(...renderInsightHotspots(t().hotspots, insight.sources || [], briefingDate));
-  const changes = insightParagraph(
-    t().changes,
-    pick(insight, "changes"),
-    "insight-change",
-    relativeTime(insight.generated_at),
-  );
-  const changeSources = sourceList(
-    t().sources,
-    (insight.changes_source_indexes || []).map((index) => sources.get(index)).filter(Boolean),
-  );
-  if (changeSources) changes.append(changeSources);
-  section.append(changes);
+  if (Array.isArray(insight.hotspots)) {
+    section.append(...renderInsightStories(t().hotspots, insight.hotspots, sources));
+    section.append(...renderInsightStories(t().gossip, insight.gossip || [], sources, true));
+  } else {
+    if (pick(insight, "overview")) section.append(insightParagraph("", pick(insight, "overview"), "insight-lead"));
+    section.append(...renderInsightHotspots(t().hotspots, insight.sources || [], ""));
+  }
+  if (insight.images?.length || insight.cover?.url) {
+    const pictures = insightSection(t().pictures);
+    pictures.append(insight.images?.length ? renderInsightGallery(insight.images) : insightCover(insight.cover));
+    section.append(pictures);
+  }
+  const trend = pick(insight, "changes");
+  if (trend.trim()) {
+    const changes = insightParagraph(
+      t().changes,
+      trend,
+      "insight-change",
+      insight.trend_window_start ? `${state.lang === "en" ? "Past 7 days" : "最近 7 天"} · ${relativeTime(insight.generated_at)}` : relativeTime(insight.generated_at),
+    );
+    const changeSources = sourceList(
+      t().sources,
+      (insight.changes_source_indexes || []).map((index) => sources.get(index)).filter(Boolean),
+    );
+    if (changeSources) changes.append(changeSources);
+    section.append(changes);
+  }
   section.append(...renderInsightGroup(t().dataSignals, insight.data_signals || [], sources));
   section.append(...renderInsightGroup(t().watchSignals, insight.watch_signals || [], sources));
-  const researchSources = sourceList(t().researchSources, insight.research_sources || []);
-  if (researchSources) section.append(researchSources);
   for (const [label, items, opportunities] of [
     [t().wealth, insight.wealth, true],
     [t().employment, insight.employment, false],
@@ -809,6 +815,23 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
   ]) {
     section.append(...renderInsightGroup(label, items || [], sources, opportunities));
   }
+  const references = insightSection(t().references);
+  const referenceList = document.createElement("ol");
+  referenceList.className = "insight-references";
+  const seen = new Set();
+  for (const source of [...sources.values(), ...(insight.research_sources || [])]) {
+    if (seen.has(source.url)) continue;
+    seen.add(source.url);
+    const link = sourceLink(source.url, pick(source, "title") || source.url);
+    if (!link) continue;
+    const item = document.createElement("li");
+    item.append(link);
+    referenceList.append(item);
+  }
+  if (referenceList.children.length) {
+    references.append(referenceList);
+    section.append(references);
+  }
   el.digest.append(section);
   el.shell.classList.remove("is-loading");
   if (preserveScroll) {
@@ -816,6 +839,44 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
       document.scrollingElement.scrollTop = scrollTop;
     }));
   }
+}
+
+function insightSection(label) {
+  const section = document.createElement("section");
+  section.className = "group insight-group";
+  const heading = document.createElement("div");
+  heading.className = "group-title";
+  const title = document.createElement("h2");
+  title.textContent = label;
+  heading.append(title);
+  section.append(heading);
+  return section;
+}
+
+function renderInsightStories(label, stories, sources, gossip = false) {
+  if (!stories.length) return [];
+  const section = insightSection(label);
+  section.classList.add("insight-hotspots");
+  const statuses = state.lang === "en"
+    ? { confirmed: "Confirmed", reported: "Reported", unconfirmed: "Unconfirmed", response: "Response", feedback: "User feedback", denied: "Denied" }
+    : { confirmed: "已确认", reported: "爆料", unconfirmed: "未证实", response: "当事方回应", feedback: "用户反馈", denied: "已否认" };
+  section.append(...stories.map((story, index) => {
+    const article = document.createElement("article");
+    article.className = "item insight-hotspot";
+    const title = document.createElement("h3");
+    title.className = "item-title";
+    title.append(span(String(index + 1).padStart(2, "0"), "insight-story-number"));
+    if (gossip) title.append(span(statuses[story.status] || statuses.unconfirmed, "insight-story-status"));
+    title.append(pick(story, "title"));
+    const summary = document.createElement("p");
+    summary.className = "item-summary";
+    summary.textContent = pick(story, "summary");
+    article.append(title, summary);
+    const links = sourceList(t().sources, (story.source_indexes || []).map((index) => sources.get(index)).filter(Boolean));
+    if (links) article.append(links);
+    return article;
+  }));
+  return [section];
 }
 
 function renderInsightHotspots(label, sources, dateText) {
@@ -844,7 +905,7 @@ function renderInsightHotspots(label, sources, dateText) {
     summary.textContent = pick(source, "summary");
     const meta = document.createElement("div");
     meta.className = "item-meta muted small";
-    meta.textContent = `${source.source || hostOf(source.url)} · ${relativeTime(source.first_seen_at)}`;
+    meta.textContent = `${source.source || hostOf(source.url)} · ${source.published_at ? relativeTime(source.published_at) : `${state.lang === "en" ? "Collected" : "收录于"} ${relativeTime(source.first_seen_at)}`}`;
     article.append(heading, summary, meta);
     return article;
   }));
@@ -871,7 +932,9 @@ function renderInsightGallery(images) {
       figure.append(link);
     }
     const caption = document.createElement("figcaption");
-    caption.append(span(pick(image, "caption"), "insight-caption"), span(` · ${image.credit} · `, "muted small"));
+    if (pick(image, "title")) caption.append(span(pick(image, "title"), "insight-picture-title"));
+    const label = image.archived ? `${t().archive} · ` : "";
+    caption.append(span(`${label}${pick(image, "caption")}`, "insight-caption"), span(` · ${image.credit} · `, "muted small"));
     const source = sourceLink(image.source_url, `${t().coverSource} ↗`);
     if (source) caption.append(source);
     figure.append(caption);
