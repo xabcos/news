@@ -1,6 +1,5 @@
 use super::{
     InsightAnalysis, InsightArticleImage, InsightArticles, InsightResearchSource, InsightSource,
-    Sampling,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -85,17 +84,16 @@ pub(super) fn citation_indexes(analysis: &InsightAnalysis) -> Vec<usize> {
 }
 
 pub(super) fn render(
-    title: String,
-    window_label: &str,
+    edition_label: &str,
     analysis: &InsightAnalysis,
     sources: &[InsightSource],
     research: &[InsightResearchSource],
     images: Vec<InsightArticleImage>,
-    sampling: Option<&Sampling>,
 ) -> InsightArticles {
+    let title = analysis.headline.clone();
     let mut article = Article::default();
     article.heading(1, &title);
-    article.paragraph(window_label);
+    article.paragraph(edition_label);
     article.stories(
         "今日热点",
         analysis.hotspots.as_deref().unwrap_or_default(),
@@ -134,9 +132,6 @@ pub(super) fn render(
         {
             article.paragraph(point);
         }
-    }
-    if let Some(sampling) = sampling {
-        article.paragraph(&sampling.note());
     }
     for (label, signals) in [
         ("关键数据", &analysis.data_signals),

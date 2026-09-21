@@ -57,7 +57,6 @@ const TEXT = {
     kind: "类型", horizon: "时间", beneficiaries: "受益者", entry: "切入方式", watch: "观察信号", risk: "主要风险",
     confidence: (n, grade) => `证据强度 ${n}/5${grade ? ` · 证据 ${grade}` : ""}`, sources: "来源",
     items: (n) => `${n} 条`,
-    sampling: (s) => `本站 AI 专栏样本：本期 ${s.current_items} 条 · 近7天 ${s.seven_day_items} 条（有收录 ${s.observed_days} 天，按原文链接去重）。`,
   },
   en: {
     locale: "en", lang: "中文", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", today: "Today", top: "Top",
@@ -70,7 +69,6 @@ const TEXT = {
     kind: "Type", horizon: "Horizon", beneficiaries: "Who may benefit", entry: "Entry path", watch: "Signals to watch", risk: "Main risk",
     confidence: (n, grade) => `Evidence ${n}/5${grade ? ` · Grade ${grade}` : ""}`, sources: "Sources",
     items: (n) => `${n} ${n === 1 ? "item" : "items"}`,
-    sampling: (s) => `Site AI-column sample: ${s.current_items} this edition · ${s.seven_day_items} over 7 days (${s.observed_days} days with records; deduplicated by source URL).`,
   },
 };
 
@@ -799,7 +797,7 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
       t().changes,
       trend,
       "insight-change",
-      insight.trend_window_start ? `${state.lang === "en" ? "Past 7 days" : "最近 7 天"} · ${relativeTime(insight.generated_at)}` : relativeTime(insight.generated_at),
+      relativeTime(insight.generated_at),
     );
     const changeSources = sourceList(
       t().sources,
@@ -807,12 +805,6 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
     );
     if (changeSources) changes.append(changeSources);
     section.append(changes);
-  }
-  if (insight.sampling) {
-    const note = document.createElement("p");
-    note.className = "insight-sampling muted small";
-    note.textContent = t().sampling(insight.sampling);
-    section.append(note);
   }
   section.append(...renderInsightGroup(t().dataSignals, insight.data_signals || [], sources));
   section.append(...renderInsightGroup(t().watchSignals, insight.watch_signals || [], sources));
