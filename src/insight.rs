@@ -285,6 +285,13 @@ struct Completed {
     payload: Value,
 }
 
+struct GeneratedAnalysis {
+    analysis: InsightAnalysis,
+    research_sources: Vec<InsightResearchSource>,
+    usage: Usage,
+    response_id: Option<String>,
+}
+
 /// The `/insight` body, rendered once per published briefing instead of on every request.
 /// Publishing and pruning bump the generation under the same lock, so a request that read
 /// PostgreSQL before either landed cannot store its stale rendering afterwards.
@@ -679,6 +686,7 @@ async fn execute(
         .fetch_all(&state.pool)
         .await?;
     let stats = collect_stats(state, window).await?;
+    // Number the final SQL sample; model input and validation share these indexes.
     let mut sources = rows
         .into_iter()
         .enumerate()
@@ -796,14 +804,15 @@ async fn execute(
         "instructions": instructions(),
         "input": [{ "role": "user", "content": content }],
         "text": { "format": {
-            "type": "json_schema", "name": "news_insight", "strict": true, "schema": schema(),
+            "type": "json_schema", "name": "news_insight", "strict": true, "schema": schema(&sources, &candidates),
         } },
     });
-    let reply = crate::ai::request(state, body).await?;
-    let citations = research_citations(&reply);
-    let (mut analysis, usage, response_id) = parse_reply(reply)?;
-    validate_selection(&mut analysis, &sources, &candidates)?;
-    let research_sources = selected_research_sources(&mut analysis, citations);
+    let GeneratedAnalysis {
+        analysis,
+        research_sources,
+        usage,
+        response_id,
+    } = generate_analysis(state, body, &sources, &candidates).await?;
     let article_images = selected_article_images(&analysis, &sources);
     let local_end = window_end.with_timezone(&state.config.timezone);
     let edition_label = format!("XAI 日报 · {}", local_end.format("%Y-%m-%d"));
@@ -825,6 +834,61 @@ async fn execute(
         response_id,
         usage,
         payload: stored,
+    })
+}
+
+/// Generate a draft and correct citation errors at most once, under the caller's deadline.
+async fn generate_analysis(
+    state: &AppState,
+    mut body: Value,
+    sources: &[InsightSource],
+    images: &[usize],
+) -> Result<GeneratedAnalysis> {
+    let mut usage = Usage::default();
+    let mut citations = Vec::new();
+    let mut correcting = false;
+    let (mut analysis, response_id) = loop {
+        let reply = crate::ai::request(state, body.clone()).await?;
+        citations.extend(research_citations(&reply));
+        let (mut analysis, used, response_id) = parse_reply(&reply)?;
+        usage.input_tokens += used.input_tokens;
+        usage.input_tokens_details.cached_tokens += used.input_tokens_details.cached_tokens;
+        usage.output_tokens += used.output_tokens;
+        usage.output_tokens_details.reasoning_tokens += used.output_tokens_details.reasoning_tokens;
+        usage.server_side_tool_usage_details.web_search_calls +=
+            used.server_side_tool_usage_details.web_search_calls;
+        usage.server_side_tool_usage_details.x_search_calls +=
+            used.server_side_tool_usage_details.x_search_calls;
+        usage.cost_in_usd_ticks += used.cost_in_usd_ticks;
+        normalize_images(&mut analysis, images);
+        match validate_selection(&analysis, sources) {
+            Ok(()) => break (analysis, response_id),
+            Err(error) => {
+                tracing::warn!(%error, ?response_id, source_count = sources.len(), correcting,
+                    "AI insight citation validation failed");
+                if correcting {
+                    return Err(error);
+                }
+                // Keep the original material and draft, including research URLs which
+                // InsightAnalysis deliberately omits when serializing stored editions.
+                let draft = crate::ai::parse_payload(&reply)?;
+                body["input"].as_array_mut().expect("analysis input").extend([
+                    json!({ "role": "assistant", "content": draft.to_string() }),
+                    json!({ "role": "user", "content": format!(
+                        "上一稿未通过来源校验：{error}。请根据原始资料和输出约束检查并修正整稿的所有引用，包括未列出的同类错误，返回完整 JSON。引用必须使用资料原有的 index，不得重新编号或把检索结果编号当成资料编号。不能确认依据时删除相关条目或无依据的陈述，必要时同步调整标题和趋势；不得只删除引用而保留无依据的内容，也不得任意换成一个合法编号。其余有依据的内容保持不变。无需再次检索。"
+                    ) }),
+                ]);
+                body["tool_choice"] = json!("none");
+                correcting = true;
+            }
+        }
+    };
+    let research_sources = selected_research_sources(&mut analysis, citations);
+    Ok(GeneratedAnalysis {
+        analysis,
+        research_sources,
+        response_id,
+        usage,
     })
 }
 
@@ -867,9 +931,10 @@ fn selected_research_sources(
         .cloned()
         .collect::<HashSet<_>>();
     analysis.research_source_urls.clear();
+    let mut seen = HashSet::new();
     citations
         .into_iter()
-        .filter(|citation| requested.contains(&citation.url))
+        .filter(|citation| requested.contains(&citation.url) && seen.insert(citation.url.clone()))
         .take(8)
         .collect()
 }
@@ -984,55 +1049,124 @@ fn current_articles(stored: &StoredInsight, day: NaiveDate) -> InsightArticles {
     articles
 }
 
-/// Reject cross-window headlines and unsupported citations instead of publishing them.
-fn validate_selection(
-    analysis: &mut InsightAnalysis,
-    sources: &[InsightSource],
-    images: &[usize],
-) -> Result<()> {
-    let Some(hotspots) = &analysis.hotspots else {
-        return Err(AppError::Internal("日报缺少结构化热点".into()));
-    };
-    for (stories, gossip) in [(hotspots, false), (&analysis.gossip, true)] {
-        for story in stories {
-            if story.source_indexes.is_empty()
-                || !story.source_indexes.iter().all(|index| {
-                    sources.iter().any(|source| {
-                        source.index == *index
-                            && source.current
-                            && if gossip {
-                                source.topic_id == "gossip"
-                            } else {
-                                source.topic_id != "gossip" && source.topic_id != "p"
-                            }
-                    })
-                })
-                || (!gossip && !matches!(story.status, articles::StoryStatus::Confirmed))
-            {
-                return Err(AppError::Internal("日报热点包含过期新闻或无效来源".into()));
-            }
-        }
-    }
-    if analysis
-        .data_signals
-        .iter()
-        .any(|signal| signal.source_indexes.is_empty())
-    {
-        return Err(AppError::Internal("日报关键数据缺少新闻来源".into()));
-    }
-    if articles::citation_indexes(analysis)
-        .iter()
-        .any(|index| !sources.iter().any(|source| source.index == *index))
-    {
-        return Err(AppError::Internal("日报引用了不存在的来源".into()));
+/// Images are optional; invalid selections do not prevent publication of valid prose.
+fn normalize_images(analysis: &mut InsightAnalysis, images: &[usize]) {
+    let invalid_images = analysis
+        .cover_source_index
+        .into_iter()
+        .chain(analysis.picture_source_indexes.iter().copied())
+        .filter(|index| !images.contains(index))
+        .collect::<Vec<_>>();
+    if !invalid_images.is_empty() {
+        tracing::warn!(?invalid_images, image_candidates = ?images,
+            "discarding invalid AI insight images");
     }
     analysis.cover_source_index = analysis
         .cover_source_index
         .filter(|index| images.contains(index));
+    let mut selected = analysis
+        .cover_source_index
+        .into_iter()
+        .collect::<HashSet<_>>();
     analysis
         .picture_source_indexes
-        .retain(|index| images.contains(index));
-    analysis.picture_source_indexes.truncate(3);
+        .retain(|index| images.contains(index) && selected.insert(*index));
+    analysis.picture_source_indexes.truncate(2);
+}
+
+/// Reject cross-window headlines and unsupported prose citations without changing the draft.
+fn validate_selection(analysis: &InsightAnalysis, sources: &[InsightSource]) -> Result<()> {
+    let Some(hotspots) = &analysis.hotspots else {
+        return Err(AppError::Internal("日报缺少结构化热点：hotspots".into()));
+    };
+    for (field, stories, gossip) in [
+        ("hotspots", hotspots, false),
+        ("gossip", &analysis.gossip, true),
+    ] {
+        for (position, story) in stories.iter().enumerate() {
+            let path = format!("{field}[{position}].source_indexes");
+            validate_source_indexes(&path, &story.source_indexes, sources, true)?;
+            for index in &story.source_indexes {
+                if !sources
+                    .iter()
+                    .any(|source| source.index == *index && story_source(source, gossip))
+                {
+                    return Err(AppError::Internal(
+                        format!(
+                            "日报热点包含过期新闻或栏目不符的来源：{path}={index}（来源数={}）",
+                            sources.len()
+                        )
+                        .into(),
+                    ));
+                }
+            }
+            if !gossip && !matches!(story.status, articles::StoryStatus::Confirmed) {
+                return Err(AppError::Internal(
+                    format!("日报热点必须是已确认新闻：{field}[{position}].status").into(),
+                ));
+            }
+        }
+    }
+    validate_source_indexes(
+        "changes_source_indexes",
+        &analysis.changes_source_indexes,
+        sources,
+        false,
+    )?;
+    for (field, signals, required) in [
+        ("data_signals", &analysis.data_signals, true),
+        ("watch_signals", &analysis.watch_signals, false),
+        ("wealth", &analysis.wealth, false),
+        ("employment", &analysis.employment, false),
+        ("risks", &analysis.risks, false),
+        ("actions", &analysis.actions, false),
+    ] {
+        for (position, signal) in signals.iter().enumerate() {
+            validate_source_indexes(
+                &format!("{field}[{position}].source_indexes"),
+                &signal.source_indexes,
+                sources,
+                required,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn story_source(source: &InsightSource, gossip: bool) -> bool {
+    source.current
+        && if gossip {
+            source.topic_id == "gossip"
+        } else {
+            source.topic_id != "gossip" && source.topic_id != "p"
+        }
+}
+
+fn validate_source_indexes(
+    field: &str,
+    indexes: &[usize],
+    sources: &[InsightSource],
+    required: bool,
+) -> Result<()> {
+    if required && indexes.is_empty() {
+        return Err(AppError::Internal(
+            format!("日报缺少新闻来源：{field} 为空（来源数={}）", sources.len()).into(),
+        ));
+    }
+    let invalid = indexes
+        .iter()
+        .copied()
+        .filter(|index| !sources.iter().any(|source| source.index == *index))
+        .collect::<Vec<_>>();
+    if !invalid.is_empty() {
+        return Err(AppError::Internal(
+            format!(
+                "日报引用了不存在的来源：{field} 含 {invalid:?}（来源数={}）",
+                sources.len()
+            )
+            .into(),
+        ));
+    }
     Ok(())
 }
 
@@ -1070,7 +1204,7 @@ fn instructions() -> &'static str {
 5. data_signals 优先2–4条新闻本身的关键数字：价格、成本、效率、性能或开放范围，不足可少写或留空。每条必须引用输入新闻，保留单位、比较基准和适用条件，说明是官方公告、厂商自测、客户案例还是社区反馈；不得将局部案例外推为行业水平。不以本站采样量、栏目条数或其增幅填充关键数据，也不重复热点中已完整说清的数字。watch_signals 最多3条，写未来具体时间节点、可核验信号与可能改变判断的条件。
 6. wealth（商业与机遇）、employment（岗位与技能）、risks、actions 各0–2条。只有新证据和实际价值才写，和前文重复就留空；克制编辑口吻。wealth 的 kind 取 business/income/industry/asset_watch，horizon 取 0-3m/3-12m/12m+；受益环节、切入点、后续验证和风险用短句。禁止收益承诺或个性化投资建议。
 7. 配图：实际观察附带图片，从图片新闻专栏 p 优先挑选与本期AI热点有关、画面有故事且吸引人的照片：机器人动作、产品实物、演示现场、有趣细节优于Logo、纯文字截图和无关美女。cover_source_index 选1张，picture_source_indexes 选最多2张补充图；总计1–3张，不凑数。近7日用过的封面降权，同一画面不重复。过去7天资料图仅在确有解释价值时用，系统标注资料图；无可靠发布日期或不合适可不选，cover 返回 null。AI生成图只能在原图说明明确标明其性质时使用。只引用已看过的候选索引，不造图址、署名或画面描述。
-8. 每条新闻/信号引用有效 source_indexes。confidence 1–5 表示证据强度，evidence_grade A=官方或一手且有交叉验证，B=可靠单一来源，C=早期或社区线索。正文不写来源编号、HTML、Markdown和URL。确需核验缺失事实才检索，最多6次，优先原始公告；research_source_urls 只写本次实际检索引用的HTTPS地址，没有检索则为空。检索不得绕过新闻时间窗口。"#
+8. 每条新闻/信号引用有效 source_indexes，只能使用输入资料原有的 index，不得重新编号；资料为空时不编造条目，相关数组留空。检索结果没有资料 index，只能通过 research_source_urls 引用，不得将检索结果编号填入 source_indexes 或 changes_source_indexes。confidence 1–5 表示证据强度，evidence_grade A=官方或一手且有交叉验证，B=可靠单一来源，C=早期或社区线索。正文不写来源编号、HTML、Markdown和URL。确需核验缺失事实才检索，最多6次，优先原始公告；research_source_urls 只写本次实际检索引用的HTTPS地址，没有检索则为空。检索不得绕过新闻时间窗口。"#
 }
 
 fn selected_cover(analysis: &InsightAnalysis, sources: &[InsightSource]) -> Option<NewsImage> {
@@ -1087,7 +1221,44 @@ fn public_image(mut image: NewsImage) -> NewsImage {
     image
 }
 
-fn schema() -> Value {
+fn index_schema(indexes: &[usize]) -> Value {
+    // Empty selections are disabled on their enclosing arrays; JSON Schema does
+    // not allow an empty enum, even when the corresponding array must stay empty.
+    if indexes.is_empty() {
+        json!({ "type": "integer" })
+    } else {
+        json!({ "type": "integer", "enum": indexes })
+    }
+}
+
+fn index_array(indexes: &[usize], minimum: usize, maximum: usize) -> Value {
+    json!({
+        "type": "array", "items": index_schema(indexes),
+        "minItems": if indexes.is_empty() { 0 } else { minimum },
+        "maxItems": if indexes.is_empty() { 0 } else { maximum },
+    })
+}
+
+fn schema(sources: &[InsightSource], images: &[usize]) -> Value {
+    let indexes = sources
+        .iter()
+        .map(|source| source.index)
+        .collect::<Vec<_>>();
+    let current = sources
+        .iter()
+        .filter(|source| story_source(source, false))
+        .map(|source| source.index)
+        .collect::<Vec<_>>();
+    let gossip = sources
+        .iter()
+        .filter(|source| story_source(source, true))
+        .map(|source| source.index)
+        .collect::<Vec<_>>();
+    let mut hotspots = articles::story_schema(index_array(&current, 1, 3));
+    hotspots["properties"]["status"] = json!({ "type": "string", "enum": ["confirmed"] });
+    let mut covers = images.iter().map(|index| json!(index)).collect::<Vec<_>>();
+    covers.push(Value::Null);
+    let max_items = |maximum: usize| if sources.is_empty() { 0 } else { maximum };
     let signal = json!({
         "type": "object", "additionalProperties": false,
         "required": ["title", "title_en", "summary", "summary_en", "confidence", "evidence_grade", "source_indexes"],
@@ -1096,7 +1267,8 @@ fn schema() -> Value {
             "summary": { "type": "string" }, "summary_en": { "type": "string" },
             "confidence": { "type": "integer", "minimum": 1, "maximum": 5 },
             "evidence_grade": { "type": "string", "enum": ["A", "B", "C"] },
-            "source_indexes": { "type": "array", "minItems": 1, "maxItems": 2, "items": { "type": "integer", "minimum": 0 } }
+            "source_indexes": { "type": "array", "minItems": 1, "maxItems": 2,
+                "items": { "$ref": "#/$defs/source_index" } }
         }
     });
     let opportunity = json!({
@@ -1120,38 +1292,42 @@ fn schema() -> Value {
             "risk": { "type": "string" }, "risk_en": { "type": "string" },
             "confidence": { "type": "integer", "minimum": 1, "maximum": 5 },
             "evidence_grade": { "type": "string", "enum": ["A", "B", "C"] },
-            "source_indexes": { "type": "array", "maxItems": 3, "items": { "type": "integer", "minimum": 0 } }
+            "source_indexes": { "type": "array", "maxItems": 3,
+                "items": { "$ref": "#/$defs/source_index" } }
         }
     });
     json!({
         "type": "object", "additionalProperties": false,
+        "$defs": { "source_index": index_schema(&indexes) },
         "required": [
             "headline", "headline_en", "overview", "overview_en", "changes", "changes_en",
             "data_signals", "watch_signals", "changes_source_indexes", "research_source_urls",
             "cover_source_index", "picture_source_indexes", "hotspots", "gossip", "wealth", "employment", "risks", "actions"
         ],
         "properties": {
-            "hotspots": { "type": "array", "maxItems": 8, "items": articles::story_schema() },
-            "gossip": { "type": "array", "maxItems": 4, "items": articles::story_schema() },
-            "picture_source_indexes": { "type": "array", "maxItems": 2, "items": { "type": "integer", "minimum": 0 } },
+            "hotspots": { "type": "array", "maxItems": if current.is_empty() { 0 } else { 8 }, "items": hotspots },
+            "gossip": { "type": "array", "maxItems": if gossip.is_empty() { 0 } else { 4 },
+                "items": articles::story_schema(index_array(&gossip, 1, 3)) },
+            "picture_source_indexes": index_array(images, 0, 2),
             "headline": { "type": "string" }, "headline_en": { "type": "string" },
             "overview": { "type": "string" }, "overview_en": { "type": "string" },
             "changes": { "type": "string" }, "changes_en": { "type": "string" },
-            "data_signals": { "type": "array", "items": signal, "maxItems": 4 },
-            "watch_signals": { "type": "array", "items": signal, "maxItems": 3 },
-            "changes_source_indexes": { "type": "array", "maxItems": 6, "items": { "type": "integer", "minimum": 0 } },
+            "data_signals": { "type": "array", "items": signal, "maxItems": max_items(4) },
+            "watch_signals": { "type": "array", "items": signal, "maxItems": max_items(3) },
+            "changes_source_indexes": { "type": "array", "maxItems": max_items(6),
+                "items": { "$ref": "#/$defs/source_index" } },
             "research_source_urls": { "type": "array", "maxItems": 8, "items": { "type": "string" } },
-            "cover_source_index": { "type": ["integer", "null"], "minimum": 0 },
-            "wealth": { "type": "array", "items": opportunity, "maxItems": 3 },
-            "employment": { "type": "array", "items": signal, "maxItems": 3 },
-            "risks": { "type": "array", "items": signal, "maxItems": 3 },
-            "actions": { "type": "array", "items": signal, "maxItems": 2 }
+            "cover_source_index": { "type": ["integer", "null"], "enum": covers },
+            "wealth": { "type": "array", "items": opportunity, "maxItems": max_items(3) },
+            "employment": { "type": "array", "items": signal, "maxItems": max_items(3) },
+            "risks": { "type": "array", "items": signal, "maxItems": max_items(3) },
+            "actions": { "type": "array", "items": signal, "maxItems": max_items(2) }
         }
     })
 }
 
-fn parse_reply(reply: Value) -> Result<(InsightAnalysis, Usage, Option<String>)> {
-    let payload = crate::ai::parse_payload(&reply)?;
+fn parse_reply(reply: &Value) -> Result<(InsightAnalysis, Usage, Option<String>)> {
+    let payload = crate::ai::parse_payload(reply)?;
     let analysis: InsightAnalysis = serde_json::from_value(payload)
         .map_err(|_| AppError::Internal("AI 响应不符合约定的结构".into()))?;
     let usage = serde_json::from_value(reply["usage"].clone()).unwrap_or_default();

@@ -126,13 +126,13 @@ fn rejects_historical_or_unconfirmed_stories_as_todays_headlines() {
     let mut draft = analysis();
     draft.hotspots = Some(vec![story(0, StoryStatus::Confirmed)]);
     draft.gossip = vec![story(1, StoryStatus::Unconfirmed)];
-    assert!(validate_selection(&mut draft, &sources, &[]).is_ok());
+    assert!(validate_selection(&draft, &sources).is_ok());
     draft.hotspots = Some(vec![story(2, StoryStatus::Confirmed)]);
-    assert!(validate_selection(&mut draft, &sources, &[]).is_err());
+    assert!(validate_selection(&draft, &sources).is_err());
     draft.hotspots = Some(vec![story(1, StoryStatus::Unconfirmed)]);
-    assert!(validate_selection(&mut draft, &sources, &[]).is_err());
+    assert!(validate_selection(&draft, &sources).is_err());
     draft.hotspots = Some(vec![story(99, StoryStatus::Confirmed)]);
-    assert!(validate_selection(&mut draft, &sources, &[]).is_err());
+    assert!(validate_selection(&draft, &sources).is_err());
 }
 
 #[test]
@@ -144,11 +144,129 @@ fn key_data_requires_a_news_reference() {
         "summary":"厂商案例：同一流程单次成本从10元降至5元。", "summary_en":"Vendor case: cost fell from 10 to 5 for the same workflow.",
         "confidence":3, "source_indexes":[]
     })).unwrap()];
-    assert!(validate_selection(&mut draft, &sources, &[]).is_err());
+    assert!(validate_selection(&draft, &sources).is_err());
     draft.data_signals[0].source_indexes = vec![0];
-    assert!(validate_selection(&mut draft, &sources, &[]).is_ok());
+    assert!(validate_selection(&draft, &sources).is_ok());
     draft.data_signals[0].source_indexes = vec![99];
-    assert!(validate_selection(&mut draft, &sources, &[]).is_err());
+    let error = validate_selection(&draft, &sources)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("data_signals[0].source_indexes"));
+    assert!(error.contains("99"));
+    assert!(error.contains("来源数=1"));
+}
+
+#[test]
+fn optional_signal_citations_keep_the_existing_validation_rules() {
+    let sources = vec![source(0, "x", true)];
+    let signal = json!({
+        "title":"观察", "title_en":"Watch", "summary":"后续观察", "summary_en":"Follow-up",
+        "confidence":3, "source_indexes":[]
+    });
+    for field in ["watch_signals", "wealth", "employment", "risks", "actions"] {
+        let mut payload = serde_json::to_value(analysis()).unwrap();
+        payload[field] = json!([signal]);
+        let draft = serde_json::from_value(payload.clone()).unwrap();
+        validate_selection(&draft, &sources).unwrap();
+        payload[field][0]["source_indexes"] = json!([99]);
+        let draft = serde_json::from_value(payload).unwrap();
+        let error = validate_selection(&draft, &sources)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(&format!("{field}[0].source_indexes")));
+    }
+    let schema = schema(&sources, &[]);
+    assert!(
+        schema["properties"]["wealth"]["items"]["properties"]["source_indexes"]
+            .get("minItems")
+            .is_none()
+    );
+}
+
+#[test]
+fn invalid_optional_images_do_not_discard_valid_prose() {
+    let sources = vec![
+        source(0, "x", true),
+        source(7, "p", true),
+        source(9, "p", true),
+    ];
+    let mut draft = analysis();
+    draft.hotspots = Some(vec![story(0, StoryStatus::Confirmed)]);
+    draft.cover_source_index = Some(999);
+    draft.picture_source_indexes = vec![0, 999, 7, 7, 9];
+    normalize_images(&mut draft, &[7, 9]);
+    validate_selection(&draft, &sources).unwrap();
+    assert_eq!(draft.cover_source_index, None);
+    assert_eq!(draft.picture_source_indexes, vec![7, 9]);
+    assert_eq!(draft.hotspots.as_ref().unwrap()[0].source_indexes, vec![0]);
+
+    draft.cover_source_index = Some(7);
+    normalize_images(&mut draft, &[7, 9]);
+    assert_eq!(draft.cover_source_index, Some(7));
+    assert_eq!(draft.picture_source_indexes, vec![9]);
+
+    normalize_images(&mut draft, &[]);
+    assert_eq!(draft.cover_source_index, None);
+    assert!(draft.picture_source_indexes.is_empty());
+    draft.changes_source_indexes = vec![999];
+    let error = validate_selection(&draft, &sources)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("changes_source_indexes"));
+    assert!(error.contains("999"));
+}
+
+#[test]
+fn schema_limits_citations_to_original_indexes_and_available_images() {
+    let sources = vec![
+        source(2, "x", true),
+        source(5, "gossip", true),
+        source(7, "x", false),
+        source(9, "p", true),
+    ];
+    let schema = schema(&sources, &[9]);
+    assert_eq!(schema["$defs"]["source_index"]["enum"], json!([2, 5, 7, 9]));
+    let properties = &schema["properties"];
+    assert_eq!(
+        properties["hotspots"]["items"]["properties"]["source_indexes"]["items"]["enum"],
+        json!([2])
+    );
+    assert_eq!(
+        properties["gossip"]["items"]["properties"]["source_indexes"]["items"]["enum"],
+        json!([5])
+    );
+    assert_eq!(properties["cover_source_index"]["enum"], json!([9, null]));
+    assert_eq!(
+        properties["picture_source_indexes"]["items"]["enum"],
+        json!([9])
+    );
+}
+
+#[test]
+fn schema_allows_quiet_days_without_inventing_sources_or_images() {
+    for sources in [vec![], vec![source(7, "x", false)]] {
+        let schema = schema(&sources, &[]);
+        let properties = &schema["properties"];
+        assert_eq!(properties["hotspots"]["maxItems"], 0);
+        assert_eq!(properties["gossip"]["maxItems"], 0);
+        assert_eq!(properties["cover_source_index"]["enum"], json!([null]));
+        assert_eq!(properties["picture_source_indexes"]["maxItems"], 0);
+        assert!(!schema.to_string().contains("\"enum\":[]"));
+        if sources.is_empty() {
+            for field in [
+                "data_signals",
+                "watch_signals",
+                "wealth",
+                "employment",
+                "risks",
+                "actions",
+                "changes_source_indexes",
+            ] {
+                assert_eq!(properties[field]["maxItems"], 0, "{field}");
+            }
+        }
+        validate_selection(&analysis(), &sources).unwrap();
+    }
 }
 
 #[test]
@@ -307,7 +425,9 @@ fn only_actual_requested_research_citations_are_published() {
         "https://example.com/research".into(),
         "https://example.com/invented".into(),
     ];
-    let references = selected_research_sources(&mut draft, research_citations(&reply));
+    let mut citations = research_citations(&reply);
+    citations.extend(citations.clone()); // The correction may cite the same URL again.
+    let references = selected_research_sources(&mut draft, citations);
     assert_eq!(references.len(), 1);
     assert_eq!(references[0].title, "Research");
 }
@@ -344,6 +464,13 @@ async fn insert_story(
 async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_days() {
     use axum::{Router, routing::post};
     use std::sync::{Mutex, atomic::AtomicBool};
+    #[derive(Clone, Copy)]
+    enum CitationReply {
+        Valid,
+        InvalidImages,
+        InvalidThenCorrected,
+        AlwaysInvalid,
+    }
     let database_url =
         std::env::var("NEWS_DAILY_TEST_DATABASE_URL").expect("disposable database URL");
     let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
@@ -364,16 +491,21 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         end,
     };
     let calls = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let call_count = || calls.lock().unwrap().len();
     let fail_once = Arc::new(AtomicBool::new(true));
     let fail_analysis = Arc::new(AtomicBool::new(false));
+    let citation_mode = Arc::new(Mutex::new(CitationReply::Valid));
     let handler_fail_analysis = fail_analysis.clone();
+    let handler_citation_mode = citation_mode.clone();
     let handler_calls = calls.clone();
     let app = Router::new().route("/v1/responses", post(move |Json(body): Json<Value>| {
         let calls = handler_calls.clone();
         let fail_once = fail_once.clone();
         let fail_analysis = handler_fail_analysis.clone();
+        let citation_mode = handler_citation_mode.clone();
         async move {
             calls.lock().unwrap().push(body.clone());
+            let correcting = body["input"][1]["role"] == "assistant";
             if body["text"]["format"]["name"] == "news_insight" && fail_analysis.load(Ordering::Relaxed) {
                 return (StatusCode::BAD_REQUEST, Json(json!({"error": "analysis fixture failure"})));
             }
@@ -406,10 +538,41 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
                 draft.changes = "七天内的变化。".into();
                 draft.changes_source_indexes = vec![old["index"].as_u64().unwrap() as usize];
                 draft.cover_source_index = Some(picture["index"].as_u64().unwrap() as usize);
-                serde_json::to_value(draft).unwrap()
+                if correcting {
+                    assert_eq!(body["tool_choice"], "none");
+                    let feedback = body["input"][2]["content"].as_str().unwrap();
+                    assert!(feedback.contains("changes_source_indexes"));
+                    assert!(feedback.contains("9999"));
+                    let previous: Value = serde_json::from_str(body["input"][1]["content"].as_str().unwrap()).unwrap();
+                    assert_eq!(previous["changes_source_indexes"], json!([9999]));
+                    assert_eq!(previous["research_source_urls"], json!(["https://example.com/research"]));
+                }
+                let invalid_citation = match *citation_mode.lock().unwrap() {
+                    CitationReply::InvalidImages => {
+                        draft.cover_source_index = Some(9999);
+                        // An existing news source is still not an image candidate.
+                        draft.picture_source_indexes = vec![current["index"].as_u64().unwrap() as usize];
+                        false
+                    }
+                    CitationReply::InvalidThenCorrected => !correcting,
+                    CitationReply::AlwaysInvalid => true,
+                    CitationReply::Valid => false,
+                };
+                if invalid_citation {
+                    draft.changes_source_indexes = vec![9999];
+                }
+                let mut payload = serde_json::to_value(draft).unwrap();
+                payload["research_source_urls"] = json!(["https://example.com/research"]);
+                payload
             };
-            (StatusCode::OK, Json(json!({"status": "completed", "id": "test-response",
-                "output": [{"type": "message", "content": [{"type": "output_text", "text": payload.to_string()}]}]})))
+            (StatusCode::OK, Json(json!({"status": "completed", "id": if correcting { "test-correction" } else { "test-response" },
+                "usage": {"input_tokens":10,"input_tokens_details":{"cached_tokens":3},
+                    "output_tokens":20,"output_tokens_details":{"reasoning_tokens":5},"cost_in_usd_ticks":100,
+                    "server_side_tool_usage_details":{"web_search_calls":if correcting {0} else {1},"x_search_calls":0}},
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": payload.to_string(),
+                    "annotations":if correcting { json!([]) } else {
+                        json!([{"type":"url_citation","url":"https://example.com/research","title":"Research"}])
+                    }}]}]})))
         }
     }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -539,6 +702,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         .find(|topic| topic["topic_id"] == "github")
         .unwrap();
     assert!(zero["change_percent"].is_null());
+    let before = call_count();
     let attempt = tokio::time::timeout(
         Duration::from_secs(10),
         runner::collect_briefing(&state, window),
@@ -594,8 +758,9 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             .iter()
             .any(|source| source.topic_id == "events")
     );
-    assert_eq!(calls.lock().unwrap().len(), 8); // Six columns, one failed-column retry, one analysis.
+    assert_eq!(call_count() - before, 8); // Six columns, one failed-column retry, one analysis.
     // Drive the actual coordinator, including slot acquisition and atomic publication.
+    let before = call_count();
     let id = start_generation(&state, day, end).await.unwrap();
     assert!(matches!(
         start_generation(&state, day, end).await,
@@ -609,7 +774,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         .unwrap();
     assert_eq!(status, "ok");
     assert_eq!(state.run_slots.available_permits(), 1);
-    assert_eq!(calls.lock().unwrap().len(), 9); // Manual regeneration reuses the same collection.
+    assert_eq!(call_count() - before, 1); // Manual regeneration reuses the same collection.
     let rendered = render_latest(&state).await.unwrap();
     let public: Value = serde_json::from_slice(&rendered.body).unwrap();
     assert_eq!(public["insight"]["window_end"], json!(end));
@@ -624,11 +789,13 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         json!({"current_items":4,"seven_day_items":6,"observed_days":3})
     );
     assert!(public["insight"].get("wechat_article").is_none());
+    let before = call_count();
     tick(&state).await.unwrap();
     assert!(!is_running(&state));
-    assert_eq!(calls.lock().unwrap().len(), 9);
+    assert_eq!(call_count() - before, 0);
 
     // A failed manual regeneration keeps the previously published edition intact.
+    let before = call_count();
     fail_analysis.store(true, Ordering::Relaxed);
     let failed_id = start_generation(&state, day, end).await.unwrap();
     wait_for_generation(&state).await;
@@ -639,16 +806,17 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         .unwrap();
     assert_eq!(failed, "failed");
     assert_eq!(render_latest(&state).await.unwrap().body, rendered.body);
-    assert_eq!(calls.lock().unwrap().len(), 10);
+    assert_eq!(call_count() - before, 1);
 
     // Scheduler retries only after the cooldown and uses the original cutoff.
+    let before = call_count();
     sqlx::query("DELETE FROM ai_insights WHERE status='ok'")
         .execute(&state.pool)
         .await
         .unwrap();
     tick(&state).await.unwrap();
     assert!(!is_running(&state));
-    assert_eq!(calls.lock().unwrap().len(), 10);
+    assert_eq!(call_count() - before, 0);
     sqlx::query("UPDATE ai_insights SET finished_at=NOW()-INTERVAL '11 minutes' WHERE id=$1")
         .bind(failed_id)
         .execute(&state.pool)
@@ -657,7 +825,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     fail_analysis.store(false, Ordering::Relaxed);
     tick(&state).await.unwrap();
     wait_for_generation(&state).await;
-    assert_eq!(calls.lock().unwrap().len(), 11);
+    assert_eq!(call_count() - before, 1);
     let recovered_end: DateTime<Utc> =
         sqlx::query_scalar("SELECT window_end FROM ai_insights WHERE status='ok'")
             .fetch_one(&state.pool)
@@ -665,7 +833,65 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             .unwrap();
     assert_eq!(recovered_end, end);
 
+    // Bad optional images must publish valid prose without an extra AI request.
+    let before = call_count();
+    *citation_mode.lock().unwrap() = CitationReply::InvalidImages;
+    let without_images = execute(&state, window.start, window.end).await.unwrap();
+    let stored: StoredInsight = serde_json::from_value(without_images.payload).unwrap();
+    assert_eq!(stored.analysis.hotspots.as_ref().unwrap().len(), 1);
+    assert!(stored.analysis.cover_source_index.is_none());
+    assert!(stored.analysis.picture_source_indexes.is_empty());
+    assert!(stored.articles.images.is_empty());
+    assert_eq!(call_count() - before, 1);
+
+    // Citation errors receive exactly one targeted correction with the original
+    // context, while both requests' usage and verified research citations survive.
+    let before = call_count();
+    *citation_mode.lock().unwrap() = CitationReply::InvalidThenCorrected;
+    let corrected = execute(&state, window.start, window.end).await.unwrap();
+    assert_eq!(corrected.response_id.as_deref(), Some("test-correction"));
+    assert_eq!(corrected.usage.input_tokens, 20);
+    assert_eq!(corrected.usage.input_tokens_details.cached_tokens, 6);
+    assert_eq!(corrected.usage.output_tokens, 40);
+    assert_eq!(corrected.usage.output_tokens_details.reasoning_tokens, 10);
+    assert_eq!(corrected.usage.cost_in_usd_ticks, 200);
+    assert_eq!(
+        corrected
+            .usage
+            .server_side_tool_usage_details
+            .web_search_calls,
+        1
+    );
+    let stored: StoredInsight = serde_json::from_value(corrected.payload).unwrap();
+    assert_eq!(stored.research_sources.len(), 1);
+    assert_eq!(
+        stored.research_sources[0].url,
+        "https://example.com/research"
+    );
+    assert_eq!(call_count() - before, 2);
+
+    // A second invalid draft fails once, records the exact citation, and leaves
+    // the previously published daily edition available.
+    let before = call_count();
+    let published = render_latest(&state).await.unwrap();
+    *citation_mode.lock().unwrap() = CitationReply::AlwaysInvalid;
+    let invalid_id = start_generation(&state, day, end).await.unwrap();
+    wait_for_generation(&state).await;
+    let (status, error): (String, String) =
+        sqlx::query_as("SELECT status,error FROM ai_insights WHERE id=$1")
+            .bind(invalid_id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(status, "failed");
+    assert!(error.contains("changes_source_indexes"));
+    assert!(error.contains("9999"));
+    assert_eq!(render_latest(&state).await.unwrap().body, published.body);
+    assert_eq!(call_count() - before, 2);
+    *citation_mode.lock().unwrap() = CitationReply::Valid;
+
     // Daily collection must continue to respect the editor's configured cost cap.
+    let before = call_count();
     sqlx::query("UPDATE topics SET daily_run_cap=1 WHERE id='github'")
         .execute(&state.pool)
         .await
@@ -681,7 +907,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             .to_string()
             .contains("上限")
     );
-    assert_eq!(calls.lock().unwrap().len(), 11);
+    assert_eq!(call_count() - before, 0);
 
     // A small input budget reproduces the same pressure as many full public columns.
     let sampled = sqlx::query_as::<_, SourceRow>(include_str!("sources.sql"))

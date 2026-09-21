@@ -40,7 +40,7 @@ pub(crate) struct Story {
     pub source_indexes: Vec<usize>,
 }
 
-pub(super) fn story_schema() -> Value {
+pub(super) fn story_schema(source_indexes: Value) -> Value {
     json!({
         "type": "object", "additionalProperties": false,
         "required": ["title", "title_en", "summary", "summary_en", "short_summary", "status", "source_indexes"],
@@ -49,8 +49,7 @@ pub(super) fn story_schema() -> Value {
             "summary": { "type": "string" }, "summary_en": { "type": "string" },
             "short_summary": { "type": "string" },
             "status": { "type": "string", "enum": ["confirmed", "reported", "unconfirmed", "response", "feedback", "denied"] },
-            "source_indexes": { "type": "array", "minItems": 1, "maxItems": 3,
-                "items": { "type": "integer", "minimum": 0 } }
+            "source_indexes": source_indexes
         }
     })
 }
