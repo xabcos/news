@@ -1151,7 +1151,7 @@ mod tests {
             window_start: 6,
             window_end: 24,
             weekdays: vec![1, 2, 3, 4, 5],
-            model: "grok-4.6".into(),
+            model: "grok-4.7".into(),
             reasoning_effort: "low".into(),
             max_items: 8,
             lookback_hours: 24,

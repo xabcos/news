@@ -72,7 +72,7 @@ cargo run
 | `PUBLIC_BASE_URL` | – | 对外根地址；非回环地址必须使用 HTTPS |
 | `NEWS_ADMIN_EMAILS` | – | 管理员邮箱，逗号分隔 |
 | `AI_API_KEY` | – | Responses API 密钥；启用调度时必填 |
-| `AI_BASE_URL` / `AI_DEFAULT_MODEL` | `https://api.zairouter.com` / `grok-4.6` | 新闻抓取接口和默认模型 |
+| `AI_BASE_URL` / `AI_DEFAULT_MODEL` | `https://api.zairouter.com` / `grok-4.7` | 新闻抓取接口和新建主题的默认模型 |
 | `AI_INSIGHT_MODEL` | `gpt-6-astra` | 支持图片输入的 XAI 日报模型 |
 | `NEWS_BRIEFING_TIME` | `06:30` | 按 `NEWS_TIMEZONE` 开始日报补采，完成后生成 |
 | `NEWS_TIMEZONE` | `Asia/Shanghai` | 日期边界和时间窗时区 |
@@ -120,6 +120,8 @@ docker compose up -d
 ```
 
 启动时按顺序执行 `migrations/` 中的迁移，创建 NEWS 数据库、套餐目录和公共主题目录。新环境启动后，调度器按照主题配置抓取，每天06:30补采并生成 XAI 日报；重启会补跑最近一期尚未完成的日报。
+
+Grok 4.7 升级迁移会更新数据库的主题模型默认值，并将仍使用 `grok-4.6` 的公共和个人主题升级为 `grok-4.7`，保留其他模型配置和历史运行记录。`AI_DEFAULT_MODEL` 控制 API 新建主题的默认模型；已有主题按数据库中保存的模型抓取。
 
 ## 验证
 

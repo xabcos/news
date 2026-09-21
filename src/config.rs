@@ -216,7 +216,7 @@ impl Config {
             payment_webhook_secret,
             ai_base_url,
             ai_api_key,
-            ai_default_model: env_value("AI_DEFAULT_MODEL", "grok-4.6"),
+            ai_default_model: env_value("AI_DEFAULT_MODEL", "grok-4.7"),
             ai_insight_model: env_value("AI_INSIGHT_MODEL", "gpt-6-astra"),
             timezone,
             briefing_time,

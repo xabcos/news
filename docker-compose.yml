@@ -23,7 +23,7 @@ services:
       REDIS_ADDR: news-redis:6379
       REDIS_DB: 1
       AI_BASE_URL: https://api.zairouter.com
-      AI_DEFAULT_MODEL: ${AI_DEFAULT_MODEL:-grok-4.6}
+      AI_DEFAULT_MODEL: ${AI_DEFAULT_MODEL:-grok-4.7}
       AI_INSIGHT_MODEL: ${AI_INSIGHT_MODEL:-gpt-6-astra}
       NEWS_FETCH_TIMEOUT_SECS: ${NEWS_FETCH_TIMEOUT_SECS:-1800}
       TMPFILE_BASE_URL: ${TMPFILE_BASE_URL}
