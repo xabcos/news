@@ -36,6 +36,8 @@ GET /feed.xml?topic=ai
 
 配图优先取自图片新闻栏目，模型实际查看最多12张候选图，按相关性和画面吸引力选择1张封面、至多2张正文图；近7天用过的封面降权，按内容哈希或原始地址去重。资料图注明背景，无合适图片不凑数。
 
+图片下载与转存共用3个并发名额，同一批次的相同原图复用转存地址。单张图片默认最多30秒（`NEWS_IMAGE_TIMEOUT_SECS`），整批最多90秒；普通新闻的图片失败时保留正文，图片栏目仍要求有效配图。图片续期同步更新内容版本，日报页面通过 ETag 识别更新。模型输入保留事实、日期与引用索引，双语展示字段和图片内部元数据留在存储层。
+
 管理员可重新生成最近一期已截止日报；重试与补跑保持相同时间窗口，成功补采的栏目不重复调用。采集与生成共用并发额度，协调任务不占用额度，单并发也可运行。失败10分钟后重试，成功后替换同一天的旧稿；期间保留上一份可用稿。自动调度由 `NEWS_SCHEDULER_ENABLED` 控制，时间由 `NEWS_BRIEFING_TIME` 配置。
 
 补采仍计入公共主题的每日运行上限；额度不足时会显示失败原因，不会绕过成本限制。Compose 同样读取调度开关与并发设置；若 `.env` 中 `NEWS_SCHEDULER_ENABLED=false`，容器也不会自动采集。
@@ -70,7 +72,7 @@ cargo run
 | `NEWS_FETCH_TIMEOUT_SECS` / `NEWS_MAX_CONCURRENT_RUNS` | `1800` / `2` | 抓取超时和并发上限 |
 | `NEWS_RETENTION_DAYS` | `128` | 新闻保留天数 |
 | `TMPFILE_BASE_URL` / `TMPFILE_API_KEY` | 必填 | 图片转存接口及密钥 |
-| `NEWS_IMAGE_MAX_BYTES` / `NEWS_IMAGE_TIMEOUT_SECS` | `8388608` / `300` | 图片大小和抓取超时 |
+| `NEWS_IMAGE_MAX_BYTES` / `NEWS_IMAGE_TIMEOUT_SECS` | `8388608` / `30` | 图片大小和单张下载、上传的总超时 |
 | `REDIS_ADDR` / `REDIS_PASS` / `REDIS_DB` | 空 / 空 / `1` | 邮件队列和缓存 |
 | `SESSION_COOKIE_NAME` / `SESSION_TTL_DAYS` / `EMAIL_LOGIN_LINK_TTL_MINUTES` | `news_session` / `30` / `30` | 会话和登录链接有效期 |
 | `YPAY_BASE_URL` / `YPAY_TENANT_CODE` / `YPAY_STORE_API_KEY` | 空 / `news` / 空 | 支付网关配置 |
@@ -119,4 +121,4 @@ make release-check
 
 该命令执行格式检查、测试、Clippy、全部前端 JavaScript 语法检查和 Compose 配置检查。
 
-日报的 PostgreSQL 集成测试单独运行：在本地开发环境变量之外设置 `NEWS_DAILY_TEST_DATABASE_URL`，指向可清空的独立测试库（名称以 `news_daily_test` 开头），然后运行 `cargo test --locked postgres_daily_pipeline -- --ignored`。测试使用本地模拟 AI 接口，验证时间边界、7天去重统计、图片输入、单并发补采、失败续跑及日报发布，不调用真实 AI 服务。
+日报的 PostgreSQL 集成测试单独运行：在本地开发环境变量之外设置 `NEWS_DAILY_TEST_DATABASE_URL`，指向可清空的独立测试库（名称以 `news_daily_test` 开头），然后运行 `cargo test --locked postgres_daily_pipeline -- --ignored`。测试使用本地模拟接口，验证时间边界、7天去重统计、图片输入、单并发补采、失败续跑、日报发布，以及图片续期、地址复用、并发上限和超时取消，不调用真实 AI 服务。

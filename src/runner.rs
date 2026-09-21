@@ -620,10 +620,6 @@ async fn execute(
     .fetch_all(&state.pool)
     .await?;
     let mut fetched = fetch::fetch(state, topic, &known, window).await?;
-    // Existing 𝐗 runs carry a single cover in their payload. Mirror it before the
-    // payload is persisted so the insight pipeline never needs to load a source image
-    // directly from a browser.
-    media::mirror_payload_cover(state, &mut fetched.payload).await;
 
     let mut fingerprints = known
         .iter()
@@ -638,7 +634,7 @@ async fn execute(
     let mut items = Vec::new();
     let mut duplicate_fingerprints = Vec::new();
     for candidate in fetched.candidates {
-        let Some(mut item) = fetch::validate(candidate, window.start)
+        let Some(item) = fetch::validate(candidate, window.start)
             .filter(|item| item.published_at.is_none_or(|at| window.contains(at)))
         else {
             dropped += 1;
@@ -655,17 +651,25 @@ async fn execute(
             continue;
         }
         titles.push(title);
-        let mut image = item.image.take();
-        if let Some(candidate_image) = image.take() {
-            image = media::mirror_image(state, candidate_image).await;
-        }
-        if topic.id == "p" && image.is_none() {
-            dropped += 1;
-            continue;
-        }
-        item.image = image;
         items.push(item);
     }
+
+    let mut images = std::iter::once(media::stored_image(&fetched.payload["cover"]))
+        .chain(items.iter_mut().map(|item| item.image.take()))
+        .collect::<Vec<_>>();
+    media::mirror_images(state, &mut images).await;
+    let mut images = images.into_iter();
+    fetched.payload["cover"] = serde_json::to_value(images.next().flatten())?;
+    for (item, image) in items.iter_mut().zip(images) {
+        item.image = image;
+    }
+    items.retain(|item| {
+        let keep = topic.id != "p" || item.image.is_some();
+        if !keep {
+            dropped += 1;
+        }
+        keep
+    });
 
     // Keep network I/O outside the write transaction. A slow image source must not hold a
     // database connection while the rest of the batch is waiting for tmpfile.

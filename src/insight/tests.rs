@@ -1,6 +1,7 @@
 use super::*;
 use articles::StoryStatus;
 use chrono::TimeZone;
+use std::time::Duration;
 
 fn analysis() -> InsightAnalysis {
     serde_json::from_value(json!({
@@ -37,6 +38,47 @@ fn image(url: &str, origin: &str) -> NewsImage {
         "source_url": "https://example.com/1", "caption": "演示现场", "caption_en": "Demo",
         "credit": "官方" }))
     .unwrap()
+}
+
+#[test]
+fn analysis_input_keeps_facts_and_dates_without_storage_metadata() {
+    let mut source = source(7, "gossip", false);
+    source.published_at = None;
+    source.image = Some(image(
+        "https://cdn.example.com/image.jpg",
+        "https://origin.example.com/image.jpg",
+    ));
+    let window = NewsWindow {
+        start: Utc::now() - ChronoDuration::days(1),
+        end: Utc::now(),
+    };
+    let task = insight_task(window, &[source.clone()], &json!({"current_items":0})).unwrap();
+    let line = task
+        .lines()
+        .find(|line| line.starts_with("最近7天新闻原文摘录"))
+        .unwrap();
+    let input: Value = serde_json::from_str(line.split_once('：').unwrap().1).unwrap();
+    assert_eq!(input[0]["index"], 7);
+    assert_eq!(input[0]["current"], false);
+    assert_eq!(input[0]["topic_id"], "gossip");
+    assert_eq!(input[0]["summary"], source.summary);
+    assert_eq!(input[0]["url"], source.url);
+    assert_eq!(input[0]["published_at"], Value::Null);
+    assert_eq!(input[0]["first_seen_at"], json!(source.first_seen_at));
+    for key in [
+        "title_en",
+        "summary_en",
+        "topic_en",
+        "image",
+        "last_seen_at",
+        "seen_count",
+    ] {
+        assert!(
+            input[0].get(key).is_none(),
+            "unexpected storage field {key}"
+        );
+    }
+    assert!(task.contains("\"current_items\":0"));
 }
 
 #[test]
@@ -286,18 +328,18 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             } else {
                 let text = body["input"][0]["content"][0]["text"].as_str().unwrap();
                 let source_line = text.lines().find(|line| line.starts_with("最近7天新闻原文摘录")).unwrap();
-                let sources: Vec<InsightSource> = serde_json::from_str(source_line.split_once('：').unwrap().1).unwrap();
-                let current = sources.iter().find(|s| s.current && s.topic_id == "x").unwrap();
-                let old = sources.iter().find(|s| !s.current && s.published_at.is_some()).unwrap();
-                let gossip = sources.iter().find(|s| s.topic_id == "gossip").unwrap();
-                let picture = sources.iter().find(|s| s.topic_id == "p").unwrap();
+                let sources: Vec<Value> = serde_json::from_str(source_line.split_once('：').unwrap().1).unwrap();
+                let current = sources.iter().find(|s| s["current"] == true && s["topic_id"] == "x").unwrap();
+                let old = sources.iter().find(|s| s["current"] == false && !s["published_at"].is_null()).unwrap();
+                let gossip = sources.iter().find(|s| s["topic_id"] == "gossip").unwrap();
+                let picture = sources.iter().find(|s| s["topic_id"] == "p").unwrap();
                 assert_eq!(body["input"][0]["content"].as_array().unwrap().iter().filter(|part| part["type"] == "input_image").count(), 1);
                 let mut draft = analysis();
-                draft.hotspots = Some(vec![story(current.index, StoryStatus::Confirmed)]);
-                draft.gossip = vec![story(gossip.index, StoryStatus::Unconfirmed)];
+                draft.hotspots = Some(vec![story(current["index"].as_u64().unwrap() as usize, StoryStatus::Confirmed)]);
+                draft.gossip = vec![story(gossip["index"].as_u64().unwrap() as usize, StoryStatus::Unconfirmed)];
                 draft.changes = "七天内的变化。".into();
-                draft.changes_source_indexes = vec![old.index];
-                draft.cover_source_index = Some(picture.index);
+                draft.changes_source_indexes = vec![old["index"].as_u64().unwrap() as usize];
+                draft.cover_source_index = Some(picture["index"].as_u64().unwrap() as usize);
                 serde_json::to_value(draft).unwrap()
             };
             (StatusCode::OK, Json(json!({"status": "completed", "id": "test-response",
@@ -311,7 +353,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     let server = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    let state = AppState::new(config).await.unwrap();
+    let mut state = AppState::new(config).await.unwrap();
     sqlx::query("TRUNCATE items, runs, ai_insights CASCADE")
         .execute(&state.pool)
         .await
@@ -543,7 +585,172 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             .any(|s| s.published_at.is_some_and(|at| window.contains(at)))
     );
     state.shutdown_workers().await;
+    check_media_renewal(&mut state).await;
+    check_media_limits(state).await;
     server.abort();
+}
+
+async fn check_media_renewal(state: &mut AppState) {
+    Arc::get_mut(&mut state.config).unwrap().tmpfile_base_url =
+        Some("https://mirror.example.com".parse().unwrap());
+    let (id, mut payload): (Uuid, Value) =
+        sqlx::query_as("SELECT id,payload FROM ai_insights WHERE status='ok'")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    let index = payload["analysis"]["cover_source_index"].as_u64().unwrap() as usize;
+    let mut old = media::stored_image(&payload["sources"][index]["image"]).unwrap();
+    old.origin_url = Some(old.url.clone());
+    old.url = "https://mirror.example.com/expired.jpg".into();
+    old.expires_at = Some(Utc::now() - ChronoDuration::hours(1));
+    let mut fresh = old.clone();
+    fresh.url = "https://mirror.example.com/renewed.jpg".into();
+    fresh.expires_at = Some(Utc::now() + ChronoDuration::days(1));
+    fresh.caption = "Different story's caption".into();
+    fresh.credit = "Different publisher".into();
+    fresh.content_hash = Some("same-photo".into());
+    payload["sources"][index]["image"] = json!(old);
+    payload["articles"]["images"][0]["url"] = json!(old.url);
+    payload["articles"]["wechat"] = json!(format!("![photo]({})", old.url));
+    sqlx::query("UPDATE ai_insights SET payload=$2 WHERE id=$1")
+        .bind(id)
+        .bind(payload)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE items SET image=$1 WHERE topic_id='p'")
+        .bind(json!(old))
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE runs SET payload=jsonb_set(payload,'{cover}',$1) WHERE topic_id='p'")
+        .bind(json!(fresh))
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    let day: NaiveDate = sqlx::query_scalar("SELECT day FROM items WHERE topic_id='p'")
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    state.digest.refresh(state, "p", day).await.unwrap();
+    let before_feed = state.digest.snapshot(state, "p", day).await.unwrap();
+    let before = Arc::new(render_latest(state).await.unwrap());
+    state
+        .insight
+        .store(state.insight.generation(), before.clone());
+
+    // The fresh run cover renews both expired copies without any network transfer.
+    tokio::time::timeout(Duration::from_secs(2), media::startup_sync(state))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(state.insight.get().is_none());
+    let after_feed = state.digest.snapshot(state, "p", day).await.unwrap();
+    assert_eq!(after_feed.revision, before_feed.revision + 1);
+    let after = render_latest(state).await.unwrap();
+    assert_ne!(before.etag, after.etag);
+    let before: Value = serde_json::from_slice(&before.body).unwrap();
+    let after: Value = serde_json::from_slice(&after.body).unwrap();
+    assert_eq!(
+        before["insight"]["generated_at"],
+        after["insight"]["generated_at"]
+    );
+    assert_eq!(after["insight"]["images"][0]["url"], fresh.url);
+    assert_eq!(after["insight"]["images"][0]["caption"], old.caption);
+    assert_eq!(after["insight"]["images"][0]["credit"], old.credit);
+    let stored: Value = sqlx::query_scalar("SELECT payload FROM ai_insights WHERE id=$1")
+        .bind(id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert!(
+        stored["articles"]["wechat"]
+            .as_str()
+            .unwrap()
+            .contains(&fresh.url)
+    );
+    media::startup_sync(state).await.unwrap();
+    assert_eq!(
+        state
+            .digest
+            .snapshot(state, "p", day)
+            .await
+            .unwrap()
+            .revision,
+        after_feed.revision
+    );
+}
+
+async fn check_media_limits(mut state: AppState) {
+    // A local socket that never completes TLS represents an unresponsive image host.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    state.image_http = reqwest::Client::builder()
+        .no_proxy()
+        .resolve("slow.example.com", addr)
+        .build()
+        .unwrap();
+    Arc::get_mut(&mut state.config).unwrap().image_timeout = Duration::from_millis(100);
+    let slow = |id| {
+        let url = format!("https://slow.example.com:{}/image/{id}", addr.port());
+        Some(image(&url, &url))
+    };
+    let mut duplicates = vec![slow(0), slow(0), slow(0)];
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let (_, accepted) = tokio::join!(
+            media::mirror_images(&state, &mut duplicates),
+            listener.accept()
+        );
+        drop(accepted.unwrap());
+    })
+    .await
+    .unwrap();
+    assert!(duplicates.iter().all(Option::is_none));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), listener.accept())
+            .await
+            .is_err()
+    );
+    assert_eq!(state.image_slots.available_permits(), 3);
+
+    Arc::get_mut(&mut state.config).unwrap().image_timeout = Duration::from_secs(5);
+    let mut tasks = tokio::task::JoinSet::new();
+    for batch in 0..2 {
+        let state = state.clone();
+        let mut images = (0..4)
+            .map(|index| slow(1 + batch * 4 + index))
+            .collect::<Vec<_>>();
+        tasks.spawn(async move {
+            media::mirror_images(&state, &mut images).await;
+            images
+        });
+    }
+    let mut sockets = Vec::new();
+    for _ in 0..3 {
+        sockets.push(
+            tokio::time::timeout(Duration::from_secs(1), listener.accept())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    assert_eq!(state.image_slots.available_permits(), 0);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), listener.accept())
+            .await
+            .is_err()
+    );
+    state.shutdown.cancel();
+    while let Some(result) = tasks.join_next().await {
+        assert!(result.unwrap().iter().all(Option::is_none));
+    }
+    drop(
+        tokio::time::timeout(Duration::from_secs(1), state.image_slots.acquire_many(3))
+            .await
+            .unwrap()
+            .unwrap(),
+    );
+    assert_eq!(state.image_slots.available_permits(), 3);
 }
 
 async fn wait_for_generation(state: &AppState) {

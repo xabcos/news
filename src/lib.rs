@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod ai;
 pub mod auth;
 pub mod config;
 pub mod digest;

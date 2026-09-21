@@ -158,6 +158,7 @@ pub struct AppState {
     in_flight: Arc<Mutex<HashSet<String>>>,
     /// One process-wide budget shared by scheduled and manual runs.
     pub(crate) run_slots: Arc<Semaphore>,
+    pub(crate) image_slots: Arc<Semaphore>,
     /// Cancels scheduler and detached workers before process shutdown.
     pub(crate) shutdown: CancellationToken,
     workers: Arc<WorkerGroup>,
@@ -215,6 +216,7 @@ impl AppState {
             config: Arc::new(config),
             in_flight: Arc::default(),
             run_slots: Arc::new(Semaphore::new(max_concurrent_runs)),
+            image_slots: Arc::new(Semaphore::new(3)),
             shutdown: CancellationToken::new(),
             workers: Arc::new(WorkerGroup::default()),
             metrics: Arc::new(Metrics::default()),

@@ -82,6 +82,7 @@ const state = {
   // One digest per loaded day; navigation/reload starts a fresh, bounded timeline.
   timeline: [],
   insight: null,
+  insightEtag: null,
   personal: false,
   historyLoading: false,
   historyError: false,
@@ -137,7 +138,7 @@ async function init() {
   await Promise.all([loadCatalog(), load()]);
 }
 
-async function fetchJson(path, { signal } = {}) {
+async function fetchJson(path, { signal, withEtag = false } = {}) {
   const privatePath = path === "/api/me" || path.startsWith("/api/me/");
   const controller = new AbortController();
   let timedOut = false;
@@ -162,7 +163,8 @@ async function fetchJson(path, { signal } = {}) {
       error.status = response.status;
       throw error;
     }
-    return response.json();
+    const data = await response.json();
+    return withEtag ? { data, etag: response.headers.get("ETag") } : data;
   } catch (error) {
     if (timedOut) {
       const timeout = new Error("Request timed out");
@@ -402,8 +404,8 @@ async function loadInsight(silent = false) {
   }
   try {
     const needCatalog = state.personal && !state.topics.length;
-    const [payload, catalog] = await Promise.all([
-      fetchJson("/insight", { signal }),
+    const [{ data: payload, etag }, catalog] = await Promise.all([
+      fetchJson("/insight", { signal, withEtag: true }),
       needCatalog ? personalCatalog(signal) : Promise.resolve(null),
     ]);
     if (epoch !== state.epoch) return;
@@ -415,15 +417,14 @@ async function loadInsight(silent = false) {
       state.topics = catalog.topics;
       renderTabs();
     }
-    if (silent
-      && payload.insight?.generated_at
-      && payload.insight.generated_at === state.insight?.generated_at) {
+    if (silent && etag && etag === state.insightEtag) {
       state.historyLoading = false;
       state.historyError = false;
       state.historyDone = true;
       setStatus("");
       return;
     }
+    state.insightEtag = etag;
     state.insight = payload.insight;
     state.historyLoading = false;
     state.historyError = false;
@@ -774,16 +775,19 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
     : t().insightLabel;
   const title = document.createElement("h2");
   title.textContent = pick(insight, "headline");
-  heading.append(span(briefingDate, "insight-date muted small"), title);
+  if (!(insight.hotspots ?? insight.sources ?? []).length) {
+    heading.append(span(briefingDate, "insight-date muted small"));
+  }
+  heading.append(title);
   section.append(heading);
   // Only explicitly selected, current stories lead a new daily edition.
   const sources = new Map((insight.sources || []).map((source) => [source.index, source]));
   if (Array.isArray(insight.hotspots)) {
-    section.append(...renderInsightStories(t().hotspots, insight.hotspots, sources));
-    section.append(...renderInsightStories(t().gossip, insight.gossip || [], sources, true));
+    section.append(...renderInsightStories(t().hotspots, insight.hotspots, sources, { dateText: briefingDate }));
+    section.append(...renderInsightStories(t().gossip, insight.gossip || [], sources, { gossip: true }));
   } else {
     if (pick(insight, "overview")) section.append(insightParagraph("", pick(insight, "overview"), "insight-lead"));
-    section.append(...renderInsightHotspots(t().hotspots, insight.sources || [], ""));
+    section.append(...renderInsightHotspots(t().hotspots, insight.sources || [], briefingDate));
   }
   if (insight.images?.length || insight.cover?.url) {
     const pictures = insightSection(t().pictures);
@@ -841,7 +845,7 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
   }
 }
 
-function insightSection(label) {
+function insightSection(label, dateText = "") {
   const section = document.createElement("section");
   section.className = "group insight-group";
   const heading = document.createElement("div");
@@ -849,13 +853,14 @@ function insightSection(label) {
   const title = document.createElement("h2");
   title.textContent = label;
   heading.append(title);
+  if (dateText) heading.append(span(dateText, "insight-date insight-hotspots-date muted small"));
   section.append(heading);
   return section;
 }
 
-function renderInsightStories(label, stories, sources, gossip = false) {
+function renderInsightStories(label, stories, sources, { gossip = false, dateText = "" } = {}) {
   if (!stories.length) return [];
-  const section = insightSection(label);
+  const section = insightSection(label, dateText);
   section.classList.add("insight-hotspots");
   const statuses = state.lang === "en"
     ? { confirmed: "Confirmed", reported: "Reported", unconfirmed: "Unconfirmed", response: "Response", feedback: "User feedback", denied: "Denied" }
@@ -882,17 +887,9 @@ function renderInsightStories(label, stories, sources, gossip = false) {
 function renderInsightHotspots(label, sources, dateText) {
   const items = sources.slice(0, 8);
   if (!items.length) return [];
-  const section = document.createElement("section");
-  section.className = "group insight-group insight-hotspots";
-  const heading = document.createElement("div");
-  heading.className = "group-title";
-  heading.append(document.createElement("h2"));
-  heading.firstElementChild.textContent = label;
-  const date = document.createElement("span");
-  date.className = "insight-date insight-hotspots-date muted small";
-  date.textContent = dateText;
-  heading.append(date);
-  section.append(heading, ...items.map((source) => {
+  const section = insightSection(label, dateText);
+  section.classList.add("insight-hotspots");
+  section.append(...items.map((source) => {
     const article = document.createElement("article");
     article.className = "item insight-hotspot";
     const title = sourceLink(source.url, pick(source, "title"), pick(source, "summary"));

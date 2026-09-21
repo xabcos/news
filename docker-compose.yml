@@ -29,7 +29,7 @@ services:
       TMPFILE_BASE_URL: ${TMPFILE_BASE_URL}
       TMPFILE_API_KEY: ${TMPFILE_API_KEY}
       NEWS_IMAGE_MAX_BYTES: ${NEWS_IMAGE_MAX_BYTES:-8388608}
-      NEWS_IMAGE_TIMEOUT_SECS: ${NEWS_IMAGE_TIMEOUT_SECS:-300}
+      NEWS_IMAGE_TIMEOUT_SECS: ${NEWS_IMAGE_TIMEOUT_SECS:-30}
       # Leave these empty to disable checkout in local/staging deployments.
       YPAY_BASE_URL: ${YPAY_BASE_URL:-}
       YPAY_TENANT_CODE: ${YPAY_TENANT_CODE:-news}

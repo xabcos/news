@@ -9,10 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::FromRow;
-use std::time::Duration;
 use url::{Host, Url};
 
-const RETRY_DELAYS: [u64; 2] = [10, 30];
 const MAX_TITLE: usize = 200;
 const MAX_SUMMARY: usize = 600;
 const MAX_SOURCE: usize = 80;
@@ -206,48 +204,13 @@ pub async fn fetch(
     known: &[Known],
     window: NewsWindow,
 ) -> Result<Fetched> {
-    let url = format!(
-        "{}/v1/responses",
-        state.config.ai_base_url.as_str().trim_end_matches('/')
-    );
     let body = request_body(
         topic,
         Utc::now().with_timezone(&state.config.timezone),
         known,
         window,
     );
-    let mut delays = RETRY_DELAYS.iter();
-    let reply: Value = loop {
-        let failure = match state
-            .http
-            .post(&url)
-            .bearer_auth(&state.config.ai_api_key)
-            .json(&body)
-            .send()
-            .await
-        {
-            Ok(response) if response.status().is_success() => break response.json().await?,
-            Ok(response)
-                if response.status().as_u16() == 429 || response.status().is_server_error() =>
-            {
-                response.status().to_string()
-            }
-            Ok(response) => {
-                let status = response.status();
-                let text = response.text().await.unwrap_or_default();
-                return Err(AppError::Internal(
-                    format!("{status}: {}", clip(&text, MAX_ERROR)).into(),
-                ));
-            }
-            Err(error) => error.to_string(),
-        };
-        let Some(seconds) = delays.next() else {
-            return Err(AppError::Internal(failure.into()));
-        };
-        tracing::debug!(%failure, seconds, "retrying AI request");
-        tokio::time::sleep(Duration::from_secs(*seconds)).await;
-    };
-    parse_reply(reply)
+    parse_reply(crate::ai::request(state, body).await?)
 }
 
 fn request_body(topic: &Topic, now: DateTime<Tz>, known: &[Known], window: NewsWindow) -> Value {

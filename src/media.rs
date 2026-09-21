@@ -13,12 +13,13 @@ use reqwest::{
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::time::{Duration, Instant};
+use std::{collections::HashMap, time::Duration};
+use tokio::{task::JoinSet, time::Instant};
 use url::Url;
 use uuid::Uuid;
 
 const RENEW_BEFORE_SECS: i64 = 6 * 3600;
-const MAX_SYNC_SECS: u64 = 300;
+const IMAGE_BATCH_TIMEOUT: Duration = Duration::from_secs(90);
 // Tiny square thumbnails are commonly used by publishers for "image unavailable"
 // placeholders. They are not useful as visual-news cards even when they return 200.
 const MIN_IMAGE_BYTES: usize = 4096;
@@ -39,29 +40,87 @@ struct StoredImageRow {
 }
 
 #[derive(Debug, sqlx::FromRow)]
-struct StoredCoverRow {
+struct StoredPayloadRow {
     id: Uuid,
     payload: Option<Value>,
 }
 
-#[derive(Debug, sqlx::FromRow)]
-struct StoredInsightRow {
-    id: Uuid,
-    payload: Option<Value>,
+/// One transfer per origin, preserving each story's caption and attribution. Unfinished
+/// images become None at the batch deadline; dropping JoinSet cancels their requests.
+pub(crate) async fn mirror_images(state: &AppState, images: &mut [Option<NewsImage>]) {
+    let deadline = Instant::now() + IMAGE_BATCH_TIMEOUT;
+    let mut origins = HashMap::new();
+    let mut groups: Vec<Vec<(usize, NewsImage)>> = Vec::new();
+    for (index, slot) in images.iter_mut().enumerate() {
+        let Some(image) = slot.take().and_then(NewsImage::validated) else {
+            continue;
+        };
+        if state.config.tmpfile_base_url.is_none() {
+            *slot = Some(image);
+            continue;
+        }
+        let origin = image.origin_url.as_ref().unwrap_or(&image.url).clone();
+        let group = *origins.entry(origin).or_insert_with(|| {
+            groups.push(Vec::new());
+            groups.len() - 1
+        });
+        groups[group].push((index, image));
+    }
+    let mut jobs = JoinSet::new();
+    for group in groups {
+        let state = state.clone();
+        jobs.spawn(async move {
+            let image = group
+                .iter()
+                .find(|(_, image)| is_fresh_tmpfile_url(&state, image))
+                .unwrap_or(&group[0])
+                .1
+                .clone();
+            (group, mirror_image(&state, image).await)
+        });
+    }
+    loop {
+        let result = tokio::select! {
+            _ = state.shutdown.cancelled() => break,
+            result = tokio::time::timeout_at(deadline, jobs.join_next()) => result,
+        };
+        match result {
+            Ok(Some(Ok((group, Some(mirrored))))) => {
+                for (index, mut image) in group {
+                    image.url.clone_from(&mirrored.url);
+                    image.origin_url.clone_from(&mirrored.origin_url);
+                    image.expires_at = mirrored.expires_at;
+                    image.content_hash.clone_from(&mirrored.content_hash);
+                    images[index] = Some(image);
+                }
+            }
+            Ok(Some(Ok((_, None)))) => {}
+            Ok(Some(Err(error))) => tracing::warn!(%error, "image task failed"),
+            Ok(None) => break,
+            Err(_) => {
+                tracing::debug!("image batch reached its time budget");
+                break;
+            }
+        }
+    }
 }
 
-/// Mirrors one image when tmpfile is configured. A failed mirror returns `None` so a
-/// visual card never falls back to a source URL that may be blocked by the browser.
-/// Local read-only deployments without tmpfile keep the original URL for development.
-pub(crate) async fn mirror_image(state: &AppState, mut image: NewsImage) -> Option<NewsImage> {
-    image = image.validated()?;
-    let Some(base_url) = state.config.tmpfile_base_url.as_ref() else {
-        return Some(image);
-    };
+async fn mirror_image(state: &AppState, image: NewsImage) -> Option<NewsImage> {
     if is_fresh_tmpfile_url(state, &image) {
         return Some(image);
     }
+    let _permit = state.image_slots.acquire().await.ok()?;
+    match tokio::time::timeout(state.config.image_timeout, transfer_image(state, image)).await {
+        Ok(image) => image,
+        Err(_) => {
+            tracing::debug!("image transfer reached its time budget");
+            None
+        }
+    }
+}
 
+async fn transfer_image(state: &AppState, mut image: NewsImage) -> Option<NewsImage> {
+    let base_url = state.config.tmpfile_base_url.as_ref()?;
     let origin = image
         .origin_url
         .clone()
@@ -74,7 +133,6 @@ pub(crate) async fn mirror_image(state: &AppState, mut image: NewsImage) -> Opti
             header::ACCEPT,
             "image/avif,image/webp,image/jpeg,image/png,image/gif",
         )
-        .timeout(state.config.image_timeout)
         .send()
         .await
     {
@@ -149,8 +207,7 @@ pub(crate) async fn mirror_image(state: &AppState, mut image: NewsImage) -> Opti
     let mut request = state
         .image_http
         .post(upload_url)
-        .multipart(Form::new().part("file", part))
-        .timeout(state.config.image_timeout);
+        .multipart(Form::new().part("file", part));
     if let Some(key) = state.config.tmpfile_api_key.as_deref() {
         request = request.bearer_auth(key);
     }
@@ -283,26 +340,6 @@ pub(crate) fn is_public_https_url(url: &Url) -> bool {
         && url.password().is_none()
 }
 
-/// Mirrors the optional cover embedded in a completed fetch payload. The payload is
-/// updated in place; a failed mirror clears the cover when tmpfile is configured.
-pub(crate) async fn mirror_payload_cover(state: &AppState, payload: &mut Value) {
-    let Some(value) = payload
-        .get("cover")
-        .cloned()
-        .filter(|value| !value.is_null())
-    else {
-        return;
-    };
-    let Ok(image) = serde_json::from_value::<NewsImage>(value) else {
-        payload["cover"] = Value::Null;
-        return;
-    };
-    payload["cover"] = mirror_image(state, image)
-        .await
-        .and_then(|image| serde_json::to_value(image).ok())
-        .unwrap_or(Value::Null);
-}
-
 fn is_fresh_tmpfile_url(state: &AppState, image: &NewsImage) -> bool {
     let Some(base) = state.config.tmpfile_base_url.as_ref() else {
         return false;
@@ -359,9 +396,8 @@ fn extension_for(content_type: &str) -> &'static str {
     }
 }
 
-/// Mirrors current visual-feed assets after a restart. The operation is deliberately
-/// bounded to one week because tmpfile URLs are temporary and old archive cards can
-/// gracefully fall back to their text when their source is no longer available.
+/// Renews one week's media in one batch so stored copies of the same photograph
+/// reuse a transfer. Published daily images enter the batch before archive cards.
 pub async fn startup_sync(state: &AppState) -> Result<()> {
     if state.config.tmpfile_base_url.is_none() {
         return Ok(());
@@ -373,24 +409,70 @@ pub async fn startup_sync(state: &AppState) -> Result<()> {
     .bind(keep_from)
     .fetch_all(&state.pool)
     .await?;
-    let deadline = Instant::now() + Duration::from_secs(MAX_SYNC_SECS);
+    let covers = sqlx::query_as::<_, StoredPayloadRow>(
+        "SELECT runs.id, runs.payload FROM runs JOIN topics ON topics.id = runs.topic_id WHERE topics.owner_user_id IS NULL AND jsonb_typeof(runs.payload->'cover') = 'object' AND runs.started_at >= NOW() - INTERVAL '7 days'",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    let insights = sqlx::query_as::<_, StoredPayloadRow>(
+        "SELECT id, payload FROM ai_insights WHERE status = 'ok' AND payload IS NOT NULL AND started_at >= NOW() - INTERVAL '7 days' ORDER BY started_at DESC",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    let positions = insights
+        .iter()
+        .map(|row| {
+            row.payload
+                .as_ref()
+                .map_or_else(Vec::new, selected_image_positions)
+        })
+        .collect::<Vec<_>>();
+    let mut images = insights
+        .iter()
+        .zip(&positions)
+        .flat_map(|(row, positions)| {
+            positions.iter().map(|&position| {
+                stored_image(&row.payload.as_ref().unwrap()["sources"][position]["image"])
+            })
+        })
+        .chain(
+            rows.iter()
+                .map(|row| row.image.as_ref().and_then(stored_image)),
+        )
+        .chain(covers.iter().map(|row| {
+            row.payload
+                .as_ref()
+                .and_then(|payload| stored_image(&payload["cover"]))
+        }))
+        .collect::<Vec<_>>();
+    mirror_images(state, &mut images).await;
+    let mut images = images.into_iter();
     let mut changed_topics = std::collections::HashSet::new();
-    for row in rows {
-        if Instant::now() >= deadline {
-            tracing::warn!("image sync reached its time budget; remaining assets will retry later");
-            break;
+    let mut insight_changed = false;
+    // Network work is finished. Persist image URLs and feed versions atomically.
+    let mut tx = state.pool.begin().await?;
+    for (row, positions) in insights.into_iter().zip(positions) {
+        let Some(mut payload) = row.payload else {
+            continue;
+        };
+        let mut changed = false;
+        for position in positions {
+            if let Some(image) = images.next().flatten() {
+                changed |= update_insight_image(&mut payload, position, image)?;
+            }
         }
-        let Some(value) = row.image.clone() else {
+        if changed {
+            sqlx::query("UPDATE ai_insights SET payload = $2 WHERE id = $1")
+                .bind(row.id)
+                .bind(payload)
+                .execute(&mut *tx)
+                .await?;
+            insight_changed = true;
+        }
+    }
+    for row in rows {
+        let Some(image) = images.next().flatten() else {
             continue;
-        };
-        let Ok(image) = serde_json::from_value::<NewsImage>(value) else {
-            continue;
-        };
-        let image = match tokio::time::timeout_at(deadline.into(), mirror_image(state, image)).await
-        {
-            Ok(Some(image)) => image,
-            Ok(None) => continue,
-            Err(_) => break,
         };
         let value = serde_json::to_value(image)?;
         if row.image.as_ref() == Some(&value) {
@@ -399,39 +481,14 @@ pub async fn startup_sync(state: &AppState) -> Result<()> {
         sqlx::query("UPDATE items SET image = $2 WHERE id = $1")
             .bind(row.id)
             .bind(value)
-            .execute(&state.pool)
+            .execute(&mut *tx)
             .await?;
         changed_topics.insert((row.topic_id, row.day));
     }
-
-    let covers = sqlx::query_as::<_, StoredCoverRow>(
-        "SELECT runs.id, runs.payload FROM runs JOIN topics ON topics.id = runs.topic_id WHERE topics.owner_user_id IS NULL AND jsonb_typeof(runs.payload->'cover') = 'object' AND runs.started_at >= NOW() - INTERVAL '7 days'",
-    )
-    .fetch_all(&state.pool)
-    .await?;
-    let mut insight_changed = false;
     for row in covers {
-        if Instant::now() >= deadline {
-            break;
-        }
-        let Some(mut payload) = row.payload else {
+        let image = images.next().flatten();
+        let (Some(mut payload), Some(image)) = (row.payload, image) else {
             continue;
-        };
-        let Some(value) = payload
-            .get("cover")
-            .cloned()
-            .filter(|value| !value.is_null())
-        else {
-            continue;
-        };
-        let Ok(image) = serde_json::from_value::<NewsImage>(value) else {
-            continue;
-        };
-        let image = match tokio::time::timeout_at(deadline.into(), mirror_image(state, image)).await
-        {
-            Ok(Some(image)) => image,
-            Ok(None) => continue,
-            Err(_) => break,
         };
         let value = serde_json::to_value(image)?;
         if payload.get("cover") == Some(&value) {
@@ -441,173 +498,98 @@ pub async fn startup_sync(state: &AppState) -> Result<()> {
         sqlx::query("UPDATE runs SET payload = $2 WHERE id = $1")
             .bind(row.id)
             .bind(payload)
-            .execute(&state.pool)
+            .execute(&mut *tx)
             .await?;
-        insight_changed = true;
     }
-    // Older published briefings may have selected a source image before mirroring was
-    // added. Keep the selected cover usable after a restart as well.
-    let insights = sqlx::query_as::<_, StoredInsightRow>(
-        "SELECT id, payload FROM ai_insights WHERE status = 'ok' AND payload IS NOT NULL AND started_at >= NOW() - INTERVAL '7 days'",
-    )
-    .fetch_all(&state.pool)
-    .await?;
-    for row in insights {
-        if Instant::now() >= deadline {
-            break;
-        }
-        let Some(mut payload) = row.payload else {
-            continue;
-        };
-        let mut indexes = Vec::new();
-        if let Some(index) = payload
-            .get("analysis")
-            .and_then(|analysis| analysis.get("cover_source_index"))
-            .and_then(Value::as_u64)
-            .and_then(|index| usize::try_from(index).ok())
-        {
-            indexes.push(index);
-        }
-        if let Some(images) = payload
-            .get("articles")
-            .and_then(|articles| articles.get("images"))
-            .and_then(Value::as_array)
-        {
-            indexes.extend(
-                images
-                    .iter()
-                    .filter_map(|image| image.get("index").and_then(Value::as_u64))
-                    .filter_map(|index| usize::try_from(index).ok()),
-            );
-        }
-        if payload.get("sources").and_then(Value::as_array).is_none() {
-            continue;
-        }
-        if indexes.is_empty() && payload["analysis"]["hotspots"].is_null() {
-            indexes.extend(
-                payload
-                    .get("sources")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter(|source| source.get("image").is_some_and(|image| !image.is_null()))
-                    .filter_map(|source| source.get("index").and_then(Value::as_u64))
-                    .filter_map(|index| usize::try_from(index).ok())
-                    .take(3),
-            );
-        }
-        indexes.sort_unstable();
-        indexes.dedup();
-        let mut payload_changed = false;
-        for index in indexes {
-            let Some(value) = payload
-                .get("sources")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .find(|source| source.get("index").and_then(Value::as_u64) == Some(index as u64))
-                .and_then(|source| source.get("image"))
-                .cloned()
-                .filter(|value| !value.is_null())
-            else {
-                continue;
-            };
-            let old_url = value.get("url").and_then(Value::as_str).map(str::to_owned);
-            let Ok(image) = serde_json::from_value::<NewsImage>(value) else {
-                continue;
-            };
-            let image =
-                match tokio::time::timeout_at(deadline.into(), mirror_image(state, image)).await {
-                    Ok(Some(image)) => image,
-                    Ok(None) => continue,
-                    Err(_) => break,
-                };
-            let value = serde_json::to_value(image)?;
-            let unchanged = payload
-                .get("sources")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .find(|source| source.get("index").and_then(Value::as_u64) == Some(index as u64))
-                .and_then(|source| source.get("image"))
-                == Some(&value);
-            if unchanged {
-                continue;
-            }
-            if let Some(sources) = payload.get_mut("sources").and_then(Value::as_array_mut)
-                && let Some(source) = sources.iter_mut().find(|source| {
-                    source.get("index").and_then(Value::as_u64) == Some(index as u64)
-                })
-            {
-                source["image"] = value.clone();
-            }
-            if let Some(images) = payload
-                .get_mut("articles")
-                .and_then(|articles| articles.get_mut("images"))
-                .and_then(Value::as_array_mut)
-            {
-                for article_image in images {
-                    if article_image.get("index").and_then(Value::as_u64) == Some(index as u64) {
-                        if let Some(url) = value.get("url") {
-                            article_image["url"] = url.clone();
-                        }
-                        if let Some(source_url) = value.get("source_url") {
-                            article_image["source_url"] = source_url.clone();
-                        }
-                        if let Some(caption) = value.get("caption") {
-                            article_image["caption"] = caption.clone();
-                        }
-                        if let Some(caption_en) = value.get("caption_en") {
-                            article_image["caption_en"] = caption_en.clone();
-                        }
-                        if let Some(credit) = value.get("credit") {
-                            article_image["credit"] = credit.clone();
-                        }
-                    }
-                }
-            }
-            if let (Some(old_url), Some(new_url)) =
-                (old_url.as_deref(), value.get("url").and_then(Value::as_str))
-            {
-                for key in ["wechat", "x"] {
-                    if let Some(article) = payload
-                        .get_mut("articles")
-                        .and_then(|articles| articles.get_mut(key))
-                        .and_then(|value| value.as_str())
-                    {
-                        let updated = article.replace(old_url, new_url);
-                        if let Some(slot) = payload
-                            .get_mut("articles")
-                            .and_then(|articles| articles.get_mut(key))
-                        {
-                            *slot = Value::String(updated);
-                        }
-                    }
-                }
-            }
-            payload_changed = true;
-        }
-        if payload_changed {
-            sqlx::query("UPDATE ai_insights SET payload = $2 WHERE id = $1")
-                .bind(row.id)
-                .bind(payload)
-                .execute(&state.pool)
-                .await?;
-            insight_changed = true;
-        }
+    if !changed_topics.is_empty() {
+        let topics = changed_topics
+            .iter()
+            .map(|(topic, _)| topic.as_str())
+            .collect::<Vec<_>>();
+        sqlx::query("UPDATE topics SET feed_revision = feed_revision + 1 WHERE id = ANY($1)")
+            .bind(topics)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    if insight_changed {
+        state.insight.invalidate();
     }
     for (topic, day) in changed_topics {
         state.digest.refresh(state, &topic, day).await?;
     }
-    if insight_changed {
-        state.insight.invalidate();
-    }
     Ok(())
+}
+
+pub(crate) fn stored_image(value: &Value) -> Option<NewsImage> {
+    serde_json::from_value(value.clone()).ok()
+}
+
+fn selected_image_positions(payload: &Value) -> Vec<usize> {
+    let Some(sources) = payload["sources"].as_array() else {
+        return Vec::new();
+    };
+    let indexes = payload["analysis"]["cover_source_index"]
+        .as_u64()
+        .into_iter()
+        .chain(
+            payload["articles"]["images"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|image| image["index"].as_u64()),
+        )
+        .collect::<std::collections::HashSet<_>>();
+    let legacy = indexes.is_empty() && payload["analysis"]["hotspots"].is_null();
+    sources
+        .iter()
+        .enumerate()
+        .filter(|(_, source)| {
+            !source["image"].is_null()
+                && (legacy
+                    || source["index"]
+                        .as_u64()
+                        .is_some_and(|index| indexes.contains(&index)))
+        })
+        .map(|(position, _)| position)
+        .take(if legacy { 3 } else { usize::MAX })
+        .collect()
+}
+
+fn update_insight_image(payload: &mut Value, position: usize, image: NewsImage) -> Result<bool> {
+    let value = serde_json::to_value(image)?;
+    let source = &mut payload["sources"][position];
+    if source["image"] == value {
+        return Ok(false);
+    }
+    let index = source["index"].clone();
+    let old_url = source["image"]["url"].as_str().map(str::to_owned);
+    source["image"] = value.clone();
+    if let Some(images) = payload
+        .get_mut("articles")
+        .and_then(|articles| articles.get_mut("images"))
+        .and_then(Value::as_array_mut)
+    {
+        for image in images.iter_mut().filter(|image| image["index"] == index) {
+            for field in ["url", "source_url", "caption", "caption_en", "credit"] {
+                image[field] = value[field].clone();
+            }
+        }
+    }
+    if let (Some(old_url), Some(new_url)) = (old_url, value["url"].as_str()) {
+        for key in ["wechat", "x"] {
+            if let Some(article) = payload["articles"][key].as_str() {
+                payload["articles"][key] = Value::String(article.replace(&old_url, new_url));
+            }
+        }
+    }
+    Ok(true)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{image_dimensions, image_is_usable, same_http_to_https_authority};
+    use super::*;
+    use serde_json::json;
     use url::Url;
 
     #[test]
@@ -644,5 +626,24 @@ mod tests {
         png[23] = 128;
         assert_eq!(image_dimensions(&png), Some((640, 640)));
         assert!(image_is_usable(&png));
+    }
+
+    #[test]
+    fn renews_selected_images_without_inventing_legacy_article_fields() {
+        let image = json!({"url":"https://cdn.example.com/old.jpg",
+            "source_url":"https://example.com/story", "caption":"图说",
+            "caption_en":"Caption", "credit":"摄影师"});
+        let mut payload = json!({"analysis": {},
+            "sources":[{"index":7,"image":image}]});
+        assert_eq!(selected_image_positions(&payload), vec![0]);
+        let mut renewed = stored_image(&payload["sources"][0]["image"]).unwrap();
+        renewed.url = "https://cdn.example.com/new.jpg".into();
+        assert!(update_insight_image(&mut payload, 0, renewed.clone()).unwrap());
+        assert!(payload.get("articles").is_none());
+        assert!(!update_insight_image(&mut payload, 0, renewed).unwrap());
+        payload["analysis"]["hotspots"] = json!([]);
+        assert!(selected_image_positions(&payload).is_empty());
+        payload["analysis"]["cover_source_index"] = json!(7);
+        assert_eq!(selected_image_positions(&payload), vec![0]);
     }
 }

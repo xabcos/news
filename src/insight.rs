@@ -22,7 +22,6 @@ use std::{
         Arc, PoisonError, RwLock,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
 };
 use uuid::Uuid;
 
@@ -32,7 +31,6 @@ use articles::Story;
 const IN_FLIGHT_KEY: &str = "__ai_insight__";
 const SOURCE_LIMIT: i64 = 240;
 const IMAGE_CANDIDATES: usize = 12;
-const RETRY_DELAYS: [u64; 2] = [10, 30];
 const MAX_ERROR: usize = 300;
 const FAILED_RETRY_MINUTES: i64 = 10;
 
@@ -755,10 +753,13 @@ async fn execute(
         .filter(|index| unique_image(sources[*index].image.as_ref().unwrap(), &mut seen_images))
         .take(IMAGE_CANDIDATES)
         .collect::<Vec<_>>();
-    for &index in &candidates {
-        if let Some(image) = sources[index].image.take() {
-            sources[index].image = media::mirror_image(state, image).await;
-        }
+    let mut images = candidates
+        .iter()
+        .map(|&index| sources[index].image.take())
+        .collect::<Vec<_>>();
+    media::mirror_images(state, &mut images).await;
+    for (&index, image) in candidates.iter().zip(images) {
+        sources[index].image = image;
     }
     candidates.retain(|index| sources[*index].image.is_some());
     let task = insight_task(window, &sources, &stats)?;
@@ -768,8 +769,8 @@ async fn execute(
         let image = source.image.as_ref().expect("mirrored image");
         let used = image.identities().any(|key| recent_covers.contains(key));
         content.push(json!({ "type": "input_text", "text": format!(
-            "图片候选 source_index={index}；图片新闻专栏={}；本期={}；近7日封面用过={}；图说={}；署名={}",
-            source.topic_id == "p", source.current, used, image.caption, image.credit) }));
+            "图片候选 source_index={index}；图片新闻专栏={}；本期={}；近7日封面用过={}；图说={}；英文图说={}；署名={}",
+            source.topic_id == "p", source.current, used, image.caption, image.caption_en, image.credit) }));
         content.push(json!({ "type": "input_image", "image_url": image.url, "detail": "low" }));
     }
     let tools = if state.config.ai_insight_model.starts_with("grok") {
@@ -789,7 +790,7 @@ async fn execute(
             "type": "json_schema", "name": "news_insight", "strict": true, "schema": schema(),
         } },
     });
-    let reply = request(state, body).await?;
+    let reply = crate::ai::request(state, body).await?;
     let citations = research_citations(&reply);
     let (mut analysis, usage, response_id) = parse_reply(reply)?;
     validate_selection(&mut analysis, &sources, &candidates)?;
@@ -1003,52 +1004,27 @@ fn validate_selection(
     Ok(())
 }
 
-async fn request(state: &AppState, body: Value) -> Result<Value> {
-    let url = format!(
-        "{}/v1/responses",
-        state.config.ai_base_url.as_str().trim_end_matches('/')
-    );
-    let mut delays = RETRY_DELAYS.iter();
-    loop {
-        let result = state
-            .http
-            .post(&url)
-            .bearer_auth(&state.config.ai_api_key)
-            .json(&body)
-            .send()
-            .await;
-        let failure = match result {
-            Ok(response) if response.status().is_success() => return Ok(response.json().await?),
-            Ok(response)
-                if response.status().as_u16() == 429 || response.status().is_server_error() =>
-            {
-                response.status().to_string()
-            }
-            Ok(response) => {
-                let status = response.status();
-                let text = response.text().await.unwrap_or_default();
-                return Err(AppError::Internal(
-                    format!("{status}: {}", clip(&text, MAX_ERROR)).into(),
-                ));
-            }
-            Err(error) => error.to_string(),
-        };
-        let Some(seconds) = delays.next() else {
-            return Err(AppError::Internal(failure.into()));
-        };
-        tracing::debug!(%failure, seconds, "retrying AI insight request");
-        tokio::time::sleep(Duration::from_secs(*seconds)).await;
-    }
-}
-
 fn insight_task(window: NewsWindow, sources: &[InsightSource], stats: &Value) -> Result<String> {
+    // Storage keeps bilingual drafts and mirror metadata; analysis needs the facts and
+    // stable citation indexes. Candidate image descriptions follow separately.
+    let sources = sources
+        .iter()
+        .map(|source| {
+            json!({
+                "index": source.index, "current": source.current, "topic_id": source.topic_id,
+                "title": source.title, "summary": source.summary, "url": source.url,
+                "source": source.source, "tags": source.tags, "importance": source.importance,
+                "published_at": source.published_at, "first_seen_at": source.first_seen_at,
+            })
+        })
+        .collect::<Vec<_>>();
     Ok(format!(
         "本期新闻区间：[{}, {})；趋势区间：[{}, {})。\n最近7天新闻原文摘录（按日、主题均衡取样；current=true 且 published_at 已知才属于今日新闻）：{}\n数据库完整7天去重统计（不受摘录条数限制）：{}\n正文与标题只引用相应窗口内材料；首见时间不等于发布时间。历史原文用于趋势，不能当作今日热点。统计表示本站采样，不代表全网热度或市场份额；observed_days 仅表示有新闻收录的天数；不足7天时说明实际样本天数，不把零条收录解释为当天没有事件，零基数不写增幅。随后附的真实图片是可选配图池，仅可选择实际看过的图片索引。",
         window.start,
         window.end,
         window.end - ChronoDuration::days(7),
         window.end,
-        serde_json::to_string(sources)?,
+        serde_json::to_string(&sources)?,
         stats,
     ))
 }

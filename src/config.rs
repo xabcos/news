@@ -184,7 +184,7 @@ impl Config {
                 "NEWS_IMAGE_MAX_BYTES 必须在 65536 到 67108864 之间".into(),
             ));
         }
-        let image_timeout_secs = parse_env("NEWS_IMAGE_TIMEOUT_SECS", 300_u64)?;
+        let image_timeout_secs = parse_env("NEWS_IMAGE_TIMEOUT_SECS", 30_u64)?;
         if !(5..=600).contains(&image_timeout_secs) {
             return Err(AppError::Config(
                 "NEWS_IMAGE_TIMEOUT_SECS 必须在 5 到 600 秒之间".into(),
