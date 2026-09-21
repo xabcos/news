@@ -16,7 +16,6 @@ const MAX_SUMMARY: usize = 600;
 const MAX_SOURCE: usize = 80;
 const MAX_TAGS: usize = 6;
 const MAX_TAG: usize = 30;
-const MAX_ERROR: usize = 300;
 const IMAGE_TOPIC_ID: &str = "x";
 
 #[derive(Debug, Clone, Copy)]
@@ -283,22 +282,23 @@ fn instructions(topic: &Topic) -> String {
 }
 
 fn schema() -> Value {
+    let image = json!({
+        "type": ["object", "null"], "additionalProperties": false,
+        "required": ["url", "source_url", "caption", "caption_en", "credit"],
+        "properties": {
+            "url": { "type": "string" },
+            "source_url": { "type": "string" },
+            "caption": { "type": "string" },
+            "caption_en": { "type": "string" },
+            "credit": { "type": "string" }
+        }
+    });
     json!({
         "type": "object",
         "additionalProperties": false,
         "required": ["items", "cover"],
         "properties": {
-            "cover": {
-                "type": ["object", "null"], "additionalProperties": false,
-                "required": ["url", "source_url", "caption", "caption_en", "credit"],
-                "properties": {
-                    "url": { "type": "string" },
-                    "source_url": { "type": "string" },
-                    "caption": { "type": "string" },
-                    "caption_en": { "type": "string" },
-                    "credit": { "type": "string" }
-                }
-            },
+            "cover": image,
             "items": { "type": "array", "items": {
             "type": "object",
             "additionalProperties": false,
@@ -314,51 +314,14 @@ fn schema() -> Value {
                 "tags": { "type": "array", "items": { "type": "string" } },
                 "tags_en": { "type": "array", "items": { "type": "string" } },
                 "importance": { "type": "integer" },
-                "image": {
-                    "type": ["object", "null"], "additionalProperties": false,
-                    "required": ["url", "source_url", "caption", "caption_en", "credit"],
-                    "properties": {
-                        "url": { "type": "string" },
-                        "source_url": { "type": "string" },
-                        "caption": { "type": "string" },
-                        "caption_en": { "type": "string" },
-                        "credit": { "type": "string" }
-                    }
-                }
+                "image": image
             }
         } } }
     })
 }
 
 fn parse_reply(reply: Value) -> Result<Fetched> {
-    if let Some(error) = reply.get("error").filter(|error| !error.is_null()) {
-        return Err(AppError::Internal(
-            format!("AI 接口错误: {}", clip(&error.to_string(), MAX_ERROR)).into(),
-        ));
-    }
-    if reply["status"] != "completed" {
-        return Err(AppError::Internal(
-            format!("AI 响应未完成: {}", reply["status"]).into(),
-        ));
-    }
-    let text = reply["output"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|output| output["type"] == "message")
-        .filter_map(|output| output["content"].as_array())
-        .flatten()
-        .find(|content| content["type"] == "output_text")
-        .and_then(|content| content["text"].as_str())
-        .ok_or_else(|| AppError::Internal("AI 响应没有文本输出".into()))?;
-    // Strict mode makes prose around the object unlikely, but the outermost braces still
-    // hold it when a model slips.
-    let json = match (text.find('{'), text.rfind('}')) {
-        (Some(start), Some(end)) if start < end => &text[start..=end],
-        _ => text,
-    };
-    let mut payload: Value = serde_json::from_str(json)
-        .map_err(|_| AppError::Internal("AI 响应不是有效的 JSON".into()))?;
+    let mut payload = crate::ai::parse_payload(&reply)?;
     let digest: ModelDigest = serde_json::from_value(payload.clone())
         .map_err(|_| AppError::Internal("AI 响应不符合约定的结构".into()))?;
     let cover = digest

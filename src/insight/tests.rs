@@ -136,6 +136,22 @@ fn rejects_historical_or_unconfirmed_stories_as_todays_headlines() {
 }
 
 #[test]
+fn key_data_requires_a_news_reference() {
+    let sources = vec![source(0, "cases", true)];
+    let mut draft = analysis();
+    draft.data_signals = vec![serde_json::from_value(json!({
+        "title":"单次任务成本下降", "title_en":"Lower cost per task",
+        "summary":"厂商案例：同一流程单次成本从10元降至5元。", "summary_en":"Vendor case: cost fell from 10 to 5 for the same workflow.",
+        "confidence":3, "source_indexes":[]
+    })).unwrap()];
+    assert!(validate_selection(&mut draft, &sources, &[]).is_err());
+    draft.data_signals[0].source_indexes = vec![0];
+    assert!(validate_selection(&mut draft, &sources, &[]).is_ok());
+    draft.data_signals[0].source_indexes = vec![99];
+    assert!(validate_selection(&mut draft, &sources, &[]).is_err());
+}
+
+#[test]
 fn formats_consistent_articles_without_empty_html_paragraphs() {
     let sources = vec![source(0, "x", true), source(1, "gossip", true)];
     let mut draft = analysis();
@@ -146,6 +162,11 @@ fn formats_consistent_articles_without_empty_html_paragraphs() {
     draft.gossip = vec![story(1, StoryStatus::Unconfirmed)];
     draft.changes = "第一条趋势。\n\n第二条趋势。".into();
     draft.changes_source_indexes = vec![0];
+    let sampling = Sampling {
+        current_items: 3,
+        seven_day_items: 5,
+        observed_days: 3,
+    };
     let articles = articles::render(
         "XAI 日报 · 2026-09-21".into(),
         "最近24小时",
@@ -153,6 +174,7 @@ fn formats_consistent_articles_without_empty_html_paragraphs() {
         &sources,
         &[],
         vec![],
+        Some(&sampling),
     );
     for text in [&articles.wechat, &articles.x, &articles.x_html] {
         let sections = ["今日热点", "AI 圈热议", "趋势分析", "参考来源"]
@@ -160,6 +182,9 @@ fn formats_consistent_articles_without_empty_html_paragraphs() {
         assert!(sections.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(!text.contains("图片新闻"));
         assert!(!text.contains("\n\n\n"));
+        assert_eq!(text.matches(&sampling.note()).count(), 1);
+        assert!(text.find("趋势分析") < text.find("本站 AI 专栏样本"));
+        assert!(text.find("本站 AI 专栏样本") < text.find("参考来源"));
     }
     assert!(articles.wechat.contains("完整事实 及适用范围。"));
     assert!(articles.x.contains("紧凑事实及限制。\n2."));
@@ -206,7 +231,7 @@ fn image_selection_is_explicit_and_survives_mirror_url_changes() {
     assert!(chosen[0].cover);
     assert_eq!(chosen[0].url, "https://cdn.example.com/new");
     assert!(chosen[1].archived);
-    let articles = articles::render("日报".into(), "24小时", &draft, &sources, &[], chosen);
+    let articles = articles::render("日报".into(), "24小时", &draft, &sources, &[], chosen, None);
     assert!(
         articles
             .wechat
@@ -227,6 +252,7 @@ fn legacy_drafts_remain_readable() {
     assert!(stored.analysis.hotspots.is_none());
     assert_eq!(stored.articles.x, "旧X稿");
     assert!(stored.articles.x_html.is_empty());
+    assert!(stored.stats.is_none());
 }
 
 #[test]
@@ -358,7 +384,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         .execute(&state.pool)
         .await
         .unwrap();
-    sqlx::query("UPDATE topics SET enabled = id IN ('x','github','p','gossip'), brief=id, last_run_at=NULL, last_status=NULL, daily_run_cap=24")
+    sqlx::query("UPDATE topics SET enabled = id IN ('x','github','p','gossip','events','codex'), brief=id, last_run_at=NULL, last_status=NULL, daily_run_cap=24")
         .execute(&state.pool).await.unwrap();
     let private_topic = format!("audit-{}", &Uuid::new_v4().simple().to_string()[..12]);
     let owner: i64 = sqlx::query_scalar("INSERT INTO users (email) VALUES ($1) RETURNING id")
@@ -410,6 +436,11 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         ("gossip", "rumour", end - ChronoDuration::hours(3)),
         ("p", "picture", end - ChronoDuration::hours(4)),
         ("openai", "disabled", end - ChronoDuration::hours(5)),
+        ("events", "world-event", end - ChronoDuration::hours(1)),
+        ("events", "past-world-event", end - ChronoDuration::days(2)),
+        ("codex", "feedback", end - ChronoDuration::hours(1)),
+        ("codex", "past-feedback", end - ChronoDuration::days(2)),
+        ("codex", "today", end - ChronoDuration::hours(1)),
     ] {
         insert_story(&state.pool, topic, slug, Some(at), at).await;
     }
@@ -421,7 +452,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         end - ChronoDuration::hours(2),
     )
     .await;
-    // An undated duplicate must not erase the original, dated gossip report.
+    // An undated AI-column copy must not pull a gossip report into the statistics.
     insert_story(
         &state.pool,
         "x",
@@ -434,14 +465,33 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         .bind(json!({"url": "https://cdn.example.com/robot.jpg", "source_url": "https://example.com/picture",
             "caption": "机器人演示（测试图）", "caption_en": "Robot demo (fixture)", "credit": "演示团队"}))
         .execute(&state.pool).await.unwrap();
+    // Even a higher-ranked copy outside the scope must not displace an eligible source.
+    sqlx::query("UPDATE items SET importance=5 WHERE topic_id='codex'")
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE items SET tags=tags || ARRAY['Agent','agent','AI Agent','智能体','AI代理'] WHERE title IN ('today','earlier')")
+        .execute(&state.pool).await.unwrap();
     let stats = collect_stats(&state, window).await.unwrap();
+    assert_eq!(stats["topic_ids"], json!(STAT_TOPICS));
     assert_eq!(stats["seven_day_items"], 5);
     assert_eq!(stats["current_items"], 3);
     assert_eq!(stats["observed_days"], 3);
     assert_eq!(stats["daily"].as_array().unwrap().len(), 7);
-    assert_eq!(stats["gossip_items"], 1);
-    assert_eq!(stats["undated_items"], 1);
     assert_eq!(stats["tags"][0]["current_items"], 3);
+    let tags = stats["tags"].as_array().unwrap();
+    assert_eq!(tags.len(), 2);
+    let agent = tags.iter().find(|tag| tag["tag"] == "Agent").unwrap();
+    assert_eq!(agent["current_items"], 1);
+    assert_eq!(agent["baseline_daily_average"], json!(0.17));
+    assert!(
+        stats["topics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|topic| { STAT_TOPICS.contains(&topic["topic_id"].as_str().unwrap()) })
+    );
+    assert_eq!(stats["baseline_daily_average"], json!(0.33));
     let zero = stats["topics"]
         .as_array()
         .unwrap()
@@ -465,6 +515,20 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     .unwrap();
     let completed = execute(&state, window.start, window.end).await.unwrap();
     let stored: StoredInsight = serde_json::from_value(completed.payload.clone()).unwrap();
+    assert_eq!(stored.stats.as_ref().unwrap().current_items, 4);
+    assert_eq!(stored.stats.as_ref().unwrap().seven_day_items, 6);
+    assert!(
+        stored
+            .articles
+            .wechat
+            .contains(&stored.stats.as_ref().unwrap().note())
+    );
+    assert!(
+        stored
+            .articles
+            .x
+            .contains(&stored.stats.as_ref().unwrap().note())
+    );
     assert_eq!(stored.analysis.hotspots.as_ref().unwrap().len(), 1);
     assert_eq!(stored.articles.images.len(), 1);
     assert!(stored.articles.images[0].cover);
@@ -479,7 +543,19 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         s.title.as_str(),
         "截止后新闻" | "过期新闻" | "private-story" | "hidden-story"
     )));
-    assert_eq!(calls.lock().unwrap().len(), 6); // Four columns, one failed-column retry, one analysis.
+    assert!(
+        stored
+            .sources
+            .iter()
+            .any(|source| source.topic_id == "codex")
+    );
+    assert!(
+        stored
+            .sources
+            .iter()
+            .any(|source| source.topic_id == "events")
+    );
+    assert_eq!(calls.lock().unwrap().len(), 8); // Six columns, one failed-column retry, one analysis.
     // Drive the actual coordinator, including slot acquisition and atomic publication.
     let id = start_generation(&state, day, end).await.unwrap();
     assert!(matches!(
@@ -494,7 +570,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         .unwrap();
     assert_eq!(status, "ok");
     assert_eq!(state.run_slots.available_permits(), 1);
-    assert_eq!(calls.lock().unwrap().len(), 7); // Manual regeneration reuses the same collection.
+    assert_eq!(calls.lock().unwrap().len(), 9); // Manual regeneration reuses the same collection.
     let rendered = render_latest(&state).await.unwrap();
     let public: Value = serde_json::from_slice(&rendered.body).unwrap();
     assert_eq!(public["insight"]["window_end"], json!(end));
@@ -504,10 +580,14 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     );
     assert_eq!(public["insight"]["hotspots"].as_array().unwrap().len(), 1);
     assert_eq!(public["insight"]["images"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        public["insight"]["sampling"],
+        json!({"current_items":4,"seven_day_items":6,"observed_days":3})
+    );
     assert!(public["insight"].get("wechat_article").is_none());
     tick(&state).await.unwrap();
     assert!(!is_running(&state));
-    assert_eq!(calls.lock().unwrap().len(), 7);
+    assert_eq!(calls.lock().unwrap().len(), 9);
 
     // A failed manual regeneration keeps the previously published edition intact.
     fail_analysis.store(true, Ordering::Relaxed);
@@ -520,7 +600,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         .unwrap();
     assert_eq!(failed, "failed");
     assert_eq!(render_latest(&state).await.unwrap().body, rendered.body);
-    assert_eq!(calls.lock().unwrap().len(), 8);
+    assert_eq!(calls.lock().unwrap().len(), 10);
 
     // Scheduler retries only after the cooldown and uses the original cutoff.
     sqlx::query("DELETE FROM ai_insights WHERE status='ok'")
@@ -529,7 +609,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         .unwrap();
     tick(&state).await.unwrap();
     assert!(!is_running(&state));
-    assert_eq!(calls.lock().unwrap().len(), 8);
+    assert_eq!(calls.lock().unwrap().len(), 10);
     sqlx::query("UPDATE ai_insights SET finished_at=NOW()-INTERVAL '11 minutes' WHERE id=$1")
         .bind(failed_id)
         .execute(&state.pool)
@@ -538,7 +618,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     fail_analysis.store(false, Ordering::Relaxed);
     tick(&state).await.unwrap();
     wait_for_generation(&state).await;
-    assert_eq!(calls.lock().unwrap().len(), 9);
+    assert_eq!(calls.lock().unwrap().len(), 11);
     let recovered_end: DateTime<Utc> =
         sqlx::query_scalar("SELECT window_end FROM ai_insights WHERE status='ok'")
             .fetch_one(&state.pool)
@@ -562,7 +642,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             .to_string()
             .contains("上限")
     );
-    assert_eq!(calls.lock().unwrap().len(), 9);
+    assert_eq!(calls.lock().unwrap().len(), 11);
 
     // A small input budget reproduces the same pressure as many full public columns.
     let sampled = sqlx::query_as::<_, SourceRow>(include_str!("sources.sql"))

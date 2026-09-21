@@ -52,11 +52,12 @@ const TEXT = {
     empty: "这一天还没有内容", latest: "查看最近有内容的一天",
     space: "工作台", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
     backToTop: "回到顶部", insightEmpty: "XAI 日报将在今日生成后显示。", insightLabel: "XAI 日报",
-    hotspots: "今日热点", gossip: "AI 圈热议", pictures: "图片新闻", references: "参考来源", archive: "资料图", changes: "趋势分析", dataSignals: "关键数据", watchSignals: "后续观察", coverSource: "原文", wealth: "商业与机遇", employment: "就业与技能",
-    risks: "风险预警", actions: "观察方向", researchSources: "数据来源",
+    hotspots: "今日热点", gossip: "AI 圈热议", references: "参考来源", archive: "资料图", changes: "趋势分析", dataSignals: "关键数据", watchSignals: "后续观察", coverSource: "原文", wealth: "商业与机遇", employment: "就业与技能",
+    risks: "风险预警", actions: "观察方向",
     kind: "类型", horizon: "时间", beneficiaries: "受益者", entry: "切入方式", watch: "观察信号", risk: "主要风险",
     confidence: (n, grade) => `证据强度 ${n}/5${grade ? ` · 证据 ${grade}` : ""}`, sources: "来源",
     items: (n) => `${n} 条`,
+    sampling: (s) => `本站 AI 专栏样本：本期 ${s.current_items} 条 · 近7天 ${s.seven_day_items} 条（有收录 ${s.observed_days} 天，按原文链接去重）。`,
   },
   en: {
     locale: "en", lang: "中文", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", today: "Today", top: "Top",
@@ -64,11 +65,12 @@ const TEXT = {
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
     space: "𝑾𝒐𝒓𝒌𝒔𝒑𝒂𝒄𝒆", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
     backToTop: "Back to top", insightEmpty: "XAI Daily will appear after today's edition is generated.", insightLabel: "XAI Daily",
-    hotspots: "Today’s headlines", gossip: "AI buzz", pictures: "In pictures", references: "References", archive: "Archive photo", changes: "Trend analysis", dataSignals: "Key data", watchSignals: "Signals ahead", coverSource: "Source", wealth: "Business & opportunities", employment: "Employment & skills",
-    risks: "Risk alerts", actions: "What to watch", researchSources: "Data sources",
+    hotspots: "Today’s headlines", gossip: "AI buzz", references: "References", archive: "Archive photo", changes: "Trend analysis", dataSignals: "Key data", watchSignals: "Signals ahead", coverSource: "Source", wealth: "Business & opportunities", employment: "Employment & skills",
+    risks: "Risk alerts", actions: "What to watch",
     kind: "Type", horizon: "Horizon", beneficiaries: "Who may benefit", entry: "Entry path", watch: "Signals to watch", risk: "Main risk",
     confidence: (n, grade) => `Evidence ${n}/5${grade ? ` · Grade ${grade}` : ""}`, sources: "Sources",
     items: (n) => `${n} ${n === 1 ? "item" : "items"}`,
+    sampling: (s) => `Site AI-column sample: ${s.current_items} this edition · ${s.seven_day_items} over 7 days (${s.observed_days} days with records; deduplicated by source URL).`,
   },
 };
 
@@ -780,6 +782,8 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
   }
   heading.append(title);
   section.append(heading);
+  if (insight.images?.length) section.append(renderInsightGallery(insight.images));
+  else if (insight.cover?.url) section.append(insightCover(insight.cover));
   // Only explicitly selected, current stories lead a new daily edition.
   const sources = new Map((insight.sources || []).map((source) => [source.index, source]));
   if (Array.isArray(insight.hotspots)) {
@@ -788,11 +792,6 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
   } else {
     if (pick(insight, "overview")) section.append(insightParagraph("", pick(insight, "overview"), "insight-lead"));
     section.append(...renderInsightHotspots(t().hotspots, insight.sources || [], briefingDate));
-  }
-  if (insight.images?.length || insight.cover?.url) {
-    const pictures = insightSection(t().pictures);
-    pictures.append(insight.images?.length ? renderInsightGallery(insight.images) : insightCover(insight.cover));
-    section.append(pictures);
   }
   const trend = pick(insight, "changes");
   if (trend.trim()) {
@@ -808,6 +807,12 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
     );
     if (changeSources) changes.append(changeSources);
     section.append(changes);
+  }
+  if (insight.sampling) {
+    const note = document.createElement("p");
+    note.className = "insight-sampling muted small";
+    note.textContent = t().sampling(insight.sampling);
+    section.append(note);
   }
   section.append(...renderInsightGroup(t().dataSignals, insight.data_signals || [], sources));
   section.append(...renderInsightGroup(t().watchSignals, insight.watch_signals || [], sources));
@@ -912,7 +917,7 @@ function renderInsightHotspots(label, sources, dateText) {
 function renderInsightGallery(images) {
   const gallery = document.createElement("div");
   gallery.className = `insight-gallery${images.length === 1 ? " is-single" : images.length === 2 ? " is-two" : ""}`;
-  gallery.append(...images.map((image) => {
+  gallery.append(...images.map((image, index) => {
     const figure = document.createElement("figure");
     figure.className = "insight-gallery-item";
     const link = sourceLink(image.source_url || image.url, "");
@@ -921,7 +926,8 @@ function renderInsightGallery(images) {
       const img = document.createElement("img");
       img.src = image.url;
       img.alt = pick(image, "caption");
-      img.loading = "lazy";
+      img.loading = index === 0 ? "eager" : "lazy";
+      if (index === 0) img.fetchPriority = "high";
       img.decoding = "async";
       img.referrerPolicy = "no-referrer";
       img.addEventListener("error", () => figure.remove(), { once: true });
@@ -984,14 +990,8 @@ function insightParagraph(label, text, className = "insight-paragraph", metaText
 
 function renderInsightGroup(label, items, sources, opportunities = false) {
   if (!items.length) return [];
-  const section = document.createElement("section");
-  section.className = "group insight-group";
-  const heading = document.createElement("div");
-  heading.className = "group-title";
-  const title = document.createElement("h2");
-  title.textContent = label;
-  heading.append(title);
-  section.append(heading, ...items.map((item) => insightCard(item, sources, opportunities)));
+  const section = insightSection(label);
+  section.append(...items.map((item) => insightCard(item, sources, opportunities)));
   return [section];
 }
 
@@ -1009,10 +1009,9 @@ function insightCard(item, sources, opportunity = false) {
   summary.append(insightText(pick(item, "summary")));
   article.append(itemHeading, summary);
   if (opportunity) article.append(opportunityDetails(item));
-  const seen = new Set();
   const links = (item.source_indexes || [])
     .map((index) => sources.get(index))
-    .filter((source) => source && !seen.has(source.index) && seen.add(source.index));
+    .filter(Boolean);
   const sourceLinks = sourceList(t().sources, links);
   if (sourceLinks) article.append(sourceLinks);
   return article;

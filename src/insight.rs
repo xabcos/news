@@ -31,8 +31,8 @@ use articles::Story;
 const IN_FLIGHT_KEY: &str = "__ai_insight__";
 const SOURCE_LIMIT: i64 = 240;
 const IMAGE_CANDIDATES: usize = 12;
-const MAX_ERROR: usize = 300;
 const FAILED_RETRY_MINUTES: i64 = 10;
+const STAT_TOPICS: [&str; 6] = ["x", "china-ai", "openai", "anthropic", "github", "cases"];
 
 fn cutoff_for_day(state: &AppState, day: NaiveDate) -> DateTime<Utc> {
     crate::topics::to_utc(
@@ -166,6 +166,22 @@ fn default_seen_count() -> i32 {
     1
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct Sampling {
+    current_items: i64,
+    seven_day_items: i64,
+    observed_days: i64,
+}
+
+impl Sampling {
+    fn note(&self) -> String {
+        format!(
+            "本站 AI 专栏样本：本期 {} 条 · 近7天 {} 条（有收录 {} 天，按原文链接去重）。",
+            self.current_items, self.seven_day_items, self.observed_days
+        )
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct InsightDocument {
     pub briefing_day: NaiveDate,
@@ -177,6 +193,8 @@ pub(crate) struct InsightDocument {
     pub model: String,
     pub cover: Option<NewsImage>,
     pub images: Vec<InsightArticleImage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<Sampling>,
     #[serde(flatten)]
     pub analysis: InsightAnalysis,
     pub sources: Vec<InsightSource>,
@@ -252,6 +270,8 @@ struct StoredInsight {
     research_sources: Vec<InsightResearchSource>,
     #[serde(default)]
     articles: InsightArticles,
+    #[serde(default)]
+    stats: Option<Sampling>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -556,6 +576,7 @@ async fn render_latest(state: &AppState) -> Result<Rendered> {
                 sources,
                 research_sources,
                 articles,
+                stats,
             } = stored;
             // Resolve selected media before reducing the list to cited sources.
             let cover = selected_cover(&analysis, &sources).map(public_image);
@@ -583,6 +604,7 @@ async fn render_latest(state: &AppState) -> Result<Rendered> {
                 model: row.model,
                 cover,
                 images,
+                sampling: stats,
                 analysis,
                 sources,
                 research_sources,
@@ -618,6 +640,7 @@ async fn collect_stats(state: &AppState, window: NewsWindow) -> Result<Value> {
         .bind(window.end - ChronoDuration::days(7))
         .bind(window.start)
         .bind(window.end)
+        .bind(STAT_TOPICS.as_slice())
         .fetch_one(&state.pool)
         .await?)
 }
@@ -670,6 +693,7 @@ async fn execute(
         .fetch_all(&state.pool)
         .await?;
     let stats = collect_stats(state, window).await?;
+    let sampling: Sampling = serde_json::from_value(stats.clone())?;
     let mut sources = rows
         .into_iter()
         .enumerate()
@@ -813,12 +837,14 @@ async fn execute(
         &sources,
         &research_sources,
         article_images,
+        Some(&sampling),
     );
     let stored = json!({
         "analysis": analysis,
         "sources": sources,
         "research_sources": research_sources,
         "articles": articles,
+        "stats": stats,
     });
     Ok(Completed {
         response_id,
@@ -988,6 +1014,13 @@ fn validate_selection(
             }
         }
     }
+    if analysis
+        .data_signals
+        .iter()
+        .any(|signal| signal.source_indexes.is_empty())
+    {
+        return Err(AppError::Internal("日报关键数据缺少新闻来源".into()));
+    }
     if articles::citation_indexes(analysis)
         .iter()
         .any(|index| !sources.iter().any(|source| source.index == *index))
@@ -1019,7 +1052,7 @@ fn insight_task(window: NewsWindow, sources: &[InsightSource], stats: &Value) ->
         })
         .collect::<Vec<_>>();
     Ok(format!(
-        "本期新闻区间：[{}, {})；趋势区间：[{}, {})。\n最近7天新闻原文摘录（按日、主题均衡取样；current=true 且 published_at 已知才属于今日新闻）：{}\n数据库完整7天去重统计（不受摘录条数限制）：{}\n正文与标题只引用相应窗口内材料；首见时间不等于发布时间。历史原文用于趋势，不能当作今日热点。统计表示本站采样，不代表全网热度或市场份额；observed_days 仅表示有新闻收录的天数；不足7天时说明实际样本天数，不把零条收录解释为当天没有事件，零基数不写增幅。随后附的真实图片是可选配图池，仅可选择实际看过的图片索引。",
+        "本期新闻区间：[{}, {})；趋势区间：[{}, {})。\n最近7天新闻原文摘录（按日、主题均衡取样；current=true 且 published_at 已知才属于今日新闻）：{}\n本站 AI 专栏7天完整去重统计（范围为 topic_ids，不受摘录条数限制）：{}\n正文与标题只引用相应窗口内材料；首见时间不等于发布时间。历史原文用于趋势，不能当作今日热点。统计已排除 codex、events、gossip、p 和发布时间不明的内容；其他栏目只作相关事实、反馈或配图的补充来源。统计是按原文链接去重的报道条目数，不是独立事件数、故障数或全网热度，不能从摘录重新计数。observed_days 仅表示有新闻收录的天数；不足7天或基线为零时不写增幅，零条日不等于没有事件。采样量由程序附为简短说明，不占用关键数据。随后附的真实图片是可选配图池，仅可选择实际看过的图片索引。",
         window.start,
         window.end,
         window.end - ChronoDuration::days(7),
@@ -1034,10 +1067,10 @@ fn instructions() -> &'static str {
 1. 今日热点 hotspots：优先6–8条当日最重要的独立AI新闻，不足时少写。同一事件合并，只用 current=true 的非 gossip、非 p 来源，status=confirmed。短标题直接写主语和动作，summary 用1–2句话说明发生什么、关键数字及适用范围，short_summary 更紧凑但保留数字和限制。不写导语套话、感叹和编辑评价，不把历史背景写成新消息。
 2. AI 圈热议 gossip：优先2–4条有来源、有趣且值得了解的AI公开爆料、传闻、回应、开发者趣闻或用户反馈。只用 current=true、topic_id=gossip 的材料。不凑数，注明谁说的、说了什么以及有没有回应；status 区分 reported（爆料）、unconfirmed（未证实）、response（回应）、feedback（用户反馈）、denied（已否认）、confirmed（已确认）。不把传闻当事实，不编造传播量，不猎奇私人生活。
 3. headline 用一句事实标题概括最重要新闻，overview 最多50字，可为空。changes 保持“趋势分析”含义：基于最近7天原始新闻，写2–3个短要点，用换行分隔，每点给出走势及支持事实，区分推断和已发生事件；changes_source_indexes 引用跨日证据。没有足够跨日证据就直说，不套用旧日报结论。
-4. data_signals 最多4条，关键数字只能来自完整统计或输入新闻。比较口径为本期24小时与此前6日日均，共7天；不把八卦、图片帖、去重前条数或日期不明材料计入已确认新闻数量。watch_signals 最多3条，写未来具体时间节点、可核验信号与可能改变判断的条件。
+4. data_signals 优先2–4条新闻本身的关键数字：价格、成本、效率、性能或开放范围，不足可少写或留空。每条必须引用输入新闻，保留单位、比较基准和适用条件，说明是官方公告、厂商自测、客户案例还是社区反馈；不得将局部案例外推为行业水平。不以本站采样量、栏目条数或其增幅填充关键数据，也不重复热点中已完整说清的数字。watch_signals 最多3条，写未来具体时间节点、可核验信号与可能改变判断的条件。
 5. wealth（商业与机遇）、employment（岗位与技能）、risks、actions 各0–2条。只有新证据和实际价值才写，和前文重复就留空；克制编辑口吻。wealth 的 kind 取 business/income/industry/asset_watch，horizon 取 0-3m/3-12m/12m+；受益环节、切入点、后续验证和风险用短句。禁止收益承诺或个性化投资建议。
 6. 配图：实际观察附带图片，从图片新闻专栏 p 优先挑选与本期AI热点有关、画面有故事且吸引人的照片：机器人动作、产品实物、演示现场、有趣细节优于Logo、纯文字截图和无关美女。cover_source_index 选1张，picture_source_indexes 选最多2张补充图；总计1–3张，不凑数。近7日用过的封面降权，同一画面不重复。过去7天资料图仅在确有解释价值时用，系统标注资料图；无可靠发布日期或不合适可不选，cover 返回 null。AI生成图只能在原图说明明确标明其性质时使用。只引用已看过的候选索引，不造图址、署名或画面描述。
-7. 每条新闻/信号引用有效 source_indexes。confidence 1–5 表示证据强度，evidence_grade A=官方或一手且有交叉验证，B=可靠单一来源，C=早期或社区线索。正文不写来源编号、HTML、Markdown和URL。统计信号可不引新闻索引。确需核验缺失事实才检索，最多6次，优先原始公告；research_source_urls 只写本次实际检索引用的HTTPS地址，没有检索则为空。检索不得绕过新闻时间窗口。"#
+7. 每条新闻/信号引用有效 source_indexes。confidence 1–5 表示证据强度，evidence_grade A=官方或一手且有交叉验证，B=可靠单一来源，C=早期或社区线索。正文不写来源编号、HTML、Markdown和URL。确需核验缺失事实才检索，最多6次，优先原始公告；research_source_urls 只写本次实际检索引用的HTTPS地址，没有检索则为空。检索不得绕过新闻时间窗口。"#
 }
 
 fn selected_cover(analysis: &InsightAnalysis, sources: &[InsightSource]) -> Option<NewsImage> {
@@ -1063,7 +1096,7 @@ fn schema() -> Value {
             "summary": { "type": "string" }, "summary_en": { "type": "string" },
             "confidence": { "type": "integer", "minimum": 1, "maximum": 5 },
             "evidence_grade": { "type": "string", "enum": ["A", "B", "C"] },
-            "source_indexes": { "type": "array", "maxItems": 2, "items": { "type": "integer", "minimum": 0 } }
+            "source_indexes": { "type": "array", "minItems": 1, "maxItems": 2, "items": { "type": "integer", "minimum": 0 } }
         }
     });
     let opportunity = json!({
@@ -1118,32 +1151,7 @@ fn schema() -> Value {
 }
 
 fn parse_reply(reply: Value) -> Result<(InsightAnalysis, Usage, Option<String>)> {
-    if let Some(error) = reply.get("error").filter(|error| !error.is_null()) {
-        return Err(AppError::Internal(
-            format!("AI 接口错误: {}", clip(&error.to_string(), MAX_ERROR)).into(),
-        ));
-    }
-    if reply["status"] != "completed" {
-        return Err(AppError::Internal(
-            format!("AI 响应未完成: {}", reply["status"]).into(),
-        ));
-    }
-    let text = reply["output"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|output| output["type"] == "message")
-        .filter_map(|output| output["content"].as_array())
-        .flatten()
-        .find(|content| content["type"] == "output_text")
-        .and_then(|content| content["text"].as_str())
-        .ok_or_else(|| AppError::Internal("AI 响应没有文本输出".into()))?;
-    let json_text = match (text.find('{'), text.rfind('}')) {
-        (Some(start), Some(end)) if start < end => &text[start..=end],
-        _ => text,
-    };
-    let payload: Value = serde_json::from_str(json_text)
-        .map_err(|_| AppError::Internal("AI 响应不是有效的 JSON".into()))?;
+    let payload = crate::ai::parse_payload(&reply)?;
     let analysis: InsightAnalysis = serde_json::from_value(payload)
         .map_err(|_| AppError::Internal("AI 响应不符合约定的结构".into()))?;
     let usage = serde_json::from_value(reply["usage"].clone()).unwrap_or_default();
@@ -1206,10 +1214,6 @@ async fn finish(
         }
     }
     Ok(())
-}
-
-fn clip(value: &str, max: usize) -> String {
-    value.trim().chars().take(max).collect()
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 use super::{
     InsightAnalysis, InsightArticleImage, InsightArticles, InsightResearchSource, InsightSource,
+    Sampling,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -90,6 +91,7 @@ pub(super) fn render(
     sources: &[InsightSource],
     research: &[InsightResearchSource],
     images: Vec<InsightArticleImage>,
+    sampling: Option<&Sampling>,
 ) -> InsightArticles {
     let mut article = Article::default();
     article.heading(1, &title);
@@ -132,6 +134,9 @@ pub(super) fn render(
         {
             article.paragraph(point);
         }
+    }
+    if let Some(sampling) = sampling {
+        article.paragraph(&sampling.note());
     }
     for (label, signals) in [
         ("关键数据", &analysis.data_signals),

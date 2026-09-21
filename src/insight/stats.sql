@@ -1,18 +1,13 @@
--- Statistics use the complete seven-day corpus, not the model's sampled sources.
--- Rumours, picture posts and undated discoveries cannot inflate news counts.
-WITH corpus AS (
+-- Filter the fixed AI columns before deduplication, across the same seven-day window.
+-- Other columns remain editorial sources but cannot displace or inflate this sample.
+WITH news AS (
     SELECT DISTINCT ON (i.fingerprint)
-           i.topic_id, t.name AS topic, i.tags, i.published_at,
-           COALESCE(i.published_at, i.first_seen_at) AS event_at
+           i.topic_id, t.name AS topic, i.tags, i.published_at AS event_at
     FROM items i JOIN topics t ON t.id = i.topic_id
     WHERE t.enabled AND t.owner_user_id IS NULL AND NOT i.hidden
-      AND COALESCE(i.published_at, i.first_seen_at) >= $1
-      AND COALESCE(i.published_at, i.first_seen_at) < $3
-    ORDER BY i.fingerprint, i.published_at IS NULL, i.topic_id = 'p',
-             i.topic_id = 'gossip', i.importance DESC, i.first_seen_at, i.id
-), news AS (
-    SELECT * FROM corpus
-    WHERE topic_id NOT IN ('gossip', 'p') AND published_at IS NOT NULL
+      AND i.topic_id = ANY($4)
+      AND i.published_at >= $1 AND i.published_at < $3
+    ORDER BY i.fingerprint, i.importance DESC, i.first_seen_at, i.id
 ), topic_counts AS (
     SELECT topic_id, topic,
            COUNT(*) FILTER (WHERE event_at >= $2) AS current_items,
@@ -21,7 +16,15 @@ WITH corpus AS (
 ), tag_counts AS (
     SELECT tag, COUNT(*) FILTER (WHERE event_at >= $2) AS current_items,
            COUNT(*) FILTER (WHERE event_at < $2) AS baseline_items
-    FROM news CROSS JOIN LATERAL (SELECT DISTINCT unnest(tags) AS tag) tags
+    FROM news CROSS JOIN LATERAL (
+        SELECT DISTINCT CASE
+            WHEN lower(btrim(tag)) IN ('agent', 'agents', 'ai agent', 'ai agents', '智能体', 'ai代理')
+                THEN 'Agent'
+            ELSE btrim(tag)
+        END AS tag
+        FROM unnest(news.tags) AS tags(tag)
+        WHERE btrim(tag) <> ''
+    ) tags
     GROUP BY tag
 ), daily AS (
     SELECT day AS window_start, COUNT(news.event_at) AS items
@@ -30,14 +33,13 @@ WITH corpus AS (
     GROUP BY day ORDER BY day
 )
 SELECT jsonb_build_object(
+    'topic_ids', $4::text[],
     'window_start', $2::timestamptz, 'window_end', $3::timestamptz,
     'trend_window_start', $1::timestamptz, 'baseline_days', 6,
     'current_items', (SELECT COUNT(*) FROM news WHERE event_at >= $2),
     'seven_day_items', (SELECT COUNT(*) FROM news),
     'baseline_daily_average', (SELECT ROUND(COUNT(*) / 6.0, 2) FROM news WHERE event_at < $2),
     'observed_days', (SELECT COUNT(*) FROM daily WHERE items > 0),
-    'gossip_items', (SELECT COUNT(*) FROM corpus WHERE topic_id = 'gossip' AND event_at >= $2 AND published_at IS NOT NULL),
-    'undated_items', (SELECT COUNT(*) FROM corpus WHERE published_at IS NULL),
     'daily', (SELECT jsonb_agg(to_jsonb(daily)) FROM daily),
     'topics', COALESCE((SELECT jsonb_agg(jsonb_build_object(
         'topic_id', topic_id, 'topic', topic, 'current_items', current_items,
