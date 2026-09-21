@@ -1262,7 +1262,6 @@ fn public_image(value: Option<serde_json::Value>) -> Option<serde_json::Value> {
     };
     object.remove("origin_url");
     object.remove("content_hash");
-    object.remove("mime_type");
     object.remove("expires_at");
     Some(serde_json::Value::Object(object))
 }

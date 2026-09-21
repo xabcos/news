@@ -26,6 +26,7 @@ use std::{
 use uuid::Uuid;
 
 mod articles;
+mod images;
 use articles::Story;
 
 const IN_FLIGHT_KEY: &str = "__ai_insight__";
@@ -726,7 +727,15 @@ async fn execute(
     for (&index, image) in candidates.iter().zip(images) {
         sources[index].image = image;
     }
-    candidates.retain(|index| sources[*index].image.is_some());
+    let mut vision_images = images::prepare(
+        state,
+        candidates
+            .iter()
+            .filter_map(|&index| sources[index].image.clone().map(|image| (index, image)))
+            .collect(),
+    )
+    .await;
+    candidates.retain(|index| vision_images.contains_key(index));
     let task = insight_task(window, &sources, &stats)?;
     let mut content = vec![json!({ "type": "input_text", "text": task })];
     for &index in &candidates {
@@ -736,7 +745,7 @@ async fn execute(
         content.push(json!({ "type": "input_text", "text": format!(
             "图片候选 source_index={index}；图片新闻专栏={}；本期={}；近7日封面用过={}；图说={}；英文图说={}；署名={}",
             source.topic_id == "p", source.current, used, image.caption, image.caption_en, image.credit) }));
-        content.push(json!({ "type": "input_image", "image_url": image.url, "detail": "low" }));
+        content.push(json!({ "type": "input_image", "image_url": vision_images.remove(&index).expect("prepared image"), "detail": "low" }));
     }
     let tools = if state.config.ai_insight_model.starts_with("grok") {
         json!([{ "type": "web_search" }, { "type": "x_search" }])
@@ -1089,7 +1098,6 @@ fn public_image(mut image: NewsImage) -> NewsImage {
     image.origin_url = None;
     image.expires_at = None;
     image.content_hash = None;
-    image.mime_type = None;
     image
 }
 

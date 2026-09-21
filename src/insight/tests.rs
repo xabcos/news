@@ -1,5 +1,6 @@
 use super::*;
 use articles::StoryStatus;
+use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::TimeZone;
 use std::time::Duration;
 
@@ -435,6 +436,56 @@ async fn insert_story(
         .execute(pool).await.unwrap();
 }
 
+async fn image_origin(state: &mut AppState) -> (String, tokio::task::JoinHandle<()>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_rustls::{TlsAcceptor, rustls};
+
+    let host = "origin.example.test";
+    let certified = rcgen::generate_simple_self_signed(vec![host.into()]).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    state.image_http = reqwest::Client::builder()
+        .no_proxy()
+        .tls_certs_only([reqwest::Certificate::from_der(certified.cert.der()).unwrap()])
+        .resolve(host, addr)
+        .build()
+        .unwrap();
+    let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![certified.cert.der().clone()],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(certified.signing_key.serialize_der()).into(),
+    )
+    .unwrap();
+    let acceptor = TlsAcceptor::from(Arc::new(tls));
+    let bytes = images::fixture_image(image::ImageFormat::WebP, 640);
+    let server = tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = acceptor.accept(stream).await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(stream.read_u8().await.unwrap());
+            }
+            let request = String::from_utf8(request).unwrap();
+            assert!(request.contains("accept: image/jpeg,image/png,image/webp,image/gif\r\n"));
+            let body = if request.starts_with("GET /corrupt") {
+                b"invalid image".as_slice()
+            } else {
+                bytes.as_slice()
+            };
+            stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: image/webp\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+            stream.shutdown().await.unwrap();
+        }
+    });
+    (format!("https://{host}:{}", addr.port()), server)
+}
+
 #[tokio::test]
 #[ignore = "requires NEWS_DAILY_TEST_DATABASE_URL and local test configuration"]
 async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_days() {
@@ -507,7 +558,13 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
                 let old = sources.iter().find(|s| s["current"] == false && !s["published_at"].is_null()).unwrap();
                 let gossip = sources.iter().find(|s| s["topic_id"] == "gossip").unwrap();
                 let picture = sources.iter().find(|s| s["topic_id"] == "p").unwrap();
-                assert_eq!(body["input"][0]["content"].as_array().unwrap().iter().filter(|part| part["type"] == "input_image").count(), 1);
+                let images = body["input"][0]["content"].as_array().unwrap().iter()
+                    .filter(|part| part["type"] == "input_image").collect::<Vec<_>>();
+                assert_eq!(images.len(), 1);
+                let data = images[0]["image_url"].as_str().unwrap().strip_prefix("data:image/jpeg;base64,").unwrap();
+                let bytes = STANDARD.decode(data).unwrap();
+                assert_eq!(image::guess_format(&bytes).unwrap(), image::ImageFormat::Jpeg);
+                assert_eq!(image::load_from_memory(&bytes).unwrap().width(), 640);
                 let mut draft = analysis();
                 draft.hotspots = vec![story(current["index"].as_u64().unwrap() as usize, StoryStatus::Confirmed)];
                 draft.gossip = vec![story(gossip["index"].as_u64().unwrap() as usize, StoryStatus::Unconfirmed)];
@@ -559,6 +616,19 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         axum::serve(listener, app).await.unwrap();
     });
     let mut state = AppState::new(config).await.unwrap();
+    let (image_origin, image_server) = image_origin(&mut state).await;
+    let original = image(
+        "https://cdn.example.com/robot.avif",
+        &format!("{image_origin}/robot.jpg"),
+    );
+    let invalid = image(
+        "https://cdn.example.com/corrupt.avif",
+        &format!("{image_origin}/corrupt.jpg"),
+    );
+    let prepared = images::prepare(&state, vec![(7, original.clone()), (9, invalid)]).await;
+    assert_eq!(prepared.len(), 1);
+    assert!(prepared.contains_key(&7));
+    assert_eq!(original.url, "https://cdn.example.com/robot.avif");
     // The first request is usable without waiting for background cache warming.
     let http_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let first_request_url = format!("http://{}", http_listener.local_addr().unwrap());
@@ -712,7 +782,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     )
     .await;
     sqlx::query("UPDATE items SET image = $1 WHERE topic_id = 'p'")
-        .bind(json!({"url": "https://cdn.example.com/robot.jpg", "source_url": "https://example.com/picture",
+        .bind(json!({"url": original.url, "origin_url": original.origin_url, "source_url": "https://example.com/picture",
             "caption": "机器人演示（测试图）", "caption_en": "Robot demo (fixture)", "credit": "演示团队"}))
         .execute(&state.pool).await.unwrap();
     // Even a higher-ranked copy outside the scope must not displace an eligible source.
@@ -782,6 +852,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     assert_eq!(stored.analysis.hotspots.len(), 1);
     assert_eq!(articles.images.len(), 1);
     assert!(articles.images[0].cover);
+    assert_eq!(articles.images[0].url, "https://cdn.example.com/robot.avif");
     assert!(articles.wechat.contains("图片新闻"));
     assert!(
         stored
@@ -1076,6 +1147,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     );
 
     state.shutdown_workers().await;
+    image_server.abort();
     check_media_renewal(&mut state).await;
     check_media_limits(state).await;
     server.abort();
@@ -1100,7 +1172,6 @@ async fn check_media_renewal(state: &mut AppState) {
     fresh.caption = "Different story's caption".into();
     fresh.credit = "Different publisher".into();
     fresh.content_hash = Some("same-photo".into());
-    fresh.mime_type = Some("image/jpeg".into());
     payload["sources"][index]["image"] = json!(old);
     sqlx::query("UPDATE ai_insights SET payload=$2 WHERE id=$1")
         .bind(id)
