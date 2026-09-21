@@ -68,11 +68,9 @@ pub struct PublicItem {
     pub published_at: Option<DateTime<Utc>>,
     pub first_seen_at: DateTime<Utc>,
     pub tags: Vec<String>,
-    #[serde(default)]
     pub tags_en: Vec<String>,
     pub importance: i16,
     pub pinned: bool,
-    #[serde(default)]
     pub image: Option<serde_json::Value>,
 }
 
@@ -81,18 +79,9 @@ pub struct PublicItem {
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Snapshot {
     pub updated_at: Option<DateTime<Utc>>,
-    /// Changes whenever the topic's visible feed changes. Older Redis snapshots decode as 0.
-    #[serde(default)]
+    /// Changes whenever the topic's visible feed changes.
     pub revision: i64,
     pub items: Vec<PublicItem>,
-}
-
-impl Snapshot {
-    /// Restores the display order that paging relies on. PostgreSQL already returns it;
-    /// a snapshot written to Redis by an older build may not break ties by id.
-    fn normalize(&mut self) {
-        self.items.sort_by(|a, b| Cursor::of(b).cmp(&Cursor::of(a)));
-    }
 }
 
 /// The display-order key of one item: `pinned DESC, published_at DESC NULLS LAST,
@@ -327,9 +316,8 @@ impl DigestCache {
         }
         let generation = self.0.generation.load(Ordering::Acquire);
         let snapshot = match redis_get(state, topic, day).await {
-            Some(mut snapshot) => {
+            Some(snapshot) => {
                 self.0.redis_hits.fetch_add(1, Ordering::Relaxed);
-                snapshot.normalize();
                 snapshot
             }
             None => {
@@ -1496,7 +1484,9 @@ mod tests {
             revision: 0,
             items: vec![item(1, false), undated, item(2, true), item(3, false)],
         };
-        snapshot.normalize();
+        snapshot
+            .items
+            .sort_by_key(|item| std::cmp::Reverse(Cursor::of(item)));
         assert_eq!(marks(&snapshot.items), vec![2, 3, 1, 9]);
     }
 
@@ -1507,7 +1497,9 @@ mod tests {
             revision: 0,
             items: (0..7).map(|n| item(n, n % 5 == 0)).collect(),
         };
-        snapshot.normalize();
+        snapshot
+            .items
+            .sort_by_key(|item| std::cmp::Reverse(Cursor::of(item)));
         // Pinned 5 and 0 lead; the rest run newest first.
         assert_eq!(marks(&snapshot.items), vec![5, 0, 6, 4, 3, 2, 1]);
 
@@ -1526,7 +1518,9 @@ mod tests {
         // now skip or repeat an item, the key does neither.
         snapshot.items.retain(|entry| entry.importance != 0);
         snapshot.items.push(item(8, false));
-        snapshot.normalize();
+        snapshot
+            .items
+            .sort_by_key(|item| std::cmp::Reverse(Cursor::of(item)));
         let (second_again, _) = page(&snapshot.items, Some(cursor), 3);
         assert_eq!(marks(second_again), vec![4, 3, 2]);
 

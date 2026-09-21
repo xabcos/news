@@ -6,7 +6,8 @@ use std::time::Duration;
 fn analysis() -> InsightAnalysis {
     serde_json::from_value(json!({
         "hotspots": [], "headline": "新闻", "headline_en": "News",
-        "overview": "", "overview_en": "", "changes": "", "changes_en": "",
+        "gossip": [], "picture_source_indexes": [], "changes": "", "changes_en": "",
+        "data_signals": [], "watch_signals": [], "changes_source_indexes": [],
         "wealth": [], "employment": [], "risks": [], "actions": []
     }))
     .unwrap()
@@ -14,7 +15,8 @@ fn analysis() -> InsightAnalysis {
 
 fn source(index: usize, topic: &str, current: bool) -> InsightSource {
     serde_json::from_value(json!({
-        "index": index, "current": current, "topic_id": topic,
+        "index": index, "current": current, "topic_id": topic, "topic": topic, "topic_en": topic,
+        "last_seen_at": Utc::now(), "seen_count": 1,
         "title": format!("新闻{index}"), "title_en": "News", "summary": "内容", "summary_en": "Summary",
         "url": format!("https://example.com/{index}"), "source": "来源", "tags": [],
         "importance": 3, "first_seen_at": Utc::now(), "published_at": Utc::now(),
@@ -124,14 +126,14 @@ fn rejects_historical_or_unconfirmed_stories_as_todays_headlines() {
         source(2, "x", false),
     ];
     let mut draft = analysis();
-    draft.hotspots = Some(vec![story(0, StoryStatus::Confirmed)]);
+    draft.hotspots = vec![story(0, StoryStatus::Confirmed)];
     draft.gossip = vec![story(1, StoryStatus::Unconfirmed)];
     assert!(validate_selection(&draft, &sources).is_ok());
-    draft.hotspots = Some(vec![story(2, StoryStatus::Confirmed)]);
+    draft.hotspots = vec![story(2, StoryStatus::Confirmed)];
     assert!(validate_selection(&draft, &sources).is_err());
-    draft.hotspots = Some(vec![story(1, StoryStatus::Unconfirmed)]);
+    draft.hotspots = vec![story(1, StoryStatus::Unconfirmed)];
     assert!(validate_selection(&draft, &sources).is_err());
-    draft.hotspots = Some(vec![story(99, StoryStatus::Confirmed)]);
+    draft.hotspots = vec![story(99, StoryStatus::Confirmed)];
     assert!(validate_selection(&draft, &sources).is_err());
 }
 
@@ -157,7 +159,7 @@ fn key_data_requires_a_news_reference() {
 }
 
 #[test]
-fn optional_signal_citations_keep_the_existing_validation_rules() {
+fn optional_signal_citations_must_reference_available_sources() {
     let sources = vec![source(0, "x", true)];
     let signal = json!({
         "title":"观察", "title_en":"Watch", "summary":"后续观察", "summary_en":"Follow-up",
@@ -191,14 +193,14 @@ fn invalid_optional_images_do_not_discard_valid_prose() {
         source(9, "p", true),
     ];
     let mut draft = analysis();
-    draft.hotspots = Some(vec![story(0, StoryStatus::Confirmed)]);
+    draft.hotspots = vec![story(0, StoryStatus::Confirmed)];
     draft.cover_source_index = Some(999);
     draft.picture_source_indexes = vec![0, 999, 7, 7, 9];
     normalize_images(&mut draft, &[7, 9]);
     validate_selection(&draft, &sources).unwrap();
     assert_eq!(draft.cover_source_index, None);
     assert_eq!(draft.picture_source_indexes, vec![7, 9]);
-    assert_eq!(draft.hotspots.as_ref().unwrap()[0].source_indexes, vec![0]);
+    assert_eq!(draft.hotspots[0].source_indexes, vec![0]);
 
     draft.cover_source_index = Some(7);
     normalize_images(&mut draft, &[7, 9]);
@@ -273,10 +275,10 @@ fn schema_allows_quiet_days_without_inventing_sources_or_images() {
 fn formats_consistent_articles_without_empty_html_paragraphs() {
     let sources = vec![source(0, "x", true), source(1, "gossip", true)];
     let mut draft = analysis();
-    draft.hotspots = Some(vec![
+    draft.hotspots = vec![
         story(0, StoryStatus::Confirmed),
         story(0, StoryStatus::Confirmed),
-    ]);
+    ];
     draft.gossip = vec![story(1, StoryStatus::Unconfirmed)];
     draft.headline = "模型降价与工具开放，AI 应用的成本门槛下降".into();
     draft.changes = "第一条趋势。\n\n第二条趋势。".into();
@@ -304,7 +306,7 @@ fn formats_consistent_articles_without_empty_html_paragraphs() {
         assert_eq!(text.matches(edition_label).count(), 1);
         assert!(text.find(&draft.headline) < text.find(edition_label));
         assert!(text.find(edition_label) < text.find("今日热点"));
-        assert!(!text.contains("本站 AI 专栏样本"));
+        assert!(!text.contains("采样说明"));
         assert!(!text.contains("新闻："));
         assert!(!text.contains("最近 7 天"));
     }
@@ -364,53 +366,27 @@ fn image_selection_is_explicit_and_survives_mirror_url_changes() {
 }
 
 #[test]
-fn saved_structured_drafts_use_the_current_title_and_layout() {
+fn structured_facts_render_both_article_formats() {
     let mut draft = analysis();
     draft.headline = "模型降价与工具开放，AI 应用的成本门槛下降".into();
-    draft.hotspots = Some(vec![story(0, StoryStatus::Confirmed)]);
+    draft.hotspots = vec![story(0, StoryStatus::Confirmed)];
     let stored: StoredInsight = serde_json::from_value(json!({
-        "analysis": draft,
-        "sources": [source(0, "x", true)],
-        "stats": {"current_items":32,"seven_day_items":213,"observed_days":5},
-        "articles": {
-            "title": "XAI 日报 · 2026-09-21",
-            "wechat": "# XAI 日报 · 2026-09-21\n\n新闻：09-20 06:30—09-21 06:30（Asia/Shanghai） · 趋势：最近 7 天\n\n本站 AI 专栏样本：本期 32 条 · 近7天 213 条（有收录 5 天，按原文链接去重）。",
-            "x": "旧X稿及时间和采样说明",
-            "x_html": "<h1>XAI 日报 · 2026-09-21</h1><p>旧时间和采样说明</p>"
-        }
-    })).unwrap();
-    let articles = current_articles(&stored, NaiveDate::from_ymd_opt(2026, 9, 21).unwrap());
+        "analysis": draft, "sources": [source(0, "x", true)], "research_sources": [],
+        "stats": {"current_items":32,"seven_day_items":213,"observed_days":5}
+    }))
+    .unwrap();
+    let articles = render_articles(&stored, NaiveDate::from_ymd_opt(2026, 9, 21).unwrap());
     assert_eq!(articles.title, stored.analysis.headline);
     for text in [&articles.wechat, &articles.x, &articles.x_html] {
         assert!(text.contains(&stored.analysis.headline));
         assert!(text.contains("XAI 日报 · 2026-09-21"));
         assert!(text.contains("今日热点"));
-        assert!(!text.contains("旧"));
-        assert!(!text.contains("本站 AI 专栏样本"));
         assert!(!text.contains("Asia/Shanghai"));
         assert!(!text.contains("最近 7 天"));
     }
     assert!(articles.wechat.contains("完整事实 及适用范围。"));
     assert!(articles.x.contains("紧凑事实及限制。"));
-    assert_eq!(stored.stats.unwrap().current_items, 32);
-}
-
-#[test]
-fn legacy_drafts_remain_readable() {
-    let mut old = serde_json::to_value(analysis()).unwrap();
-    old.as_object_mut().unwrap().remove("hotspots");
-    let stored: StoredInsight = serde_json::from_value(json!({
-        "analysis": old, "sources": [], "articles": { "wechat": "旧公众号稿", "x": "旧X稿" }
-    }))
-    .unwrap();
-    assert!(stored.analysis.hotspots.is_none());
-    assert_eq!(stored.articles.x, "旧X稿");
-    assert!(stored.articles.x_html.is_empty());
-    assert!(stored.stats.is_none());
-    let articles = current_articles(&stored, NaiveDate::from_ymd_opt(2026, 9, 21).unwrap());
-    assert_eq!(articles.wechat, "旧公众号稿");
-    assert_eq!(articles.x, "旧X稿");
-    assert!(articles.x_html.is_empty());
+    assert_eq!(stored.stats.current_items, 32);
 }
 
 #[test]
@@ -533,7 +509,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
                 let picture = sources.iter().find(|s| s["topic_id"] == "p").unwrap();
                 assert_eq!(body["input"][0]["content"].as_array().unwrap().iter().filter(|part| part["type"] == "input_image").count(), 1);
                 let mut draft = analysis();
-                draft.hotspots = Some(vec![story(current["index"].as_u64().unwrap() as usize, StoryStatus::Confirmed)]);
+                draft.hotspots = vec![story(current["index"].as_u64().unwrap() as usize, StoryStatus::Confirmed)];
                 draft.gossip = vec![story(gossip["index"].as_u64().unwrap() as usize, StoryStatus::Unconfirmed)];
                 draft.changes = "七天内的变化。".into();
                 draft.changes_source_indexes = vec![old["index"].as_u64().unwrap() as usize];
@@ -583,11 +559,49 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         axum::serve(listener, app).await.unwrap();
     });
     let mut state = AppState::new(config).await.unwrap();
+    let catalog: Vec<(String, String)> = sqlx::query_as(
+        "SELECT id,name FROM topics WHERE owner_user_id IS NULL ORDER BY sort_weight",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        catalog
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "x",
+            "p",
+            "china-ai",
+            "overseas-ai",
+            "gossip",
+            "github",
+            "events",
+            "cases",
+            "issues"
+        ]
+    );
+    assert_eq!(catalog[3].1, "𝑶");
+    sqlx::migrate::Migrator::new(state.config.migrations_dir.clone())
+        .await
+        .unwrap()
+        .run(&state.pool)
+        .await
+        .unwrap();
+    let migrations: Vec<i64> =
+        sqlx::query_scalar("SELECT version FROM _sqlx_migrations ORDER BY version")
+            .fetch_all(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(migrations, [1]);
+    sqlx::query("INSERT INTO topics (id,name,brief,enabled) VALUES ('inactive','Inactive','Inactive',false)")
+        .execute(&state.pool).await.unwrap();
     sqlx::query("TRUNCATE items, runs, ai_insights CASCADE")
         .execute(&state.pool)
         .await
         .unwrap();
-    sqlx::query("UPDATE topics SET enabled = id IN ('x','github','p','gossip','events','codex'), brief=id, last_run_at=NULL, last_status=NULL, daily_run_cap=24")
+    sqlx::query("UPDATE topics SET enabled = id IN ('x','p','china-ai','overseas-ai','gossip','github','events','cases','issues'), brief=id, last_run_at=NULL, last_status=NULL, daily_run_cap=24")
         .execute(&state.pool).await.unwrap();
     let private_topic = format!("audit-{}", &Uuid::new_v4().simple().to_string()[..12]);
     let owner: i64 = sqlx::query_scalar("INSERT INTO users (email) VALUES ($1) RETURNING id")
@@ -626,7 +640,11 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     for (topic, slug, at) in [
         ("x", "today", end - ChronoDuration::hours(1)),
         ("github", "today", end - ChronoDuration::hours(1)),
-        ("github", "zero-baseline", end - ChronoDuration::hours(2)),
+        (
+            "overseas-ai",
+            "zero-baseline",
+            end - ChronoDuration::hours(2),
+        ),
         ("x", "start", window.start),
         ("x", "earlier", end - ChronoDuration::days(2)),
         ("x", "seven-day-start", end - ChronoDuration::days(7)),
@@ -638,12 +656,14 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         ("x", "future", end),
         ("gossip", "rumour", end - ChronoDuration::hours(3)),
         ("p", "picture", end - ChronoDuration::hours(4)),
-        ("openai", "disabled", end - ChronoDuration::hours(5)),
+        ("china-ai", "china-release", end - ChronoDuration::hours(4)),
+        ("cases", "case-study", end - ChronoDuration::hours(4)),
+        ("inactive", "disabled", end - ChronoDuration::hours(5)),
         ("events", "world-event", end - ChronoDuration::hours(1)),
         ("events", "past-world-event", end - ChronoDuration::days(2)),
-        ("codex", "feedback", end - ChronoDuration::hours(1)),
-        ("codex", "past-feedback", end - ChronoDuration::days(2)),
-        ("codex", "today", end - ChronoDuration::hours(1)),
+        ("issues", "feedback", end - ChronoDuration::hours(1)),
+        ("issues", "past-feedback", end - ChronoDuration::days(2)),
+        ("issues", "today", end - ChronoDuration::hours(1)),
     ] {
         insert_story(&state.pool, topic, slug, Some(at), at).await;
     }
@@ -655,7 +675,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         end - ChronoDuration::hours(2),
     )
     .await;
-    // An undated AI-column copy must not pull a gossip report into the statistics.
+    // An undated duplicate cannot displace the dated Gossip source.
     insert_story(
         &state.pool,
         "x",
@@ -669,19 +689,22 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             "caption": "机器人演示（测试图）", "caption_en": "Robot demo (fixture)", "credit": "演示团队"}))
         .execute(&state.pool).await.unwrap();
     // Even a higher-ranked copy outside the scope must not displace an eligible source.
-    sqlx::query("UPDATE items SET importance=5 WHERE topic_id='codex'")
+    sqlx::query("UPDATE items SET importance=5 WHERE topic_id='issues'")
         .execute(&state.pool)
         .await
         .unwrap();
     sqlx::query("UPDATE items SET tags=tags || ARRAY['Agent','agent','AI Agent','智能体','AI代理'] WHERE title IN ('today','earlier')")
         .execute(&state.pool).await.unwrap();
     let stats = collect_stats(&state, window).await.unwrap();
-    assert_eq!(stats["topic_ids"], json!(STAT_TOPICS));
-    assert_eq!(stats["seven_day_items"], 5);
-    assert_eq!(stats["current_items"], 3);
+    assert_eq!(
+        stats["topic_ids"],
+        json!(["x", "p", "china-ai", "overseas-ai", "gossip", "cases"])
+    );
+    assert_eq!(stats["seven_day_items"], 9);
+    assert_eq!(stats["current_items"], 7);
     assert_eq!(stats["observed_days"], 3);
     assert_eq!(stats["daily"].as_array().unwrap().len(), 7);
-    assert_eq!(stats["tags"][0]["current_items"], 3);
+    assert_eq!(stats["tags"][0]["current_items"], 7);
     let tags = stats["tags"].as_array().unwrap();
     assert_eq!(tags.len(), 2);
     let agent = tags.iter().find(|tag| tag["tag"] == "Agent").unwrap();
@@ -699,7 +722,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         .as_array()
         .unwrap()
         .iter()
-        .find(|topic| topic["topic_id"] == "github")
+        .find(|topic| topic["topic_id"] == "overseas-ai")
         .unwrap();
     assert!(zero["change_percent"].is_null());
     let before = call_count();
@@ -719,23 +742,20 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     .unwrap();
     let completed = execute(&state, window.start, window.end).await.unwrap();
     let stored: StoredInsight = serde_json::from_value(completed.payload.clone()).unwrap();
-    assert_eq!(stored.stats.as_ref().unwrap().current_items, 4);
-    assert_eq!(stored.stats.as_ref().unwrap().seven_day_items, 6);
-    assert_eq!(stored.articles.title, stored.analysis.headline);
-    for text in [
-        &stored.articles.wechat,
-        &stored.articles.x,
-        &stored.articles.x_html,
-    ] {
+    assert_eq!(stored.stats.current_items, 8);
+    assert_eq!(stored.stats.seven_day_items, 10);
+    let articles = render_articles(&stored, day);
+    assert_eq!(articles.title, stored.analysis.headline);
+    for text in [&articles.wechat, &articles.x, &articles.x_html] {
         assert!(text.contains(&stored.analysis.headline));
-        assert!(!text.contains("本站 AI 专栏样本"));
+        assert!(!text.contains("采样说明"));
         assert!(!text.contains("新闻："));
         assert!(!text.contains("最近 7 天"));
     }
-    assert_eq!(stored.analysis.hotspots.as_ref().unwrap().len(), 1);
-    assert_eq!(stored.articles.images.len(), 1);
-    assert!(stored.articles.images[0].cover);
-    assert!(stored.articles.wechat.contains("图片新闻"));
+    assert_eq!(stored.analysis.hotspots.len(), 1);
+    assert_eq!(articles.images.len(), 1);
+    assert!(articles.images[0].cover);
+    assert!(articles.wechat.contains("图片新闻"));
     assert!(
         stored
             .sources
@@ -750,7 +770,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         stored
             .sources
             .iter()
-            .any(|source| source.topic_id == "codex")
+            .any(|source| source.topic_id == "issues")
     );
     assert!(
         stored
@@ -758,7 +778,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             .iter()
             .any(|source| source.topic_id == "events")
     );
-    assert_eq!(call_count() - before, 8); // Six columns, one failed-column retry, one analysis.
+    assert_eq!(call_count() - before, 11); // Nine columns, one failed-column retry, one analysis.
     // Drive the actual coordinator, including slot acquisition and atomic publication.
     let before = call_count();
     let id = start_generation(&state, day, end).await.unwrap();
@@ -786,7 +806,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     assert_eq!(public["insight"]["images"].as_array().unwrap().len(), 1);
     assert_eq!(
         public["insight"]["sampling"],
-        json!({"current_items":4,"seven_day_items":6,"observed_days":3})
+        json!({"current_items":8,"seven_day_items":10,"observed_days":3})
     );
     assert!(public["insight"].get("wechat_article").is_none());
     let before = call_count();
@@ -838,10 +858,10 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     *citation_mode.lock().unwrap() = CitationReply::InvalidImages;
     let without_images = execute(&state, window.start, window.end).await.unwrap();
     let stored: StoredInsight = serde_json::from_value(without_images.payload).unwrap();
-    assert_eq!(stored.analysis.hotspots.as_ref().unwrap().len(), 1);
+    assert_eq!(stored.analysis.hotspots.len(), 1);
     assert!(stored.analysis.cover_source_index.is_none());
     assert!(stored.analysis.picture_source_indexes.is_empty());
-    assert!(stored.articles.images.is_empty());
+    assert!(selected_article_images(&stored.analysis, &stored.sources).is_empty());
     assert_eq!(call_count() - before, 1);
 
     // Citation errors receive exactly one targeted correction with the original
@@ -955,8 +975,6 @@ async fn check_media_renewal(state: &mut AppState) {
     fresh.credit = "Different publisher".into();
     fresh.content_hash = Some("same-photo".into());
     payload["sources"][index]["image"] = json!(old);
-    payload["articles"]["images"][0]["url"] = json!(old.url);
-    payload["articles"]["wechat"] = json!(format!("![photo]({})", old.url));
     sqlx::query("UPDATE ai_insights SET payload=$2 WHERE id=$1")
         .bind(id)
         .bind(payload)
@@ -1008,12 +1026,11 @@ async fn check_media_renewal(state: &mut AppState) {
         .fetch_one(&state.pool)
         .await
         .unwrap();
-    assert!(
-        stored["articles"]["wechat"]
-            .as_str()
-            .unwrap()
-            .contains(&fresh.url)
-    );
+    assert!(stored.get("articles").is_none());
+    let stored: StoredInsight = serde_json::from_value(stored).unwrap();
+    let articles = render_articles(&stored, day);
+    assert!(articles.wechat.contains(&fresh.url));
+    assert!(!articles.wechat.contains(&old.url));
     media::startup_sync(state).await.unwrap();
     assert_eq!(
         state

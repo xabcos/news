@@ -232,12 +232,6 @@ p { margin-top: 0; }
 .insight-heading h2 { margin: 0; font-size: clamp(1.35rem, 4vw, 1.8rem); line-height: 1.25; }
 .insight-date { margin-bottom: .25rem; color: var(--primary-strong); font-size: .72rem; font-weight: 700; letter-spacing: .04em; }
 .insight-hotspots-date { margin: 0; white-space: nowrap; text-transform: none; }
-.insight-cover { margin: .9rem 0 1rem; }
-.insight-cover > a { display: block; overflow: hidden; border-radius: var(--radius-m); background: var(--surface-soft); }
-.insight-cover img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
-.insight-cover figcaption { padding: .45rem 0 0; font-size: .78rem; line-height: 1.45; }
-.insight-cover figcaption a { color: var(--primary-strong); text-decoration: none; }
-.insight-cover figcaption a:hover { text-decoration: underline; text-underline-offset: .15em; }
 .insight-gallery { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .65rem; margin: .9rem 0 1rem; }
 .insight-gallery.is-single { grid-template-columns: 1fr; }
 .insight-gallery.is-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -247,7 +241,6 @@ p { margin-top: 0; }
 .insight-gallery-item figcaption { padding: .35rem 0 0; font-size: .72rem; line-height: 1.4; }
 .insight-gallery-item figcaption a { color: var(--primary-strong); text-decoration: none; }
 .insight-gallery-item figcaption a:hover { text-decoration: underline; text-underline-offset: .15em; }
-.insight-lead { margin: 1rem 0 .8rem; color: color-mix(in srgb, var(--text) 88%, var(--muted)); font-size: 1.02rem; line-height: 1.72; }
 .insight-change { margin: .65rem 0 1.15rem; padding: .7rem .85rem; border-left: 3px solid var(--primary); background: var(--primary-soft); }
 .insight-change-heading { display: flex; align-items: baseline; gap: .45rem; margin-bottom: .2rem; }
 .insight-change h3 { margin-bottom: 0; font-size: .82rem; }

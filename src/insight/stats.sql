@@ -1,4 +1,4 @@
--- Filter the fixed AI columns before deduplication, across the same seven-day window.
+-- Filter the daily statistics columns before deduplication, across the same seven-day window.
 -- Other columns remain editorial sources but cannot displace or inflate this sample.
 WITH news AS (
     SELECT DISTINCT ON (i.fingerprint)

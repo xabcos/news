@@ -59,7 +59,6 @@ pub(super) fn citation_indexes(analysis: &InsightAnalysis) -> Vec<usize> {
     let mut indexes = analysis
         .hotspots
         .iter()
-        .flatten()
         .chain(&analysis.gossip)
         .flat_map(|story| story.source_indexes.iter().copied())
         .collect::<Vec<_>>();
@@ -93,11 +92,7 @@ pub(super) fn render(
     let mut article = Article::default();
     article.heading(1, &title);
     article.paragraph(edition_label);
-    article.stories(
-        "今日热点",
-        analysis.hotspots.as_deref().unwrap_or_default(),
-        false,
-    );
+    article.stories("今日热点", &analysis.hotspots, false);
     article.stories("AI 圈热议", &analysis.gossip, true);
     if !images.is_empty() {
         article.heading(2, "图片新闻");

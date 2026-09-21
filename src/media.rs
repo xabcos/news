@@ -237,9 +237,8 @@ async fn transfer_image(state: &AppState, mut image: NewsImage) -> Option<NewsIm
         tracing::debug!(url = %origin, "tmpfile returned an invalid direct link");
         return None;
     };
-    // Older tmpfile deployments may derive the link from an HTTP forwarded header even
-    // though the public origin is HTTPS. Upgrade that same-authority link to HTTPS; never
-    // accept a different host or an insecure URL from the upstream response.
+    // Reverse proxies may forward HTTP internally. Use the configured HTTPS origin
+    // for its own links, and reject links to a different host.
     if direct_url.scheme() == "http"
         && base_url.scheme() == "https"
         && same_http_to_https_authority(&direct_url, base_url)
@@ -533,26 +532,23 @@ fn selected_image_positions(payload: &Value) -> Vec<usize> {
         .as_u64()
         .into_iter()
         .chain(
-            payload["articles"]["images"]
+            payload["analysis"]["picture_source_indexes"]
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter_map(|image| image["index"].as_u64()),
+                .filter_map(Value::as_u64),
         )
         .collect::<std::collections::HashSet<_>>();
-    let legacy = indexes.is_empty() && payload["analysis"]["hotspots"].is_null();
     sources
         .iter()
         .enumerate()
         .filter(|(_, source)| {
             !source["image"].is_null()
-                && (legacy
-                    || source["index"]
-                        .as_u64()
-                        .is_some_and(|index| indexes.contains(&index)))
+                && source["index"]
+                    .as_u64()
+                    .is_some_and(|index| indexes.contains(&index))
         })
         .map(|(position, _)| position)
-        .take(if legacy { 3 } else { usize::MAX })
         .collect()
 }
 
@@ -562,27 +558,7 @@ fn update_insight_image(payload: &mut Value, position: usize, image: NewsImage) 
     if source["image"] == value {
         return Ok(false);
     }
-    let index = source["index"].clone();
-    let old_url = source["image"]["url"].as_str().map(str::to_owned);
-    source["image"] = value.clone();
-    if let Some(images) = payload
-        .get_mut("articles")
-        .and_then(|articles| articles.get_mut("images"))
-        .and_then(Value::as_array_mut)
-    {
-        for image in images.iter_mut().filter(|image| image["index"] == index) {
-            for field in ["url", "source_url", "caption", "caption_en", "credit"] {
-                image[field] = value[field].clone();
-            }
-        }
-    }
-    if let (Some(old_url), Some(new_url)) = (old_url, value["url"].as_str()) {
-        for key in ["wechat", "x"] {
-            if let Some(article) = payload["articles"][key].as_str() {
-                payload["articles"][key] = Value::String(article.replace(&old_url, new_url));
-            }
-        }
-    }
+    source["image"] = value;
     Ok(true)
 }
 
@@ -594,20 +570,20 @@ mod tests {
 
     #[test]
     fn accepts_tmpfile_http_link_for_https_origin() {
-        let direct = Url::parse("http://dl.xabclabs.com/files/token").unwrap();
-        let base = Url::parse("https://dl.xabclabs.com").unwrap();
+        let direct = Url::parse("http://media.example.com/files/token").unwrap();
+        let base = Url::parse("https://media.example.com").unwrap();
         assert!(same_http_to_https_authority(&direct, &base));
     }
 
     #[test]
     fn rejects_different_host_or_non_default_port() {
-        let base = Url::parse("https://dl.xabclabs.com").unwrap();
+        let base = Url::parse("https://media.example.com").unwrap();
         assert!(!same_http_to_https_authority(
             &Url::parse("http://other.example/files/token").unwrap(),
             &base,
         ));
         assert!(!same_http_to_https_authority(
-            &Url::parse("http://dl.xabclabs.com:8080/files/token").unwrap(),
+            &Url::parse("http://media.example.com:8080/files/token").unwrap(),
             &base,
         ));
     }
@@ -629,21 +605,20 @@ mod tests {
     }
 
     #[test]
-    fn renews_selected_images_without_inventing_legacy_article_fields() {
+    fn renews_only_explicitly_selected_images() {
         let image = json!({"url":"https://cdn.example.com/old.jpg",
             "source_url":"https://example.com/story", "caption":"图说",
             "caption_en":"Caption", "credit":"摄影师"});
-        let mut payload = json!({"analysis": {},
+        let mut payload = json!({"analysis": {"cover_source_index":7,"picture_source_indexes":[]},
             "sources":[{"index":7,"image":image}]});
         assert_eq!(selected_image_positions(&payload), vec![0]);
         let mut renewed = stored_image(&payload["sources"][0]["image"]).unwrap();
         renewed.url = "https://cdn.example.com/new.jpg".into();
         assert!(update_insight_image(&mut payload, 0, renewed.clone()).unwrap());
-        assert!(payload.get("articles").is_none());
         assert!(!update_insight_image(&mut payload, 0, renewed).unwrap());
-        payload["analysis"]["hotspots"] = json!([]);
+        payload["analysis"]["cover_source_index"] = Value::Null;
         assert!(selected_image_positions(&payload).is_empty());
-        payload["analysis"]["cover_source_index"] = json!(7);
+        payload["analysis"]["picture_source_indexes"] = json!([7]);
         assert_eq!(selected_image_positions(&payload), vec![0]);
     }
 }

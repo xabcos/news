@@ -770,27 +770,18 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
   section.className = "insight";
   const heading = document.createElement("div");
   heading.className = "insight-heading";
-  const briefingDate = insight.briefing_day
-    ? `${t().insightLabel} · ${formatDay(insight.briefing_day, insight.timezone)}`
-    : t().insightLabel;
+  const briefingDate = `${t().insightLabel} · ${formatDay(insight.briefing_day, insight.timezone)}`;
   const title = document.createElement("h2");
   title.textContent = pick(insight, "headline");
-  if (!(insight.hotspots ?? insight.sources ?? []).length) {
+  if (!insight.hotspots.length) {
     heading.append(span(briefingDate, "insight-date muted small"));
   }
   heading.append(title);
   section.append(heading);
-  if (insight.images?.length) section.append(renderInsightGallery(insight.images));
-  else if (insight.cover?.url) section.append(insightCover(insight.cover));
-  // Only explicitly selected, current stories lead a new daily edition.
-  const sources = new Map((insight.sources || []).map((source) => [source.index, source]));
-  if (Array.isArray(insight.hotspots)) {
-    section.append(...renderInsightStories(t().hotspots, insight.hotspots, sources, { dateText: briefingDate }));
-    section.append(...renderInsightStories(t().gossip, insight.gossip || [], sources, { gossip: true }));
-  } else {
-    if (pick(insight, "overview")) section.append(insightParagraph("", pick(insight, "overview"), "insight-lead"));
-    section.append(...renderInsightHotspots(t().hotspots, insight.sources || [], briefingDate));
-  }
+  if (insight.images.length) section.append(renderInsightGallery(insight.images));
+  const sources = new Map(insight.sources.map((source) => [source.index, source]));
+  section.append(...renderInsightStories(t().hotspots, insight.hotspots, sources, { dateText: briefingDate }));
+  section.append(...renderInsightStories(t().gossip, insight.gossip, sources, { gossip: true }));
   const trend = pick(insight, "changes");
   if (trend.trim()) {
     const changes = insightParagraph(
@@ -801,26 +792,26 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
     );
     const changeSources = sourceList(
       t().sources,
-      (insight.changes_source_indexes || []).map((index) => sources.get(index)).filter(Boolean),
+      insight.changes_source_indexes.map((index) => sources.get(index)).filter(Boolean),
     );
     if (changeSources) changes.append(changeSources);
     section.append(changes);
   }
-  section.append(...renderInsightGroup(t().dataSignals, insight.data_signals || [], sources));
-  section.append(...renderInsightGroup(t().watchSignals, insight.watch_signals || [], sources));
+  section.append(...renderInsightGroup(t().dataSignals, insight.data_signals, sources));
+  section.append(...renderInsightGroup(t().watchSignals, insight.watch_signals, sources));
   for (const [label, items, opportunities] of [
     [t().wealth, insight.wealth, true],
     [t().employment, insight.employment, false],
     [t().risks, insight.risks, false],
     [t().actions, insight.actions, false],
   ]) {
-    section.append(...renderInsightGroup(label, items || [], sources, opportunities));
+    section.append(...renderInsightGroup(label, items, sources, opportunities));
   }
   const references = insightSection(t().references);
   const referenceList = document.createElement("ol");
   referenceList.className = "insight-references";
   const seen = new Set();
-  for (const source of [...sources.values(), ...(insight.research_sources || [])]) {
+  for (const source of [...sources.values(), ...insight.research_sources]) {
     if (seen.has(source.url)) continue;
     seen.add(source.url);
     const link = sourceLink(source.url, pick(source, "title") || source.url);
@@ -881,31 +872,6 @@ function renderInsightStories(label, stories, sources, { gossip = false, dateTex
   return [section];
 }
 
-function renderInsightHotspots(label, sources, dateText) {
-  const items = sources.slice(0, 8);
-  if (!items.length) return [];
-  const section = insightSection(label, dateText);
-  section.classList.add("insight-hotspots");
-  section.append(...items.map((source) => {
-    const article = document.createElement("article");
-    article.className = "item insight-hotspot";
-    const title = sourceLink(source.url, pick(source, "title"), pick(source, "summary"));
-    const heading = document.createElement("h3");
-    heading.className = "item-title";
-    if (title) heading.append(title);
-    else heading.textContent = pick(source, "title");
-    const summary = document.createElement("p");
-    summary.className = "item-summary";
-    summary.textContent = pick(source, "summary");
-    const meta = document.createElement("div");
-    meta.className = "item-meta muted small";
-    meta.textContent = `${source.source || hostOf(source.url)} · ${source.published_at ? relativeTime(source.published_at) : `${state.lang === "en" ? "Collected" : "收录于"} ${relativeTime(source.first_seen_at)}`}`;
-    article.append(heading, summary, meta);
-    return article;
-  }));
-  return [section];
-}
-
 function renderInsightGallery(images) {
   const gallery = document.createElement("div");
   gallery.className = `insight-gallery${images.length === 1 ? " is-single" : images.length === 2 ? " is-two" : ""}`;
@@ -936,33 +902,6 @@ function renderInsightGallery(images) {
     return figure;
   }));
   return gallery;
-}
-
-function insightCover(cover) {
-  const figure = document.createElement("figure");
-  figure.className = "insight-cover";
-  const link = document.createElement("a");
-  link.href = cover.source_url;
-  link.target = "_blank";
-  link.rel = "noopener noreferrer";
-  const image = document.createElement("img");
-  image.src = cover.url;
-  image.alt = pick(cover, "caption");
-  image.loading = "eager";
-  image.fetchPriority = "high";
-  image.decoding = "async";
-  image.referrerPolicy = "no-referrer";
-  image.addEventListener("error", () => figure.remove(), { once: true });
-  link.append(image);
-  const caption = document.createElement("figcaption");
-  const source = document.createElement("a");
-  source.href = cover.source_url;
-  source.target = "_blank";
-  source.rel = "noopener noreferrer";
-  source.textContent = `${t().coverSource} ↗`;
-  caption.append(span(pick(cover, "caption"), "insight-caption"), span(` · ${cover.credit} · `, "muted small"), source);
-  figure.append(link, caption);
-  return figure;
 }
 
 function insightParagraph(label, text, className = "insight-paragraph", metaText = "") {

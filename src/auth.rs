@@ -66,9 +66,7 @@ impl User {
         self.pro_until.is_some_and(|until| until > Utc::now())
     }
 
-    /// Personal fetch tasks are a Pro feature. Existing Free tasks remain
-    /// readable and runnable for accounts that still have one after the
-    /// entitlement change; creation is checked separately by the topic API.
+    /// Creating personal fetch tasks requires Pro; execution follows plan limits.
     pub(crate) fn can_create_personal_topic(&self) -> bool {
         self.is_pro()
     }
@@ -261,7 +259,7 @@ pub(crate) async fn me(State(state): State<AppState>, user: User) -> Result<Resp
         },
     }))
     .into_response();
-    // Sessions that predate the role cookie pick it up on their next workspace visit.
+    // Refresh the page's role hint from the authenticated account.
     response.headers_mut().append(
         header::SET_COOKIE,
         HeaderValue::from_str(&role_cookie(&state, &user.role))
