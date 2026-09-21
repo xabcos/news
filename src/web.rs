@@ -288,8 +288,8 @@ pub async fn serve(state: AppState) -> Result<()> {
         })?;
     tracing::info!(%bind_addr, "news listening");
 
-    // Populate the digest cache after the listener is ready so a cold cache never delays
-    // startup. Requests arriving during warm-up simply fill the same cache on demand.
+    // AppState loads the topic catalogue before serving. Warm news snapshots in the
+    // background; requests can load any missing snapshot directly from the database.
     let warmup = tokio::spawn({
         let state = state.clone();
         async move {

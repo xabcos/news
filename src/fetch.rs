@@ -121,6 +121,9 @@ pub(crate) struct NewsImage {
     pub expires_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_hash: Option<String>,
+    /// Verified format of the mirrored bytes, shared by browser and model inputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
 }
 
 impl NewsImage {
@@ -564,6 +567,7 @@ mod tests {
             origin_url: None,
             expires_at: None,
             content_hash: None,
+            mime_type: None,
         };
         let image = image.validated().expect("valid sourced image");
         assert!(image.belongs_to("https://news.example.com/story?id=7&utm_source=x"));

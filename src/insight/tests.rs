@@ -559,6 +559,33 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         axum::serve(listener, app).await.unwrap();
     });
     let mut state = AppState::new(config).await.unwrap();
+    // The first request is usable without waiting for background cache warming.
+    let http_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let first_request_url = format!("http://{}", http_listener.local_addr().unwrap());
+    let router = crate::web::router(state.clone());
+    let http_server =
+        tokio::spawn(async move { axum::serve(http_listener, router).await.unwrap() });
+    let first: Value = state
+        .http
+        .get(format!("{first_request_url}/topics"))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(first["topics"].as_array().unwrap().len(), 9);
+    state
+        .http
+        .get(format!("{first_request_url}/digest?topic=x"))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    http_server.abort();
     let catalog: Vec<(String, String)> = sqlx::query_as(
         "SELECT id,name FROM topics WHERE owner_user_id IS NULL ORDER BY sort_weight",
     )
@@ -910,6 +937,54 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     assert_eq!(call_count() - before, 2);
     *citation_mode.lock().unwrap() = CitationReply::Valid;
 
+    // Fail the first completion write after the model has returned. The sequence
+    // increment survives rollback, so the next write can persist the same result.
+    sqlx::raw_sql(
+        "CREATE SEQUENCE test_insight_finish_attempt; \
+        CREATE FUNCTION test_insight_finish_fault() RETURNS trigger LANGUAGE plpgsql AS $$ \
+        BEGIN IF NEW.status='ok' AND nextval('test_insight_finish_attempt')=1 THEN \
+        RAISE EXCEPTION 'injected completion write failure'; END IF; RETURN NEW; END $$; \
+        CREATE TRIGGER test_insight_finish_fault BEFORE UPDATE ON ai_insights \
+        FOR EACH ROW EXECUTE FUNCTION test_insight_finish_fault();",
+    )
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    let before = call_count();
+    let retry_id = start_generation(&state, day, end).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let failed_once: bool =
+                sqlx::query_scalar("SELECT is_called FROM test_insight_finish_attempt")
+                    .fetch_one(&state.pool)
+                    .await
+                    .unwrap();
+            if failed_once {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(is_running(&state));
+    tick(&state).await.unwrap();
+    wait_for_generation(&state).await;
+    let recovered: String = sqlx::query_scalar("SELECT status FROM ai_insights WHERE id=$1")
+        .bind(retry_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(recovered, "ok");
+    assert_eq!(call_count() - before, 1);
+    sqlx::raw_sql(
+        "DROP TRIGGER test_insight_finish_fault ON ai_insights; \
+        DROP FUNCTION test_insight_finish_fault(); DROP SEQUENCE test_insight_finish_attempt;",
+    )
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
     // Daily collection must continue to respect the editor's configured cost cap.
     let before = call_count();
     sqlx::query("UPDATE topics SET daily_run_cap=1 WHERE id='github'")
@@ -949,6 +1024,57 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             .iter()
             .any(|s| s.published_at.is_some_and(|at| window.contains(at)))
     );
+    // A repeated URL outside the 80-item prefilter must not count as an insert.
+    sqlx::query(
+        "INSERT INTO items (id,topic_id,day,fingerprint,title,summary,url,first_seen_at) \
+        SELECT gen_random_uuid(),'x',$1,decode(lpad(i::text,64,'0'),'hex'), \
+        'fixture-'||md5(i::text),'prefilter fixture','https://example.com/prefilter/'||i, \
+        NOW()+INTERVAL '1 hour'+i*INTERVAL '1 second' FROM generate_series(1,81) i",
+    )
+    .bind(state.digest.today())
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE topics SET daily_run_cap=24 WHERE id='github'")
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE runs SET triggered_by='briefing',window_end=$1 WHERE topic_id='github' AND status='ok'")
+        .bind(end).execute(&state.pool).await.unwrap();
+    sqlx::query("DELETE FROM runs WHERE topic_id='x'")
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    let count_before: i64 = sqlx::query_scalar("SELECT count(*) FROM items")
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    let revision_before: i64 = sqlx::query_scalar("SELECT feed_revision FROM topics WHERE id='x'")
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    runner::collect_briefing(&state, window).await.unwrap();
+    let counts: (i32, i32, i32) =
+        sqlx::query_as("SELECT new_count,dup_count,dropped_count FROM runs WHERE topic_id='x'")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(counts, (0, 1, 2));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM items")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap(),
+        count_before
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT feed_revision FROM topics WHERE id='x'")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap(),
+        revision_before
+    );
+
     state.shutdown_workers().await;
     check_media_renewal(&mut state).await;
     check_media_limits(state).await;
@@ -974,6 +1100,7 @@ async fn check_media_renewal(state: &mut AppState) {
     fresh.caption = "Different story's caption".into();
     fresh.credit = "Different publisher".into();
     fresh.content_hash = Some("same-photo".into());
+    fresh.mime_type = Some("image/jpeg".into());
     payload["sources"][index]["image"] = json!(old);
     sqlx::query("UPDATE ai_insights SET payload=$2 WHERE id=$1")
         .bind(id)

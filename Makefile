@@ -2,13 +2,16 @@ APP := news
 IMAGE ?= proxyxai/news
 VERSION ?= rust
 
-.PHONY: check test fmt fmt-check clippy audit js-check compose-check release-check run docker-build docker-up-local docker-down
+.PHONY: check test integration-test fmt fmt-check clippy audit js-check compose-check release-check run docker-build docker-up-local docker-down
 
 check:
 	cargo check --locked --all-targets
 
 test:
 	cargo test --locked --all-targets
+
+integration-test:
+	cargo test --locked postgres_ -- --ignored
 
 fmt:
 	cargo fmt --all

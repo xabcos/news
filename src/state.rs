@@ -221,6 +221,7 @@ impl AppState {
             workers: Arc::new(WorkerGroup::default()),
             metrics: Arc::new(Metrics::default()),
         };
+        state.digest.reload_topics(&state).await?;
         Ok(state)
     }
 

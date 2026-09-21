@@ -286,7 +286,6 @@ impl DigestCache {
 
     /// Fills memory for every enabled topic so the first request already hits it.
     pub async fn warm(&self, state: &AppState) -> Result<()> {
-        self.reload_topics(state).await?;
         for topic in self.topics().iter() {
             for day in [self.today(), self.yesterday()] {
                 self.snapshot(state, &topic.id, day).await?;
@@ -1064,11 +1063,6 @@ async fn me_feed(
 }
 
 async fn personal_topic_cards(state: &AppState, user_id: i64) -> Result<Vec<PersonalTopicCard>> {
-    // The HTTP listener starts before the asynchronous cache warm-up. A first authenticated
-    // request must still see public topics if it wins that startup race.
-    if state.digest.topics().is_empty() {
-        state.digest.reload_topics(state).await?;
-    }
     let mut cards = Vec::new();
     for topic in state.digest.topics().iter() {
         let snapshot = state
@@ -1268,6 +1262,7 @@ fn public_image(value: Option<serde_json::Value>) -> Option<serde_json::Value> {
     };
     object.remove("origin_url");
     object.remove("content_hash");
+    object.remove("mime_type");
     object.remove("expires_at");
     Some(serde_json::Value::Object(object))
 }

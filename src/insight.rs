@@ -32,6 +32,7 @@ const IN_FLIGHT_KEY: &str = "__ai_insight__";
 const SOURCE_LIMIT: i64 = 240;
 const IMAGE_CANDIDATES: usize = 12;
 const FAILED_RETRY_MINUTES: i64 = 10;
+const FINISH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 const STAT_TOPICS: [&str; 6] = ["x", "p", "china-ai", "overseas-ai", "gossip", "cases"];
 
 fn cutoff_for_day(state: &AppState, day: NaiveDate) -> DateTime<Utc> {
@@ -599,8 +600,19 @@ async fn run(
         }
     }.await;
     let status = if outcome.is_ok() { "ok" } else { "failed" };
-    if let Err(error) = finish(&state, run_id, started_at, outcome).await {
-        tracing::error!(%error, status, "failed to record AI insight");
+    // Keep the completed result and its run reservation until PostgreSQL accepts it.
+    // Retrying this idempotent write never repeats a paid model request.
+    loop {
+        match finish(&state, run_id, started_at, &outcome).await {
+            Ok(()) => break,
+            Err(error) => {
+                tracing::error!(%error, %run_id, status, "AI insight persistence failed; retrying");
+                tokio::select! {
+                    _ = state.shutdown.cancelled() => break,
+                    _ = tokio::time::sleep(FINISH_RETRY_DELAY) => {}
+                }
+            }
+        }
     }
     state.in_flight().remove(IN_FLIGHT_KEY);
 }
@@ -1077,6 +1089,7 @@ fn public_image(mut image: NewsImage) -> NewsImage {
     image.origin_url = None;
     image.expires_at = None;
     image.content_hash = None;
+    image.mime_type = None;
     image
 }
 
@@ -1196,7 +1209,7 @@ async fn finish(
     state: &AppState,
     run_id: Uuid,
     started_at: DateTime<Utc>,
-    outcome: Result<Completed>,
+    outcome: &Result<Completed>,
 ) -> Result<()> {
     match outcome {
         Ok(done) => {

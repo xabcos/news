@@ -997,6 +997,12 @@ mod tests {
             .await
             .unwrap();
         assert!(database.starts_with("news_payment_audit_"));
+        sqlx::migrate::Migrator::new(std::path::Path::new("migrations"))
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
         let day = Utc::now().date_naive();
         let user = fixture_owner(&pool).await;
         let overdue = fixture_order(&pool, user, 61, "pending").await;

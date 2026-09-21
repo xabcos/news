@@ -26,7 +26,7 @@ NEWS 按主题采集、去重并整理中英文新闻，提供新闻首页、Ato
 
 日报保存结构化事实、引用、图片选择和统计快照。网页、公众号 Markdown、X Articles 纯文本及 HTML 从这些内容生成，共用主标题。页面依次呈现热点、AI 圈热议、趋势、关键数据、后续观察和参考来源；空分组省略。关键数据来自有引用的价格、成本、效率或性能事实。
 
-配图优先使用 `p` 栏目。模型查看最多 12 张候选图，选择至多 1 张封面和 2 张正文图，按内容哈希或原始地址去重；图片由服务端转存并自动续期。公众号稿可直接使用图片链接，X 稿提供图片顺序、图说、署名和原文链接。
+配图优先使用 `p` 栏目。模型查看最多 12 张候选图，选择至多 1 张封面和 2 张正文图，按内容哈希或原始地址去重。服务端请求 JPEG、PNG、WebP 或 GIF，完整解码校验后统一保存为静态 JPEG，并自动续期；无法验证的图片不进入日报候选。公众号稿可直接使用图片链接，X 稿提供图片顺序、图说、署名和原文链接。
 
 ## 运行与部署
 
@@ -90,6 +90,7 @@ GET /insight
 ```bash
 make release-check
 NEWS_DAILY_TEST_DATABASE_URL=postgres://.../news_daily_test_check cargo test --locked postgres_daily_pipeline -- --ignored
+NEWS_DAILY_TEST_DATABASE_URL=postgres://.../news_daily_test_check NEWS_PAYMENT_TEST_DATABASE_URL=postgres://.../news_payment_audit_check make integration-test
 ```
 
-`release-check` 执行格式检查、单元测试、Clippy、前端语法和 Compose 配置检查。PostgreSQL 集成测试需要独立空库，数据库名称以 `news_daily_test` 开头；它使用本地模拟接口，验证初始化、栏目目录、统计范围、时间边界、去重、单并发补采、失败续跑、日报发布与图片续期。
+`release-check` 执行格式检查、单元测试、Clippy、前端语法和 Compose 配置检查。`integration-test` 使用两个独立空库，名称分别以 `news_daily_test` 和 `news_payment_audit_` 开头，并需要本地测试配置。它通过模拟接口验证初始化、首次访问、统计范围、时间边界、去重、单并发补采、失败续跑、日报落库重试、图片续期及支付幂等。CI 自动执行两组检查。

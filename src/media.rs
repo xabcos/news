@@ -6,6 +6,7 @@
 
 use crate::{error::Result, fetch::NewsImage, state::AppState};
 use chrono::{DateTime, Utc};
+use image::{DynamicImage, ImageDecoder, ImageReader, Limits, codecs::jpeg::JpegEncoder};
 use reqwest::{
     header,
     multipart::{Form, Part},
@@ -13,7 +14,7 @@ use reqwest::{
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, io::Cursor, time::Duration};
 use tokio::{task::JoinSet, time::Instant};
 use url::Url;
 use uuid::Uuid;
@@ -24,6 +25,8 @@ const IMAGE_BATCH_TIMEOUT: Duration = Duration::from_secs(90);
 // placeholders. They are not useful as visual-news cards even when they return 200.
 const MIN_IMAGE_BYTES: usize = 4096;
 const MIN_IMAGE_DIMENSION: u32 = 320;
+const MIRRORED_MIME_TYPE: &str = "image/jpeg";
+const MAX_DECODE_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct UploadResponse {
@@ -91,6 +94,7 @@ pub(crate) async fn mirror_images(state: &AppState, images: &mut [Option<NewsIma
                     image.origin_url.clone_from(&mirrored.origin_url);
                     image.expires_at = mirrored.expires_at;
                     image.content_hash.clone_from(&mirrored.content_hash);
+                    image.mime_type.clone_from(&mirrored.mime_type);
                     images[index] = Some(image);
                 }
             }
@@ -129,10 +133,7 @@ async fn transfer_image(state: &AppState, mut image: NewsImage) -> Option<NewsIm
         .image_http
         .get(&origin)
         .header(header::USER_AGENT, "xabcnews.com image mirror")
-        .header(
-            header::ACCEPT,
-            "image/avif,image/webp,image/jpeg,image/png,image/gif",
-        )
+        .header(header::ACCEPT, "image/jpeg,image/png,image/webp,image/gif")
         .send()
         .await
     {
@@ -151,15 +152,6 @@ async fn transfer_image(state: &AppState, mut image: NewsImage) -> Option<NewsIm
         return None;
     }
 
-    let content_type = response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(normalize_content_type);
-    let Some(content_type) = content_type else {
-        tracing::debug!(url = %origin, "news image has an unsupported content type");
-        return None;
-    };
     if response
         .content_length()
         .is_some_and(|size| size > state.config.image_max_bytes)
@@ -181,21 +173,22 @@ async fn transfer_image(state: &AppState, mut image: NewsImage) -> Option<NewsIm
         }
         bytes.extend_from_slice(&chunk);
     }
-    if bytes.is_empty() {
-        tracing::debug!(url = %origin, "news image is empty");
+    let bytes = tokio::task::spawn_blocking(move || normalize_image(&bytes))
+        .await
+        .ok()
+        .flatten();
+    let Some(bytes) = bytes.filter(|bytes| bytes.len() as u64 <= state.config.image_max_bytes)
+    else {
+        tracing::debug!(url = %origin, "news image is invalid, unsupported or outside size limits");
         return None;
-    }
-    if !image_is_usable(&bytes) {
-        tracing::debug!(url = %origin, size = bytes.len(), "news image is too small or likely a placeholder");
-        return None;
-    }
+    };
     image.content_hash = Some(hex::encode(Sha256::digest(&bytes)));
+    image.mime_type = Some(MIRRORED_MIME_TYPE.to_owned());
 
-    let extension = extension_for(content_type);
-    let filename = format!("news-{}.{}", Uuid::new_v4(), extension);
+    let filename = format!("news-{}.jpg", Uuid::new_v4());
     let part = match Part::bytes(bytes)
         .file_name(filename)
-        .mime_str(content_type)
+        .mime_str(MIRRORED_MIME_TYPE)
     {
         Ok(part) => part,
         Err(error) => {
@@ -255,81 +248,51 @@ async fn transfer_image(state: &AppState, mut image: NewsImage) -> Option<NewsIm
     Some(image)
 }
 
-fn image_is_usable(bytes: &[u8]) -> bool {
-    bytes.len() >= MIN_IMAGE_BYTES
-        && !image_dimensions(bytes).is_some_and(|(width, height)| {
-            width < MIN_IMAGE_DIMENSION || height < MIN_IMAGE_DIMENSION
+/// Decode the complete file before publication; HTTP MIME labels alone are not proof
+/// of an image. Store one static JPEG representation for both pages and vision inputs.
+fn normalize_image(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.len() < MIN_IMAGE_BYTES {
+        return None;
+    }
+    let mut reader = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    limits.max_alloc = Some(MAX_DECODE_BYTES);
+    reader.limits(limits);
+    let mut decoder = reader.into_decoder().ok()?;
+    let (width, height) = decoder.dimensions();
+    if width < MIN_IMAGE_DIMENSION
+        || height < MIN_IMAGE_DIMENSION
+        || decoder.total_bytes() > MAX_DECODE_BYTES
+    {
+        return None;
+    }
+    let orientation = decoder.orientation().ok()?;
+    let mut decoded = DynamicImage::from_decoder(decoder).ok()?;
+    decoded.apply_orientation(orientation);
+    if decoded.width() > 4096 || decoded.height() > 4096 {
+        decoded = decoded.thumbnail(4096, 4096);
+    }
+    let decoded = if decoded.color().has_alpha() {
+        let rgba = decoded.into_rgba8();
+        image::RgbImage::from_fn(rgba.width(), rgba.height(), |x, y| {
+            let pixel = rgba.get_pixel(x, y);
+            let alpha = u16::from(pixel[3]);
+            image::Rgb(std::array::from_fn(|channel| {
+                ((u16::from(pixel[channel]) * alpha + 255 * (255 - alpha)) / 255) as u8
+            }))
         })
-}
-
-/// Reads dimensions from the formats accepted above without decoding or trusting image
-/// metadata. Unknown formats are allowed through; the byte-size guard still rejects the
-/// tiny placeholder class this protects against.
-fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() >= 24 {
-        return Some((
-            u32::from_be_bytes(bytes[16..20].try_into().ok()?),
-            u32::from_be_bytes(bytes[20..24].try_into().ok()?),
-        ));
-    }
-    if (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")) && bytes.len() >= 10 {
-        return Some((
-            u16::from_le_bytes(bytes[6..8].try_into().ok()?) as u32,
-            u16::from_le_bytes(bytes[8..10].try_into().ok()?) as u32,
-        ));
-    }
-    if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
-        let chunk = bytes.get(12..16)?;
-        if chunk == b"VP8X" && bytes.len() >= 30 {
-            let width = 1 + u32::from_le_bytes([bytes[24], bytes[25], bytes[26], 0]);
-            let height = 1 + u32::from_le_bytes([bytes[27], bytes[28], bytes[29], 0]);
-            return Some((width, height));
-        }
-        if chunk == b"VP8 " {
-            let start = bytes
-                .windows(3)
-                .position(|window| window == b"\x9d\x01\x2a")?;
-            let start = start + 3;
-            if bytes.len() >= start + 4 {
-                let width = u16::from_le_bytes(bytes[start..start + 2].try_into().ok()?) & 0x3fff;
-                let height =
-                    u16::from_le_bytes(bytes[start + 2..start + 4].try_into().ok()?) & 0x3fff;
-                return Some((u32::from(width), u32::from(height)));
-            }
-        }
-    }
-    if bytes.starts_with(b"\xff\xd8") {
-        let mut index = 2;
-        while index + 9 < bytes.len() {
-            if bytes[index] != 0xff {
-                index += 1;
-                continue;
-            }
-            while index < bytes.len() && bytes[index] == 0xff {
-                index += 1;
-            }
-            let marker = *bytes.get(index)?;
-            index += 1;
-            if marker == 0xd8 || marker == 0xd9 || (0xd0..=0xd7).contains(&marker) {
-                continue;
-            }
-            let length = u16::from_be_bytes(bytes.get(index..index + 2)?.try_into().ok()?) as usize;
-            if length < 2 || index + length > bytes.len() {
-                return None;
-            }
-            if (0xc0..=0xc3).contains(&marker)
-                || (0xc5..=0xc7).contains(&marker)
-                || (0xc9..=0xcb).contains(&marker)
-                || (0xcd..=0xcf).contains(&marker)
-            {
-                let height = u16::from_be_bytes(bytes.get(index + 3..index + 5)?.try_into().ok()?);
-                let width = u16::from_be_bytes(bytes.get(index + 5..index + 7)?.try_into().ok()?);
-                return Some((u32::from(width), u32::from(height)));
-            }
-            index += length;
-        }
-    }
-    None
+    } else {
+        decoded.into_rgb8()
+    };
+    let mut jpeg = Vec::new();
+    JpegEncoder::new_with_quality(&mut jpeg, 90)
+        .encode_image(&decoded)
+        .ok()?;
+    Some(jpeg)
 }
 
 pub(crate) fn is_public_https_url(url: &Url) -> bool {
@@ -347,6 +310,7 @@ fn is_fresh_tmpfile_url(state: &AppState, image: &NewsImage) -> bool {
         return false;
     };
     same_origin(&image_url, base)
+        && image.mime_type.as_deref() == Some(MIRRORED_MIME_TYPE)
         && image.expires_at.is_some_and(|expires_at| {
             expires_at > Utc::now() + chrono::Duration::seconds(RENEW_BEFORE_SECS)
         })
@@ -369,30 +333,6 @@ fn same_http_to_https_authority(left: &Url, right: &Url) -> bool {
     left.host_str() == right.host_str()
         && left.port_or_known_default() == Some(80)
         && right.port_or_known_default() == Some(443)
-}
-
-fn normalize_content_type(value: &str) -> Option<&'static str> {
-    let value = value.split(';').next()?.trim().to_ascii_lowercase();
-    match value.as_str() {
-        "image/avif" => Some("image/avif"),
-        "image/webp" => Some("image/webp"),
-        "image/jpeg" | "image/jpg" => Some("image/jpeg"),
-        "image/png" => Some("image/png"),
-        "image/gif" => Some("image/gif"),
-        "image/bmp" => Some("image/bmp"),
-        _ => None,
-    }
-}
-
-fn extension_for(content_type: &str) -> &'static str {
-    match content_type {
-        "image/avif" => "avif",
-        "image/webp" => "webp",
-        "image/png" => "png",
-        "image/gif" => "gif",
-        "image/bmp" => "bmp",
-        _ => "jpg",
-    }
 }
 
 /// Renews one week's media in one batch so stored copies of the same photograph
@@ -589,19 +529,51 @@ mod tests {
     }
 
     #[test]
-    fn rejects_tiny_placeholder_dimensions() {
-        let mut png = vec![0; 4096];
-        png[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
-        png[19] = 220;
-        png[23] = 220;
-        assert_eq!(image_dimensions(&png), Some((220, 220)));
-        assert!(!image_is_usable(&png));
-        png[18] = 2;
-        png[19] = 128;
-        png[22] = 2;
-        png[23] = 128;
-        assert_eq!(image_dimensions(&png), Some((640, 640)));
-        assert!(image_is_usable(&png));
+    fn decodes_supported_images_into_valid_static_jpeg() {
+        for format in [
+            image::ImageFormat::Jpeg,
+            image::ImageFormat::Png,
+            image::ImageFormat::WebP,
+            image::ImageFormat::Gif,
+        ] {
+            let bytes = fixture_image(format, 640);
+            let normalized = normalize_image(&bytes).expect("valid supported image");
+            assert_eq!(
+                image::guess_format(&normalized).unwrap(),
+                image::ImageFormat::Jpeg
+            );
+            let decoded = image::load_from_memory(&normalized).unwrap();
+            assert_eq!((decoded.width(), decoded.height()), (640, 640));
+        }
+    }
+
+    fn fixture_image(format: image::ImageFormat, size: u32) -> Vec<u8> {
+        let pixels = image::RgbImage::from_fn(size, size, |x, y| {
+            let n = x
+                .wrapping_mul(1_664_525)
+                .wrapping_add(y.wrapping_mul(1_013_904_223));
+            image::Rgb([n as u8, (n >> 8) as u8, (n >> 16) as u8])
+        });
+        let mut bytes = Cursor::new(Vec::new());
+        DynamicImage::ImageRgb8(pixels)
+            .write_to(&mut bytes, format)
+            .unwrap();
+        bytes.into_inner()
+    }
+
+    #[test]
+    fn rejects_placeholders_corrupt_files_and_unsupported_formats() {
+        assert!(normalize_image(&fixture_image(image::ImageFormat::Png, 220)).is_none());
+        let mut fake = vec![0; 8192];
+        fake[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        fake[16..20].copy_from_slice(&640_u32.to_be_bytes());
+        fake[20..24].copy_from_slice(&640_u32.to_be_bytes());
+        assert!(normalize_image(&fake).is_none());
+        let png = fixture_image(image::ImageFormat::Png, 640);
+        assert!(normalize_image(&png[..4096]).is_none());
+        assert!(normalize_image(&b"<html>Access denied</html>".repeat(200)).is_none());
+        fake[..16].copy_from_slice(b"\0\0\0\x1cftypavif\0\0\0\0");
+        assert!(normalize_image(&fake).is_none());
     }
 
     #[test]
