@@ -310,14 +310,7 @@ function renderBriefingImages(images) {
       source.rel = "noopener noreferrer";
       caption.append(source);
     }
-    const actions = node("div", "briefing-image-actions");
-    if (url) {
-      actions.append(button("复制图片地址", async () => {
-        await navigator.clipboard.writeText(url);
-        toast("图片地址已复制");
-      }, "button-quiet"));
-    }
-    card.append(caption, actions);
+    card.append(caption);
     return card;
   }));
 }

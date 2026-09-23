@@ -75,8 +75,6 @@ fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
 .briefing-image { min-width: 0; margin: 0; }
 .briefing-image img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; border-radius: var(--radius-m); background: var(--surface-soft); }
 .briefing-image-caption { margin-top: .35rem; font-size: .76rem; line-height: 1.4; color: var(--muted); }
-.briefing-image-actions { margin-top: .35rem; }
-.briefing-image-actions .button { padding: .2rem .5rem; min-height: 1.8rem; }
 .briefing-drafts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
 .briefing-draft { min-width: 0; }
 .briefing-draft-heading { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-bottom: .4rem; }
