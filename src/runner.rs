@@ -705,7 +705,7 @@ async fn execute(
                 break;
             }
             let result = tokio::time::timeout(
-                remaining.min(Duration::from_secs(180)),
+                remaining.min(Duration::from_secs(600)),
                 reads::prepare(state, topic, &mut item, &mut fetched.usage),
             )
             .await
@@ -978,6 +978,9 @@ async fn media_refresh_loop(state: AppState) {
         }
         if let Err(error) = media::startup_sync(&state).await {
             tracing::warn!(%error, "news image refresh deferred");
+        }
+        if let Err(error) = reads::refresh_images(&state).await {
+            tracing::warn!(%error, "Reads image refresh deferred");
         }
     }
 }

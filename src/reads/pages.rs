@@ -11,7 +11,7 @@ use axum::{
     routing::get,
 };
 use chrono::{DateTime, Utc};
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd, html};
+use pulldown_cmark::{Event, Parser, Tag, TagEnd, html};
 use serde::Deserialize;
 use serde_json::json;
 use sqlx::FromRow;
@@ -77,6 +77,7 @@ struct Detail {
     source_language: String,
     license_name: Option<String>,
     license_url: Option<String>,
+    full_text: Option<sqlx::types::Json<super::full_text::Document>>,
 }
 
 fn choose<'a>(en: bool, zh: &'a str, english: &'a str) -> &'a str {
@@ -125,12 +126,12 @@ async fn index(
     if !enabled {
         return Err(AppError::NotFound("主题不存在".into()));
     }
-    let requested_hot = params.view.as_deref() == Some("hot");
-    if requested_hot && page != 1 {
+    let hot = params.view.as_deref() == Some("hot");
+    if hot && page != 1 {
         return Err(AppError::NotFound("页面不存在".into()));
     }
-    let mut rows = Vec::new();
-    if requested_hot {
+    let mut rows;
+    if hot {
         let mut query = sqlx::QueryBuilder::new("SELECT ");
         query.push(CARD).push(" ").push(VISIBLE).push(
             " AND a.hot_rank IS NOT NULL AND i.first_seen_at >= NOW() - INTERVAL '30 days' ORDER BY a.hot_rank LIMIT 24"
@@ -139,10 +140,7 @@ async fn index(
             .build_query_as::<Card>()
             .fetch_all(&state.pool)
             .await?;
-    }
-    // During cold start the normal reading list remains useful, without invented ranks.
-    let hot = rows.len() >= 8;
-    if !hot {
+    } else {
         let mut query = sqlx::QueryBuilder::new("SELECT ");
         query
             .push(CARD)
@@ -180,7 +178,7 @@ async fn index(
         choose(en, "最新", "Latest"),
         escape(&localized("/reads?view=hot", en)),
         if hot { " aria-current=\"page\"" } else { "" },
-        choose(en, "热读 24", "Popular 24")
+        choose(en, "热读", "Popular")
     );
     for (index, row) in rows.iter().enumerate() {
         content.push_str(&card(
@@ -191,11 +189,15 @@ async fn index(
         ));
     }
     if rows.is_empty() {
-        content.push_str(choose(
+        content.push_str(if hot { choose(
+            en,
+            "<p class=muted>热读正在积累，先看看<a href=\"/reads\">最新文章</a>。</p>",
+            "<p class=muted>Popular reads are taking shape. Explore the <a href=\"/reads?lang=en\">latest articles</a>.</p>",
+        ) } else { choose(
             en,
             "<p class=muted>第一篇精选，正在路上。</p>",
             "<p class=muted>The first read is on its way.</p>",
-        ));
+        ) });
     }
     content.push_str("</div><nav class=reads-pagination aria-label=Pagination>");
     if page > 1 {
@@ -221,7 +223,7 @@ async fn index(
         listing(page, false)
     };
     let title = if hot {
-        format!("{} · 𝑹𝒆𝒂𝒅𝒔", choose(en, "热读 24", "Popular 24"))
+        format!("{} · 𝑹𝒆𝒂𝒅𝒔", choose(en, "热读", "Popular"))
     } else if page == 1 {
         "𝑹𝒆𝒂𝒅𝒔 · 𝑵𝒆𝒘𝒔".to_owned()
     } else {
@@ -243,7 +245,7 @@ async fn detail(
 ) -> Result<Response> {
     let id = Uuid::parse_str(&id).map_err(|_| AppError::NotFound("文章不存在".into()))?;
     let mut query = sqlx::QueryBuilder::new("SELECT ");
-    query.push(CARD).push(", a.body, a.body_en, a.source_title, a.source_language, a.license_name, a.license_url ")
+    query.push(CARD).push(", a.body, a.body_en, a.source_title, a.source_language, a.license_name, a.license_url, a.full_text ")
         .push(VISIBLE).push(" AND i.id = ").push_bind(id);
     let row = query
         .build_query_as::<Detail>()
@@ -255,7 +257,7 @@ async fn detail(
     let title = choose(en, &item.title, &item.title_en);
     let summary = choose(en, &item.summary, &item.summary_en);
     let body = choose(en, &row.body, &row.body_en);
-    let language = if item.mode == "full" {
+    let language = if item.mode == "full" && row.full_text.is_none() {
         &row.source_language
     } else {
         choose(en, "zh-CN", "en")
@@ -265,9 +267,13 @@ async fn detail(
     } else {
         &item.author
     };
+    let views = format!(
+        "<span class=read-views data-page-views hidden title=\"{}\">{EYE}<span data-page-views-value></span></span>",
+        choose(en, "累计阅读次数", "Total page views")
+    );
     let mut content = format!(
-        "<article class=read><header class=read-heading><div class=item-meta>{} · <time datetime=\"{}\">{}</time></div><h1>{}</h1><p class=read-deck>{}</p><div class=item-meta><span>{}</span><span>·</span><a href=\"{}\" rel=\"noopener noreferrer\">{}</a></div></header><div class=read-body lang=\"{}\">{}</div>",
-        kind(&item.mode, en),
+        "<article class=read><header class=read-heading><div class=item-meta>{}<time datetime=\"{}\">{}</time></div><div class=read-title><h1>{}</h1>{views}</div><p class=read-deck>{}</p><div class=item-meta><span>{}</span><span>·</span><a href=\"{}\" rel=\"noopener noreferrer\">{}</a></div></header><div class=read-body lang=\"{}\">{}</div>",
+        kind_prefix(&item.mode, en),
         item.first_seen_at.to_rfc3339(),
         item.first_seen_at
             .with_timezone(&state.config.timezone)
@@ -280,6 +286,28 @@ async fn detail(
         escape(language),
         render_markdown(body)
     );
+    if let Some(document) = &row.full_text {
+        let translated = document.translated(en);
+        let _ = write!(
+            content,
+            "<section class=read-full><h2>{}</h2><div class=read-body lang=\"{}\">{}</div></section>",
+            if translated {
+                choose(en, "全文译文", "Full translation")
+            } else {
+                choose(en, "原文", "Original article")
+            },
+            escape(if translated {
+                choose(en, "zh-CN", "en")
+            } else {
+                &row.source_language
+            }),
+            render_events(
+                document.events(en),
+                &document.images,
+                state.config.tmpfile_base_url.as_ref()
+            ),
+        );
+    }
     let _ = write!(
         content,
         "<footer class=read-source><a href=\"{}\" rel=\"noopener noreferrer\">{} ↗</a>",
@@ -293,11 +321,23 @@ async fn detail(
             choose(en, "转载许可", "Republished under"),
             escape(url),
             escape(name),
-            choose(
-                en,
-                "保留原文语言，调整阅读排版。",
-                "Original language; formatting adapted for reading."
-            )
+            if row
+                .full_text
+                .as_ref()
+                .is_some_and(|document| document.translated(en))
+            {
+                choose(
+                    en,
+                    "全文由 AI 辅助翻译，保留原文结构、代码与署名；译文沿用原文许可。上方精读为本站整理。",
+                    "AI-assisted full translation; structure, code and attribution preserved. The original license applies to this translation. The reading guide above is by News.",
+                )
+            } else {
+                choose(
+                    en,
+                    "保留原文语言，调整阅读排版。",
+                    "Original language; formatting adapted for reading.",
+                )
+            }
         );
     } else {
         let _ = write!(
@@ -310,11 +350,6 @@ async fn detail(
             )
         );
     }
-    let _ = write!(
-        content,
-        "<span class=read-views data-page-views hidden title=\"{}\">{EYE}<span data-page-views-value></span></span>",
-        choose(en, "累计阅读次数", "Total page views")
-    );
     let _ = write!(
         content,
         "</footer><div class=read-actions><a href=\"{}\">← 𝑹𝒆𝒂𝒅𝒔</a><button id=copyRead class=\"button button-quiet button-small\" type=button hidden>{}</button><span id=copyStatus class=muted role=status></span></div></article>",
@@ -392,11 +427,11 @@ async fn detail(
     ))
 }
 
-fn kind(mode: &str, en: bool) -> &'static str {
+fn kind_prefix(mode: &str, en: bool) -> &'static str {
     if mode == "full" {
-        choose(en, "授权全文", "Full text")
+        choose(en, "授权全文 · ", "Full text · ")
     } else {
-        choose(en, "本站精读", "Reading guide")
+        ""
     }
 }
 
@@ -411,14 +446,14 @@ fn card(item: &Card, en: bool, rank: Option<usize>, timezone: chrono_tz::Tz) -> 
         .filter(|views| *views > 0 && item.first_seen_at >= Utc::now() - chrono::Duration::days(30))
         .map(|views| {
             format!(
-                "<span class=read-views title=\"{}\">{EYE}<span>{views}</span></span>",
+                " · <span class=read-views title=\"{}\">{EYE}<span>{views}</span></span>",
                 choose(en, "累计阅读次数", "Total page views")
             )
         })
         .unwrap_or_default();
     format!(
-        "<article class=item>{rank}<div class=read-card><div class=item-meta><span>{}</span> · <span>{}</span> · <time datetime=\"{}\">{}</time>{views}</div><h2 class=item-title><a href=\"{}\">{}</a></h2><p class=item-summary>{}</p></div></article>",
-        kind(&item.mode, en),
+        "<article class=item>{rank}<div class=read-card><div class=item-meta>{}<span>{}</span> · <span class=read-date><time datetime=\"{}\">{}</time>{views}</span></div><h2 class=item-title><a href=\"{}\">{}</a></h2><p class=item-summary>{}</p></div></article>",
+        kind_prefix(&item.mode, en),
         escape(&item.source),
         item.first_seen_at.to_rfc3339(),
         item.first_seen_at
@@ -496,7 +531,7 @@ async fn layout(
 <title>{title}</title><meta name="description" content="{description}"><meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f6f4"><meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1115">
 <link rel="canonical" href="{canonical}"><link rel="alternate" hreflang="zh-CN" href="{zh}"><link rel="alternate" hreflang="en" href="{english}"><link rel="alternate" hreflang="x-default" href="{zh}">
 <meta property="og:type" content="{og_type}"><meta property="og:title" content="{title}"><meta property="og:description" content="{description}"><meta property="og:url" content="{canonical}"><meta property="og:site_name" content="News"><meta name="twitter:card" content="summary">
-<link rel="icon" type="image/svg+xml" href="/icon.svg"><link rel="alternate" type="application/atom+xml" title="Reads" href="/feed.xml?topic=reads"><link rel="stylesheet" href="/styles.css?v=reads-v2"><link rel="stylesheet" href="/reads.css?v=2">{schema}</head>
+<link rel="icon" type="image/svg+xml" href="/icon.svg"><link rel="alternate" type="application/atom+xml" title="Reads" href="/feed.xml?topic=reads"><link rel="stylesheet" href="/styles.css?v=reads-v2"><link rel="stylesheet" href="/reads.css?v=3">{schema}</head>
 <body class="public reads"><header class="topbar"><a class="brand" href="{home}" aria-label="News"><img class="brand-logo" src="/icon.svg" alt=""><span>𝑵𝒆𝒘𝒔</span></a><nav class="tabs" aria-label="{topics_label}">{tabs}</nav><div class="tools"><a class="space-link button button-quiet button-small" href="/me/">{workspace}</a><a class="space-link button button-quiet button-small" href="{other_lang}" hreflang="{other_code}">{language_label}</a></div></header>
 <main class="shell">{content}</main>
 <button id="backToTop" class="button back-to-top" type="button" aria-label="{back_to_top}" title="{back_to_top}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 12 6-6 6 6M12 6v12"/></svg></button>
@@ -524,15 +559,36 @@ async fn layout(
 }
 
 fn render_markdown(value: &str) -> String {
-    let parser = Parser::new_ext(
-        value,
-        Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES,
-    )
-    .filter_map(|event| match event {
+    render_events(Parser::new_ext(value, super::full_text::OPTIONS), &[], None)
+}
+
+fn render_events<'a>(
+    events: impl IntoIterator<Item = Event<'a>>,
+    images: &[super::full_text::Image],
+    storage: Option<&url::Url>,
+) -> String {
+    let mut image = None;
+    let mut alt = String::new();
+    let parser = events.into_iter().filter_map(|event| match event {
         Event::Html(_)
-        | Event::InlineHtml(_)
-        | Event::Start(Tag::Image { .. })
-        | Event::End(TagEnd::Image) => None,
+        | Event::InlineHtml(_) => None,
+        Event::Start(Tag::Image { dest_url, .. }) => {
+            alt.clear();
+            image = Some(dest_url.strip_prefix("reads-image:")
+                .and_then(|id| id.parse::<usize>().ok()).and_then(|index| images.get(index))
+                .and_then(|image| image.stored.as_ref()).filter(|stored| stored.expires_at > Utc::now())
+                .and_then(|stored| url::Url::parse(&stored.direct_link).ok())
+                .filter(|url| crate::media::is_public_https_url(url) && storage.is_some_and(|base| base.origin() == url.origin())));
+            None
+        }
+        Event::End(TagEnd::Image) => {
+            let url = image.take().flatten();
+            Some(if let Some(url) = url {
+                Event::Html(format!("<img src=\"{}\" alt=\"{}\" loading=lazy decoding=async referrerpolicy=no-referrer>", escape(url.as_str()), escape(&alt)).into())
+            } else { Event::Text(std::mem::take(&mut alt).into()) })
+        }
+        Event::Text(text) | Event::Code(text) if image.is_some() => { alt.push_str(&text); None }
+        _ if image.is_some() => None,
         Event::Start(Tag::Link {
             link_type,
             dest_url,
@@ -651,6 +707,39 @@ async fn sitemap_page(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_text_loads_only_unexpired_images_from_configured_storage() {
+        let mut images = vec![super::super::full_text::Image {
+            origin: "https://original.example/diagram.png".into(),
+            stored: Some(crate::media::UploadResponse {
+                direct_link: "https://media.example.test/diagram.png".into(),
+                expires_at: Utc::now() + chrono::Duration::days(7),
+            }),
+        }];
+        let base = url::Url::parse("https://media.example.test").unwrap();
+        let render = |images: &[_]| {
+            render_events(
+                Parser::new(
+                    "![A diagram](reads-image:0) ![tracking](https://tracker.example/pixel)",
+                ),
+                images,
+                Some(&base),
+            )
+        };
+        let html = render(&images);
+        assert_eq!(html.matches("<img ").count(), 1);
+        assert!(html.contains("loading=lazy decoding=async"));
+        assert!(!html.contains("original.example"));
+        assert!(!html.contains("tracker.example"));
+        images[0].stored.as_mut().unwrap().direct_link =
+            "https://untrusted.example/diagram.png".into();
+        assert!(!render(&images).contains("<img "));
+        images[0].stored.as_mut().unwrap().direct_link =
+            "https://media.example.test/diagram.png".into();
+        images[0].stored.as_mut().unwrap().expires_at = Utc::now() - chrono::Duration::seconds(1);
+        assert!(!render(&images).contains("<img "));
+    }
 
     #[test]
     fn markdown_cannot_execute_scripts_or_load_tracking_images() {

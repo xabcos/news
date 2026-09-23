@@ -25,10 +25,10 @@ const IMAGE_BATCH_TIMEOUT: Duration = Duration::from_secs(90);
 const MIN_IMAGE_BYTES: usize = 4096;
 const MIN_IMAGE_DIMENSION: u32 = 320;
 
-#[derive(Debug, Deserialize)]
-struct UploadResponse {
-    direct_link: String,
-    expires_at: DateTime<Utc>,
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+pub(crate) struct UploadResponse {
+    pub direct_link: String,
+    pub expires_at: DateTime<Utc>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -120,7 +120,6 @@ async fn mirror_image(state: &AppState, image: NewsImage) -> Option<NewsImage> {
 }
 
 async fn transfer_image(state: &AppState, mut image: NewsImage) -> Option<NewsImage> {
-    let base_url = state.config.tmpfile_base_url.as_ref()?;
     let origin = image
         .origin_url
         .clone()
@@ -136,7 +135,20 @@ async fn transfer_image(state: &AppState, mut image: NewsImage) -> Option<NewsIm
         return None;
     }
     image.content_hash = Some(hex::encode(Sha256::digest(&bytes)));
+    let uploaded = upload_image(state, bytes, content_type).await?;
+    image.origin_url = Some(origin);
+    image.url = uploaded.direct_link;
+    image.expires_at = Some(uploaded.expires_at);
+    Some(image)
+}
 
+/// Shared storage transport. Callers validate source bytes for their own use case.
+pub(crate) async fn upload_image(
+    state: &AppState,
+    bytes: Vec<u8>,
+    content_type: &str,
+) -> Option<UploadResponse> {
+    let base_url = state.config.tmpfile_base_url.as_ref()?;
     let extension = extension_for(content_type);
     let filename = format!("news-{}.{}", Uuid::new_v4(), extension);
     let part = match Part::bytes(bytes)
@@ -160,27 +172,27 @@ async fn transfer_image(state: &AppState, mut image: NewsImage) -> Option<NewsIm
     {
         Ok(response) if response.status().is_success() => response,
         Ok(response) => {
-            tracing::debug!(status = %response.status(), url = %origin, "tmpfile image upload failed");
+            tracing::debug!(status = %response.status(), "tmpfile image upload failed");
             return None;
         }
         Err(error) => {
-            tracing::debug!(%error, url = %origin, "tmpfile image upload failed");
+            tracing::debug!(%error, "tmpfile image upload failed");
             return None;
         }
     };
     let uploaded = match response.json::<UploadResponse>().await {
         Ok(uploaded) => uploaded,
         Err(error) => {
-            tracing::debug!(%error, url = %origin, "tmpfile returned an invalid image response");
+            tracing::debug!(%error, "tmpfile returned an invalid image response");
             return None;
         }
     };
     if uploaded.expires_at <= Utc::now() {
-        tracing::debug!(url = %origin, "tmpfile returned an expired image link");
+        tracing::debug!("tmpfile returned an expired image link");
         return None;
     }
     let Ok(mut direct_url) = Url::parse(&uploaded.direct_link) else {
-        tracing::debug!(url = %origin, "tmpfile returned an invalid direct link");
+        tracing::debug!("tmpfile returned an invalid direct link");
         return None;
     };
     // Reverse proxies may forward HTTP internally. Use the configured HTTPS origin
@@ -192,13 +204,13 @@ async fn transfer_image(state: &AppState, mut image: NewsImage) -> Option<NewsIm
         let _ = direct_url.set_scheme("https");
     }
     if !is_public_https_url(&direct_url) || !same_origin(&direct_url, base_url) {
-        tracing::debug!(url = %origin, "tmpfile returned a non-HTTPS direct link");
+        tracing::debug!("tmpfile returned a non-HTTPS direct link");
         return None;
     }
-    image.origin_url = Some(origin);
-    image.url = direct_url.to_string();
-    image.expires_at = Some(uploaded.expires_at);
-    Some(image)
+    Some(UploadResponse {
+        direct_link: direct_url.to_string(),
+        expires_at: uploaded.expires_at,
+    })
 }
 
 /// Bounded HTTPS download shared by browser mirroring and model input preparation.
@@ -273,7 +285,7 @@ fn image_is_usable(bytes: &[u8]) -> bool {
 /// Reads dimensions from the formats accepted above without decoding or trusting image
 /// metadata. Unknown formats are allowed through; the byte-size guard still rejects the
 /// tiny placeholder class this protects against.
-fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+pub(crate) fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() >= 24 {
         return Some((
             u32::from_be_bytes(bytes[16..20].try_into().ok()?),

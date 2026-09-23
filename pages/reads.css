@@ -10,13 +10,16 @@
 .reads-views a[aria-current] { color: var(--text); border-bottom: 1px solid currentColor; }
 .reads-list .item { display: flex; gap: .9rem; }
 .read-card { min-width: 0; flex: 1; }
+.read-card .item-meta { display: block; }
+.read-date { white-space: nowrap; }
 .read-rank { width: 1.3rem; flex-shrink: 0; padding-top: .15rem; color: var(--muted); font-size: .72rem; font-variant-numeric: tabular-nums; }
-.read-views { display: inline-flex; align-items: center; gap: .3rem; margin-left: auto; white-space: nowrap; color: var(--muted); font-size: .75rem; font-variant-numeric: tabular-nums; }
-.read-source > .read-views { margin-top: .85rem; }
+.read-views { display: inline-flex; align-items: center; vertical-align: middle; gap: .3rem; white-space: nowrap; color: var(--muted); font-size: .75rem; font-variant-numeric: tabular-nums; }
 .reads-pagination, .read-actions { display: flex; align-items: center; gap: 1.5rem; margin-top: 2rem; font-size: .85rem; }
 .reads-pagination a, .read-actions a { color: var(--muted); text-decoration: none; }
 .read-heading { margin-bottom: 2.5rem; }
-.read-heading h1 { margin: .8rem 0 1rem; font-size: clamp(1.65rem, 4vw, 2.2rem); line-height: 1.4; letter-spacing: -.025em; text-wrap: balance; overflow-wrap: anywhere; }
+.read-title { display: flex; align-items: baseline; gap: 1rem; margin: .8rem 0 1rem; }
+.read-title h1 { flex: 1; min-width: 0; margin: 0; font-size: clamp(1.65rem, 4vw, 2.2rem); line-height: 1.4; letter-spacing: -.025em; text-wrap: balance; overflow-wrap: anywhere; }
+.read-title .read-views { flex-shrink: 0; }
 .read-deck { color: var(--muted); font-size: 1rem; line-height: 1.8; }
 .read-heading .item-meta a { text-decoration: none; }
 .read-body { font-size: 1.05rem; line-height: 1.95; overflow-wrap: anywhere; }
@@ -27,6 +30,9 @@
 .read-body a:hover, .read-source a:hover { color: var(--primary-strong); }
 .read-body pre { padding: 1rem; background: var(--surface-soft); border-radius: .4rem; overflow-x: auto; font-size: .85rem; line-height: 1.7; }
 .read-body code { font-size: .88em; }
+.read-body img { display: block; max-width: 100%; height: auto; margin: 1.5rem auto; }
+.read-full { margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--line); }
+.read-full > h2 { margin: 0 0 1.5rem; color: var(--muted); font-size: .85rem; font-weight: 500; }
 .read-body blockquote { margin-left: 0; padding-left: 1.2rem; border-left: 2px solid var(--line-strong); color: var(--muted); }
 .read-body table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; font-size: .9rem; }
 .read-body th, .read-body td { padding: .5rem .75rem; border-bottom: 1px solid var(--line); text-align: left; }

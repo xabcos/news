@@ -44,7 +44,8 @@ fn source(licensed: bool) -> source::Source {
         title: "A small team’s notes on building dependable AI tools".into(),
         author: "Example Author".into(), language: "en".into(), published_at: Some(Utc::now()),
         body: "## Start with a question\n\nAn original source discusses how a small team reduced review effort by choosing a narrow task and checking the results against real examples. The scope of the experiment matters more than the number of features.\n\n".repeat(4),
-        license: licensed.then(|| source::License { name: "CC BY 4.0".into(), url: "https://creativecommons.org/licenses/by/4.0/".into() }),
+        images: Vec::new(),
+        license: licensed.then(|| source::License { name: "CC BY 4.0".into(), url: "https://creativecommons.org/licenses/by/4.0/".into(), translation: true, images: false }),
     }
 }
 
@@ -63,7 +64,7 @@ fn article(index: usize) -> Article {
         mode: "brief", author: "Example Author".into(), source_title: "A small team’s notes".into(), source_language:"en".into(),
         body: format!("## 从具体问题开始\n\n与其一开始建立包罗万象的系统，这篇文章提供了一条更容易验证的路径：先找到一个有明确输入、输出和使用者的小问题。\n\n## 给结果留下检验的空间\n\n真正值得关注的是反馈是否能够进入下一轮改进。团队需要记录失败的例子，区分模型的能力边界与流程本身的问题，再决定是否扩大使用范围。\n\n## 如何理解这份经验\n\n这些观察来自特定团队的实践，适用范围取决于数据质量、任务复杂度和检查成本。它提供的是一种思考顺序，而非对所有场景的效果承诺。\n\n第 {index} 篇阅读。"),
         body_en: "## Begin with a concrete problem\n\nA small, observable task makes it possible to learn from actual use. The useful lesson is to connect each experiment with a clear question, a review process and a decision about what to change next.\n\n## Keep the limits in view\n\nThe account describes one team’s experience. Its value lies in the questions it raises about evaluation, feedback and the cost of checking results, rather than a universal promise about performance.".into(),
-        source_hash:vec![index as u8;32], license:None, fetched_at:Utc::now(),
+        source_hash:vec![index as u8;32], license:None, fetched_at:Utc::now(), full_text: None,
     }
 }
 
@@ -97,17 +98,21 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         let calls = handler_calls.clone();
         async move {
             calls.fetch_add(1, Ordering::SeqCst);
-            assert_eq!(request["text"]["format"]["name"], "reads_editorial");
             let input: Value = serde_json::from_str(request["input"].as_str().unwrap()).unwrap();
-            assert!(input["source_text"].as_str().unwrap().contains("scope of the experiment"));
             assert!(request.get("tools").is_none());
-            let licensed = input["licensed"] == true;
-            let draft = json!({"worthy":!input["url"].as_str().unwrap().ends_with("/rejected"),
+            let draft = if request["text"]["format"]["name"] == "reads_translation" {
+                if input["title"] == "Incomplete translation fixture" { json!({"texts":[]}) } else {
+                json!({"texts":input["texts"].as_array().unwrap().iter().map(|text| json!({"id":text["id"],"zh": if text["text"].as_str().unwrap().starts_with("Start") { "从一个问题开始" } else { "原文指出，团队通过缩小任务范围，并使用真实样例检验结果，减少了复核工作。实验的范围比功能数量更重要。" }, "en":if input["english_needed"] == true { text["text"].as_str().unwrap() } else { "" }})).collect::<Vec<_>>()}) }
+            } else {
+                assert_eq!(request["text"]["format"]["name"], "reads_editorial");
+                assert!(input["source_text"].as_str().unwrap().contains("scope of the experiment"));
+                json!({"worthy":!input["url"].as_str().unwrap().ends_with("/rejected"),
+                "source_language":if input["source_language"] == "und" { "en" } else { input["source_language"].as_str().unwrap() },
                 "title":"让 AI 工具真正有用，从一个可验证的问题开始", "title_en":"Making AI useful starts with a question you can test",
                 "summary":"从小团队的实践中，理解任务范围、验证成本与反馈速度之间的取舍。", "summary_en":"A reading of the tradeoffs between task scope, review costs and the speed of feedback.",
-                "body":if licensed { String::new() } else { article(0).body.repeat(2) },
-                "body_en":if licensed { String::new() } else { article(0).body_en.repeat(3) },
-            });
+                "body":article(0).body.repeat(2),
+                "body_en":article(0).body_en.repeat(3),
+            }) };
             Json(json!({"status":"completed", "id":"reads-fixture", "usage":{"input_tokens":40,"output_tokens":50,"cost_in_usd_ticks":90},
                 "output":[{"type":"message","content":[{"type":"output_text","text":draft.to_string()}]}]}))
         }
@@ -163,8 +168,12 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         .unwrap()
         .unwrap();
     assert_eq!(full.mode, "full");
-    assert_eq!(full.body, source(true).body);
-    assert!(full.body_en.is_empty());
+    assert_eq!(full.body, article(0).body.repeat(2));
+    assert!(!full.body_en.is_empty());
+    let document = full.full_text.as_ref().unwrap();
+    assert_eq!(document.original, source(true).body);
+    assert!(document.zh.is_some());
+    assert!(document.en.is_none());
     let mut brief_item = item(1);
     let brief = prepare_source(&state, &topic, &mut brief_item, &mut usage, source(false))
         .await
@@ -178,7 +187,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             usage.output_tokens,
             usage.cost_in_usd_ticks
         ),
-        (80, 100, 180)
+        (120, 150, 270)
     );
     let articles = HashMap::from([
         (full_item.fingerprint.clone(), full),
@@ -205,7 +214,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             .unwrap()
             .is_none()
     );
-    assert_eq!(calls.load(Ordering::SeqCst), 4);
+    assert_eq!(calls.load(Ordering::SeqCst), 5);
     let mut repeat = item(0);
     repeat.url = source(true).url.to_string();
     repeat.fingerprint = fingerprint(&source(true).url);
@@ -291,7 +300,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         .await
         .unwrap();
     assert_eq!(payload["skip"], "reads_daily_limit");
-    assert_eq!(calls.load(Ordering::SeqCst), 4);
+    assert_eq!(calls.load(Ordering::SeqCst), 5);
     // News retention cannot remove Reads or its body.
     let news_topic: Topic = sqlx::query_as("SELECT * FROM topics WHERE id='x'")
         .fetch_one(&state.pool)
@@ -340,7 +349,8 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
     let html = response.text().await.unwrap();
     for text in [
         "授权全文",
-        "scope of the experiment",
+        "实验的范围比功能数量更重要",
+        "全文译文",
         "CC BY 4.0",
         "application/ld+json",
         "rel=\"canonical\"",
@@ -366,6 +376,21 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         .await
         .unwrap();
     assert!(english.contains("<html lang=\"en\""));
+    assert!(english.contains("scope of the experiment"));
+    assert!(english.contains("Original article"));
+    let document = scraper::Html::parse_document(&html);
+    assert_eq!(
+        document
+            .select(&scraper::Selector::parse(".read-title [data-page-views]").unwrap())
+            .count(),
+        1
+    );
+    assert_eq!(
+        document
+            .select(&scraper::Selector::parse(".read-source [data-page-views]").unwrap())
+            .count(),
+        0
+    );
     assert!(english.contains("Full text"));
     let list = client
         .get(format!("{base}/reads?page=3"))
@@ -497,8 +522,140 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
     check_related_candidates(&state, &client, &base, id).await;
     check_cached_reads_stats(&state, &client, &base).await;
     discovery::check_queue(&state).await;
+    check_full_text_variants(&state, &topic, &calls).await;
+    check_full_text_image_renewal(&state, id).await;
     server.abort();
     ai_server.abort();
+}
+
+async fn check_full_text_variants(
+    state: &AppState,
+    topic: &Topic,
+    calls: &std::sync::atomic::AtomicUsize,
+) {
+    use std::sync::atomic::Ordering;
+    let mut japanese = source(true);
+    japanese.language = "ja".into();
+    japanese.url.set_path("/japanese");
+    // Multiple chunks, with both translations required for a non-English original.
+    japanese.body = japanese.body.repeat(12);
+    let mut usage = Usage::default();
+    let before = calls.load(Ordering::SeqCst);
+    let full = prepare_source(state, topic, &mut item(701), &mut usage, japanese)
+        .await
+        .unwrap()
+        .unwrap();
+    let full = full.full_text.unwrap();
+    assert!(full.zh.is_some() && full.en.is_some());
+    assert!(calls.load(Ordering::SeqCst) - before > 2);
+    assert_eq!(
+        full.zh.as_ref().unwrap().len(),
+        full.en.as_ref().unwrap().len()
+    );
+
+    let mut unspecified = source(true);
+    unspecified.url.set_path("/without-html-language");
+    unspecified.language = "und".into();
+    let full = prepare_source(state, topic, &mut item(704), &mut usage, unspecified)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(full.source_language, "en");
+    assert!(
+        full.full_text.unwrap().en.is_none(),
+        "English originals are reused even without an HTML language hint"
+    );
+
+    let mut untranslated = source(true);
+    untranslated.url.set_path("/republication-only");
+    untranslated.license.as_mut().unwrap().translation = false;
+    let before = calls.load(Ordering::SeqCst);
+    let full = prepare_source(state, topic, &mut item(702), &mut usage, untranslated)
+        .await
+        .unwrap()
+        .unwrap();
+    let full = full.full_text.unwrap();
+    assert!(full.zh.is_none() && full.en.is_none());
+    assert_eq!(
+        calls.load(Ordering::SeqCst) - before,
+        1,
+        "No translation call without permission"
+    );
+
+    let mut incomplete = source(true);
+    incomplete.url.set_path("/incomplete-translation");
+    incomplete.title = "Incomplete translation fixture".into();
+    let mut usage = Usage::default();
+    let brief = prepare_source(state, topic, &mut item(703), &mut usage, incomplete)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(brief.mode, "brief");
+    assert!(brief.license.is_none() && brief.full_text.is_none());
+    assert_eq!(brief.body, article(0).body.repeat(2));
+    assert_eq!(
+        usage.input_tokens, 80,
+        "Failed translation usage is still accounted for"
+    );
+}
+
+async fn check_full_text_image_renewal(state: &AppState, id: Uuid) {
+    use sqlx::types::Json;
+    let mut media_state = state.clone();
+    let mut config = crate::config::Config::from_env().unwrap();
+    config.tmpfile_base_url = Some("https://media.example.test".parse().unwrap());
+    media_state.config = std::sync::Arc::new(config);
+    let Json(mut document): Json<full_text::Document> =
+        sqlx::query_scalar("SELECT full_text FROM read_articles WHERE item_id=$1")
+            .bind(id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    let stored = crate::media::UploadResponse {
+        direct_link: "https://media.example.test/previous.png".into(),
+        expires_at: Utc::now() + chrono::Duration::hours(3),
+    };
+    document.images.push(full_text::Image {
+        origin: "https://127.0.0.1/private.png".into(),
+        stored: Some(stored.clone()),
+    });
+    sqlx::query("UPDATE read_articles SET full_text=$2, images_renew_at=NOW() - INTERVAL '1 hour' WHERE item_id=$1")
+        .bind(id).bind(Json(&document)).execute(&state.pool).await.unwrap();
+    // Disabled topics have no image traffic or renewal updates.
+    sqlx::query("UPDATE topics SET enabled=false WHERE id='reads'")
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    full_text::refresh_images(&media_state).await.unwrap();
+    let still_due: bool =
+        sqlx::query_scalar("SELECT images_renew_at < NOW() FROM read_articles WHERE item_id=$1")
+            .bind(id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert!(still_due);
+    sqlx::query("UPDATE topics SET enabled=true WHERE id='reads'")
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    full_text::refresh_images(&media_state).await.unwrap();
+    let (Json(updated), next): (Json<full_text::Document>, DateTime<Utc>) =
+        sqlx::query_as("SELECT full_text,images_renew_at FROM read_articles WHERE item_id=$1")
+            .bind(id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert!(next > Utc::now());
+    assert_eq!(
+        updated.images[0].stored.as_ref().unwrap().direct_link,
+        stored.direct_link
+    );
+    assert_eq!(
+        updated.images[0].stored.as_ref().unwrap().expires_at,
+        stored.expires_at
+    );
+    assert_eq!(updated.original, document.original);
+    assert_eq!(updated.zh, document.zh);
 }
 
 async fn check_related_candidates(
@@ -621,6 +778,24 @@ async fn check_cached_reads_stats(state: &AppState, client: &reqwest::Client, ba
         .await
         .unwrap();
     assert!(!cold.contains("class=read-rank"));
+    assert!(cold.contains("href=\"/reads?view=hot\" aria-current=\"page\">热读</a>"));
+    assert!(cold.contains("热读正在积累"));
+    assert!(!cold.contains("<article class=item>"));
+    // A single ranked article must keep the hot route and active tab.
+    sqlx::query("UPDATE read_articles SET views=15, hot_rank=1 WHERE item_id=(SELECT id FROM items WHERE topic_id='reads' AND NOT hidden ORDER BY first_seen_at DESC LIMIT 1)")
+        .execute(&state.pool).await.unwrap();
+    let sparse = client
+        .get(format!("{base}/reads?view=hot"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(sparse.matches("class=read-rank").count(), 1);
+    assert!(sparse.contains("href=\"/reads?view=hot\" aria-current=\"page\">热读</a>"));
+    assert!(sparse.contains("</time> · <span class=read-views"));
+    assert!(!sparse.contains("热读 24"));
     stats::refresh(state, &endpoint).await.unwrap();
     let snapshot: Vec<(Uuid, i64, Option<i16>)> = sqlx::query_as("SELECT item_id, views, hot_rank FROM read_articles WHERE views IS NOT NULL ORDER BY item_id")
         .fetch_all(&state.pool).await.unwrap();
@@ -636,7 +811,8 @@ async fn check_cached_reads_stats(state: &AppState, client: &reqwest::Client, ba
         .await
         .unwrap();
     assert_eq!(hot.matches("class=read-rank").count(), 24);
-    assert!(hot.contains("Popular 24"));
+    assert!(hot.contains(">Popular</a>"));
+    assert!(!hot.contains("Popular 24"));
     assert!(hot.contains("/reads?view=hot&amp;lang=en"));
     assert!(!hot.contains("rel=next"));
     assert_eq!(

@@ -19,12 +19,19 @@ pub(crate) struct LicenseGrant {
     license_url: Url,
     /// A selector identifying the complete article, excluding site navigation.
     selector: String,
+    /// Set only when the permission also covers translation / article illustrations.
+    #[serde(default)]
+    translation: bool,
+    #[serde(default)]
+    images: bool,
 }
 
 #[derive(Debug)]
 pub(super) struct License {
     pub name: String,
     pub url: String,
+    pub translation: bool,
+    pub images: bool,
 }
 
 pub(super) struct Source {
@@ -33,6 +40,7 @@ pub(super) struct Source {
     pub author: String,
     pub language: String,
     pub body: String,
+    pub images: Vec<super::full_text::Image>,
     pub license: Option<License>,
     pub published_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -88,6 +96,7 @@ pub(super) enum Content {
     Html,
     Json,
     Feed,
+    Image(usize),
 }
 
 pub(super) async fn download(url: Url, content: Content) -> Result<(Url, Vec<u8>)> {
@@ -97,6 +106,10 @@ pub(super) async fn download(url: Url, content: Content) -> Result<(Url, Vec<u8>
 }
 
 async fn download_inner(mut url: Url, content: Content) -> Result<(Url, Vec<u8>)> {
+    let max_bytes = match content {
+        Content::Image(limit) => limit,
+        _ => MAX_BYTES,
+    };
     for _ in 0..5 {
         if !public_url(&url) {
             return Err(invalid_source("原文必须是公开 HTTPS 地址"));
@@ -138,6 +151,15 @@ async fn download_inner(mut url: Url, content: Content) -> Result<(Url, Vec<u8>)
             .and_then(|value| value.to_str().ok())
             .unwrap_or("");
         let accepted = match content {
+            Content::Image(_) => [
+                "image/png",
+                "image/jpeg",
+                "image/webp",
+                "image/gif",
+                "image/avif",
+                "image/bmp",
+            ]
+            .contains(&content_type.split(';').next().unwrap_or("").trim()),
             Content::Json => content_type.starts_with("application/json"),
             Content::Html => {
                 content_type.starts_with("text/html")
@@ -159,13 +181,13 @@ async fn download_inner(mut url: Url, content: Content) -> Result<(Url, Vec<u8>)
         }
         if response
             .content_length()
-            .is_some_and(|size| size > MAX_BYTES as u64)
+            .is_some_and(|size| size > max_bytes as u64)
         {
             return Err(invalid_source("原文网页过大"));
         }
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await? {
-            if bytes.len() + chunk.len() > MAX_BYTES {
+            if bytes.len() + chunk.len() > max_bytes {
                 return Err(invalid_source("原文网页过大"));
             }
             bytes.extend_from_slice(&chunk);
@@ -255,6 +277,7 @@ async fn fetch_post(id: &str) -> Result<Source> {
         author: post.author_name,
         language: paragraph.attr("lang").unwrap_or("und").into(),
         body,
+        images: Vec::new(),
         license: None,
         published_at: None,
     })
@@ -381,12 +404,20 @@ fn extract(url: Url, text: &str, grants: &[LicenseGrant]) -> Result<Source> {
         Some(License {
             name: grant.name.clone(),
             url: grant.license_url.to_string(),
+            translation: grant.translation,
+            images: grant.images,
         })
     } else if semantic {
         // Only article-scoped or document metadata licenses count. Footer links often
         // apply to the website's code/assets, not to the article being republished.
         root.select(&selector("a[rel~='license']"))
             .chain(html.select(&selector("head link[rel~='license']")))
+            .filter(|node| {
+                !node
+                    .ancestors()
+                    .filter_map(ElementRef::wrap)
+                    .any(|parent| parent.value().name() == "figure")
+            })
             .filter_map(|node| node.attr("href"))
             .filter_map(|href| url.join(href).ok())
             .find_map(open_license)
@@ -397,6 +428,11 @@ fn extract(url: Url, text: &str, grants: &[LicenseGrant]) -> Result<Source> {
         &html,
         "meta[property='article:published_time'], meta[name='date'], meta[itemprop='datePublished']",
     ));
+    let (body, images) = if license.is_some() {
+        rich_markdown(root, &url, license.as_ref())?
+    } else {
+        (body, Vec::new())
+    };
     Ok(Source {
         url,
         title: title.trim().chars().take(300).collect(),
@@ -410,6 +446,7 @@ fn extract(url: Url, text: &str, grants: &[LicenseGrant]) -> Result<Source> {
             .take(32)
             .collect(),
         body,
+        images,
         license,
         published_at,
     })
@@ -445,73 +482,31 @@ fn open_license(url: Url) -> Option<License> {
     Some(License {
         name: name.into(),
         url: format!("https://creativecommons.org{path}/"),
+        translation: true,
+        images: false,
     })
 }
 
 fn markdown(root: ElementRef<'_>, base: &Url) -> Result<String> {
-    fn walk(
-        element: ElementRef<'_>,
-        base: &Url,
-        output: &mut String,
-        verbatim: bool,
-        depth: usize,
-    ) -> Result<()> {
-        if depth > 128 {
-            return Err(invalid_source("原文结构过于复杂"));
-        }
-        let tag = element.value().name();
-        if matches!(
-            tag,
-            "script"
-                | "style"
-                | "nav"
-                | "aside"
-                | "footer"
-                | "form"
-                | "button"
-                | "noscript"
-                | "svg"
-        ) || element.attr("hidden").is_some()
-            || element.attr("aria-hidden") == Some("true")
-        {
-            return Ok(());
-        }
-        let block = matches!(
-            tag,
-            "p" | "div"
-                | "section"
-                | "article"
-                | "main"
-                | "ul"
-                | "ol"
-                | "blockquote"
-                | "table"
-                | "tr"
-                | "figure"
-                | "figcaption"
-        );
-        if block || tag.starts_with('h') && tag.len() == 2 {
-            output.push_str("\n\n");
-        }
-        match tag {
-            "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => output.push_str("## "),
-            "li" => output.push_str("\n- "),
-            "br" => output.push_str("  \n"),
-            "pre" => output.push_str("\n\n````````\n"),
-            "a" => output.push('['),
-            "img" => {
-                if let Some(alt) = element.attr("alt").filter(|alt| !alt.is_empty()) {
-                    output.push_str(&format!(" [图片：{}] ", escape_markdown(alt)));
-                }
-            }
-            _ => {}
-        }
-        for child in element.children() {
-            match child.value() {
-                Node::Text(text) => {
-                    if verbatim || tag == "pre" {
-                        output.push_str(text);
-                    } else {
+    rich_markdown(root, base, None).map(|(body, _)| body)
+}
+
+fn rich_markdown(
+    root: ElementRef<'_>,
+    base: &Url,
+    license: Option<&License>,
+) -> Result<(String, Vec<super::full_text::Image>)> {
+    struct Writer<'a> {
+        base: &'a Url,
+        license: Option<&'a License>,
+        images: Vec<super::full_text::Image>,
+    }
+    impl Writer<'_> {
+        fn children(&mut self, element: ElementRef<'_>, depth: usize) -> Result<String> {
+            let mut output = String::new();
+            for child in element.children() {
+                match child.value() {
+                    Node::Text(text) => {
                         let mut space = false;
                         for c in text.chars() {
                             if c.is_whitespace() {
@@ -528,42 +523,222 @@ fn markdown(root: ElementRef<'_>, base: &Url) -> Result<String> {
                             }
                         }
                     }
+                    Node::Element(_) => {
+                        if let Some(child) = ElementRef::wrap(child) {
+                            output.push_str(&self.walk(child, depth + 1)?);
+                        }
+                    }
+                    _ => {}
                 }
-                Node::Element(_) => {
-                    if let Some(child) = ElementRef::wrap(child) {
-                        walk(child, base, output, verbatim || tag == "pre", depth + 1)?;
+            }
+            Ok(output)
+        }
+
+        fn walk(&mut self, element: ElementRef<'_>, depth: usize) -> Result<String> {
+            if depth > 128 {
+                return Err(invalid_source("原文结构过于复杂"));
+            }
+            let tag = element.value().name();
+            if matches!(
+                tag,
+                "script"
+                    | "style"
+                    | "nav"
+                    | "aside"
+                    | "footer"
+                    | "form"
+                    | "button"
+                    | "noscript"
+                    | "svg"
+            ) || element.attr("hidden").is_some()
+                || element.attr("aria-hidden") == Some("true")
+            {
+                return Ok(String::new());
+            }
+            if tag == "pre" || tag == "code" {
+                let code = element.text().collect::<String>();
+                let ticks = code.split(|c| c != '`').map(str::len).max().unwrap_or(0) + 1;
+                if tag == "pre" {
+                    let fence = "`".repeat(ticks.max(3));
+                    let language = element
+                        .select(&selector("code"))
+                        .next()
+                        .and_then(|code| code.attr("class"))
+                        .unwrap_or("")
+                        .split_whitespace()
+                        .find_map(|class| class.strip_prefix("language-"))
+                        .filter(|language| {
+                            language
+                                .chars()
+                                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+                        })
+                        .unwrap_or("");
+                    return Ok(format!(
+                        "\n\n{fence}{language}\n{code}{}{fence}\n\n",
+                        if code.ends_with('\n') { "" } else { "\n" }
+                    ));
+                }
+                let fence = "`".repeat(ticks);
+                return Ok(format!("{fence} {code} {fence}"));
+            }
+            if tag == "img" {
+                let alt = element.attr("alt").unwrap_or("");
+                let figure = element
+                    .ancestors()
+                    .filter_map(ElementRef::wrap)
+                    .find(|node| node.value().name() == "figure");
+                let explicit = element.attr("data-license").map(str::to_owned).or_else(|| {
+                    figure
+                        .and_then(|figure| figure.select(&selector("a[rel~='license']")).next())
+                        .and_then(|link| link.attr("href"))
+                        .map(str::to_owned)
+                });
+                let image_license = explicit
+                    .as_ref()
+                    .and_then(|href| self.base.join(href).ok())
+                    .and_then(open_license);
+                let allowed = self.license.is_some()
+                    && if explicit.is_some() {
+                        image_license.is_some()
+                    } else {
+                        self.license.is_some_and(|license| license.images)
+                    };
+                let origin = [element.attr("data-src"), element.attr("src")]
+                    .into_iter()
+                    .flatten()
+                    .find_map(|src| self.base.join(src).ok().filter(public_url));
+                if allowed && let Some(origin) = origin {
+                    let index = if let Some(index) = self
+                        .images
+                        .iter()
+                        .position(|image| image.origin == origin.as_str())
+                    {
+                        index
+                    } else if self.images.len() < 64 {
+                        let index = self.images.len();
+                        self.images.push(super::full_text::Image {
+                            origin: origin.to_string(),
+                            stored: None,
+                        });
+                        index
+                    } else {
+                        return Err(invalid_source("原文图片过多"));
+                    };
+                    let mut image = format!("![{}](reads-image:{index})", escape_markdown(alt));
+                    // Figure credits already appear in the caption; a license attached
+                    // directly to the image needs its own visible attribution link.
+                    if element.attr("data-license").is_some()
+                        && let Some(license) = image_license
+                    {
+                        image.push_str(&format!(" [{}]({})", license.name, license.url));
+                    }
+                    return Ok(image);
+                }
+                return Ok(if alt.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [Image: {}] ", escape_markdown(alt))
+                });
+            }
+            if matches!(tag, "ul" | "ol") {
+                let mut output = String::from("\n\n");
+                let start = element
+                    .attr("start")
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .unwrap_or(1);
+                for (index, child) in element
+                    .children()
+                    .filter_map(ElementRef::wrap)
+                    .filter(|child| child.value().name() == "li")
+                    .enumerate()
+                {
+                    let text = self.children(child, depth + 1)?;
+                    let marker = if tag == "ol" {
+                        format!("{}. ", start.saturating_add(index as u32))
+                    } else {
+                        "- ".into()
+                    };
+                    let indent = " ".repeat(marker.len());
+                    output.push_str(&marker);
+                    output.push_str(&text.trim().replace('\n', &format!("\n{indent}")));
+                    output.push('\n');
+                }
+                output.push('\n');
+                return Ok(output);
+            }
+            if tag == "table" {
+                let mut rows = Vec::new();
+                for row in element.select(&selector("tr")) {
+                    let mut cells = Vec::new();
+                    for cell in row
+                        .children()
+                        .filter_map(ElementRef::wrap)
+                        .filter(|cell| matches!(cell.value().name(), "td" | "th"))
+                    {
+                        cells.push(self.children(cell, depth + 1)?.trim().replace('\n', " "));
+                    }
+                    if !cells.is_empty() {
+                        rows.push(cells);
                     }
                 }
-                _ => {}
+                let width = rows.iter().map(Vec::len).max().unwrap_or(0);
+                let mut output = String::from("\n\n");
+                for (index, mut cells) in rows.into_iter().enumerate() {
+                    cells.resize(width, String::new());
+                    output.push_str(&format!("| {} |\n", cells.join(" | ")));
+                    if index == 0 {
+                        output.push_str(&format!("|{}\n", " --- |".repeat(width)));
+                    }
+                }
+                output.push('\n');
+                return Ok(output);
             }
+            let text = self.children(element, depth)?;
+            Ok(match tag {
+                "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => format!(
+                    "\n\n{} {}\n\n",
+                    "#".repeat(tag[1..].parse::<usize>().unwrap().max(2)),
+                    text.trim()
+                ),
+                "a" => {
+                    if let Some(url) = element
+                        .attr("href")
+                        .and_then(|href| self.base.join(href).ok())
+                        .filter(|url| {
+                            matches!(url.scheme(), "https" | "http")
+                                && url.username().is_empty()
+                                && url.password().is_none()
+                        })
+                    {
+                        format!(
+                            "[{}](<{}>)",
+                            text.trim(),
+                            url.as_str().replace('>', "%3E").replace('<', "%3C")
+                        )
+                    } else {
+                        text
+                    }
+                }
+                "strong" | "b" => format!("**{text}**"),
+                "em" | "i" => format!("*{text}*"),
+                "del" | "s" => format!("~~{text}~~"),
+                "blockquote" => format!("\n\n> {}\n\n", text.trim().replace('\n', "\n> ")),
+                "br" => "  \n".into(),
+                "hr" => "\n\n---\n\n".into(),
+                "p" | "div" | "section" | "article" | "main" | "figure" | "figcaption" => {
+                    format!("\n\n{}\n\n", text.trim())
+                }
+                _ => text,
+            })
         }
-        if tag == "a" {
-            output.push(']');
-            if let Some(url) = element
-                .attr("href")
-                .and_then(|href| base.join(href).ok())
-                .filter(|url| matches!(url.scheme(), "https" | "http"))
-            {
-                output.push_str(&format!(
-                    "(<{}>)",
-                    url.as_str().replace('>', "%3E").replace('<', "%3C")
-                ));
-            }
-        }
-        if tag == "pre" {
-            output.push_str("\n````````\n\n");
-        }
-        if matches!(tag, "td" | "th") {
-            output.push_str(" · ");
-        }
-        if block || tag.starts_with('h') && tag.len() == 2 {
-            output.push_str("\n\n");
-        }
-        Ok(())
     }
-    let mut output = String::new();
-    walk(root, base, &mut output, false, 0)?;
-    Ok(output.trim().to_owned())
+    let mut writer = Writer {
+        base,
+        license,
+        images: Vec::new(),
+    };
+    let body = writer.walk(root, 0)?;
+    Ok((body.trim().to_owned(), writer.images))
 }
 
 fn escape_markdown(value: &str) -> String {
@@ -580,6 +755,60 @@ fn escape_markdown(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_text_preserves_code_lists_tables_and_only_authorized_images() {
+        let url = Url::parse("https://example.com/posts/one").unwrap();
+        let grants = license_grants(r#"[{"prefix":"https://example.com/posts/","name":"Author permission","license_url":"https://example.com/permission","selector":"article","translation":true,"images":true}]"#).unwrap();
+        let prose =
+            "A detailed observation describing the experiment and its limitations. ".repeat(15);
+        let text = format!(
+            r#"<html lang="en"><article><h2>Experiment</h2><p>{prose}</p><p>Use <code>a &lt; b</code> and <strong>inspect</strong> the result.</p><pre><code class="language-rust">let text = "```";
+  work();
+</code></pre><ol start="3"><li>First<ul><li>Nested</li></ul></li><li>Second</li></ol><blockquote><p>Preserve this quotation.</p></blockquote><table><tr><th>Input</th><th>Output</th></tr><tr><td>2</td><td>4</td></tr></table><figure><img data-src="/plot.png" src="data:image/png;base64,x" alt="The result"><figcaption>Diagram by the author</figcaption></figure><img src="/plot.png" alt="Repeated"><figure><img src="/restricted.png" alt="Third party"><figcaption><a rel="license" href="/all-rights-reserved">Separate rights</a></figcaption></figure><img src="http://127.0.0.1/internal" alt="No private images"></article></html>"#
+        );
+        let source = extract(url.clone(), &text, &grants).unwrap();
+        assert!(source.license.as_ref().unwrap().translation);
+        assert_eq!(source.images.len(), 1);
+        assert_eq!(source.images[0].origin, "https://example.com/plot.png");
+        assert_eq!(source.body.matches("reads-image:0").count(), 2);
+        assert!(!source.body.contains("restricted.png"));
+        let mut html = String::new();
+        pulldown_cmark::html::push_html(
+            &mut html,
+            pulldown_cmark::Parser::new_ext(&source.body, super::super::full_text::OPTIONS),
+        );
+        let html = Html::parse_fragment(&html);
+        assert_eq!(
+            html.select(&selector("pre code"))
+                .next()
+                .unwrap()
+                .text()
+                .collect::<String>(),
+            "let text = \"```\";\n  work();\n"
+        );
+        assert_eq!(html.select(&selector("ol[start='3'] > li")).count(), 2);
+        assert_eq!(html.select(&selector("ol ul li")).count(), 1);
+        assert_eq!(html.select(&selector("table tbody td")).count(), 2);
+        assert_eq!(html.select(&selector("blockquote")).count(), 1);
+
+        let cc = "<a rel='license' href='https://creativecommons.org/licenses/by/4.0/'>License</a>";
+        let text = format!(
+            "<article><p>{prose}</p>{cc}<img src='/unknown.png' alt='Unknown'><figure><img src='/licensed.png' alt='Licensed'><figcaption>Credit: Author {cc}</figcaption></figure></article>"
+        );
+        let source = extract(url.clone(), &text, &[]).unwrap();
+        assert_eq!(source.images.len(), 1);
+        assert!(source.images[0].origin.ends_with("/licensed.png"));
+        let only_picture_license = format!(
+            "<article><p>{prose}</p><figure><img src='/licensed.png'><figcaption>{cc}</figcaption></figure></article>"
+        );
+        assert!(
+            extract(url, &only_picture_license, &[])
+                .unwrap()
+                .license
+                .is_none()
+        );
+    }
 
     #[test]
     fn refuses_private_and_special_networks() {
