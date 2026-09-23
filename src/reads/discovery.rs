@@ -14,7 +14,6 @@ use url::Url;
 const POOL_LIMIT: i64 = 160;
 pub(super) const CANDIDATE_LIMIT: usize = 32;
 
-// Discovery sources do not grant republication rights. Licensing is checked on each article.
 const FEEDS: &[(&str, &str, &str)] = &[
     ("Cloudflare", "en", "https://blog.cloudflare.com/rss/"),
     ("GitHub", "en", "https://github.blog/feed/"),
