@@ -85,9 +85,9 @@ fn analysis_input_keeps_facts_and_dates_without_storage_metadata() {
 }
 
 #[test]
-fn closes_editions_at_0630_and_keeps_half_open_windows() {
-    let cutoff = NaiveTime::from_hms_opt(6, 30, 0).unwrap();
-    let end = Utc.with_ymd_and_hms(2026, 9, 20, 22, 30, 0).unwrap();
+fn closes_editions_at_0600_and_keeps_half_open_windows() {
+    let cutoff = NaiveTime::from_hms_opt(6, 0, 0).unwrap();
+    let end = Utc.with_ymd_and_hms(2026, 9, 20, 22, 0, 0).unwrap();
     assert_eq!(
         due_day(
             end - ChronoDuration::seconds(1),

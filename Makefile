@@ -25,8 +25,7 @@ clippy:
 # Not part of release-check: CI runs `make release-check` on a runner without cargo-audit.
 # Run this locally, or install cargo-audit in the workflow before wiring it in.
 audit:
-	# SQLx records its optional MySQL driver in Cargo.lock; rsa is not in this project's build tree.
-	cargo audit --ignore RUSTSEC-2023-0071
+	cargo audit
 
 js-check:
 	@for file in pages/*.js pages/me/*.js; do node --check "$$file" || exit; done

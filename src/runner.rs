@@ -14,7 +14,6 @@ use std::{
 };
 use tokio::sync::OwnedSemaphorePermit;
 use tokio::{task::JoinSet, time::MissedTickBehavior};
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 const TICK: Duration = Duration::from_secs(30);
@@ -31,7 +30,6 @@ const BACKGROUND_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 /// Starts the scheduler (unless disabled) and the maintenance loop. Detached workers are
 /// registered in `AppState` so shutdown can cancel and join them before the process exits.
 pub fn spawn(state: AppState) -> BackgroundTasks {
-    let background_state = state.clone();
     let mut tasks = JoinSet::new();
     tasks.spawn(crate::payment::maintenance_loop(
         state.pool.clone(),
@@ -55,20 +53,18 @@ pub fn spawn(state: AppState) -> BackgroundTasks {
     }
     BackgroundTasks {
         tasks,
-        shutdown: background_state.shutdown.clone(),
-        workers: background_state,
+        workers: state,
     }
 }
 
 pub struct BackgroundTasks {
     tasks: JoinSet<()>,
-    shutdown: CancellationToken,
     workers: AppState,
 }
 
 impl BackgroundTasks {
     pub async fn shutdown(mut self) {
-        self.shutdown.cancel();
+        self.workers.shutdown.cancel();
         let roots_finished = tokio::time::timeout(BACKGROUND_SHUTDOWN_TIMEOUT, async {
             while self.tasks.join_next().await.is_some() {}
         })
@@ -1001,7 +997,7 @@ async fn cleanup_items(state: &AppState, keep_from: NaiveDate) -> Result<()> {
 async fn cleanup_in_batches(
     state: &AppState,
     table: &'static str,
-    statement: &str,
+    statement: &'static str,
     cutoff_days: i64,
 ) -> Result<()> {
     let mut total = 0_u64;

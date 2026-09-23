@@ -43,7 +43,7 @@ pub struct Config {
     pub(crate) scheduler_enabled: bool,
     pub(crate) retention_days: u32,
     pub(crate) tmpfile_base_url: Option<Url>,
-    pub(crate) tmpfile_api_key: Option<String>,
+    pub(crate) tmpfile_api_key: String,
     pub(crate) image_max_bytes: u64,
     pub(crate) image_timeout: Duration,
 }
@@ -157,7 +157,7 @@ impl Config {
             .parse::<Tz>()
             .map_err(|_| AppError::Config("NEWS_TIMEZONE 必须是有效的 IANA 时区".into()))?;
         let briefing_time =
-            NaiveTime::parse_from_str(&env_value("NEWS_BRIEFING_TIME", "06:30"), "%H:%M")
+            NaiveTime::parse_from_str(&env_value("NEWS_BRIEFING_TIME", "06:00"), "%H:%M")
                 .map_err(|_| AppError::Config("NEWS_BRIEFING_TIME 必须是 HH:MM 格式".into()))?;
         let fetch_timeout_secs = parse_env("NEWS_FETCH_TIMEOUT_SECS", 1800_u64)?;
         if !(30..=1800).contains(&fetch_timeout_secs) {
@@ -177,7 +177,7 @@ impl Config {
             "TMPFILE_BASE_URL",
             &required_env("TMPFILE_BASE_URL")?,
         )?);
-        let tmpfile_api_key = Some(required_env("TMPFILE_API_KEY")?);
+        let tmpfile_api_key = required_env("TMPFILE_API_KEY")?;
         let image_max_bytes = parse_env("NEWS_IMAGE_MAX_BYTES", 8_u64 * 1024 * 1024)?;
         if !(64 * 1024..=64 * 1024 * 1024).contains(&image_max_bytes) {
             return Err(AppError::Config(

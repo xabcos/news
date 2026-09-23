@@ -87,7 +87,7 @@ function bindEvents() {
     const s = session;
     if (!s) return;
     clearTimeout(s.timer);
-    if (document.visibilityState === "visible" && !s.refreshing) void refresh(s).catch(reportError);
+    if (document.visibilityState === "visible") void refresh(s).catch(reportError);
   });
 }
 
@@ -167,7 +167,7 @@ async function enterApp(data) {
   const s = {
     user: data.user, usage: data.usage, admin: data.user.role === "admin",
     controller: new AbortController(), topics: [], running: new Set(), selected: null,
-    itemsVersion: 0, runsVersion: 0, refreshVersion: 0, timer: null, refreshing: false,
+    itemsVersion: 0, runsVersion: 0, timer: null, refreshing: false,
     briefing: null,
     timezone: data.usage.timezone, today: { runs: data.usage.runs_today, cost_ticks: 0 },
     users: null,
@@ -206,13 +206,12 @@ async function refresh(s) {
   if (s.refreshing) return;
   s.refreshing = true;
   clearTimeout(s.timer);
-  const version = ++s.refreshVersion;
   try {
     const [topics, status, account] = await Promise.all([
       s.request(`${s.base}/topics`), s.request(`${s.base}/status`),
       s.admin ? null : s.request("/api/me"),
     ]);
-    if (session !== s || version !== s.refreshVersion) return;
+    if (session !== s) return;
     const finished = [...s.running].some((id) => !status.running.includes(id));
     const selected = topics.find((topic) => topic.id === s.selected);
     const contentChanged = selected?.last_run_at !== s.topics.find((topic) => topic.id === s.selected)?.last_run_at;
@@ -233,7 +232,7 @@ async function refresh(s) {
     if (s.admin) await loadBriefing(s);
   } finally {
     s.refreshing = false;
-    if (session === s && version === s.refreshVersion) scheduleRefresh(s);
+    if (session === s) scheduleRefresh(s);
   }
 }
 
@@ -263,7 +262,7 @@ function renderBriefing(s) {
   const briefing = s.briefing;
   if (!briefing) {
     message("briefingMessage", "还没有生成过 XAI 日报。");
-    $("#briefingMeta").textContent = "每日 6:30 开始采集，完成后生成日报；也可重新生成最近一期";
+    $("#briefingMeta").textContent = "每日 06:00 开始采集，完成后生成日报；也可重新生成最近一期";
     $("#briefingDrafts").classList.add("hidden");
     $("#runBriefingButton").disabled = false;
     renderBriefingImages([]);

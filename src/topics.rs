@@ -103,8 +103,6 @@ struct Run {
     error: Option<String>,
 }
 
-const RUN_COLUMNS: &str = "id, triggered_by, status, started_at, finished_at, model, input_tokens, cached_tokens, output_tokens, reasoning_tokens, web_search_calls, x_search_calls, cost_ticks, returned_count, new_count, dup_count, dropped_count, error";
-
 #[derive(Debug, Serialize, FromRow)]
 struct Item {
     id: Uuid,
@@ -126,8 +124,6 @@ struct Item {
     hidden: bool,
     pinned: bool,
 }
-
-const ITEM_COLUMNS: &str = "id, topic_id, day, title, summary, title_en, summary_en, url, source, published_at, tags, tags_en, importance, first_seen_at, last_seen_at, seen_count, hidden, pinned";
 
 /// Every editable column, all optional: a PATCH body, or the settings part of a create.
 #[derive(Debug, Default, Deserialize)]
@@ -819,9 +815,13 @@ async fn list_runs(
     scope: TopicScope,
 ) -> Result<Json<Vec<Run>>> {
     load_topic(&state, &id, &user, scope).await?;
-    let runs = sqlx::query_as::<_, Run>(&format!(
-        "SELECT {RUN_COLUMNS} FROM runs WHERE topic_id = $1 ORDER BY started_at DESC LIMIT $2"
-    ))
+    let runs = sqlx::query_as::<_, Run>(
+        "SELECT id, triggered_by, status, started_at, finished_at, model,
+                input_tokens, cached_tokens, output_tokens, reasoning_tokens,
+                web_search_calls, x_search_calls, cost_ticks, returned_count,
+                new_count, dup_count, dropped_count, error
+         FROM runs WHERE topic_id = $1 ORDER BY started_at DESC LIMIT $2",
+    )
     .bind(&id)
     .bind(query.limit.unwrap_or(50).clamp(1, 200))
     .fetch_all(&state.pool)
@@ -847,10 +847,13 @@ async fn list_items(
         .await?
         .unwrap_or_else(|| state.digest.today()),
     };
-    let items = sqlx::query_as::<_, Item>(&format!(
-        "SELECT {ITEM_COLUMNS} FROM items WHERE topic_id = $1 AND day = $2 \
-         ORDER BY pinned DESC, published_at DESC NULLS LAST, first_seen_at DESC"
-    ))
+    let items = sqlx::query_as::<_, Item>(
+        "SELECT id, topic_id, day, title, summary, title_en, summary_en, url, source,
+                published_at, tags, tags_en, importance, first_seen_at, last_seen_at,
+                seen_count, hidden, pinned
+         FROM items WHERE topic_id = $1 AND day = $2
+         ORDER BY pinned DESC, published_at DESC NULLS LAST, first_seen_at DESC",
+    )
     .bind(&id)
     .bind(day)
     .fetch_all(&state.pool)
@@ -866,10 +869,16 @@ async fn update_item(
     scope: TopicScope,
 ) -> Result<Json<Item>> {
     let mut transaction = state.pool.begin().await?;
-    let item = sqlx::query_as::<_, Item>(&format!(
-        "UPDATE items SET hidden = COALESCE($2, hidden), pinned = COALESCE($3, pinned) \
-         WHERE id = $1 AND EXISTS (SELECT 1 FROM topics WHERE topics.id = items.topic_id AND (($4 AND topics.owner_user_id IS NULL) OR (NOT $4 AND topics.owner_user_id = $5))) RETURNING {ITEM_COLUMNS}"
-    ))
+    let item = sqlx::query_as::<_, Item>(
+        "UPDATE items SET hidden = COALESCE($2, hidden), pinned = COALESCE($3, pinned)
+         WHERE id = $1 AND EXISTS (
+             SELECT 1 FROM topics WHERE topics.id = items.topic_id
+             AND (($4 AND topics.owner_user_id IS NULL) OR (NOT $4 AND topics.owner_user_id = $5))
+         )
+         RETURNING id, topic_id, day, title, summary, title_en, summary_en, url, source,
+                   published_at, tags, tags_en, importance, first_seen_at, last_seen_at,
+                   seen_count, hidden, pinned",
+    )
     .bind(id)
     .bind(request.hidden)
     .bind(request.pinned)

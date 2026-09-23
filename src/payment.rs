@@ -18,7 +18,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Utc};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use qrcode::{QrCode, render::svg};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

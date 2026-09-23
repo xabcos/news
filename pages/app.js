@@ -406,7 +406,7 @@ async function loadInsight(silent = false) {
     const needCatalog = state.personal && !state.topics.length;
     const [{ data: payload, etag }, catalog] = await Promise.all([
       fetchJson("/insight", { signal, withEtag: true }),
-      needCatalog ? personalCatalog(signal) : Promise.resolve(null),
+      needCatalog ? personalCatalog(signal) : null,
     ]);
     if (epoch !== state.epoch) return;
     if (catalog?.expired) {
@@ -544,7 +544,6 @@ async function loadMoreItems(sentinel) {
   const target = groupTargets.get(sentinel);
   if (!target || target.loading || !sentinel.isConnected || !target.group.next) return;
   const { digest, group } = target;
-  if (!Array.isArray(group.items)) group.items = [];
   const timeline = state.timeline;
   target.loading = true;
   try {
@@ -641,7 +640,6 @@ function setupTopicSwipe() {
 
 function changeTopic(direction) {
   const topicIds = ["", INSIGHT_ID, ...state.topics.map((topic) => topic.id)];
-  if (topicIds.length <= 1) return false;
   const current = topicIds.indexOf(state.topic);
   // A deep link can be rendered before the async catalogue arrives. Wait for
   // that catalogue instead of treating the unknown topic as ALL.

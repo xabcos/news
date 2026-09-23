@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::FromRow;
-use url::{Host, Url};
+use url::Url;
 
 const MAX_TITLE: usize = 200;
 const MAX_SUMMARY: usize = 600;
@@ -159,11 +159,7 @@ impl NewsImage {
 
 fn normalize_image_url(value: &mut String) -> Option<()> {
     let url = Url::parse(value.trim()).ok()?;
-    if url.scheme() != "https"
-        || !matches!(url.host(), Some(Host::Domain(host)) if host.contains('.') && !host.ends_with(".local") && !host.ends_with(".localhost"))
-        || !url.username().is_empty()
-        || url.password().is_some()
-    {
+    if !crate::media::is_public_https_url(&url) {
         return None;
     }
     *value = url.to_string();

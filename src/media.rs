@@ -131,10 +131,6 @@ async fn transfer_image(state: &AppState, mut image: NewsImage) -> Option<NewsIm
         "image/avif,image/webp,image/jpeg,image/png,image/gif",
     )
     .await?;
-    if bytes.is_empty() {
-        tracing::debug!(url = %origin, "news image is empty");
-        return None;
-    }
     if !image_is_usable(&bytes) {
         tracing::debug!(url = %origin, size = bytes.len(), "news image is too small or likely a placeholder");
         return None;
@@ -154,14 +150,14 @@ async fn transfer_image(state: &AppState, mut image: NewsImage) -> Option<NewsIm
         }
     };
     let upload_url = format!("{}/upload", base_url.as_str().trim_end_matches('/'));
-    let mut request = state
+    let response = match state
         .image_http
         .post(upload_url)
-        .multipart(Form::new().part("file", part));
-    if let Some(key) = state.config.tmpfile_api_key.as_deref() {
-        request = request.bearer_auth(key);
-    }
-    let response = match request.send().await {
+        .bearer_auth(&state.config.tmpfile_api_key)
+        .multipart(Form::new().part("file", part))
+        .send()
+        .await
+    {
         Ok(response) if response.status().is_success() => response,
         Ok(response) => {
             tracing::debug!(status = %response.status(), url = %origin, "tmpfile image upload failed");

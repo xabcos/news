@@ -20,7 +20,7 @@ NEWS 按主题采集、去重并整理中英文新闻，提供新闻首页、Ato
 
 ## XAI 日报
 
-首页的 `AI` 入口展示 XAI 日报。默认每天北京时间 06:30 补采启用的公共栏目，然后生成前 24 小时的新闻与最近 7 天的趋势。新闻窗口固定为 `[昨日06:30, 今日06:30)`，手动生成与自动重试共用这一窗口。
+首页的 `AI` 入口展示 XAI 日报。默认每天北京时间 06:00 补采启用的公共栏目，然后生成前 24 小时的新闻与最近 7 天的趋势。新闻窗口固定为 `[昨日06:00, 今日06:00)`，手动生成与自动重试共用这一窗口。
 
 统计范围为 **`x`、`p`、`china-ai`、`overseas-ai`、`gossip`、`cases`**。本期数量、栏目与标签分布、7 天统计和此前 6 日日均均使用这一范围：先筛选启用的公共栏目、有效发布时间和可见条目，再按原文 URL 指纹去重。统计表示报道收录数量，Gossip 被收录不代表其说法已证实。
 
@@ -59,7 +59,7 @@ docker compose up -d
 | `AI_API_KEY` | 启用采集时必填 | Responses API 密钥 |
 | `AI_BASE_URL` / `AI_DEFAULT_MODEL` | `https://api.zairouter.com` / `grok-4.7` | 采集接口与新建主题的模型 |
 | `AI_INSIGHT_MODEL` | `gpt-6-astra` | 支持图片输入的日报模型 |
-| `NEWS_TIMEZONE` / `NEWS_BRIEFING_TIME` | `Asia/Shanghai` / `06:30` | 日期边界和日报截止时间 |
+| `NEWS_TIMEZONE` / `NEWS_BRIEFING_TIME` | `Asia/Shanghai` / `06:00` | 日期边界和日报截止时间 |
 | `NEWS_SCHEDULER_ENABLED` | `true` | 自动采集与日报调度 |
 | `NEWS_FETCH_TIMEOUT_SECS` / `NEWS_MAX_CONCURRENT_RUNS` | `1800` / `2` | 请求超时与采集、生成共用并发数 |
 | `NEWS_RETENTION_DAYS` | `128` | 新闻保留天数 |

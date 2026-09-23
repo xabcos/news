@@ -19,7 +19,6 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 const DATABASE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
-const DATABASE_STATEMENT_TIMEOUT_SECONDS: u64 = 10;
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REDIS_CONNECTION_TIMEOUT: Duration = Duration::from_secs(3);
 const REDIS_RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -61,18 +60,8 @@ impl Metrics {
         let duration_us = elapsed.as_micros().min(u128::from(u64::MAX)) as u64;
         self.total_duration_us
             .fetch_add(duration_us, Ordering::Relaxed);
-        let mut current = self.max_duration_us.load(Ordering::Relaxed);
-        while duration_us > current {
-            match self.max_duration_us.compare_exchange_weak(
-                current,
-                duration_us,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(observed) => current = observed,
-            }
-        }
+        self.max_duration_us
+            .fetch_max(duration_us, Ordering::Relaxed);
     }
 
     pub(crate) fn snapshot(&self) -> MetricsSnapshot {
@@ -86,6 +75,7 @@ impl Metrics {
     }
 }
 
+#[derive(Default)]
 struct WorkerGroupState {
     closed: bool,
     handles: Vec<JoinHandle<()>>,
@@ -94,19 +84,9 @@ struct WorkerGroupState {
 /// Tracks detached application workers and gives them a bounded shutdown window. Finished
 /// handles are discarded when new work is registered, so a busy service does not accumulate
 /// one join handle per historical run.
+#[derive(Default)]
 pub(crate) struct WorkerGroup {
     state: Mutex<WorkerGroupState>,
-}
-
-impl Default for WorkerGroup {
-    fn default() -> Self {
-        Self {
-            state: Mutex::new(WorkerGroupState {
-                closed: false,
-                handles: Vec::new(),
-            }),
-        }
-    }
 }
 
 impl WorkerGroup {
@@ -176,11 +156,9 @@ impl AppState {
                 Box::pin(async move {
                     // Runtime queries are bounded at the database. Migrations deliberately
                     // use a separate pool below and are not subject to this short timeout.
-                    sqlx::query(&format!(
-                        "SET statement_timeout = '{DATABASE_STATEMENT_TIMEOUT_SECONDS}s'"
-                    ))
-                    .execute(connection)
-                    .await?;
+                    sqlx::query("SET statement_timeout = '10s'")
+                        .execute(connection)
+                        .await?;
                     Ok(())
                 })
             })

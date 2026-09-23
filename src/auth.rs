@@ -391,7 +391,11 @@ async fn cleanup_login_tokens(state: &AppState) -> Result<()> {
 }
 
 /// Deletes in bounded batches so a large backlog never holds locks for a whole pass.
-async fn cleanup_in_batches(state: &AppState, table: &'static str, statement: &str) -> Result<()> {
+async fn cleanup_in_batches(
+    state: &AppState,
+    table: &'static str,
+    statement: &'static str,
+) -> Result<()> {
     let mut total = 0;
     for batch_index in 0..CLEANUP_MAX_BATCHES {
         let deleted = sqlx::query(statement)
