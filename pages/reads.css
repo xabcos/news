@@ -1,11 +1,11 @@
 .reads .shell { padding-top: 2.75rem; }
 .reads [hidden] { display: none; }
-.reads-heading { margin-bottom: 1.4rem; }
-.reads-heading h1 { margin-bottom: .45rem; font-size: 1.75rem; }
-.reads-heading p { color: var(--muted); font-size: .9rem; }
+.reads-heading { display: flex; align-items: baseline; gap: 1rem; margin-bottom: 1.8rem; }
+.reads-heading h1 { flex-shrink: 0; margin: 0; font-size: 1.75rem; }
+.reads-heading p { min-width: 0; margin: 0; color: var(--muted); font-size: .9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .reads-list .item { padding: 1.4rem 0; }
 .reads-list .item:first-child { padding-top: 0; }
-.reads-views { display: flex; gap: 1.35rem; margin-bottom: 1.8rem; font-size: .85rem; }
+.reads-views { display: flex; flex-shrink: 0; gap: 1.35rem; margin-left: auto; font-size: .85rem; white-space: nowrap; }
 .reads-views a { color: var(--muted); text-decoration: none; padding-bottom: .4rem; }
 .reads-views a[aria-current] { color: var(--text); border-bottom: 1px solid currentColor; }
 .reads-list .item { display: flex; gap: .9rem; }
@@ -45,6 +45,10 @@
   .reads-list, .read-heading, .read-source, .read-actions, .read-related,
   .read-body :is(p, h1, h2, h3, h4, h5, h6) { touch-action: pan-y pinch-zoom; }
   .reads .shell { padding-top: 1.8rem; }
+  .reads-heading { gap: .5rem; }
+  .reads-heading h1 { font-size: 1.25rem; }
+  .reads-heading p, .reads-views { font-size: .75rem; }
+  .reads-views { gap: .8rem; }
   .read-heading { margin-bottom: 1.8rem; }
   .read-body { font-size: 1rem; }
 }
