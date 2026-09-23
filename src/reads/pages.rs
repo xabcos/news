@@ -352,9 +352,8 @@ async fn detail(
     }
     let _ = write!(
         content,
-        "</footer><div class=read-actions><a href=\"{}\">← 𝑹𝒆𝒂𝒅𝒔</a><button id=copyRead class=\"button button-quiet button-small\" type=button hidden>{}</button><span id=copyStatus class=muted role=status></span></div></article>",
-        localized("/reads", en),
-        choose(en, "复制链接", "Copy link")
+        "</footer><div class=read-actions><a href=\"{}\">← 𝑹𝒆𝒂𝒅𝒔</a></div></article>",
+        localized("/reads", en)
     );
     // Rank only the latest 200 visible alternatives, then load the three cards.
     let mut query = sqlx::QueryBuilder::new(
@@ -531,11 +530,11 @@ async fn layout(
 <title>{title}</title><meta name="description" content="{description}"><meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f6f4"><meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1115">
 <link rel="canonical" href="{canonical}"><link rel="alternate" hreflang="zh-CN" href="{zh}"><link rel="alternate" hreflang="en" href="{english}"><link rel="alternate" hreflang="x-default" href="{zh}">
 <meta property="og:type" content="{og_type}"><meta property="og:title" content="{title}"><meta property="og:description" content="{description}"><meta property="og:url" content="{canonical}"><meta property="og:site_name" content="News"><meta name="twitter:card" content="summary">
-<link rel="icon" type="image/svg+xml" href="/icon.svg"><link rel="alternate" type="application/atom+xml" title="Reads" href="/feed.xml?topic=reads"><link rel="stylesheet" href="/styles.css?v=reads-v2"><link rel="stylesheet" href="/reads.css?v=3">{schema}</head>
+<link rel="icon" type="image/svg+xml" href="/icon.svg"><link rel="alternate" type="application/atom+xml" title="Reads" href="/feed.xml?topic=reads"><link rel="stylesheet" href="/styles.css?v=reads-v2"><link rel="stylesheet" href="/reads.css?v=4">{schema}</head>
 <body class="public reads"><header class="topbar"><a class="brand" href="{home}" aria-label="News"><img class="brand-logo" src="/icon.svg" alt=""><span>𝑵𝒆𝒘𝒔</span></a><nav class="tabs" aria-label="{topics_label}">{tabs}</nav><div class="tools"><a class="space-link button button-quiet button-small" href="/me/">{workspace}</a><a class="space-link button button-quiet button-small" href="{other_lang}" hreflang="{other_code}">{language_label}</a></div></header>
 <main class="shell">{content}</main>
 <button id="backToTop" class="button back-to-top" type="button" aria-label="{back_to_top}" title="{back_to_top}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 12 6-6 6 6M12 6v12"/></svg></button>
-<script src="/public.js?v=1" defer></script><script src="/reads.js?v=2" defer></script><script src="/stats.js?v=2" data-track-url="{track_url}" defer></script></body></html>"##,
+<script src="/public.js?v=1" defer></script><script src="/reads.js?v=3" defer></script><script src="/stats.js?v=2" data-track-url="{track_url}" defer></script></body></html>"##,
         lang = choose(en, "zh-CN", "en"),
         title = escape(title),
         description = escape(description),
