@@ -38,14 +38,13 @@ fn copied_passages_are_rejected_across_whitespace() {
     ));
 }
 
-fn source(licensed: bool) -> source::Source {
+fn source(path: &str) -> source::Source {
     source::Source {
-        url: url::Url::parse(if licensed { "https://example.com/authorized" } else { "https://example.com/essay" }).unwrap(),
+        url: url::Url::parse(&format!("https://example.com/{path}")).unwrap(),
         title: "A small team’s notes on building dependable AI tools".into(),
         author: "Example Author".into(), language: "en".into(), published_at: Some(Utc::now()),
         body: "## Start with a question\n\nAn original source discusses how a small team reduced review effort by choosing a narrow task and checking the results against real examples. The scope of the experiment matters more than the number of features.\n\n".repeat(4),
         images: Vec::new(),
-        license: licensed.then(|| source::License { name: "CC BY 4.0".into(), url: "https://creativecommons.org/licenses/by/4.0/".into(), translation: true, images: false }),
     }
 }
 
@@ -61,10 +60,10 @@ fn item(index: usize) -> NewItem {
 
 fn article(index: usize) -> Article {
     Article {
-        mode: "brief", author: "Example Author".into(), source_title: "A small team’s notes".into(), source_language:"en".into(),
+        author: "Example Author".into(), source_title: "A small team’s notes".into(), source_language:"en".into(),
         body: format!("## 从具体问题开始\n\n与其一开始建立包罗万象的系统，这篇文章提供了一条更容易验证的路径：先找到一个有明确输入、输出和使用者的小问题。\n\n## 给结果留下检验的空间\n\n真正值得关注的是反馈是否能够进入下一轮改进。团队需要记录失败的例子，区分模型的能力边界与流程本身的问题，再决定是否扩大使用范围。\n\n## 如何理解这份经验\n\n这些观察来自特定团队的实践，适用范围取决于数据质量、任务复杂度和检查成本。它提供的是一种思考顺序，而非对所有场景的效果承诺。\n\n第 {index} 篇阅读。"),
         body_en: "## Begin with a concrete problem\n\nA small, observable task makes it possible to learn from actual use. The useful lesson is to connect each experiment with a clear question, a review process and a decision about what to change next.\n\n## Keep the limits in view\n\nThe account describes one team’s experience. Its value lies in the questions it raises about evaluation, feedback and the cost of checking results, rather than a universal promise about performance.".into(),
-        source_hash:vec![index as u8;32], license:None, fetched_at:Utc::now(), full_text: None,
+        source_hash:vec![index as u8;32], fetched_at:Utc::now(), full_text: None,
     }
 }
 
@@ -128,6 +127,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         .await
         .unwrap();
     assert_eq!(topic.name, "𝑹𝒆𝒂𝒅𝒔");
+    assert!(!topic.brief.contains("转载许可"));
     assert_eq!(
         (
             topic.interval_minutes,
@@ -143,43 +143,42 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         .bind(run_id).execute(&state.pool).await.unwrap();
     let today = state.digest.today();
     let old = today - chrono::Duration::days(200);
-    // Neither available capacity nor a full-text license overrides an editorial rejection.
-    for licensed in [false, true] {
-        let mut rejected = source(licensed);
-        rejected.url.set_path("/rejected");
-        assert!(
-            prepare_source(
-                &state,
-                &topic,
-                &mut item(2),
-                &mut Usage::default(),
-                rejected
-            )
-            .await
-            .unwrap()
-            .is_none()
-        );
-    }
+    // Available capacity never overrides an editorial rejection.
+    let rejected = source("rejected");
+    assert!(
+        prepare_source(
+            &state,
+            &topic,
+            &mut item(2),
+            &mut Usage::default(),
+            rejected
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
     assert_eq!(daily_count(&state, today).await.unwrap(), 0);
     let mut usage = Usage::default();
     let mut full_item = item(0);
-    let full = prepare_source(&state, &topic, &mut full_item, &mut usage, source(true))
+    let full = prepare_source(&state, &topic, &mut full_item, &mut usage, source("essay"))
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(full.mode, "full");
+    assert!(full.full_text.is_some());
     assert_eq!(full.body, article(0).body.repeat(2));
     assert!(!full.body_en.is_empty());
     let document = full.full_text.as_ref().unwrap();
-    assert_eq!(document.original, source(true).body);
+    assert_eq!(document.original, source("essay").body);
     assert!(document.zh.is_some());
     assert!(document.en.is_none());
     let mut brief_item = item(1);
-    let brief = prepare_source(&state, &topic, &mut brief_item, &mut usage, source(false))
+    let mut incomplete = source("incomplete");
+    incomplete.title = "Incomplete translation fixture".into();
+    let brief = prepare_source(&state, &topic, &mut brief_item, &mut usage, incomplete)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(brief.mode, "brief");
+    assert!(brief.full_text.is_none());
     assert!(!brief.body.contains("scope of the experiment"));
     assert_eq!(
         (
@@ -187,7 +186,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             usage.output_tokens,
             usage.cost_in_usd_ticks
         ),
-        (120, 150, 270)
+        (160, 200, 360)
     );
     let articles = HashMap::from([
         (full_item.fingerprint.clone(), full),
@@ -209,15 +208,21 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
     );
     // A repeat from a different day is not published or sent to the editor again.
     assert!(
-        prepare_source(&state, &topic, &mut item(1), &mut usage, source(false))
-            .await
-            .unwrap()
-            .is_none()
+        prepare_source(
+            &state,
+            &topic,
+            &mut item(1),
+            &mut usage,
+            source("incomplete")
+        )
+        .await
+        .unwrap()
+        .is_none()
     );
     assert_eq!(calls.load(Ordering::SeqCst), 5);
     let mut repeat = item(0);
-    repeat.url = source(true).url.to_string();
-    repeat.fingerprint = fingerprint(&source(true).url);
+    repeat.url = source("essay").url.to_string();
+    repeat.fingerprint = fingerprint(&source("essay").url);
     assert_eq!(
         crate::runner::persist_items(
             &state,
@@ -330,10 +335,11 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         .await
         .unwrap();
     assert_eq!(count, 0);
-    let id: Uuid = sqlx::query_scalar("SELECT item_id FROM read_articles WHERE mode='full'")
-        .fetch_one(&state.pool)
-        .await
-        .unwrap();
+    let id: Uuid =
+        sqlx::query_scalar("SELECT item_id FROM read_articles WHERE full_text IS NOT NULL")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let app = crate::web::router(state.clone());
@@ -348,10 +354,8 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
     let etag = response.headers()["etag"].clone();
     let html = response.text().await.unwrap();
     for text in [
-        "授权全文",
         "实验的范围比功能数量更重要",
         "全文译文",
-        "CC BY 4.0",
         "application/ld+json",
         "rel=\"canonical\"",
         "hreflang=\"en\"",
@@ -391,7 +395,8 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             .count(),
         0
     );
-    assert!(english.contains("Full text"));
+    assert!(!html.contains("授权全文"));
+    assert!(!html.contains("Republished under"));
     let list = client
         .get(format!("{base}/reads?page=3"))
         .send()
@@ -466,7 +471,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
     );
     // Deleting an item also removes its body, with no orphaned public page.
     let deleted: Uuid =
-        sqlx::query_scalar("SELECT item_id FROM read_articles WHERE mode='brief' LIMIT 1")
+        sqlx::query_scalar("SELECT item_id FROM read_articles WHERE full_text IS NULL LIMIT 1")
             .fetch_one(&state.pool)
             .await
             .unwrap();
@@ -534,7 +539,7 @@ async fn check_full_text_variants(
     calls: &std::sync::atomic::AtomicUsize,
 ) {
     use std::sync::atomic::Ordering;
-    let mut japanese = source(true);
+    let mut japanese = source("essay");
     japanese.language = "ja".into();
     japanese.url.set_path("/japanese");
     // Multiple chunks, with both translations required for a non-English original.
@@ -553,7 +558,7 @@ async fn check_full_text_variants(
         full.en.as_ref().unwrap().len()
     );
 
-    let mut unspecified = source(true);
+    let mut unspecified = source("essay");
     unspecified.url.set_path("/without-html-language");
     unspecified.language = "und".into();
     let full = prepare_source(state, topic, &mut item(704), &mut usage, unspecified)
@@ -566,23 +571,7 @@ async fn check_full_text_variants(
         "English originals are reused even without an HTML language hint"
     );
 
-    let mut untranslated = source(true);
-    untranslated.url.set_path("/republication-only");
-    untranslated.license.as_mut().unwrap().translation = false;
-    let before = calls.load(Ordering::SeqCst);
-    let full = prepare_source(state, topic, &mut item(702), &mut usage, untranslated)
-        .await
-        .unwrap()
-        .unwrap();
-    let full = full.full_text.unwrap();
-    assert!(full.zh.is_none() && full.en.is_none());
-    assert_eq!(
-        calls.load(Ordering::SeqCst) - before,
-        1,
-        "No translation call without permission"
-    );
-
-    let mut incomplete = source(true);
+    let mut incomplete = source("essay");
     incomplete.url.set_path("/incomplete-translation");
     incomplete.title = "Incomplete translation fixture".into();
     let mut usage = Usage::default();
@@ -590,8 +579,7 @@ async fn check_full_text_variants(
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(brief.mode, "brief");
-    assert!(brief.license.is_none() && brief.full_text.is_none());
+    assert!(brief.full_text.is_none());
     assert_eq!(brief.body, article(0).body.repeat(2));
     assert_eq!(
         usage.input_tokens, 80,
@@ -689,9 +677,9 @@ async fn check_related_candidates(
                    g=0, g=201
             FROM generate_series(0,201) g RETURNING id
         )
-        INSERT INTO read_articles (item_id, mode, author, source_title, source_language,
+        INSERT INTO read_articles (item_id, author, source_title, source_language,
                                    body, source_hash, fetched_at)
-        SELECT id, 'brief', 'Example Author', 'Original essay', 'en',
+        SELECT id, 'Example Author', 'Original essay', 'en',
                repeat('A paragraph explaining the original argument. ',6),
                sha256(convert_to(id::text,'UTF8')), $1 FROM inserted",
     )

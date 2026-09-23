@@ -21,7 +21,7 @@ use uuid::Uuid;
 const PAGE_SIZE: i64 = 12;
 const SITEMAP_SIZE: i64 = 10000;
 const VISIBLE: &str = "FROM items i JOIN read_articles a ON a.item_id = i.id JOIN topics t ON t.id = i.topic_id WHERE i.topic_id = 'reads' AND t.enabled AND t.owner_user_id IS NULL AND NOT i.hidden";
-const CARD: &str = "i.id, i.title, i.title_en, i.summary, i.summary_en, i.source, i.url, i.first_seen_at, a.mode, a.author, a.views";
+const CARD: &str = "i.id, i.title, i.title_en, i.summary, i.summary_en, i.source, i.url, i.first_seen_at, a.author, a.views";
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
@@ -62,7 +62,6 @@ struct Card {
     source: String,
     url: String,
     first_seen_at: DateTime<Utc>,
-    mode: String,
     author: String,
     views: Option<i64>,
 }
@@ -75,8 +74,6 @@ struct Detail {
     body_en: String,
     source_title: String,
     source_language: String,
-    license_name: Option<String>,
-    license_url: Option<String>,
     full_text: Option<sqlx::types::Json<super::full_text::Document>>,
 }
 
@@ -245,8 +242,12 @@ async fn detail(
 ) -> Result<Response> {
     let id = Uuid::parse_str(&id).map_err(|_| AppError::NotFound("文章不存在".into()))?;
     let mut query = sqlx::QueryBuilder::new("SELECT ");
-    query.push(CARD).push(", a.body, a.body_en, a.source_title, a.source_language, a.license_name, a.license_url, a.full_text ")
-        .push(VISIBLE).push(" AND i.id = ").push_bind(id);
+    query
+        .push(CARD)
+        .push(", a.body, a.body_en, a.source_title, a.source_language, a.full_text ")
+        .push(VISIBLE)
+        .push(" AND i.id = ")
+        .push_bind(id);
     let row = query
         .build_query_as::<Detail>()
         .fetch_optional(&state.pool)
@@ -257,11 +258,7 @@ async fn detail(
     let title = choose(en, &item.title, &item.title_en);
     let summary = choose(en, &item.summary, &item.summary_en);
     let body = choose(en, &row.body, &row.body_en);
-    let language = if item.mode == "full" && row.full_text.is_none() {
-        &row.source_language
-    } else {
-        choose(en, "zh-CN", "en")
-    };
+    let language = choose(en, "zh-CN", "en");
     let author = if item.author.is_empty() {
         &item.source
     } else {
@@ -272,8 +269,7 @@ async fn detail(
         choose(en, "累计阅读次数", "Total page views")
     );
     let mut content = format!(
-        "<article class=read><header class=read-heading><div class=item-meta>{}<time datetime=\"{}\">{}</time></div><div class=read-title><h1>{}</h1>{views}</div><p class=read-deck>{}</p><div class=item-meta><span>{}</span><span>·</span><a href=\"{}\" rel=\"noopener noreferrer\">{}</a></div></header><div class=read-body lang=\"{}\">{}</div>",
-        kind_prefix(&item.mode, en),
+        "<article class=read><header class=read-heading><div class=item-meta><time datetime=\"{}\">{}</time></div><div class=read-title><h1>{}</h1>{views}</div><p class=read-deck>{}</p><div class=item-meta><span>{}</span><span>·</span><a href=\"{}\" rel=\"noopener noreferrer\">{}</a></div></header><div class=read-body lang=\"{}\">{}</div>",
         item.first_seen_at.to_rfc3339(),
         item.first_seen_at
             .with_timezone(&state.config.timezone)
@@ -314,42 +310,15 @@ async fn detail(
         escape(&item.url),
         escape(&row.source_title)
     );
-    if let (Some(name), Some(url)) = (&row.license_name, &row.license_url) {
-        let _ = write!(
-            content,
-            "<p>{} <a href=\"{}\" rel=license>{}</a> · {}</p>",
-            choose(en, "转载许可", "Republished under"),
-            escape(url),
-            escape(name),
-            if row
-                .full_text
-                .as_ref()
-                .is_some_and(|document| document.translated(en))
-            {
-                choose(
-                    en,
-                    "全文由 AI 辅助翻译，保留原文结构、代码与署名；译文沿用原文许可。上方精读为本站整理。",
-                    "AI-assisted full translation; structure, code and attribution preserved. The original license applies to this translation. The reading guide above is by News.",
-                )
-            } else {
-                choose(
-                    en,
-                    "保留原文语言，调整阅读排版。",
-                    "Original language; formatting adapted for reading.",
-                )
-            }
-        );
-    } else {
-        let _ = write!(
-            content,
-            "<p>{}</p>",
-            choose(
-                en,
-                "本站基于原文整理的 AI 辅助精读，观点归属原作者，分析仅供参考。",
-                "An AI-assisted reading guide by News, based on the linked source. Original views belong to their author."
-            )
-        );
-    }
+    let _ = write!(
+        content,
+        "<p>{}</p>",
+        choose(
+            en,
+            "精读与翻译由 AI 辅助整理，原文观点与内容归属原作者。",
+            "AI-assisted reading guide and translation. Original content is attributed to its author.",
+        )
+    );
     let _ = write!(
         content,
         "</footer><div class=read-actions><a href=\"{}\">← 𝑹𝒆𝒂𝒅𝒔</a></div></article>",
@@ -398,17 +367,14 @@ async fn detail(
     }
     let path = format!("/reads/{id}");
     let canonical = absolute(&state, &localized(&path, en));
-    let mut structured = json!({
+    let structured = json!({
         "@context": "https://schema.org", "@type":"Article", "headline":title,
         "description":summary, "url":canonical, "mainEntityOfPage":canonical,
         "datePublished":item.first_seen_at.to_rfc3339(), "inLanguage":language,
         "publisher":{"@type":"Organization", "name":"News", "url":state.config.public_base_url},
-        "author": if item.mode == "full" { json!({"@type":"Person", "name":author}) } else { json!({"@type":"Organization", "name":"News"}) },
+        "author":{"@type":"Organization", "name":"News"},
         "isBasedOn": item.url,
     });
-    if let Some(url) = &row.license_url {
-        structured["license"] = json!(url);
-    }
     let html = layout(
         &state,
         en,
@@ -424,14 +390,6 @@ async fn detail(
         &Rendered::new(html),
         "text/html; charset=utf-8",
     ))
-}
-
-fn kind_prefix(mode: &str, en: bool) -> &'static str {
-    if mode == "full" {
-        choose(en, "授权全文 · ", "Full text · ")
-    } else {
-        ""
-    }
 }
 
 const EYE: &str = r#"<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>"#;
@@ -451,8 +409,7 @@ fn card(item: &Card, en: bool, rank: Option<usize>, timezone: chrono_tz::Tz) -> 
         })
         .unwrap_or_default();
     format!(
-        "<article class=item>{rank}<div class=read-card><div class=item-meta>{}<span>{}</span> · <span class=read-date><time datetime=\"{}\">{}</time>{views}</span></div><h2 class=item-title><a href=\"{}\">{}</a></h2><p class=item-summary>{}</p></div></article>",
-        kind_prefix(&item.mode, en),
+        "<article class=item>{rank}<div class=read-card><div class=item-meta><span>{}</span> · <span class=read-date><time datetime=\"{}\">{}</time>{views}</span></div><h2 class=item-title><a href=\"{}\">{}</a></h2><p class=item-summary>{}</p></div></article>",
         escape(&item.source),
         item.first_seen_at.to_rfc3339(),
         item.first_seen_at

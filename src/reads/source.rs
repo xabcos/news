@@ -1,5 +1,5 @@
 use super::invalid_source;
-use crate::error::{AppError, Result};
+use crate::error::Result;
 use reqwest::{Client, redirect::Policy};
 use scraper::{ElementRef, Html, Node, Selector};
 use serde::Deserialize;
@@ -11,29 +11,6 @@ use url::Url;
 
 const MAX_BYTES: usize = 2 * 1024 * 1024;
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct LicenseGrant {
-    prefix: Url,
-    name: String,
-    license_url: Url,
-    /// A selector identifying the complete article, excluding site navigation.
-    selector: String,
-    /// Set only when the permission also covers translation / article illustrations.
-    #[serde(default)]
-    translation: bool,
-    #[serde(default)]
-    images: bool,
-}
-
-#[derive(Debug)]
-pub(super) struct License {
-    pub name: String,
-    pub url: String,
-    pub translation: bool,
-    pub images: bool,
-}
-
 pub(super) struct Source {
     pub url: Url,
     pub title: String,
@@ -41,42 +18,10 @@ pub(super) struct Source {
     pub language: String,
     pub body: String,
     pub images: Vec<super::full_text::Image>,
-    pub license: Option<License>,
     pub published_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-pub(crate) fn license_grants(value: &str) -> Result<Vec<LicenseGrant>> {
-    let grants: Vec<LicenseGrant> = serde_json::from_str(value).map_err(|_| {
-        AppError::Config("NEWS_READS_LICENSES 必须是有效的授权配置 JSON 数组".into())
-    })?;
-    for grant in &grants {
-        if !public_url(&grant.prefix)
-            || !public_url(&grant.license_url)
-            || grant.prefix.query().is_some()
-            || grant.prefix.fragment().is_some()
-            || grant.name.trim().is_empty()
-            || grant.name.len() > 160
-            || grant.selector.trim().is_empty()
-            || Selector::parse(&grant.selector).is_err()
-        {
-            return Err(AppError::Config(
-                "NEWS_READS_LICENSES 的 URL、授权名称或正文选择器无效".into(),
-            ));
-        }
-    }
-    Ok(grants)
-}
-
-impl LicenseGrant {
-    fn matches(&self, url: &Url) -> bool {
-        self.prefix.origin() == url.origin()
-            && (self.prefix.path() == url.path()
-                || (self.prefix.path().ends_with('/')
-                    && url.path().starts_with(self.prefix.path())))
-    }
-}
-
-pub(super) async fn fetch(value: &str, grants: &[LicenseGrant]) -> Result<Source> {
+pub(super) async fn fetch(value: &str) -> Result<Source> {
     tokio::time::timeout(Duration::from_secs(30), async {
         let url = Url::parse(value).map_err(|_| invalid_source("原文 URL 无效"))?;
         if let Some(id) = x_status(&url) {
@@ -85,7 +30,7 @@ pub(super) async fn fetch(value: &str, grants: &[LicenseGrant]) -> Result<Source
         let (url, bytes) = download(url, Content::Html).await?;
         let html =
             std::str::from_utf8(&bytes).map_err(|_| invalid_source("原文不是 UTF-8 文本"))?;
-        extract(url, html, grants)
+        extract(url, html)
     })
     .await
     .map_err(|_| invalid_source("读取原文超时"))?
@@ -263,7 +208,7 @@ async fn fetch_post(id: &str) -> Result<Source> {
         .select(&selector("blockquote.twitter-tweet p"))
         .next()
         .ok_or_else(|| invalid_source("X 帖子缺少可读取正文"))?;
-    let body = markdown(paragraph, &url)?;
+    let (body, images) = markdown(paragraph, &url)?;
     if body.trim_end().ends_with('…')
         || body.contains("Show more")
         || body.contains("Read more")
@@ -277,8 +222,7 @@ async fn fetch_post(id: &str) -> Result<Source> {
         author: post.author_name,
         language: paragraph.attr("lang").unwrap_or("und").into(),
         body,
-        images: Vec::new(),
-        license: None,
+        images,
         published_at: None,
     })
 }
@@ -295,7 +239,7 @@ fn meta(html: &Html, query: &str) -> String {
         .into()
 }
 
-fn extract(url: Url, text: &str, grants: &[LicenseGrant]) -> Result<Source> {
+fn extract(url: Url, text: &str) -> Result<Source> {
     let html = Html::parse_document(text);
     if html
         .select(&selector("script[type='application/ld+json']"))
@@ -310,44 +254,36 @@ fn extract(url: Url, text: &str, grants: &[LicenseGrant]) -> Result<Source> {
     {
         return Err(invalid_source("原文标注为非公开全文"));
     }
-    let grant = grants.iter().find(|grant| grant.matches(&url));
     let article_meta = meta(&html, "meta[property='og:type']") == "article";
     let body_selector = article_selector(&url);
-    if grant.is_none()
-        && (url.path() == "/"
-            || (body_selector.is_none()
-                && !article_meta
-                && html.select(&selector("article")).count() > 1))
+    if url.path() == "/"
+        || (body_selector.is_none()
+            && !article_meta
+            && html.select(&selector("article")).count() > 1)
     {
         return Err(invalid_source("原文链接不是独立文章页"));
     }
-    let mut selectors = grant
-        .map(|grant| vec![grant.selector.as_str()])
-        .unwrap_or_else(|| {
-            vec![
-                "[itemprop='articleBody']",
-                ".entry-content",
-                ".post-content",
-                ".article-body",
-                ".post-body",
-                ".rich-editor",
-                ".markdown-body",
-                "#article_body",
-                "article",
-                "main",
-            ]
-        });
-    if grant.is_none()
-        && let Some(query) = body_selector
-    {
+    let mut selectors = vec![
+        "[itemprop='articleBody']",
+        ".entry-content",
+        ".post-content",
+        ".article-body",
+        ".post-body",
+        ".rich-editor",
+        ".markdown-body",
+        "#article_body",
+        "article",
+        "main",
+    ];
+    if let Some(query) = body_selector {
         selectors.insert(0, query);
     }
-    let (root, body, semantic) = selectors
+    let (root, body, images) = selectors
         .iter()
         .find_map(|query| {
             html.select(&selector(query)).find_map(|root| {
-                let body = markdown(root, &url).ok()?;
-                (body.chars().count() >= 600).then_some((root, body, *query != "main"))
+                let (body, images) = markdown(root, &url).ok()?;
+                (body.chars().count() >= 600).then_some((root, body, images))
             })
         })
         .ok_or_else(|| invalid_source("未找到完整的文章正文"))?;
@@ -400,39 +336,10 @@ fn extract(url: Url, text: &str, grants: &[LicenseGrant]) -> Result<Source> {
             .map(|node| node.text().collect::<String>())
             .unwrap_or_default();
     }
-    let license = if let Some(grant) = grant {
-        Some(License {
-            name: grant.name.clone(),
-            url: grant.license_url.to_string(),
-            translation: grant.translation,
-            images: grant.images,
-        })
-    } else if semantic {
-        // Only article-scoped or document metadata licenses count. Footer links often
-        // apply to the website's code/assets, not to the article being republished.
-        root.select(&selector("a[rel~='license']"))
-            .chain(html.select(&selector("head link[rel~='license']")))
-            .filter(|node| {
-                !node
-                    .ancestors()
-                    .filter_map(ElementRef::wrap)
-                    .any(|parent| parent.value().name() == "figure")
-            })
-            .filter_map(|node| node.attr("href"))
-            .filter_map(|href| url.join(href).ok())
-            .find_map(open_license)
-    } else {
-        None
-    };
     let published_at = crate::fetch::parse_time(&meta(
         &html,
         "meta[property='article:published_time'], meta[name='date'], meta[itemprop='datePublished']",
     ));
-    let (body, images) = if license.is_some() {
-        rich_markdown(root, &url, license.as_ref())?
-    } else {
-        (body, Vec::new())
-    };
     Ok(Source {
         url,
         title: title.trim().chars().take(300).collect(),
@@ -447,12 +354,11 @@ fn extract(url: Url, text: &str, grants: &[LicenseGrant]) -> Result<Source> {
             .collect(),
         body,
         images,
-        license,
         published_at,
     })
 }
 
-// Extraction hints only; CSS selectors do not grant republication rights.
+// Publisher-specific article containers exclude recommendations and navigation.
 fn article_selector(url: &Url) -> Option<&'static str> {
     match url.host_str()?.trim_start_matches("www.") {
         "blog.cloudflare.com" | "shopify.engineering" | "heise.de" => Some(".article-content"),
@@ -468,37 +374,9 @@ fn article_selector(url: &Url) -> Option<&'static str> {
     }
 }
 
-fn open_license(url: Url) -> Option<License> {
-    if url.host_str()? != "creativecommons.org" || !matches!(url.scheme(), "https" | "http") {
-        return None;
-    }
-    let path = url.path().trim_end_matches('/');
-    let name = match path {
-        "/licenses/by/4.0" => "CC BY 4.0",
-        "/licenses/by-sa/4.0" => "CC BY-SA 4.0",
-        "/publicdomain/zero/1.0" => "CC0 1.0",
-        _ => return None,
-    };
-    Some(License {
-        name: name.into(),
-        url: format!("https://creativecommons.org{path}/"),
-        translation: true,
-        images: false,
-    })
-}
-
-fn markdown(root: ElementRef<'_>, base: &Url) -> Result<String> {
-    rich_markdown(root, base, None).map(|(body, _)| body)
-}
-
-fn rich_markdown(
-    root: ElementRef<'_>,
-    base: &Url,
-    license: Option<&License>,
-) -> Result<(String, Vec<super::full_text::Image>)> {
+fn markdown(root: ElementRef<'_>, base: &Url) -> Result<(String, Vec<super::full_text::Image>)> {
     struct Writer<'a> {
         base: &'a Url,
-        license: Option<&'a License>,
         images: Vec<super::full_text::Image>,
     }
     impl Writer<'_> {
@@ -583,31 +461,11 @@ fn rich_markdown(
             }
             if tag == "img" {
                 let alt = element.attr("alt").unwrap_or("");
-                let figure = element
-                    .ancestors()
-                    .filter_map(ElementRef::wrap)
-                    .find(|node| node.value().name() == "figure");
-                let explicit = element.attr("data-license").map(str::to_owned).or_else(|| {
-                    figure
-                        .and_then(|figure| figure.select(&selector("a[rel~='license']")).next())
-                        .and_then(|link| link.attr("href"))
-                        .map(str::to_owned)
-                });
-                let image_license = explicit
-                    .as_ref()
-                    .and_then(|href| self.base.join(href).ok())
-                    .and_then(open_license);
-                let allowed = self.license.is_some()
-                    && if explicit.is_some() {
-                        image_license.is_some()
-                    } else {
-                        self.license.is_some_and(|license| license.images)
-                    };
                 let origin = [element.attr("data-src"), element.attr("src")]
                     .into_iter()
                     .flatten()
                     .find_map(|src| self.base.join(src).ok().filter(public_url));
-                if allowed && let Some(origin) = origin {
+                if let Some(origin) = origin {
                     let index = if let Some(index) = self
                         .images
                         .iter()
@@ -624,15 +482,7 @@ fn rich_markdown(
                     } else {
                         return Err(invalid_source("原文图片过多"));
                     };
-                    let mut image = format!("![{}](reads-image:{index})", escape_markdown(alt));
-                    // Figure credits already appear in the caption; a license attached
-                    // directly to the image needs its own visible attribution link.
-                    if element.attr("data-license").is_some()
-                        && let Some(license) = image_license
-                    {
-                        image.push_str(&format!(" [{}]({})", license.name, license.url));
-                    }
-                    return Ok(image);
+                    return Ok(format!("![{}](reads-image:{index})", escape_markdown(alt)));
                 }
                 return Ok(if alt.is_empty() {
                     String::new()
@@ -734,7 +584,6 @@ fn rich_markdown(
     }
     let mut writer = Writer {
         base,
-        license,
         images: Vec::new(),
     };
     let body = writer.walk(root, 0)?;
@@ -757,9 +606,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn full_text_preserves_code_lists_tables_and_only_authorized_images() {
+    fn full_text_preserves_code_lists_tables_images_and_captions() {
         let url = Url::parse("https://example.com/posts/one").unwrap();
-        let grants = license_grants(r#"[{"prefix":"https://example.com/posts/","name":"Author permission","license_url":"https://example.com/permission","selector":"article","translation":true,"images":true}]"#).unwrap();
         let prose =
             "A detailed observation describing the experiment and its limitations. ".repeat(15);
         let text = format!(
@@ -767,12 +615,17 @@ mod tests {
   work();
 </code></pre><ol start="3"><li>First<ul><li>Nested</li></ul></li><li>Second</li></ol><blockquote><p>Preserve this quotation.</p></blockquote><table><tr><th>Input</th><th>Output</th></tr><tr><td>2</td><td>4</td></tr></table><figure><img data-src="/plot.png" src="data:image/png;base64,x" alt="The result"><figcaption>Diagram by the author</figcaption></figure><img src="/plot.png" alt="Repeated"><figure><img src="/restricted.png" alt="Third party"><figcaption><a rel="license" href="/all-rights-reserved">Separate rights</a></figcaption></figure><img src="http://127.0.0.1/internal" alt="No private images"></article></html>"#
         );
-        let source = extract(url.clone(), &text, &grants).unwrap();
-        assert!(source.license.as_ref().unwrap().translation);
-        assert_eq!(source.images.len(), 1);
+        let source = extract(url.clone(), &text).unwrap();
+        assert_eq!(source.images.len(), 2);
         assert_eq!(source.images[0].origin, "https://example.com/plot.png");
         assert_eq!(source.body.matches("reads-image:0").count(), 2);
-        assert!(!source.body.contains("restricted.png"));
+        assert_eq!(
+            source.images[1].origin,
+            "https://example.com/restricted.png"
+        );
+        assert!(source.body.contains("Diagram by the author"));
+        assert!(source.body.contains("Separate rights"));
+        assert!(!source.body.contains("127.0.0.1"));
         let mut html = String::new();
         pulldown_cmark::html::push_html(
             &mut html,
@@ -791,23 +644,6 @@ mod tests {
         assert_eq!(html.select(&selector("ol ul li")).count(), 1);
         assert_eq!(html.select(&selector("table tbody td")).count(), 2);
         assert_eq!(html.select(&selector("blockquote")).count(), 1);
-
-        let cc = "<a rel='license' href='https://creativecommons.org/licenses/by/4.0/'>License</a>";
-        let text = format!(
-            "<article><p>{prose}</p>{cc}<img src='/unknown.png' alt='Unknown'><figure><img src='/licensed.png' alt='Licensed'><figcaption>Credit: Author {cc}</figcaption></figure></article>"
-        );
-        let source = extract(url.clone(), &text, &[]).unwrap();
-        assert_eq!(source.images.len(), 1);
-        assert!(source.images[0].origin.ends_with("/licensed.png"));
-        let only_picture_license = format!(
-            "<article><p>{prose}</p><figure><img src='/licensed.png'><figcaption>{cc}</figcaption></figure></article>"
-        );
-        assert!(
-            extract(url, &only_picture_license, &[])
-                .unwrap()
-                .license
-                .is_none()
-        );
     }
 
     #[test]
@@ -834,41 +670,30 @@ mod tests {
     }
 
     #[test]
-    fn only_verified_article_licenses_enable_full_text() {
+    fn full_text_does_not_depend_on_license_markup() {
         let url = Url::parse("https://example.com/posts/one").unwrap();
         let text = "An original paragraph with details and useful experience. ".repeat(20);
-        let document = |license: &str, footer: &str| {
-            format!(
-                "<html lang='en'><head><meta name='author' content='Ada'></head><body><article><h1>Real title</h1><p>{text}</p>{license}<script>steal()</script></article><footer>{footer}</footer></body></html>"
-            )
-        };
-        let cc = "<a rel='license' href='https://creativecommons.org/licenses/by/4.0/'>CC BY</a>";
-        let source = extract(url.clone(), &document(cc, ""), &[]).unwrap();
-        assert_eq!(source.license.unwrap().name, "CC BY 4.0");
-        assert_eq!(source.author, "Ada");
-        assert!(!source.body.contains("steal()"));
-        assert!(
-            extract(url.clone(), &document("", cc), &[])
-                .unwrap()
-                .license
-                .is_none()
-        );
-        let grants = license_grants(r#"[{"prefix":"https://example.com/posts/","name":"Author permission","license_url":"https://example.com/permission","selector":"article"}]"#).unwrap();
-        assert!(
-            extract(url.clone(), &document("", ""), &grants)
-                .unwrap()
-                .license
-                .is_some()
-        );
-        assert!(
-            !grants[0].matches(&Url::parse("https://example.com/posts-elsewhere/one").unwrap())
-        );
-        assert!(!grants[0].matches(&Url::parse("https://evil.example/posts/one").unwrap()));
-        assert!(extract(url, &document("<p>Subscribe to continue</p>", ""), &[]).is_err());
+        for license in [
+            "",
+            "<a href='https://creativecommons.org/licenses/by/4.0/'>CC BY</a>",
+            "All rights reserved",
+        ] {
+            let html = format!(
+                "<html lang='en'><head><meta name='author' content='Ada'></head><body><article><h1>Real title</h1><p>{text}</p><img src='/diagram.png' alt='Experiment'><p>{license}</p><script>steal()</script></article><footer>Site navigation</footer></body></html>"
+            );
+            let source = extract(url.clone(), &html).unwrap();
+            assert_eq!(source.author, "Ada");
+            assert!(source.body.contains("original paragraph"));
+            assert_eq!(source.images[0].origin, "https://example.com/diagram.png");
+            assert!(!source.body.contains("steal()"));
+            assert!(!source.body.contains("Site navigation"));
+        }
+        let paywall = format!("<article><p>{text}</p><p>Subscribe to continue</p></article>");
+        assert!(extract(url, &paywall).is_err());
     }
 
     #[test]
-    fn article_body_hints_exclude_recommendations_and_do_not_grant_a_license() {
+    fn article_body_hints_exclude_recommendations() {
         let text = "A useful detailed original observation about how a team evaluates its work. "
             .repeat(20);
         for (url, class) in [
@@ -879,10 +704,9 @@ mod tests {
             let html = format!(
                 "<html lang='en'><head><meta property='article:published_time' content='2026-09-22T10:00:00Z'></head><body><div class='{class}'><h1>Real article</h1><p>{text}</p></div><aside><article>Unrelated recommendation</article><article>Another recommendation</article></aside><footer><a rel='license' href='https://creativecommons.org/licenses/by/4.0/'>Site assets</a></footer></body></html>"
             );
-            let source = extract(Url::parse(url).unwrap(), &html, &[]).unwrap();
+            let source = extract(Url::parse(url).unwrap(), &html).unwrap();
             assert!(source.body.contains("original observation"));
             assert!(!source.body.contains("recommendation"));
-            assert!(source.license.is_none());
             assert_eq!(
                 source.published_at.unwrap().to_rfc3339(),
                 "2026-09-22T10:00:00+00:00"
@@ -897,12 +721,12 @@ mod tests {
         let excerpt = format!(
             "<article><p>{text}</p><a class='read-more' href='/subscribe'>Continue</a></article>"
         );
-        assert!(extract(url.clone(), &excerpt, &[]).is_err());
+        assert!(extract(url.clone(), &excerpt).is_err());
         let nested = format!(
             "<article>{}<p>{text}</p>{}</article>",
             "<div>".repeat(150),
             "</div>".repeat(150)
         );
-        assert!(extract(url, &nested, &[]).is_err());
+        assert!(extract(url, &nested).is_err());
     }
 }
