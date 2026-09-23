@@ -8,6 +8,7 @@ NEWS 按主题采集、去重并整理中英文新闻，提供新闻首页、Ato
 | --- | --- | --- |
 | 𝐗 | `x` | 全球 AI、科技产品、硬件、支付、创业与产业趋势 |
 | 𝑷 | `p` | AI、科技、军事、财经热点图片和公开视觉内容 |
+| 𝑹𝒆𝒂𝒅𝒔 | `reads` | 值得读完的原创文章与公开长帖，授权全文与本站精读 |
 | 𝑪 | `china-ai` | 中国模型、开发平台、开源与应用生态 |
 | 𝑶 | `overseas-ai` | OpenAI、Anthropic、Grok、Gemini、Mistral 等海外 LLM 的产品、研究与商业动态 |
 | 𝑮𝒐𝒔𝒔𝒊𝒑 | `gossip` | AI 圈爆料、回应、公开热议与网络安全事件 |
@@ -17,6 +18,18 @@ NEWS 按主题采集、去重并整理中英文新闻，提供新闻首页、Ato
 | 𝑰𝒔𝒔𝒖𝒆𝒔 | `issues` | Codex、Grok、Claude 的使用反馈、故障与解决方案 |
 
 栏目方向、关注来源和采集参数定义在 [初始化文件](migrations/0001_schema.sql)，可通过管理员工作台调整。采集要求具体事实、原文链接、明确时间和事件去重；Gossip 明确区分已确认消息、爆料、回应与推测。
+
+## Reads
+
+`/reads` 展示长期保留的精选文章。默认每 64 分钟全天采集，优先 AI、科技、商业；每轮最多 2 篇、每天最多 8 篇，没有合格内容时不发布。X 与全网搜索只负责发现线索，随后读取原站正文；X 公开长帖通过官方 oEmbed 读取，过短、不完整、付费或登录内容跳过。正文请求限定公开 HTTPS、逐跳校验并固定 DNS 地址，限时、限体积，不携带凭据。
+
+“授权全文”仅使用文章范围内可验证的 CC BY 4.0、CC BY-SA 4.0、CC0 1.0 许可，或运营者配置的已获转载许可。保留原文语言、作者、来源及许可链接，调整阅读排版。`NEWS_READS_LICENSES` 默认为空数组；每项包含 `prefix`、`name`、`license_url`、`selector`，分别对应已获授权的 URL 范围、许可名、许可证明链接和完整正文 CSS 选择器。目录范围必须以 `/` 结尾，其他路径只精确匹配。示例见 `.env.example`；配置本身不代表已取得许可。
+
+其他来源生成明确标注的中英文“本站精读”，依据已读取正文撰写独立解读，保留来源、记录正文哈希，不持久化未授权的源站全文；无法支持有价值精读时跳过。搜索摘要不会冒充全文。详情页 `/reads/{uuid}` 直接输出 HTML，带独立标题、canonical、语言版本、Article 数据和分享信息；`/sitemap.xml` 提供分片站点地图，Atom 中的 Reads 链接指向本站详情。
+
+文章与正文在一个事务中发布，跨日期永久去重。Reads 不受新闻保留天数影响，仍可在工作台隐藏、置顶或删除；隐藏或停用后详情和站点地图均不再公开。沿用现有调度、并发限制、运行统计和匿名访问统计，无额外定时服务。
+
+列表通过专用部分索引按置顶、收录时间排序。“继续阅读”从最近 200 篇可见的其他文章中优先选择标签相关的 3 篇，再读取卡片信息，限制历史积累带来的查询开销。
 
 ## XAI 日报
 
@@ -47,7 +60,7 @@ docker compose config >/dev/null
 docker compose up -d
 ```
 
-服务绑定宿主机 `127.0.0.1:8793`。将 [Nginx 配置](deploy/nginx/xabcnews.com.conf) 加入网关的 `http` 配置，为 `xabcnews.com` 提供入口。应用启动时执行单个初始化迁移，创建表结构、Free / Pro 套餐和 9 个公共栏目；调度器按栏目配置采集，并生成最近一期已截止日报。
+服务绑定宿主机 `127.0.0.1:8793`。将 [Nginx 配置](deploy/nginx/xabcnews.com.conf) 加入网关的 `http` 配置，为 `xabcnews.com` 提供入口。应用启动时按顺序执行数据库迁移，创建表结构、Free / Pro 套餐和 10 个公共栏目；调度器按栏目配置采集，并生成最近一期已截止日报。
 
 ## 配置
 
@@ -63,6 +76,7 @@ docker compose up -d
 | `NEWS_SCHEDULER_ENABLED` | `true` | 自动采集与日报调度 |
 | `NEWS_FETCH_TIMEOUT_SECS` / `NEWS_MAX_CONCURRENT_RUNS` | `1800` / `2` | 请求超时与采集、生成共用并发数 |
 | `NEWS_RETENTION_DAYS` | `128` | 新闻保留天数 |
+| `NEWS_READS_LICENSES` | `[]` | Reads 已取得的全文转载授权与正文选择器 |
 | `TMPFILE_BASE_URL` / `TMPFILE_API_KEY` | 必填 | 图片转存接口与密钥 |
 | `NEWS_IMAGE_MAX_BYTES` / `NEWS_IMAGE_TIMEOUT_SECS` | `8388608` / `30` | 单张图片大小与下载、上传总超时 |
 | `REDIS_ADDR` / `REDIS_PASS` / `REDIS_DB` | 空 / 空 / `1` | 缓存和邮件队列 |
@@ -79,6 +93,9 @@ GET /topics
 GET /days?topic=x&limit=30
 GET /feed.xml?topic=overseas-ai
 GET /insight
+GET /reads?page=1&lang=en
+GET /reads/{uuid}
+GET /sitemap.xml
 ```
 
 省略 `topic` 读取全部公共栏目，省略 `day` 读取最近有内容的日期。`limit` 为 1–128，`next` 为后续分页游标。公共响应支持 ETag 和短期缓存，私有响应不缓存。
@@ -90,7 +107,7 @@ GET /insight
 ```bash
 make release-check
 NEWS_DAILY_TEST_DATABASE_URL=postgres://.../news_daily_test_check cargo test --locked postgres_daily_pipeline -- --ignored
-NEWS_DAILY_TEST_DATABASE_URL=postgres://.../news_daily_test_check NEWS_PAYMENT_TEST_DATABASE_URL=postgres://.../news_payment_audit_check make integration-test
+NEWS_DAILY_TEST_DATABASE_URL=postgres://.../news_daily_test_check NEWS_PAYMENT_TEST_DATABASE_URL=postgres://.../news_payment_audit_check NEWS_READS_TEST_DATABASE_URL=postgres://.../news_reads_test_check make integration-test
 ```
 
-`release-check` 执行格式检查、单元测试、Clippy、前端语法和 Compose 配置检查。`integration-test` 使用两个独立空库，名称分别以 `news_daily_test` 和 `news_payment_audit_` 开头，并需要本地测试配置。它通过模拟接口验证初始化、首次访问、统计范围、时间边界、去重、单并发补采、失败续跑、日报落库重试、图片续期及支付幂等。CI 自动执行两组检查。
+`release-check` 执行格式检查、单元测试、Clippy、前端语法和 Compose 配置检查。`integration-test` 使用三个独立空库，名称分别以 `news_daily_test`、`news_payment_audit_` 和 `news_reads_test` 开头，并需要本地测试配置。模拟接口覆盖日报与支付流程，以及 Reads 的两种正文模式、用量累计、永久去重、并发发布上限、事务回滚、长期保留、服务端正文、语言版本、缓存、隐藏和删除。CI 自动执行。

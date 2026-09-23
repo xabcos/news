@@ -141,6 +141,7 @@ p { margin-top: 0; }
 .tabs > :first-child { margin-left: auto; }
 .tabs > :last-child { margin-right: auto; }
 .tab {
+  text-decoration: none;
   padding: .3rem .7rem;
   border: 1px solid transparent;
   border-radius: 999px;

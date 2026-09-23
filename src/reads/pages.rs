@@ -1,0 +1,594 @@
+use crate::{
+    digest::{Rendered, conditional},
+    error::{AppError, Result},
+    state::AppState,
+};
+use axum::{
+    Router,
+    extract::{Path, Query, State},
+    http::HeaderMap,
+    response::Response,
+    routing::get,
+};
+use chrono::{DateTime, Utc};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd, html};
+use serde::Deserialize;
+use serde_json::json;
+use sqlx::FromRow;
+use std::fmt::Write;
+use uuid::Uuid;
+
+const PAGE_SIZE: i64 = 12;
+const SITEMAP_SIZE: i64 = 10000;
+const VISIBLE: &str = "FROM items i JOIN read_articles a ON a.item_id = i.id JOIN topics t ON t.id = i.topic_id WHERE i.topic_id = 'reads' AND t.enabled AND t.owner_user_id IS NULL AND NOT i.hidden";
+const CARD: &str = "i.id, i.title, i.title_en, i.summary, i.summary_en, i.source, i.url, i.first_seen_at, a.mode, a.author";
+
+pub(crate) fn router() -> Router<AppState> {
+    Router::new()
+        .route("/reads", get(index))
+        .route("/reads/{id}", get(detail))
+        .route("/sitemap.xml", get(sitemap))
+        .route("/reads/sitemap/{page}", get(sitemap_page))
+        .route("/robots.txt", get(robots))
+        .layer(tower_http::compression::CompressionLayer::new())
+}
+
+#[derive(Default, Deserialize)]
+struct Params {
+    lang: Option<String>,
+    page: Option<u32>,
+}
+
+impl Params {
+    fn english(&self) -> bool {
+        self.lang.as_deref() == Some("en")
+    }
+    fn page(&self) -> Result<u32> {
+        match self.page.unwrap_or(1) {
+            page @ 1..=100000 => Ok(page),
+            _ => Err(AppError::NotFound("页面不存在".into())),
+        }
+    }
+}
+
+#[derive(FromRow)]
+struct Card {
+    id: Uuid,
+    title: String,
+    title_en: String,
+    summary: String,
+    summary_en: String,
+    source: String,
+    url: String,
+    first_seen_at: DateTime<Utc>,
+    mode: String,
+    author: String,
+}
+
+#[derive(FromRow)]
+struct Detail {
+    #[sqlx(flatten)]
+    card: Card,
+    body: String,
+    body_en: String,
+    source_title: String,
+    source_language: String,
+    license_name: Option<String>,
+    license_url: Option<String>,
+}
+
+fn choose<'a>(en: bool, zh: &'a str, english: &'a str) -> &'a str {
+    if en && !english.is_empty() {
+        english
+    } else {
+        zh
+    }
+}
+
+fn localized(path: &str, en: bool) -> String {
+    format!(
+        "{path}{}",
+        if en {
+            if path.contains('?') {
+                "&lang=en"
+            } else {
+                "?lang=en"
+            }
+        } else {
+            ""
+        }
+    )
+}
+
+fn listing(page: u32, en: bool) -> String {
+    localized(
+        &if page == 1 {
+            "/reads".into()
+        } else {
+            format!("/reads?page={page}")
+        },
+        en,
+    )
+}
+
+async fn index(
+    State(state): State<AppState>,
+    Query(params): Query<Params>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    let en = params.english();
+    let page = params.page()?;
+    let enabled: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM topics WHERE id='reads' AND enabled AND owner_user_id IS NULL)")
+        .fetch_one(&state.pool).await?;
+    if !enabled {
+        return Err(AppError::NotFound("主题不存在".into()));
+    }
+    let mut query = sqlx::QueryBuilder::new("SELECT ");
+    query
+        .push(CARD)
+        .push(" ")
+        .push(VISIBLE)
+        .push(" ORDER BY i.pinned DESC, i.first_seen_at DESC, i.id DESC LIMIT ")
+        .push_bind(PAGE_SIZE + 1)
+        .push(" OFFSET ")
+        .push_bind(i64::from(page - 1) * PAGE_SIZE);
+    let mut rows = query
+        .build_query_as::<Card>()
+        .fetch_all(&state.pool)
+        .await?;
+    if page > 1 && rows.is_empty() {
+        return Err(AppError::NotFound("页面不存在".into()));
+    }
+    let more = rows.len() > PAGE_SIZE as usize;
+    rows.truncate(PAGE_SIZE as usize);
+    let description = choose(
+        en,
+        "值得读完的文章与观点",
+        "Ideas and stories worth your time",
+    );
+    let mut content = format!(
+        "<header class=reads-heading><h1>𝑹𝒆𝒂𝒅𝒔</h1><p>{description}</p></header><div class=reads-list>"
+    );
+    for row in &rows {
+        content.push_str(&card(row, en));
+    }
+    if rows.is_empty() {
+        content.push_str(choose(
+            en,
+            "<p class=muted>第一篇精选，正在路上。</p>",
+            "<p class=muted>The first read is on its way.</p>",
+        ));
+    }
+    content.push_str("</div><nav class=reads-pagination aria-label=Pagination>");
+    if page > 1 {
+        let _ = write!(
+            content,
+            "<a rel=prev href=\"{}\">{}</a>",
+            escape(&listing(page - 1, en)),
+            choose(en, "上一页", "Newer")
+        );
+    }
+    if more {
+        let _ = write!(
+            content,
+            "<a rel=next href=\"{}\">{}</a>",
+            escape(&listing(page + 1, en)),
+            choose(en, "继续阅读", "Older reads")
+        );
+    }
+    content.push_str("</nav>");
+    let path = listing(page, false);
+    let title = if page == 1 {
+        "𝑹𝒆𝒂𝒅𝒔 · 𝑵𝒆𝒘𝒔".to_owned()
+    } else {
+        format!("𝑹𝒆𝒂𝒅𝒔 · {page} · 𝑵𝒆𝒘𝒔")
+    };
+    let html = layout(&state, en, &path, &title, description, &content, None).await?;
+    Ok(conditional(
+        &headers,
+        &Rendered::new(html),
+        "text/html; charset=utf-8",
+    ))
+}
+
+async fn detail(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(params): Query<Params>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    let id = Uuid::parse_str(&id).map_err(|_| AppError::NotFound("文章不存在".into()))?;
+    let mut query = sqlx::QueryBuilder::new("SELECT ");
+    query.push(CARD).push(", a.body, a.body_en, a.source_title, a.source_language, a.license_name, a.license_url ")
+        .push(VISIBLE).push(" AND i.id = ").push_bind(id);
+    let row = query
+        .build_query_as::<Detail>()
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("文章不存在".into()))?;
+    let en = params.english();
+    let item = &row.card;
+    let title = choose(en, &item.title, &item.title_en);
+    let summary = choose(en, &item.summary, &item.summary_en);
+    let body = choose(en, &row.body, &row.body_en);
+    let language = if item.mode == "full" {
+        &row.source_language
+    } else {
+        choose(en, "zh-CN", "en")
+    };
+    let author = if item.author.is_empty() {
+        &item.source
+    } else {
+        &item.author
+    };
+    let mut content = format!(
+        "<article class=read><header class=read-heading><div class=item-meta>{} · <time datetime=\"{}\">{}</time></div><h1>{}</h1><p class=read-deck>{}</p><div class=item-meta><span>{}</span><span>·</span><a href=\"{}\" rel=\"noopener noreferrer\">{}</a></div></header><div class=read-body lang=\"{}\">{}</div>",
+        kind(&item.mode, en),
+        item.first_seen_at.to_rfc3339(),
+        item.first_seen_at
+            .with_timezone(&state.config.timezone)
+            .format("%Y-%m-%d"),
+        escape(title),
+        escape(summary),
+        choose(en, "原文", "Source"),
+        escape(&item.url),
+        escape(author),
+        escape(language),
+        render_markdown(body)
+    );
+    let _ = write!(
+        content,
+        "<footer class=read-source><a href=\"{}\" rel=\"noopener noreferrer\">{} ↗</a>",
+        escape(&item.url),
+        escape(&row.source_title)
+    );
+    if let (Some(name), Some(url)) = (&row.license_name, &row.license_url) {
+        let _ = write!(
+            content,
+            "<p>{} <a href=\"{}\" rel=license>{}</a> · {}</p>",
+            choose(en, "转载许可", "Republished under"),
+            escape(url),
+            escape(name),
+            choose(
+                en,
+                "保留原文语言，调整阅读排版。",
+                "Original language; formatting adapted for reading."
+            )
+        );
+    } else {
+        let _ = write!(
+            content,
+            "<p>{}</p>",
+            choose(
+                en,
+                "本站基于原文整理的 AI 辅助精读，观点归属原作者，分析仅供参考。",
+                "An AI-assisted reading guide by News, based on the linked source. Original views belong to their author."
+            )
+        );
+    }
+    let _ = write!(
+        content,
+        "</footer><div class=read-actions><a href=\"{}\">← 𝑹𝒆𝒂𝒅𝒔</a><button id=copyRead class=\"button button-quiet button-small\" type=button hidden>{}</button><span id=copyStatus class=muted role=status></span></div></article>",
+        localized("/reads", en),
+        choose(en, "复制链接", "Copy link")
+    );
+    // Rank only the latest 200 visible alternatives, then load the three cards.
+    let mut query = sqlx::QueryBuilder::new(
+        "WITH recent AS MATERIALIZED (
+            SELECT id, tags, first_seen_at FROM items
+            WHERE topic_id = 'reads' AND NOT hidden AND id <> ",
+    );
+    query
+        .push_bind(id)
+        .push(
+            " ORDER BY first_seen_at DESC, id DESC LIMIT 200
+        ), related AS (
+            SELECT id, first_seen_at, tags && (SELECT tags FROM items WHERE id = ",
+        )
+        .push_bind(id)
+        .push(
+            ") AS matches FROM recent
+            ORDER BY matches DESC, first_seen_at DESC, id DESC LIMIT 3
+        ) SELECT ",
+        )
+        .push(CARD)
+        .push(
+            " FROM related r JOIN items i ON i.id = r.id
+            JOIN read_articles a ON a.item_id = i.id JOIN topics t ON t.id = i.topic_id
+            WHERE t.enabled AND t.owner_user_id IS NULL
+            ORDER BY r.matches DESC, r.first_seen_at DESC, r.id DESC",
+        );
+    let related = query
+        .build_query_as::<Card>()
+        .fetch_all(&state.pool)
+        .await?;
+    if !related.is_empty() {
+        let _ = write!(
+            content,
+            "<aside class=read-related><h2>{}</h2>",
+            choose(en, "继续阅读", "Keep reading")
+        );
+        for row in &related {
+            content.push_str(&card(row, en));
+        }
+        content.push_str("</aside>");
+    }
+    let path = format!("/reads/{id}");
+    let canonical = absolute(&state, &localized(&path, en));
+    let mut structured = json!({
+        "@context": "https://schema.org", "@type":"Article", "headline":title,
+        "description":summary, "url":canonical, "mainEntityOfPage":canonical,
+        "datePublished":item.first_seen_at.to_rfc3339(), "inLanguage":language,
+        "publisher":{"@type":"Organization", "name":"News", "url":state.config.public_base_url},
+        "author": if item.mode == "full" { json!({"@type":"Person", "name":author}) } else { json!({"@type":"Organization", "name":"News"}) },
+        "isBasedOn": item.url,
+    });
+    if let Some(url) = &row.license_url {
+        structured["license"] = json!(url);
+    }
+    let html = layout(
+        &state,
+        en,
+        &path,
+        &format!("{title} · 𝑹𝒆𝒂𝒅𝒔"),
+        summary,
+        &content,
+        Some(structured),
+    )
+    .await?;
+    Ok(conditional(
+        &headers,
+        &Rendered::new(html),
+        "text/html; charset=utf-8",
+    ))
+}
+
+fn kind(mode: &str, en: bool) -> &'static str {
+    if mode == "full" {
+        choose(en, "授权全文", "Full text")
+    } else {
+        choose(en, "本站精读", "Reading guide")
+    }
+}
+
+fn card(item: &Card, en: bool) -> String {
+    format!(
+        "<article class=item><div class=item-meta><span>{}</span> · <span>{}</span></div><h2 class=item-title><a href=\"{}\">{}</a></h2><p class=item-summary>{}</p></article>",
+        kind(&item.mode, en),
+        escape(&item.source),
+        localized(&format!("/reads/{}", item.id), en),
+        escape(choose(en, &item.title, &item.title_en)),
+        escape(choose(en, &item.summary, &item.summary_en))
+    )
+}
+
+fn absolute(state: &AppState, path: &str) -> String {
+    format!(
+        "{}{}",
+        state.config.public_base_url.as_str().trim_end_matches('/'),
+        path
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn layout(
+    state: &AppState,
+    en: bool,
+    path: &str,
+    title: &str,
+    description: &str,
+    content: &str,
+    structured: Option<serde_json::Value>,
+) -> Result<String> {
+    let topics: Vec<(String, String, String)> = sqlx::query_as("SELECT id, name, name_en FROM topics WHERE enabled AND owner_user_id IS NULL ORDER BY sort_weight, id")
+        .fetch_all(&state.pool).await?;
+    let mut tabs = format!(
+        "<a class=tab href=\"{}\">𝐀𝐋𝐋</a><a class=tab href=\"{}\">𝐀𝐈</a>",
+        localized("/", en),
+        escape(&localized("/?topic=insight", en))
+    );
+    for (id, name, name_en) in topics {
+        let href = if id == "reads" {
+            localized("/reads", en)
+        } else {
+            let mut query = url::form_urlencoded::Serializer::new(String::new());
+            query.append_pair("topic", &id);
+            if en {
+                query.append_pair("lang", "en");
+            }
+            format!("/?{}", query.finish())
+        };
+        let _ = write!(
+            tabs,
+            "<a class=tab href=\"{}\"{}>{}</a>",
+            escape(&href),
+            if id == "reads" {
+                " aria-current=\"true\""
+            } else {
+                ""
+            },
+            escape(choose(en, &name, &name_en))
+        );
+    }
+    let schema = structured
+        .map(|value| {
+            format!(
+                "<script type=\"application/ld+json\">{}</script>",
+                value
+                    .to_string()
+                    .replace('&', "\\u0026")
+                    .replace('<', "\\u003c")
+                    .replace('>', "\\u003e")
+            )
+        })
+        .unwrap_or_default();
+    Ok(format!(
+        r##"<!doctype html>
+<html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title><meta name="description" content="{description}"><meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f6f4"><meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1115">
+<link rel="canonical" href="{canonical}"><link rel="alternate" hreflang="zh-CN" href="{zh}"><link rel="alternate" hreflang="en" href="{english}"><link rel="alternate" hreflang="x-default" href="{zh}">
+<meta property="og:type" content="{og_type}"><meta property="og:title" content="{title}"><meta property="og:description" content="{description}"><meta property="og:url" content="{canonical}"><meta property="og:site_name" content="News"><meta name="twitter:card" content="summary">
+<link rel="icon" type="image/svg+xml" href="/icon.svg"><link rel="alternate" type="application/atom+xml" title="Reads" href="/feed.xml?topic=reads"><link rel="stylesheet" href="/styles.css?v=reads-v1"><link rel="stylesheet" href="/reads.css?v=1">{schema}</head>
+<body class="public reads"><header class="topbar"><a class="brand" href="{home}" aria-label="News"><img class="brand-logo" src="/icon.svg" alt=""><span>𝑵𝒆𝒘𝒔</span></a><nav class="tabs" aria-label="{topics_label}">{tabs}</nav><div class="tools"><a class="space-link button button-quiet button-small" href="/me/">{workspace}</a><a class="space-link button button-quiet button-small" href="{other_lang}" hreflang="{other_code}">{language_label}</a></div></header>
+<main class="shell">{content}</main><script src="/reads.js?v=1" defer></script><script src="/stats.js" data-track-url="https://stats.xairouter.com/track/pk-c994c1ce749548c8b45c55d21fdfc4cf" defer></script></body></html>"##,
+        lang = choose(en, "zh-CN", "en"),
+        title = escape(title),
+        description = escape(description),
+        canonical = escape(&absolute(state, &localized(path, en))),
+        zh = escape(&absolute(state, path)),
+        english = escape(&absolute(state, &localized(path, true))),
+        og_type = if schema.is_empty() {
+            "website"
+        } else {
+            "article"
+        },
+        home = localized("/", en),
+        topics_label = choose(en, "主题", "Topics"),
+        workspace = choose(en, "工作台", "Workspace"),
+        other_lang = escape(&localized(path, !en)),
+        other_code = choose(en, "en", "zh-CN"),
+        language_label = choose(en, "EN", "中文"),
+    ))
+}
+
+fn render_markdown(value: &str) -> String {
+    let parser = Parser::new_ext(
+        value,
+        Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES,
+    )
+    .filter_map(|event| match event {
+        Event::Html(_)
+        | Event::InlineHtml(_)
+        | Event::Start(Tag::Image { .. })
+        | Event::End(TagEnd::Image) => None,
+        Event::Start(Tag::Link {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => {
+            let safe = url::Url::parse(&dest_url).is_ok_and(|url| {
+                matches!(url.scheme(), "https" | "http")
+                    && url.username().is_empty()
+                    && url.password().is_none()
+            });
+            Some(Event::Start(Tag::Link {
+                link_type,
+                dest_url: if safe { dest_url } else { "".into() },
+                title,
+                id,
+            }))
+        }
+        other => Some(other),
+    });
+    let mut html = String::new();
+    html::push_html(&mut html, parser);
+    html
+}
+
+fn escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+async fn robots(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    conditional(
+        &headers,
+        &Rendered::new(format!(
+            "User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /me/\nSitemap: {}\n",
+            absolute(&state, "/sitemap.xml")
+        )),
+        "text/plain; charset=utf-8",
+    )
+}
+
+async fn sitemap(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
+    let count: i64 = sqlx::QueryBuilder::new("SELECT COUNT(*) ")
+        .push(VISIBLE)
+        .build_query_scalar()
+        .fetch_one(&state.pool)
+        .await?;
+    let mut xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><sitemapindex xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">".to_owned();
+    for page in 1..=((count + SITEMAP_SIZE - 1) / SITEMAP_SIZE).max(1) {
+        let _ = write!(
+            xml,
+            "<sitemap><loc>{}</loc></sitemap>",
+            escape(&absolute(&state, &format!("/reads/sitemap/{page}")))
+        );
+    }
+    xml.push_str("</sitemapindex>");
+    Ok(conditional(
+        &headers,
+        &Rendered::new(xml),
+        "application/xml; charset=utf-8",
+    ))
+}
+
+async fn sitemap_page(
+    State(state): State<AppState>,
+    Path(page): Path<u32>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    if page == 0 || page > 100000 {
+        return Err(AppError::NotFound("页面不存在".into()));
+    }
+    let rows: Vec<(Uuid, DateTime<Utc>)> = sqlx::QueryBuilder::new("SELECT i.id, i.first_seen_at ")
+        .push(VISIBLE)
+        .push(" ORDER BY i.first_seen_at, i.id LIMIT ")
+        .push_bind(SITEMAP_SIZE)
+        .push(" OFFSET ")
+        .push_bind(i64::from(page - 1) * SITEMAP_SIZE)
+        .build_query_as()
+        .fetch_all(&state.pool)
+        .await?;
+    if page > 1 && rows.is_empty() {
+        return Err(AppError::NotFound("页面不存在".into()));
+    }
+    let mut xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">".to_owned();
+    if page == 1 {
+        for path in ["/", "/reads", "/reads?lang=en"] {
+            let _ = write!(
+                xml,
+                "<url><loc>{}</loc></url>",
+                escape(&absolute(&state, path))
+            );
+        }
+    }
+    for (id, time) in rows {
+        for en in [false, true] {
+            let _ = write!(
+                xml,
+                "<url><loc>{}</loc><lastmod>{}</lastmod></url>",
+                escape(&absolute(&state, &localized(&format!("/reads/{id}"), en))),
+                time.to_rfc3339()
+            );
+        }
+    }
+    xml.push_str("</urlset>");
+    Ok(conditional(
+        &headers,
+        &Rendered::new(xml),
+        "application/xml; charset=utf-8",
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn markdown_cannot_execute_scripts_or_load_tracking_images() {
+        let html = render_markdown(
+            "## Useful\n\n<script>alert(1)</script>\n\n[bad](javascript:alert%281%29) ![alt](https://tracker.test/pixel) <img src=x onerror=alert(1)>\n\n[good](https://example.com/post)",
+        );
+        assert!(html.contains("<h2>Useful</h2>"));
+        assert!(html.contains("href=\"https://example.com/post\""));
+        for bad in ["<script", "<img", "javascript:", "onerror", "tracker.test"] {
+            assert!(!html.contains(bad), "{html}");
+        }
+    }
+}

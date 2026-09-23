@@ -10,6 +10,7 @@ pub mod fetch;
 pub mod insight;
 pub mod media;
 pub mod payment;
+pub mod reads;
 pub mod runner;
 pub mod state;
 pub mod topics;

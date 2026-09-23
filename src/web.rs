@@ -47,6 +47,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/api/webhooks/payment", post(payment::payment_webhook))
         .merge(topics::router())
         .merge(digest::router())
+        .merge(crate::reads::router())
         .route("/api", any(api_not_found))
         .route("/api/{*path}", any(api_not_found))
         .fallback_service(

@@ -28,6 +28,7 @@ jobs:
       DATABASE_URL: postgres://postgres:test@127.0.0.1:5432/news_daily_test_ci
       NEWS_DAILY_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:5432/news_daily_test_ci
       NEWS_PAYMENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:5432/news_payment_audit_ci
+      NEWS_READS_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:5432/news_reads_test_ci
       PUBLIC_BASE_URL: http://127.0.0.1:8788
       NEWS_ADMIN_EMAILS: admin@example.test
       NEWS_SCHEDULER_ENABLED: "false"
@@ -41,4 +42,5 @@ jobs:
           components: rustfmt, clippy
       - run: make release-check
       - run: docker exec ${{ job.services.postgres.id }} createdb -U postgres news_payment_audit_ci
+      - run: docker exec ${{ job.services.postgres.id }} createdb -U postgres news_reads_test_ci
       - run: make integration-test

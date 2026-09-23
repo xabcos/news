@@ -2,14 +2,14 @@ use crate::{
     auth::{self, PlanLimits},
     error::{AppError, Result},
     fetch::{self, Known, NewsWindow},
-    insight, media,
+    insight, media, reads,
     state::AppState,
     topics::{self, Topic},
 };
 use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Utc};
 use serde_json::Value;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     time::{Duration, Instant},
 };
 use tokio::sync::OwnedSemaphorePermit;
@@ -285,7 +285,7 @@ async fn tick(state: &AppState) -> Result<()> {
 /// The coordinator holds no semaphore permit; even a single-slot deployment can progress.
 pub(crate) async fn collect_briefing(state: &AppState, window: NewsWindow) -> Result<()> {
     let topics = sqlx::query_as::<_, Topic>(
-        "SELECT * FROM topics WHERE enabled AND owner_user_id IS NULL
+        "SELECT * FROM topics WHERE enabled AND owner_user_id IS NULL AND id <> 'reads'
          AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.topic_id = topics.id
                          AND triggered_by = 'briefing' AND status = 'ok' AND window_end = $1)
          ORDER BY sort_weight, id",
@@ -598,7 +598,7 @@ struct Completed {
     dropped: i32,
 }
 
-/// Fetches, validates, deduplicates against the last two days and stores the new stories.
+/// Collects and validates stories; Reads also prepares its body before publication.
 async fn execute(
     state: &AppState,
     topic: &Topic,
@@ -607,12 +607,26 @@ async fn execute(
 ) -> Result<Completed> {
     let today = state.digest.today();
     let yesterday = today.pred_opt().expect("date in range");
+    let is_reads = topic.id == "reads" && topic.owner_user_id.is_none();
+    if is_reads && reads::daily_count(state, today).await? >= reads::DAILY_LIMIT {
+        return Ok(Completed {
+            response_id: None,
+            usage: fetch::Usage::default(),
+            payload: serde_json::json!({"items": [], "skip": "reads_daily_limit"}),
+            day: today,
+            returned: 0,
+            new: 0,
+            dup: 0,
+            dropped: 0,
+        });
+    }
     let known = sqlx::query_as::<_, Known>(
-        "SELECT title, url, fingerprint FROM items WHERE topic_id = $1 AND day >= $2 ORDER BY first_seen_at DESC LIMIT $3",
+        "SELECT title, url, fingerprint FROM items WHERE topic_id = $1 AND ($4 OR day >= $2) ORDER BY first_seen_at DESC LIMIT $3",
     )
     .bind(&topic.id)
     .bind(yesterday)
     .bind(KNOWN_LIMIT)
+    .bind(is_reads)
     .fetch_all(&state.pool)
     .await?;
     let mut fetched = fetch::fetch(state, topic, &known, window).await?;
@@ -626,16 +640,21 @@ async fn execute(
         .map(|item| fetch::normalize_title(&item.title))
         .collect::<Vec<_>>();
     let returned = fetched.candidates.len() as i32;
-    let (mut new, mut dup, mut dropped) = (0, 0, 0);
+    let (mut dup, mut dropped) = (0, 0);
     let mut items = Vec::new();
     let mut duplicate_fingerprints = Vec::new();
     for candidate in fetched.candidates {
-        let Some(item) = fetch::validate(candidate, window.start)
+        let Some(mut item) = fetch::validate(candidate, window.start)
             .filter(|item| item.published_at.is_none_or(|at| window.contains(at)))
         else {
             dropped += 1;
             continue;
         };
+        if is_reads {
+            item.fingerprint =
+                reads::fingerprint(&url::Url::parse(&item.url).expect("validated URL"));
+            item.image = None;
+        }
         if topic.id == "p" && item.image.is_none() {
             dropped += 1;
             continue;
@@ -648,6 +667,38 @@ async fn execute(
         }
         titles.push(title);
         items.push(item);
+    }
+
+    let mut articles = HashMap::new();
+    if is_reads {
+        let available =
+            (reads::DAILY_LIMIT - reads::daily_count(state, today).await?).max(0) as usize;
+        let limit = reads::ROUND_LIMIT
+            .min(topic.max_items as usize)
+            .min(available);
+        dropped += items.len().saturating_sub(limit) as i32;
+        items.truncate(limit);
+        let mut prepared = Vec::new();
+        let mut skipped = Vec::new();
+        for mut item in items {
+            match reads::prepare(state, topic, &mut item, &mut fetched.usage).await {
+                Ok(Some(article)) => {
+                    articles.insert(item.fingerprint.clone(), article);
+                    prepared.push(item);
+                }
+                Ok(None) => {
+                    dropped += 1;
+                }
+                Err(error) => {
+                    tracing::warn!(url = %item.url, %error, "Reads candidate skipped");
+                    skipped.push(serde_json::json!({"url": item.url, "reason": error.to_string()}));
+                    dropped += 1;
+                }
+            }
+        }
+        items = prepared;
+        fetched.payload["skipped"] = serde_json::json!(skipped);
+        fetched.payload["cover"] = Value::Null;
     }
 
     let mut images = std::iter::once(media::stored_image(&fetched.payload["cover"]))
@@ -667,15 +718,72 @@ async fn execute(
         keep
     });
 
-    // Keep network I/O outside the write transaction. A slow image source must not hold a
-    // database connection while the rest of the batch is waiting for tmpfile.
+    // A long read may finish after midnight; charge its publication to the new day.
+    let today = if is_reads {
+        state.digest.today()
+    } else {
+        today
+    };
+    let (new, conflicts, capped) = persist_items(
+        state,
+        topic,
+        run_id,
+        today,
+        items,
+        articles,
+        duplicate_fingerprints,
+    )
+    .await?;
+    Ok(Completed {
+        response_id: fetched.response_id,
+        usage: fetched.usage,
+        payload: fetched.payload,
+        day: today,
+        returned,
+        new,
+        dup: dup + conflicts,
+        dropped: dropped + capped,
+    })
+}
+
+/// All network work finishes before this transaction. Reads metadata and its body
+/// publish together; the topic lock enforces the daily cap across concurrent workers.
+pub(crate) async fn persist_items(
+    state: &AppState,
+    topic: &Topic,
+    run_id: Uuid,
+    today: NaiveDate,
+    items: Vec<fetch::NewItem>,
+    mut articles: HashMap<Vec<u8>, reads::Article>,
+    mut duplicate_fingerprints: Vec<Vec<u8>>,
+) -> Result<(i32, i32, i32)> {
+    let is_reads = topic.id == "reads" && topic.owner_user_id.is_none();
+    let yesterday = today.pred_opt().expect("date in range");
+    let (mut new, mut dup, mut dropped) = (0, 0, 0);
     let mut tx = state.pool.begin().await?;
+    let mut available = i64::MAX;
+    if is_reads {
+        sqlx::query("SELECT id FROM topics WHERE id = 'reads' FOR UPDATE")
+            .execute(&mut *tx)
+            .await?;
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM items WHERE topic_id = 'reads' AND day = $1")
+                .bind(today)
+                .fetch_one(&mut *tx)
+                .await?;
+        available = (reads::DAILY_LIMIT - count).max(0);
+    }
     for item in items {
+        if available == 0 {
+            dropped += 1;
+            continue;
+        }
+        let id = Uuid::new_v4();
         let inserted = sqlx::query(
             "INSERT INTO items (id, topic_id, day, fingerprint, title, summary, title_en, summary_en, url, source, published_at, tags, tags_en, importance, first_run_id, image) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) ON CONFLICT DO NOTHING",
         )
-        .bind(Uuid::new_v4())
+        .bind(id)
         .bind(&topic.id)
         .bind(today)
         .bind(&item.fingerprint)
@@ -695,6 +803,13 @@ async fn execute(
         .await?
         .rows_affected();
         if inserted == 1 {
+            if is_reads {
+                let article = articles
+                    .remove(&item.fingerprint)
+                    .ok_or_else(|| AppError::Internal("Reads 缺少正文，取消发布".into()))?;
+                reads::insert(&mut tx, id, article).await?;
+                available -= 1;
+            }
             new += 1;
         } else {
             dup += 1;
@@ -705,11 +820,12 @@ async fn execute(
     // updates the row that was just inserted, matching the previous per-item ordering.
     for fingerprint in duplicate_fingerprints {
         sqlx::query(
-            "UPDATE items SET last_seen_at = NOW(), seen_count = seen_count + 1 WHERE topic_id = $1 AND day >= $2 AND fingerprint = $3",
+            "UPDATE items SET last_seen_at = NOW(), seen_count = seen_count + 1 WHERE topic_id = $1 AND ($4 OR day >= $2) AND fingerprint = $3",
         )
         .bind(&topic.id)
         .bind(yesterday)
         .bind(fingerprint)
+        .bind(is_reads)
         .execute(&mut *tx)
         .await?;
     }
@@ -720,16 +836,7 @@ async fn execute(
             .await?;
     }
     tx.commit().await?;
-    Ok(Completed {
-        response_id: fetched.response_id,
-        usage: fetched.usage,
-        payload: fetched.payload,
-        day: today,
-        returned,
-        new,
-        dup,
-        dropped,
-    })
+    Ok((new, dup, dropped))
 }
 
 /// Records the outcome, updates the topic's run state and schedules the next run.
@@ -955,7 +1062,7 @@ async fn cleanup_insights(state: &AppState) -> Result<()> {
     .await
 }
 
-async fn cleanup_items(state: &AppState, keep_from: NaiveDate) -> Result<()> {
+pub(crate) async fn cleanup_items(state: &AppState, keep_from: NaiveDate) -> Result<()> {
     let mut total = 0_u64;
     for batch_index in 0..CLEANUP_MAX_BATCHES {
         let deleted = sqlx::query(
@@ -963,7 +1070,7 @@ async fn cleanup_items(state: &AppState, keep_from: NaiveDate) -> Result<()> {
             WITH expired AS (
                 SELECT id
                 FROM items
-                WHERE day < $2
+                WHERE day < $2 AND topic_id <> 'reads'
                 ORDER BY day, id
                 LIMIT $1
                 FOR UPDATE SKIP LOCKED

@@ -1300,12 +1300,17 @@ async fn feed(
         updated.to_rfc3339(),
     );
     for (item, index) in &entries {
+        let url = if topics[*index].id == "reads" {
+            format!("{base}reads/{}", item.id)
+        } else {
+            item.url.clone()
+        };
         let _ = write!(
             xml,
             r#"<entry><id>urn:uuid:{}</id><title>{}</title><link rel="alternate" href="{}"/><updated>{}</updated>{}<author><name>{}</name></author><category term="{}"/>{}<summary>{}</summary></entry>"#,
             item.id,
             escape(&item.title),
-            escape(&item.url),
+            escape(&url),
             item.first_seen_at.to_rfc3339(),
             item.published_at
                 .map(|at| format!("<published>{}</published>", at.to_rfc3339()))

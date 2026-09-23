@@ -1,0 +1,36 @@
+.reads .shell { padding-top: 2.75rem; }
+.reads [hidden] { display: none; }
+.reads-heading { margin-bottom: 2.25rem; }
+.reads-heading h1 { margin-bottom: .45rem; font-size: 1.75rem; }
+.reads-heading p { color: var(--muted); font-size: .9rem; }
+.reads-list .item { padding: 1.4rem 0; }
+.reads-list .item:first-child { padding-top: 0; }
+.reads-pagination, .read-actions { display: flex; align-items: center; gap: 1.5rem; margin-top: 2rem; font-size: .85rem; }
+.reads-pagination a, .read-actions a { color: var(--muted); text-decoration: none; }
+.read-heading { margin-bottom: 2.5rem; }
+.read-heading h1 { margin: .8rem 0 1rem; font-size: clamp(1.65rem, 4vw, 2.2rem); line-height: 1.4; letter-spacing: -.025em; text-wrap: balance; overflow-wrap: anywhere; }
+.read-deck { color: var(--muted); font-size: 1rem; line-height: 1.8; }
+.read-heading .item-meta a { text-decoration: none; }
+.read-body { font-size: 1.05rem; line-height: 1.95; overflow-wrap: anywhere; }
+.read-body p, .read-body ul, .read-body ol, .read-body pre, .read-body blockquote { margin: 0 0 1.5rem; }
+.read-body h1, .read-body h2, .read-body h3 { margin: 2.3rem 0 .9rem; font-size: 1.2rem; line-height: 1.6; text-wrap: balance; }
+.read-body li + li { margin-top: .5rem; }
+.read-body a { text-decoration-color: var(--line-strong); text-underline-offset: .2em; }
+.read-body a:hover, .read-source a:hover { color: var(--primary-strong); }
+.read-body pre { padding: 1rem; background: var(--surface-soft); border-radius: .4rem; overflow-x: auto; font-size: .85rem; line-height: 1.7; }
+.read-body code { font-size: .88em; }
+.read-body blockquote { margin-left: 0; padding-left: 1.2rem; border-left: 2px solid var(--line-strong); color: var(--muted); }
+.read-body table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; font-size: .9rem; }
+.read-body th, .read-body td { padding: .5rem .75rem; border-bottom: 1px solid var(--line); text-align: left; }
+.read-source { margin-top: 2.5rem; padding-top: 1.25rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .8rem; line-height: 1.8; overflow-wrap: anywhere; }
+.read-source a { text-underline-offset: .2em; }
+.read-source p { margin: .6rem 0 0; }
+.read-actions { gap: 1rem; }
+.read-actions .button { margin-left: auto; color: var(--muted); }
+.read-related { margin-top: 3.5rem; padding-top: 1.5rem; border-top: 1px solid var(--line); }
+.read-related > h2 { color: var(--muted); font-size: .85rem; font-weight: 500; margin-bottom: .5rem; }
+@media (max-width: 768px) {
+  .reads .shell { padding-top: 1.8rem; }
+  .read-heading { margin-bottom: 1.8rem; }
+  .read-body { font-size: 1rem; }
+}

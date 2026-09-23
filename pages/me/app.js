@@ -451,7 +451,7 @@ async function loadItems(s) {
 
 function renderItem(s, item) {
   const row = node("li", `item-row${item.pinned ? " is-pinned" : ""}${item.hidden ? " is-hidden" : ""}`);
-  const url = safeUrl(item.url);
+  const url = item.topic_id === "reads" && !item.hidden ? `/reads/${item.id}` : safeUrl(item.url);
   const link = node(url ? "a" : "strong", "", item.title);
   if (url) { link.href = url; link.target = "_blank"; link.rel = "noopener noreferrer"; }
   const meta = node("div", "item-meta");

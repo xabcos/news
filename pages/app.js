@@ -74,7 +74,7 @@ const TEXT = {
 
 const initial = new URLSearchParams(location.search);
 const state = {
-  lang: storage.getItem("news.lang") === "en" ? "en" : "zh",
+  lang: initial.has("lang") ? (initial.get("lang") === "en" ? "en" : "zh") : (storage.getItem("news.lang") === "en" ? "en" : "zh"),
   topic: initial.get("topic") || "",
   day: initial.get("day") || "",
   topics: [],
@@ -107,6 +107,10 @@ let activeLoadController = null;
 document.addEventListener("DOMContentLoaded", init);
 
 async function init() {
+  if (state.topic === "reads") {
+    location.replace(`/reads${state.lang === "en" ? "?lang=en" : ""}`);
+    return;
+  }
   applyLang();
   el.lang.addEventListener("click", () => {
     const scrollTop = window.scrollY;
@@ -663,6 +667,10 @@ function updateHistoryLoader() {
 }
 
 function navigate(changes) {
+  if (changes.topic === "reads") {
+    location.assign(`/reads${state.lang === "en" ? "?lang=en" : ""}`);
+    return;
+  }
   Object.assign(state, changes);
   history.pushState({}, "", `${location.pathname}${search()}`);
   renderTabs();
@@ -701,6 +709,13 @@ function renderTabs() {
     ...state.topics.map((topic) => ({ id: topic.id, label: name(topic) })),
   ];
   el.tabs.replaceChildren(...tabs.map(({ id, label }) => {
+    if (id === "reads") {
+      const tab = document.createElement("a");
+      tab.className = "tab";
+      tab.href = `/reads${state.lang === "en" ? "?lang=en" : ""}`;
+      tab.textContent = label;
+      return tab;
+    }
     const tab = button(label, () => navigate({ topic: id, day: "" }), "tab");
     if (id === state.topic) tab.setAttribute("aria-current", "true");
     return tab;
@@ -1081,7 +1096,7 @@ function renderGroups(digest) {
 }
 
 function renderGroupItem(group, item) {
-  return group.id === "p" ? imageNewsCard(item) : card(item);
+  return group.id === "p" ? imageNewsCard(item) : card(item, group.id === "reads");
 }
 
 function imageNewsCard(item) {
@@ -1140,7 +1155,7 @@ function emptyState(groups, day) {
   return box;
 }
 
-function card(item) {
+function card(item, reading = false) {
   const article = document.createElement("article");
   article.className = "item";
   article.classList.toggle("is-pinned", item.pinned);
@@ -1156,9 +1171,11 @@ function card(item) {
   const title = document.createElement("h3");
   title.className = "item-title";
   const link = document.createElement("a");
-  link.href = item.url;
-  link.target = "_blank";
-  link.rel = "noopener noreferrer";
+  link.href = reading ? `/reads/${item.id}${state.lang === "en" ? "?lang=en" : ""}` : item.url;
+  if (!reading) {
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+  }
   link.textContent = pick(item, "title");
   title.append(link);
 
