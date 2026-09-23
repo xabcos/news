@@ -89,7 +89,6 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
     let mut config = crate::config::Config::from_env().unwrap();
     config.database_url = database_url;
     config.redis_addr = None;
-    config.tmpfile_base_url = None;
     config.scheduler_enabled = false;
     let calls = Arc::new(AtomicUsize::new(0));
     let handler_calls = calls.clone();
@@ -135,9 +134,12 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             topic.window_end,
             topic.max_items
         ),
-        (64, 0, 24, 4)
+        (64, 0, 24, 8)
     );
     assert_eq!(topic.weekdays, [1, 2, 3, 4, 5, 6, 7]);
+    assert_eq!(topic.model, "grok-4.6");
+    assert_eq!(topic.daily_run_cap, 32);
+    assert_eq!(topic.sort_weight, 81);
     let run_id = Uuid::new_v4();
     sqlx::query("INSERT INTO runs (id,topic_id,triggered_by,status,model) VALUES ($1,'reads','manual','ok','test')")
         .bind(run_id).execute(&state.pool).await.unwrap();
@@ -270,7 +272,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
     assert_eq!(daily_count(&state, today).await.unwrap(), 0);
     // Concurrent publications serialize their daily allowance under the topic lock.
     let batch = |start: usize| {
-        let items: Vec<_> = (start..start + 14).map(item).collect();
+        let items: Vec<_> = (start..start + 18).map(item).collect();
         let articles = items
             .iter()
             .enumerate()
@@ -281,7 +283,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
     let (first, second) = tokio::join!(batch(10), batch(50));
     let first = first.unwrap();
     let second = second.unwrap();
-    assert_eq!(first.0 + second.0, 24);
+    assert_eq!(first.0 + second.0, 32);
     assert_eq!(first.2 + second.2, 4);
     assert_eq!(daily_count(&state, today).await.unwrap(), DAILY_LIMIT);
     // At the daily limit, a scheduled run does not call search or generation.
@@ -329,7 +331,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         .fetch_one(&state.pool)
         .await
         .unwrap();
-    assert_eq!(count, 26);
+    assert_eq!(count, DAILY_LIMIT + 2);
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM items WHERE topic_id='x'")
         .fetch_one(&state.pool)
         .await
@@ -506,14 +508,14 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         .unwrap();
     assert!(first_page.contains("rel=next href=\"/reads?page=2\""));
     let last_page = client
-        .get(format!("{base}/reads?page=3&lang=en"))
+        .get(format!("{base}/reads?page=4&lang=en"))
         .send()
         .await
         .unwrap()
         .text()
         .await
         .unwrap();
-    assert!(last_page.contains("rel=prev href=\"/reads?page=2&amp;lang=en\""));
+    assert!(last_page.contains("rel=prev href=\"/reads?page=3&amp;lang=en\""));
     assert!(!last_page.contains("rel=next"));
     let feed = client
         .get(format!("{base}/feed.xml?topic=reads"))
@@ -591,7 +593,7 @@ async fn check_full_text_image_renewal(state: &AppState, id: Uuid) {
     use sqlx::types::Json;
     let mut media_state = state.clone();
     let mut config = crate::config::Config::from_env().unwrap();
-    config.tmpfile_base_url = Some("https://media.example.test".parse().unwrap());
+    config.tmpfile_base_url = "https://media.example.test".parse().unwrap();
     media_state.config = std::sync::Arc::new(config);
     let Json(mut document): Json<full_text::Document> =
         sqlx::query_scalar("SELECT full_text FROM read_articles WHERE item_id=$1")

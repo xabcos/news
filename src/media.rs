@@ -55,10 +55,6 @@ pub(crate) async fn mirror_images(state: &AppState, images: &mut [Option<NewsIma
         let Some(image) = slot.take().and_then(NewsImage::validated) else {
             continue;
         };
-        if state.config.tmpfile_base_url.is_none() {
-            *slot = Some(image);
-            continue;
-        }
         let origin = image.origin_url.as_ref().unwrap_or(&image.url).clone();
         let group = *origins.entry(origin).or_insert_with(|| {
             groups.push(Vec::new());
@@ -148,7 +144,7 @@ pub(crate) async fn upload_image(
     bytes: Vec<u8>,
     content_type: &str,
 ) -> Option<UploadResponse> {
-    let base_url = state.config.tmpfile_base_url.as_ref()?;
+    let base_url = &state.config.tmpfile_base_url;
     let extension = extension_for(content_type);
     let filename = format!("news-{}.{}", Uuid::new_v4(), extension);
     let part = match Part::bytes(bytes)
@@ -360,13 +356,10 @@ pub(crate) fn is_public_https_url(url: &Url) -> bool {
 }
 
 fn is_fresh_tmpfile_url(state: &AppState, image: &NewsImage) -> bool {
-    let Some(base) = state.config.tmpfile_base_url.as_ref() else {
-        return false;
-    };
     let Ok(image_url) = Url::parse(&image.url) else {
         return false;
     };
-    same_origin(&image_url, base)
+    same_origin(&image_url, &state.config.tmpfile_base_url)
         && image.expires_at.is_some_and(|expires_at| {
             expires_at > Utc::now() + chrono::Duration::seconds(RENEW_BEFORE_SECS)
         })
@@ -418,9 +411,6 @@ fn extension_for(content_type: &str) -> &'static str {
 /// Renews one week's media in one batch so stored copies of the same photograph
 /// reuse a transfer. Published daily images enter the batch before archive cards.
 pub async fn startup_sync(state: &AppState) -> Result<()> {
-    if state.config.tmpfile_base_url.is_none() {
-        return Ok(());
-    }
     let keep_from = state.digest.today() - chrono::Duration::days(7);
     let rows = sqlx::query_as::<_, StoredImageRow>(
         "SELECT items.id, items.topic_id, items.day, items.image FROM items JOIN topics ON topics.id = items.topic_id WHERE items.image IS NOT NULL AND items.day >= $1 AND topics.owner_user_id IS NULL ORDER BY items.day DESC LIMIT 500",

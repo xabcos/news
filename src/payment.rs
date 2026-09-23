@@ -649,7 +649,7 @@ async fn create_ypay_order(
         external_user_id: user.id,
         amount: order.amount_fen as f64 / 100.0,
         amount_input: fen_amount_input(order.amount_fen),
-        pay_method: state.config.ypay_pay_method.clone(),
+        pay_method: "native".into(),
         description: format!("{} · {} 天", plan.name, plan.duration_days),
         out_trade_no: order.out_trade_no.clone(),
         product_code: plan.code.clone(),

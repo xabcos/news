@@ -34,7 +34,6 @@ services:
       YPAY_BASE_URL: ${YPAY_BASE_URL:-}
       YPAY_TENANT_CODE: ${YPAY_TENANT_CODE:-news}
       YPAY_STORE_API_KEY: ${YPAY_STORE_API_KEY:-}
-      YPAY_PAY_METHOD: ${YPAY_PAY_METHOD:-native}
       PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET:-}
       # Provided by .env (0600); never written into this file.
       AI_API_KEY: ${AI_API_KEY}

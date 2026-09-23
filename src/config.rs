@@ -30,7 +30,6 @@ pub struct Config {
     pub(crate) ypay_base_url: Option<Url>,
     pub(crate) ypay_tenant_code: String,
     pub(crate) ypay_store_api_key: Option<String>,
-    pub(crate) ypay_pay_method: String,
     pub(crate) payment_webhook_secret: Option<String>,
     pub(crate) ai_base_url: Url,
     pub(crate) ai_api_key: String,
@@ -42,7 +41,7 @@ pub struct Config {
     pub(crate) max_concurrent_runs: usize,
     pub(crate) scheduler_enabled: bool,
     pub(crate) retention_days: u32,
-    pub(crate) tmpfile_base_url: Option<Url>,
+    pub(crate) tmpfile_base_url: Url,
     pub(crate) tmpfile_api_key: String,
     pub(crate) image_max_bytes: u64,
     pub(crate) image_timeout: Duration,
@@ -137,12 +136,6 @@ impl Config {
         }
         let ypay_tenant_code = env_value("YPAY_TENANT_CODE", "news");
         validate_tenant_code(&ypay_tenant_code)?;
-        let ypay_pay_method = env_value("YPAY_PAY_METHOD", "native");
-        if ypay_pay_method != "native" {
-            return Err(AppError::Config(
-                "NEWS 当前只支持 YPay native 微信扫码支付".into(),
-            ));
-        }
 
         let scheduler_enabled = bool_env("NEWS_SCHEDULER_ENABLED", true)?;
         let ai_api_key = optional_env("AI_API_KEY").unwrap_or_default();
@@ -173,10 +166,8 @@ impl Config {
         }
 
         // NEWS always serves media through tmpfile so browser-visible assets stay stable.
-        let tmpfile_base_url = Some(parse_http_url(
-            "TMPFILE_BASE_URL",
-            &required_env("TMPFILE_BASE_URL")?,
-        )?);
+        let tmpfile_base_url =
+            parse_http_url("TMPFILE_BASE_URL", &required_env("TMPFILE_BASE_URL")?)?;
         let tmpfile_api_key = required_env("TMPFILE_API_KEY")?;
         let image_max_bytes = parse_env("NEWS_IMAGE_MAX_BYTES", 8_u64 * 1024 * 1024)?;
         if !(64 * 1024..=64 * 1024 * 1024).contains(&image_max_bytes) {
@@ -212,7 +203,6 @@ impl Config {
             ypay_base_url,
             ypay_tenant_code,
             ypay_store_api_key,
-            ypay_pay_method,
             payment_webhook_secret,
             ai_base_url,
             ai_api_key,

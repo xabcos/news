@@ -91,7 +91,7 @@ const state = {
 storage.setItem("news.lastVisit", String(Date.now()));
 
 const el = {
-  topbar: $("#topbar"), tabs: $("#tabs"), lang: $("#langToggle"), me: $("#meLink"),
+  tabs: $("#tabs"), lang: $("#langToggle"), me: $("#meLink"),
   shell: $(".shell"), status: $("#status"), digest: $("#digest"), loadMore: $("#loadMore"),
   backToTop: $("#backToTop"),
 };

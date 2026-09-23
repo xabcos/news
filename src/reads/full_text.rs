@@ -211,9 +211,6 @@ fn validate_translation(translation: &Translation, source: &[String], english: b
 }
 
 async fn mirror_images(state: &AppState, images: &mut [Image]) {
-    if state.config.tmpfile_base_url.is_none() {
-        return;
-    }
     let mut jobs = JoinSet::new();
     for (index, image) in images.iter().enumerate() {
         if image
@@ -274,9 +271,6 @@ async fn mirror_images(state: &AppState, images: &mut [Image]) {
 /// The existing hourly media task renews a bounded, indexed batch, including archived
 /// Reads. Failed transfers retain the previous URL and retry on a later maintenance run.
 pub(crate) async fn refresh_images(state: &AppState) -> Result<()> {
-    if state.config.tmpfile_base_url.is_none() {
-        return Ok(());
-    }
     let mut rows: Vec<(Uuid, Json<Document>)> = sqlx::query_as(
         "SELECT a.item_id, a.full_text FROM read_articles a JOIN items i ON i.id=a.item_id JOIN topics t ON t.id=i.topic_id \
          WHERE a.images_renew_at <= NOW() AND NOT i.hidden AND t.enabled AND t.owner_user_id IS NULL \

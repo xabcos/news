@@ -25,8 +25,8 @@ use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
-pub(crate) const DAILY_LIMIT: i64 = 24;
-pub(crate) const ROUND_LIMIT: usize = 4;
+pub(crate) const DAILY_LIMIT: i64 = 32;
+pub(crate) const ROUND_LIMIT: usize = 8;
 
 pub(crate) struct Article {
     author: String,

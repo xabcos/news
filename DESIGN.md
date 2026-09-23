@@ -14,17 +14,19 @@ Rust / Axum 提供 API、页面与后台调度。PostgreSQL 保存业务数据�
 
 ## 数据模型
 
-`users`、`sessions`、`email_login_tokens` 管理账户和登录；`topics`、`runs`、`items` 管理栏目、采集和新闻；`ai_insights` 保存日报；`plans`、`orders`、`payment_events` 管理套餐和支付。`user_metrics` 维护注册数量，`maintenance_state` 记录清理进度。表、约束、索引与默认目录在 `migrations/0001_schema.sql` 中统一定义。
+`users`、`sessions`、`email_login_tokens` 管理账户和登录；`topics`、`runs`、`items` 管理栏目、采集和新闻；`read_articles` 保存 Reads 精读、全文和热度，`read_candidates` 保存临时候选；`ai_insights` 保存日报；`plans`、`orders`、`payment_events` 管理套餐和支付。`user_metrics` 维护注册数量，`maintenance_state` 记录清理进度。表、约束、索引与线上公共主题初始化配置在 `migrations/0001_schema.sql` 中统一定义。
 
 主题通过 `owner_user_id` 区分公共和个人数据。新闻按栏目、日期和原文 URL 指纹去重；发布时间未知时保留空值。日报日期和时间窗口必填，成功结果必须有完成时间及内容。订单保存成交时的价格与权益期限，支付事件按事件键幂等处理。
 
 ## 栏目与采集
 
-公共栏目顺序为 `x`、`p`、`china-ai`、`overseas-ai`、`gossip`、`github`、`events`、`cases`、`issues`。`𝑪` 与 `𝑶` 分别覆盖国内、海外模型生态；综合科技、图片、热议、开发者、全球事件、应用案例和使用问题各有明确方向。
+公共栏目顺序为 `x`、`p`、`china-ai`、`overseas-ai`、`gossip`、`github`、`events`、`cases`、`issues`、`reads`。`𝑪` 与 `𝑶` 分别覆盖国内、海外模型生态；综合科技、图片、热议、开发者、全球事件、应用案例和使用问题各有明确方向。
 
-调度器每 30 秒认领到期任务。数据库锁和进程内任务集合协调运行，采集与日报生成共用信号量。每个栏目独立配置模型、活跃时段、间隔、回看窗口、单次条数和每日上限。内容通过 URL、时间、长度、标签和去重校验后写入数据库，再刷新缓存。
+调度器每 30 秒认领到期任务。数据库锁和进程内任务集合协调运行，采集与日报生成共用信号量。每个栏目独立配置模型、活跃时段、间隔、回看窗口、单次条数和每日运行次数。内容通过 URL、时间、长度、标签和去重校验后写入数据库，再刷新缓存。
 
 图片在数据库事务外下载和转存，3 个任务共享并发额度，单图默认 30 秒、批次最多 90 秒。网页图片优先协商 AVIF 并保留原始格式。日报的视觉输入单独向原站协商兼容格式，经过完整解码后直接以静态 JPEG 数据输入模型，不转存副本；解码有尺寸与内存上限，无法验证的图片不参与模型选图。同批相同原图复用转存地址，保留各报道的图说和署名；续期后更新内容版本与 ETag。
+
+Reads 复用调度与并发额度，每轮最多发布 8 篇、每天最多 32 篇，不设最低数量；优先近 72 小时新作，近 30 天优文补充。正文审核、全文翻译和图片转存完成后发布，翻译失败时保留合格精读。文章永久去重并独立于新闻保留期限；列表和热读查询本地数据库，后台异步同步 Stats 阅读数。
 
 ## 日报
 
@@ -38,7 +40,7 @@ Rust / Axum 提供 API、页面与后台调度。PostgreSQL 保存业务数据�
 
 ## HTTP 与账户
 
-公共路由为 `/digest`、`/topics`、`/days`、`/insight`、`/feed.xml`。读取顺序为内存、Redis、PostgreSQL；内容更新、日切和清理触发缓存失效。公共响应支持 ETag，工作台和账户响应使用 `no-store`。Nginx 只缓存公共响应。
+公共路由为 `/digest`、`/topics`、`/days`、`/insight`、`/feed.xml`、`/reads`、`/reads/{uuid}`、`/sitemap.xml`。读取顺序为内存、Redis、PostgreSQL；内容更新、日切和清理触发缓存失效。公共响应支持 ETag，工作台和账户响应使用 `no-store`。Nginx 只缓存公共响应。
 
 邮箱一次性登录令牌以哈希保存，会话使用 HttpOnly cookie。管理员由配置邮箱确定，管理公共内容；个人主题由账户和套餐授权。支付回调校验签名并幂等开通 Pro 权益。
 

@@ -509,7 +509,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     let mut config = crate::config::Config::from_env().unwrap();
     config.database_url = database_url;
     config.max_concurrent_runs = 1;
-    config.tmpfile_base_url = None;
+    config.tmpfile_base_url = "https://cdn.example.com".parse().unwrap();
     config.redis_addr = None;
     let day = due_day(Utc::now(), config.timezone, config.briefing_time);
     let end = crate::topics::to_utc(config.timezone, day.and_time(config.briefing_time));
@@ -670,17 +670,17 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         [
             "x",
             "p",
-            "reads",
             "china-ai",
             "overseas-ai",
             "gossip",
             "github",
             "events",
             "cases",
-            "issues"
+            "issues",
+            "reads"
         ]
     );
-    assert_eq!(catalog[4].1, "𝑶");
+    assert_eq!(catalog[3].1, "𝑶");
     sqlx::migrate::Migrator::new(state.config.migrations_dir.clone())
         .await
         .unwrap()
@@ -692,7 +692,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             .fetch_all(&state.pool)
             .await
             .unwrap();
-    assert_eq!(migrations, [1, 2, 3, 4, 5]);
+    assert_eq!(migrations, [1]);
     sqlx::query("INSERT INTO topics (id,name,brief,enabled) VALUES ('inactive','Inactive','Inactive',false)")
         .execute(&state.pool).await.unwrap();
     sqlx::query("TRUNCATE items, runs, ai_insights CASCADE")
@@ -784,7 +784,8 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     .await;
     sqlx::query("UPDATE items SET image = $1 WHERE topic_id = 'p'")
         .bind(json!({"url": original.url, "origin_url": original.origin_url, "source_url": "https://example.com/picture",
-            "caption": "机器人演示（测试图）", "caption_en": "Robot demo (fixture)", "credit": "演示团队"}))
+            "caption": "机器人演示（测试图）", "caption_en": "Robot demo (fixture)", "credit": "演示团队",
+            "expires_at": Utc::now() + ChronoDuration::days(1)}))
         .execute(&state.pool).await.unwrap();
     // Even a higher-ranked copy outside the scope must not displace an eligible source.
     sqlx::query("UPDATE items SET importance=5 WHERE topic_id='issues'")
@@ -1156,7 +1157,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
 
 async fn check_media_renewal(state: &mut AppState) {
     Arc::get_mut(&mut state.config).unwrap().tmpfile_base_url =
-        Some("https://mirror.example.com".parse().unwrap());
+        "https://mirror.example.com".parse().unwrap();
     let (id, mut payload): (Uuid, Value) =
         sqlx::query_as("SELECT id,payload FROM ai_insights WHERE status='ok'")
             .fetch_one(&state.pool)

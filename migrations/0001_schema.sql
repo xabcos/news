@@ -168,6 +168,48 @@ CREATE INDEX items_first_seen_visible_idx ON items (first_seen_at DESC, topic_id
 CREATE INDEX items_topic_day_idx ON items (topic_id, day DESC, hidden, published_at DESC, first_seen_at DESC);
 CREATE INDEX items_event_time_idx ON items (COALESCE(published_at, first_seen_at)) WHERE NOT hidden;
 
+-- Reads retain their URL identity across dates and survive news retention.
+CREATE UNIQUE INDEX items_reads_source_idx ON items (fingerprint) WHERE topic_id = 'reads';
+CREATE INDEX items_reads_order_idx ON items (pinned DESC, first_seen_at DESC, id DESC)
+    WHERE topic_id = 'reads' AND NOT hidden;
+CREATE INDEX items_reads_recent_idx ON items (first_seen_at DESC, id DESC)
+    WHERE topic_id = 'reads' AND NOT hidden;
+
+CREATE TABLE read_articles (
+    item_id uuid PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+    author text NOT NULL,
+    source_title text NOT NULL,
+    source_language text NOT NULL,
+    body text NOT NULL CHECK (char_length(body) BETWEEN 200 AND 80000),
+    body_en text NOT NULL DEFAULT '' CHECK (char_length(body_en) <= 80000),
+    source_hash bytea NOT NULL CHECK (octet_length(source_hash) = 32),
+    fetched_at timestamptz NOT NULL,
+    views bigint CHECK (views >= 0),
+    hot_rank smallint CHECK (hot_rank BETWEEN 1 AND 24),
+    full_text jsonb,
+    images_renew_at timestamptz,
+    CONSTRAINT read_articles_document_check CHECK (full_text IS NULL OR
+        (jsonb_typeof(full_text) = 'object' AND octet_length(full_text::text) <= 2097152))
+);
+CREATE INDEX read_articles_hot_idx ON read_articles (hot_rank) WHERE hot_rank IS NOT NULL;
+CREATE INDEX read_articles_images_renew_idx ON read_articles (images_renew_at)
+    WHERE images_renew_at IS NOT NULL;
+
+-- Temporary discovery metadata; published article bodies live in read_articles.
+CREATE TABLE read_candidates (
+    fingerprint bytea PRIMARY KEY CHECK (octet_length(fingerprint) = 32),
+    url text NOT NULL,
+    title text NOT NULL,
+    source text NOT NULL,
+    language text NOT NULL,
+    published_at timestamptz NOT NULL,
+    attempts smallint NOT NULL DEFAULT 0 CHECK (attempts BETWEEN 0 AND 3),
+    next_attempt_at timestamptz NOT NULL DEFAULT now(),
+    finished boolean NOT NULL DEFAULT false
+);
+CREATE INDEX read_candidates_pending_idx ON read_candidates (published_at DESC)
+    WHERE NOT finished;
+
 CREATE TABLE ai_insights (
     id uuid PRIMARY KEY,
     status text NOT NULL CHECK (status IN ('running', 'ok', 'failed')),
@@ -233,48 +275,53 @@ INSERT INTO plans (code, name, price_fen, duration_days, description, sort_weigh
     ('free', 'Free', 0, 0, '可阅读公共主题，新建个人抓取任务需 Pro', 10),
     ('pro', 'Pro', 9900, 31, '最多 4 个主题，最短 64 分钟抓取间隔', 20);
 
+-- Public topic configuration captured from production on 2026-09-24.
 INSERT INTO topics (
-    id, name, name_en, description, brief, interval_minutes, window_start, window_end,
-    weekdays, reasoning_effort, max_items, lookback_hours, daily_run_cap, sort_weight
+    id, name, name_en, description, brief, enabled, interval_minutes, window_start, window_end,
+    weekdays, model, reasoning_effort, max_items, lookback_hours, daily_run_cap, sort_weight
 ) VALUES
     ('x', '𝐗', '𝐗', '全球 AI、科技产品与产业趋势',
 $brief$中文：跟踪全球 AI 模型与产品、AI 硬件、机器人、智能体、论文与开源项目、芯片算力、开发者工具、科技创业和产业商业动态。覆盖中国与海外重要公司；关注 Apple、华为、Kindle、手机、阅读器、电纸书、显示器和拓竹 3D 打印。关注支付与跨境支付、AI 变现、产品机会、就业信号、创作者、娱乐、审美及可信互联网趣闻。关注 xairouter.com 及下列信息源。优先一手事实和有依据的数据；非政治导向，排除未经证实的传闻、营销、重复报道及经不起数据推敲的宣传。
 English: Track global AI models and products, research, open source, hardware, robotics, agents, chips, compute, developer tools, startups and business. Cover major Chinese and overseas companies, Apple, Huawei, Kindle, phones, e-readers, displays and Bambu Lab 3D printing. Include payments, cross-border payments, AI monetization, jobs, creators, entertainment, aesthetics and sourced internet stories. Follow xairouter.com and the source pool below. Prefer primary facts and supported data; avoid politics, rumors, marketing and duplicates.
-关注账号（检索线索，使用时核实来源）：@AnthropicAI、@hackernews、@MistralAI、@cohere、@grok、@hilbertspaess、@moonbitlang、@opencode、@inference_net、@arena、@cursor_ai、@Cloudflare、@elonmusk、@durov、@alexandr_wang、@steipete、@MicrosoftAI、@YouTube、@JensenHuang、@Apple、@janleike、@togethercompute、@Valley101_Qian、@DarioAmodei、@deepseek_ai、@akorinek、@MulticaAI、@MiniMax_AI、@CFchangelog、@Alibaba_Qwen、@perplexitydevs、@DiscoLoopAI、@cerebras、@cnxsoft、@latestincosmos、@googleaidevs、@BambulabGlobal、@cognition、@vepsi__、@karpathy、@zcode_ai、@gregisenberg、@rileybrown、@jackfriks、@levelsio、@ai_explorer25、@EXM7777、@aronhouyu、@eptwts、@godofprompt、@vasuman、@AmirMushich、@0xROAS、@egeberkina、@MengTo、@boringmarketer、@kimmonismus、@aidangomez、@stevewoz、@METR_Evals、@NorthstarBrain、@ShaneLegg、@GoogleResearch、@typesafeai、@CompleteSkeptic、@HacktronAI、@kirodotdev$brief$,
-     64, 0, 24, '{1,2,3,4,5,6,7}', 'high', 24, 36, 96, 0),
+关注账号（检索线索，使用时核实来源）：@AnthropicAI、@hackernews、@MistralAI、@cohere、@grok、@hilbertspaess、@moonbitlang、@opencode、@inference_net、@arena、@cursor_ai、@Cloudflare、@elonmusk、@durov、@alexandr_wang、@steipete、@MicrosoftAI、@YouTube、@JensenHuang、@Apple、@janleike、@togethercompute、@Valley101_Qian、@DarioAmodei、@deepseek_ai、@akorinek、@MulticaAI、@MiniMax_AI、@CFchangelog、@Alibaba_Qwen、@perplexitydevs、@DiscoLoopAI、@cerebras、@cnxsoft、@latestincosmos、@googleaidevs、@BambulabGlobal、@cognition、@vepsi__、@karpathy、@zcode_ai、@gregisenberg、@rileybrown、@jackfriks、@levelsio、@ai_explorer25、@EXM7777、@aronhouyu、@eptwts、@godofprompt、@vasuman、@AmirMushich、@0xROAS、@egeberkina、@MengTo、@boringmarketer、@kimmonismus、@aidangomez、@stevewoz、@METR_Evals、@NorthstarBrain、@ShaneLegg、@GoogleResearch、@typesafeai、@CompleteSkeptic、@HacktronAI、@kirodotdev @nypost$brief$,
+     true, 64, 0, 24, '{1,2,3,4,5,6,7}', 'grok-4.7', 'high', 24, 36, 96, 0),
     ('p', '𝑷', '𝑷', 'AI、科技与全球热点图片及公开视觉内容',
 $brief$中文：关注采集窗口内的 AI、科技发展、国际军事、金融经济热点图片和新闻现场，以及有明确传播证据的公开 X 配图热帖；兼顾有地点、时间或传播背景的公开美图和热图。不要日本娱乐明星新闻。每条必须同时有可核实的文章或帖子、直接对应且可用的图片和准确图说，优先官方、现场、原作者或权威媒体。允许合适的 AI 生成图，但明确标注 AI generated，不能冒充现场照片。排除占位图、商标、广告、拼图、血腥、偷拍、私密、露骨及未成年人性化内容；不把普通图库图包装成热点，无可靠图片就省略。
 English: Collect visual stories about AI, technology, international military developments, finance and the economy, plus public X image posts with evidence of circulation. Include photo trends only with a verifiable place, time or circulation context. Exclude Japanese entertainment-celebrity news. Require a matching article or post, usable image and factual caption; prefer official, eyewitness, original-author and authoritative-media sources. Label suitable AI-generated images and never present them as real scenes. Exclude placeholders, logos, ads, collages, graphic violence, voyeuristic, private, explicit or sexualized-minor content. Do not pass stock photos off as trends; omit items without reliable images.$brief$,
-     64, 0, 24, '{1,2,3,4,5,6,7}', 'high', 30, 24, 96, 10),
+     true, 64, 0, 24, '{1,2,3,4,5,6,7}', 'grok-4.7', 'high', 30, 24, 96, 10),
     ('china-ai', '𝑪', '𝑪', '中国 AI 模型、开发平台与应用生态',
 $brief$中文：关注中国大陆 AI 模型公司、开源社区、开发平台与应用生态的可核实进展。覆盖 DeepSeek、Kimi／月之暗面、智谱／Z.ai／GLM、通义千问／Qwen、豆包／字节 Seed、MiniMax、百度文心／ERNIE、腾讯混元、华为盘古、讯飞星火、阶跃星辰 Step、01.AI／Yi、百川、书生·浦语／InternLM、OpenBMB／MiniCPM、商汤日日新、小米 MiMo，以及获得实际关注的新团队、新模型和重要开源项目。采集新模型与版本、推理与编程、多模态与生成模型、Agent 与 Coding 工具、API 与价格、开源权重、技术报告、部署推理框架、开发者采用、企业落地、合作及真实反馈。优先官网、博客、文档、GitHub、Hugging Face、技术报告与可信媒体，X 用作线索并回到一手来源核实。排除刷榜、营销、无依据 benchmark、传闻和重复。
 English: Cover verifiable developments from the China-based model companies and ecosystems listed above, including emerging teams with real adoption. Track releases, reasoning and coding, multimodal and generative models, agents, coding tools, APIs, pricing, open weights, technical reports, deployment frameworks, developer adoption, enterprise use, partnerships and first-hand feedback. Prefer official sites, documentation, GitHub, Hugging Face, reports and credible media; corroborate X leads with primary sources. Exclude ranking manipulation, marketing, unsupported benchmarks, rumors and duplicates.
 关注账号（检索线索，使用时核实来源）：@QwenDevs$brief$,
-     64, 5, 20, '{1,2,3,4,5,6,7}', 'high', 24, 24, 24, 20),
+     true, 64, 5, 20, '{1,2,3,4,5,6,7}', 'grok-4.7', 'high', 24, 24, 24, 20),
     ('overseas-ai', '𝑶', '𝑶', '海外 LLM 的官方产品、研究与商业动态',
 $brief$中文：关注海外大语言模型及生态的一手进展：OpenAI／ChatGPT／Codex、Anthropic／Claude／Claude Code、xAI／Grok、Google／Gemini、Mistral，以及其他获得实际关注的海外团队和模型。覆盖新模型与版本、推理与编程、多模态、Agent 和 SDK、开发者工具、API、定价配额、开源权重、论文与技术报告、安全对齐研究、合作、融资并购和重要商业变化。优先对应厂商官网、公告、博客、文档、官方仓库、技术报告及经核实的官方或核心成员账号；媒体补充可追溯的具体事实。普通容量故障、登录异常和可复现问题归 Issues；未经证实的爆料归 Gossip。排除营销转发、泛泛评论和没有新事实的重复报道。
 English: Track first-party overseas LLM developments across OpenAI, ChatGPT, Codex, Anthropic, Claude, Claude Code, xAI/Grok, Google/Gemini, Mistral and other relevant overseas teams. Cover model releases, reasoning, coding, multimodal capabilities, agents, SDKs, tools, APIs, pricing, quotas, open weights, research, safety, partnerships, financing, acquisitions and material business changes. Prefer official sites, documentation, repositories, papers and verified first-party accounts; corroborate media claims. Route routine operational problems to Issues and unconfirmed claims to Gossip; exclude promotional reposts and duplicates.
-关注账号（检索线索，使用时核实来源）：@OpenAI、@OpenAIDevs、@sama、@thsottiaux、@CodexReleases、@cerebras、@CompleteSkeptic、@AnthropicAI、@claudeai、@ClaudeDevs、@ClaudeCodeLog、@MistralAI、@cohere、@grok、@googleaidevs、@GoogleResearch$brief$,
-     512, 0, 24, '{1,2,3,4,5,6,7}', 'high', 24, 36, 24, 30),
+关注 openai.com anthropic.com grok.com 最新动态
+关注账号（检索线索，使用时核实来源）：@OpenAI、@OpenAIDevs、@sama、@thsottiaux、@CodexReleases、@cerebras、@CompleteSkeptic、@AnthropicAI、@claudeai、@ClaudeDevs、@ClaudeCodeLog、@MistralAI、@cohere、@grok、@googleaidevs、@GoogleResearch @mattshumer_$brief$,
+     true, 256, 0, 24, '{1,2,3,4,5,6,7}', 'grok-4.7', 'high', 24, 36, 24, 30),
     ('gossip', '𝑮𝒐𝒔𝒔𝒊𝒑', '𝑮𝒐𝒔𝒔𝒊𝒑', 'AI 圈爆料、公开热议与网络安全事件',
 $brief$中文：关注系统指定采集窗口内全球 AI 圈新闻、八卦、传闻、回应和安全事件。优先检索 X 的公开帖子、回复、引用帖和线程，目标至少 70% 为 X 原始内容，线索不足时少收录。关注公司内部爆料、模型泄漏、产品延期、融资并购、高管变动，以及模型窃取、API 密钥与数据泄漏、供应链攻击、Prompt Injection、越狱、数据投毒、模型提取、对抗样本、Agent 安全事故和 AI 被用于恶意软件、钓鱼、深度伪造、诈骗、勒索的公开事件。结合中英文检索；时间条件采用系统实际窗口，回复有证据价值时保留。依据原帖交代作者、时间、背景、涉及公司或人物与攻击类型、证实状态、可信度依据或有依据的评分、官方回应、独立核实及后续验证信号，按系统既定字段输出。区分事实、来源说法和推测；原始帖子优先，互动量与粉丝数不等于可信度，合并重复并注明矛盾。仅作公开信息和防御性分析，不提供攻击代码、实施步骤或私人信息。
 English: Track AI-industry rumors, responses, public discussion and security incidents within the supplied collection window. Prefer original X posts, replies, quotes and threads, targeting at least 70% X sources without padding. Cover company leaks, delays, funding, acquisitions, leadership changes, model and data theft, key leaks, supply-chain attacks, prompt injection, jailbreaks, poisoning, extraction, adversarial examples, agent incidents and AI-enabled malware, phishing, deepfakes, fraud or ransomware. Attribute claims, distinguish confirmation from speculation, explain credibility, seek responses and independent corroboration, and retain follow-up signals. Use the supplied output schema. Do not equate engagement with credibility; merge duplicates and flag contradictions. Limit coverage to public, defensive analysis without attack instructions or private data.$brief$,
-     64, 6, 24, '{1,2,3,4,5,6,7}', 'high', 30, 24, 24, 40),
+     true, 64, 6, 24, '{1,2,3,4,5,6,7}', 'grok-4.7', 'high', 30, 24, 24, 40),
     ('github', '𝑮𝒊𝒕𝑯𝒖𝒃', '𝑮𝒊𝒕𝑯𝒖𝒃', 'GitHub、Rust、AI 开源项目与开发者生态',
 $brief$中文：关注有真实活动的 GitHub AI 项目、Rust、开源模型、开发框架、Agent 工具、推理基础设施和开发者服务。跟踪 AWS Bedrock、OpenAI、Anthropic、智谱、DeepSeek、Kimi、Qwen、MiniMax、Meta 等生态；使用 xairouter.com、daily.dev、github.com/HackerNews/API 及下列账号作为开发者动态线索。优先仓库、release、官方文档、作者说明和一手使用反馈；用版本、提交与 issue、采用、贡献者变化或真实 X 传播证据判断热度。重点写项目、代码、工具和开发者实际价值，避免重复厂商产品新闻。排除刷榜、营销、搬运、无实质代码项目及未证实传闻。
 English: Track active GitHub AI projects, Rust, open models, frameworks, agent tools, inference infrastructure and developer services. Cover AWS Bedrock and the OpenAI, Anthropic, Z.ai, DeepSeek, Kimi, Qwen, MiniMax and Meta ecosystems. Use xairouter.com, daily.dev, github.com/HackerNews/API and the accounts below as leads. Prefer repositories, releases, documentation, author notes and first-hand feedback. Require evidence from development, adoption, contributors or real circulation. Focus on practical developer value; exclude duplicated vendor news, manipulated rankings, marketing, empty projects and rumors.
 关注账号（检索线索，使用时核实来源）：@github、@CodexReleases、@ClaudeDevs、@Codexresets_、@AnthropicAI、@GHCopilotLog、@ClaudeCodeLog、@moonbitlang、@opencode、@zcode_ai、@dotey、@cursor_ai、@blankspeaker、@Cloudflare、@arena、@OpenRouter、@Docker、@deepseek_ai$brief$,
-     512, 0, 24, '{1,2,3,4,5,6,7}', 'high', 24, 48, 24, 50),
+     true, 256, 0, 24, '{1,2,3,4,5,6,7}', 'grok-4.7', 'high', 24, 48, 24, 50),
     ('events', '𝑬𝒗𝒆𝒏𝒕𝒔', '𝑬𝒗𝒆𝒏𝒕𝒔', '全球经济、科技、社会与公共风险事件',
 $brief$中文：跟踪近期发生且影响明确的全球科技、互联网、公司与行业、经济、虚拟货币、AI 支付、跨境支付、创业、教育与全球高校、就业与裁员、灾害预警、气候、公共安全、能源和基础科学进展。关注国际局势、军事技术、AI 军事应用及俄乌、中东、叙利亚、也门、胡塞武装、朝鲜半岛、中美关系、中日关系等重大事件的可靠进展。说明事实、时间线、影响范围、来源质量和后续风险；必要时补充明确标注的历史背景，不把旧材料当新进展。优先政府机构通报、原始文件、现场证据和权威媒体，参考下列账号线索。避免重复 AI 产品与具体应用案例，排除煽动标题、未经证实的传闻、营销和重复报道。
 English: Track recent consequential developments in technology, business, the economy, crypto, AI and cross-border payments, startups, education, universities, jobs, layoffs, disasters, climate, public safety, energy and basic science. Cover international affairs, military technology, military AI and reliable developments concerning Russia–Ukraine, the Middle East, Syria, Yemen, the Houthis, the Korean Peninsula, China–US and China–Japan relations. Explain facts, timelines, impact, source quality and risks; label historical context. Prefer official statements, primary documents, direct evidence and authoritative media. Exclude duplicated AI product stories, sensationalism, rumors and marketing.
 关注账号（检索线索，使用时核实来源）：@radargeo、@YourAnonTV$brief$,
-     64, 0, 24, '{1,2,3,4,5,6,7}', 'high', 24, 36, 96, 60),
+     true, 64, 0, 24, '{1,2,3,4,5,6,7}', 'grok-4.7', 'high', 24, 36, 96, 60),
     ('cases', '𝑪𝒂𝒔𝒆𝒔', '𝑪𝒂𝒔𝒆𝒔', '真实 AI 应用、商业流程与行业案例',
 $brief$中文：收集真实、可复用的 AI 应用案例，说明组织或个人、具体任务、模型或工具、流程变化、成本或效率、结果证据、限制和可迁移经验。覆盖医疗、教育、科研、金融支付、跨境支付、制造、营销、客服、内容、软件开发、个人效率和业务自动化。优先企业公告、技术报告、客户案例、论文和当事人记录；投资内容只作事实与风险分析。排除产品宣传、空泛观点、无法核实的成功故事和重复新闻。
 English: Collect real, reusable AI use cases identifying the organization or person, task, model or tool, workflow changes, cost or efficiency, evidence, limitations and transferable lessons. Cover healthcare, education, research, finance, payments and cross-border payments, manufacturing, marketing, support, content, software, personal productivity and automation. Prefer company statements, technical reports, customer cases, papers and first-hand records. Treat investment material as factual risk analysis. Exclude promotion, vague opinions, unverifiable success stories and duplicates.$brief$,
-     512, 0, 24, '{1,2,3,4,5,6,7}', 'high', 24, 72, 24, 70),
+     true, 256, 0, 24, '{1,2,3,4,5,6,7}', 'grok-4.7', 'high', 24, 72, 24, 70),
     ('issues', '𝑰𝒔𝒔𝒖𝒆𝒔', '𝑰𝒔𝒔𝒖𝒆𝒔', 'Codex / Grok / Claude 使用体验、容量故障与开发者反馈',
-$brief$中文：追踪 Codex、Grok、Claude 及相关开发者服务的真实使用信号，重点关注 Selected model is at capacity、server_overloaded、登录或额度异常、reset、版本行为变化和可复现的解决方案。优先 X、Linux.do、GitHub issue、官方状态页和一手用户记录；每条说明时间、环境、症状、证据和解决方案可信度。区分服务已确认故障、个别用户报告和待验证的修复办法。不收录普通产品发布、无证据抱怨或重复转发。
+$brief$中文：追踪 Codex、Grok、Claude DeepSeek及相关开发者服务的真实使用信号，重点关注 Selected model is at capacity、server_overloaded、限流、登录或额度异常、模型降智、reset、版本行为变化和可复现的解决方案。优先 X、Linux.do、GitHub issue、官方状态页和一手用户记录；每条说明时间、环境、症状、证据和解决方案可信度。区分服务已确认故障、个别用户报告和待验证的修复办法。不收录普通产品发布、无证据抱怨或重复转发。
 English: Track real operational signals around Codex, Grok, Claude and related developer services: capacity errors, server_overloaded, login or quota failures, reset messages, behavior changes and reproducible fixes. Prefer X, Linux.do, GitHub issues, official status pages and first-hand reports. State time, environment, symptoms, evidence and confidence in a fix; distinguish confirmed incidents, individual reports and unverified workarounds. Exclude ordinary product announcements, unsupported complaints and duplicate reposts.$brief$,
-     512, 0, 24, '{1,2,3,4,5,6,7}', 'medium', 30, 48, 24, 80);
+     true, 256, 0, 24, '{1,2,3,4,5,6,7}', 'grok-4.7', 'medium', 30, 48, 24, 80),
+    ('reads', '𝑹𝒆𝒂𝒅𝒔', '𝑹𝒆𝒂𝒅𝒔', '值得读完的文章与观点',
+$brief$精选欧美、日本、德国、法国等地区的优质原创博文、工程实践、科技文摘与公开长帖以及来自 x.com 上面的热门 Articles , Reddit  openai.com anthropic.com 等优秀内容站点。优先近72小时新作，以近30天仍有价值的文章补充；重视独立观点、可复用经验和实质信息，兼顾国家、语言与来源多样性。排除泛泛而谈、重复常识、快讯、广告、转载、付费墙与登录后内容。品质优先，每轮最多发布8篇，每天最多32篇，不设最低数量，没有合格内容时允许不收录。正文独立核验，不为凑数降低质量。$brief$,
+     true, 64, 0, 24, '{1,2,3,4,5,6,7}', 'grok-4.6', 'high', 8, 72, 32, 81);
