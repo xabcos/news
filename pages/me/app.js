@@ -243,7 +243,7 @@ function scheduleRefresh(s) {
     if (session !== s) return;
     if (document.visibilityState !== "visible") return;
     try { await refresh(s); } catch { /* The next scheduled refresh retries. */ }
-  }, s.running.size || s.briefing?.status === "running" ? 5000 : 60000);
+  }, 3 * 60 * 1000);
 }
 
 async function loadBriefing(s) {
