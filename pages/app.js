@@ -856,9 +856,10 @@ function renderInsightStories(label, stories, sources, { gossip = false, dateTex
     article.className = "item insight-hotspot";
     const title = document.createElement("h3");
     title.className = "item-title";
-    title.append(span(String(index + 1).padStart(2, "0"), "insight-story-number"));
-    if (gossip) title.append(span(statuses[story.status] || statuses.unconfirmed, "insight-story-status"));
-    title.append(pick(story, "title"));
+    const headline = document.createElement("span");
+    if (gossip) headline.append(span(statuses[story.status] || statuses.unconfirmed, "insight-story-status"));
+    headline.append(pick(story, "title"));
+    title.append(span(String(index + 1).padStart(2, "0"), "insight-story-number"), headline);
     const summary = document.createElement("p");
     summary.className = "item-summary";
     summary.textContent = pick(story, "summary");
