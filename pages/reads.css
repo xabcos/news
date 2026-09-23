@@ -1,4 +1,3 @@
-.reads .shell { padding-top: 2.75rem; }
 .reads [hidden] { display: none; }
 .reads-heading { display: flex; align-items: baseline; gap: 1rem; margin-bottom: 1.8rem; }
 .reads-heading h1 { flex-shrink: 0; margin: 0; font-size: 1.75rem; }
@@ -44,7 +43,6 @@
 @media (max-width: 768px) {
   .reads-list, .read-heading, .read-source, .read-actions, .read-related,
   .read-body :is(p, h1, h2, h3, h4, h5, h6) { touch-action: pan-y pinch-zoom; }
-  .reads .shell { padding-top: 1.8rem; }
   .reads-heading { gap: .5rem; }
   .reads-heading h1 { font-size: 1.25rem; }
   .reads-heading p, .reads-views { font-size: .75rem; }
