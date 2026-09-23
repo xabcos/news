@@ -1,10 +1,18 @@
 .reads .shell { padding-top: 2.75rem; }
 .reads [hidden] { display: none; }
-.reads-heading { margin-bottom: 2.25rem; }
+.reads-heading { margin-bottom: 1.4rem; }
 .reads-heading h1 { margin-bottom: .45rem; font-size: 1.75rem; }
 .reads-heading p { color: var(--muted); font-size: .9rem; }
 .reads-list .item { padding: 1.4rem 0; }
 .reads-list .item:first-child { padding-top: 0; }
+.reads-views { display: flex; gap: 1.35rem; margin-bottom: 1.8rem; font-size: .85rem; }
+.reads-views a { color: var(--muted); text-decoration: none; padding-bottom: .4rem; }
+.reads-views a[aria-current] { color: var(--text); border-bottom: 1px solid currentColor; }
+.reads-list .item { display: flex; gap: .9rem; }
+.read-card { min-width: 0; flex: 1; }
+.read-rank { width: 1.3rem; flex-shrink: 0; padding-top: .15rem; color: var(--muted); font-size: .72rem; font-variant-numeric: tabular-nums; }
+.read-views { display: inline-flex; align-items: center; gap: .3rem; margin-left: auto; white-space: nowrap; color: var(--muted); font-size: .75rem; font-variant-numeric: tabular-nums; }
+.read-source > .read-views { margin-top: .85rem; }
 .reads-pagination, .read-actions { display: flex; align-items: center; gap: 1.5rem; margin-top: 2rem; font-size: .85rem; }
 .reads-pagination a, .read-actions a { color: var(--muted); text-decoration: none; }
 .read-heading { margin-bottom: 2.5rem; }
@@ -30,6 +38,8 @@
 .read-related { margin-top: 3.5rem; padding-top: 1.5rem; border-top: 1px solid var(--line); }
 .read-related > h2 { color: var(--muted); font-size: .85rem; font-weight: 500; margin-bottom: .5rem; }
 @media (max-width: 768px) {
+  .reads-list, .read-heading, .read-source, .read-actions, .read-related,
+  .read-body :is(p, h1, h2, h3, h4, h5, h6) { touch-action: pan-y pinch-zoom; }
   .reads .shell { padding-top: 1.8rem; }
   .read-heading { margin-bottom: 1.8rem; }
   .read-body { font-size: 1rem; }

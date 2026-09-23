@@ -12,6 +12,23 @@ fn x_aliases_and_tracking_links_have_one_identity() {
 }
 
 #[test]
+fn feed_tracking_does_not_create_duplicate_articles() {
+    let article = url::Url::parse("https://netflixtechblog.com/article").unwrap();
+    for link in [
+        "https://netflixtechblog.com/article?source=rss----123",
+        "https://netflixtechblog.com/article?wt_mc=rss&lang=en",
+    ] {
+        let url = url::Url::parse(link).unwrap();
+        let expected = if link.contains("lang=") {
+            url::Url::parse("https://netflixtechblog.com/article?lang=en").unwrap()
+        } else {
+            article.clone()
+        };
+        assert_eq!(fingerprint(&url), fingerprint(&expected));
+    }
+}
+
+#[test]
 fn copied_passages_are_rejected_across_whitespace() {
     let original = "A specific original argument with enough supporting detail to count as a substantive passage, rather than a common phrase that might appear in unrelated works.";
     assert!(copies_passage(&original.replace(' ', "\n"), original));
@@ -25,7 +42,7 @@ fn source(licensed: bool) -> source::Source {
     source::Source {
         url: url::Url::parse(if licensed { "https://example.com/authorized" } else { "https://example.com/essay" }).unwrap(),
         title: "A small team’s notes on building dependable AI tools".into(),
-        author: "Example Author".into(), language: "en".into(),
+        author: "Example Author".into(), language: "en".into(), published_at: Some(Utc::now()),
         body: "## Start with a question\n\nAn original source discusses how a small team reduced review effort by choosing a narrow task and checking the results against real examples. The scope of the experiment matters more than the number of features.\n\n".repeat(4),
         license: licensed.then(|| source::License { name: "CC BY 4.0".into(), url: "https://creativecommons.org/licenses/by/4.0/".into() }),
     }
@@ -85,7 +102,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             assert!(input["source_text"].as_str().unwrap().contains("scope of the experiment"));
             assert!(request.get("tools").is_none());
             let licensed = input["licensed"] == true;
-            let draft = json!({"worthy":true,
+            let draft = json!({"worthy":!input["url"].as_str().unwrap().ends_with("/rejected"),
                 "title":"让 AI 工具真正有用，从一个可验证的问题开始", "title_en":"Making AI useful starts with a question you can test",
                 "summary":"从小团队的实践中，理解任务范围、验证成本与反馈速度之间的取舍。", "summary_en":"A reading of the tradeoffs between task scope, review costs and the speed of feedback.",
                 "body":if licensed { String::new() } else { article(0).body.repeat(2) },
@@ -113,7 +130,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             topic.window_end,
             topic.max_items
         ),
-        (64, 0, 24, 2)
+        (64, 0, 24, 4)
     );
     assert_eq!(topic.weekdays, [1, 2, 3, 4, 5, 6, 7]);
     let run_id = Uuid::new_v4();
@@ -121,6 +138,24 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         .bind(run_id).execute(&state.pool).await.unwrap();
     let today = state.digest.today();
     let old = today - chrono::Duration::days(200);
+    // Neither available capacity nor a full-text license overrides an editorial rejection.
+    for licensed in [false, true] {
+        let mut rejected = source(licensed);
+        rejected.url.set_path("/rejected");
+        assert!(
+            prepare_source(
+                &state,
+                &topic,
+                &mut item(2),
+                &mut Usage::default(),
+                rejected
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+    }
+    assert_eq!(daily_count(&state, today).await.unwrap(), 0);
     let mut usage = Usage::default();
     let mut full_item = item(0);
     let full = prepare_source(&state, &topic, &mut full_item, &mut usage, source(true))
@@ -170,7 +205,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             .unwrap()
             .is_none()
     );
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(calls.load(Ordering::SeqCst), 4);
     let mut repeat = item(0);
     repeat.url = source(true).url.to_string();
     repeat.fingerprint = fingerprint(&source(true).url);
@@ -221,7 +256,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
     assert_eq!(daily_count(&state, today).await.unwrap(), 0);
     // Concurrent publications serialize their daily allowance under the topic lock.
     let batch = |start: usize| {
-        let items: Vec<_> = (start..start + 6).map(item).collect();
+        let items: Vec<_> = (start..start + 14).map(item).collect();
         let articles = items
             .iter()
             .enumerate()
@@ -229,10 +264,10 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             .collect();
         crate::runner::persist_items(&state, &topic, run_id, today, items, articles, vec![])
     };
-    let (first, second) = tokio::join!(batch(10), batch(20));
+    let (first, second) = tokio::join!(batch(10), batch(50));
     let first = first.unwrap();
     let second = second.unwrap();
-    assert_eq!(first.0 + second.0, 8);
+    assert_eq!(first.0 + second.0, 24);
     assert_eq!(first.2 + second.2, 4);
     assert_eq!(daily_count(&state, today).await.unwrap(), DAILY_LIMIT);
     // At the daily limit, a scheduled run does not call search or generation.
@@ -256,7 +291,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         .await
         .unwrap();
     assert_eq!(payload["skip"], "reads_daily_limit");
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(calls.load(Ordering::SeqCst), 4);
     // News retention cannot remove Reads or its body.
     let news_topic: Topic = sqlx::query_as("SELECT * FROM topics WHERE id='x'")
         .fetch_one(&state.pool)
@@ -280,7 +315,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         .fetch_one(&state.pool)
         .await
         .unwrap();
-    assert_eq!(count, 10);
+    assert_eq!(count, 26);
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM items WHERE topic_id='x'")
         .fetch_one(&state.pool)
         .await
@@ -333,7 +368,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
     assert!(english.contains("<html lang=\"en\""));
     assert!(english.contains("Full text"));
     let list = client
-        .get(format!("{base}/reads"))
+        .get(format!("{base}/reads?page=3"))
         .send()
         .await
         .unwrap()
@@ -422,11 +457,11 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             .await
             .unwrap();
     assert!(!exists);
-    let items: Vec<_> = (30..34).map(item).collect();
+    let items: Vec<_> = (130..134).map(item).collect();
     let articles = items
         .iter()
         .enumerate()
-        .map(|(i, item)| (item.fingerprint.clone(), article(30 + i)))
+        .map(|(i, item)| (item.fingerprint.clone(), article(130 + i)))
         .collect();
     crate::runner::persist_items(&state, &topic, run_id, old, items, articles, vec![])
         .await
@@ -440,16 +475,16 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         .await
         .unwrap();
     assert!(first_page.contains("rel=next href=\"/reads?page=2\""));
-    let second_page = client
-        .get(format!("{base}/reads?page=2&lang=en"))
+    let last_page = client
+        .get(format!("{base}/reads?page=3&lang=en"))
         .send()
         .await
         .unwrap()
         .text()
         .await
         .unwrap();
-    assert!(second_page.contains("rel=prev href=\"/reads?lang=en\""));
-    assert!(!second_page.contains("rel=next"));
+    assert!(last_page.contains("rel=prev href=\"/reads?page=2&amp;lang=en\""));
+    assert!(!last_page.contains("rel=next"));
     let feed = client
         .get(format!("{base}/feed.xml?topic=reads"))
         .send()
@@ -460,6 +495,8 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         .unwrap();
     assert!(feed.contains(&format!("href=\"{}reads/", state.config.public_base_url)));
     check_related_candidates(&state, &client, &base, id).await;
+    check_cached_reads_stats(&state, &client, &base).await;
+    discovery::check_queue(&state).await;
     server.abort();
     ai_server.abort();
 }
@@ -548,4 +585,112 @@ async fn check_related_candidates(
     assert_eq!(links[2], format!("/reads/{}", Uuid::from_u128(3)));
     assert_eq!(links[3], format!("/reads/{}", Uuid::from_u128(2)));
     assert!(!links.contains(&format!("/reads/{}", Uuid::from_u128(1)).as_str()));
+}
+
+async fn check_cached_reads_stats(state: &AppState, client: &reqwest::Client, base: &str) {
+    use axum::{Json, Router, http::StatusCode, routing::post};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    sqlx::query("UPDATE items SET url = 'https://source' || (get_byte(uuid_send(id),15) % 16) || '.example/essay/' || id WHERE topic_id='reads'")
+        .execute(&state.pool).await.unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fail_at = Arc::new(AtomicUsize::new(usize::MAX));
+    let (counter, failure) = (calls.clone(), fail_at.clone());
+    let app = Router::new().route("/pages", post(move |Json(request): Json<Value>| {
+        let call = counter.fetch_add(1, Ordering::SeqCst);
+        let failing = failure.load(Ordering::SeqCst);
+        async move {
+            if call >= failing { return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({}))); }
+            let urls = request["urls"].as_array().unwrap();
+            assert!(!urls.is_empty() && urls.len() <= 100);
+            let pages: Vec<_> = urls.iter().map(|url| json!({"url":url, "visits":if failing == usize::MAX { 42 } else { 999 }})).collect();
+            (StatusCode::OK, Json(json!({"pages":pages})))
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/pages", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let cold = client
+        .get(format!("{base}/reads?view=hot"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(!cold.contains("class=read-rank"));
+    stats::refresh(state, &endpoint).await.unwrap();
+    let snapshot: Vec<(Uuid, i64, Option<i16>)> = sqlx::query_as("SELECT item_id, views, hot_rank FROM read_articles WHERE views IS NOT NULL ORDER BY item_id")
+        .fetch_all(&state.pool).await.unwrap();
+    assert_eq!(snapshot.iter().filter(|row| row.2.is_some()).count(), 24);
+    assert!(snapshot.iter().all(|row| row.1 == 42));
+    let before = calls.load(Ordering::SeqCst);
+    let hot = client
+        .get(format!("{base}/reads?view=hot&lang=en"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(hot.matches("class=read-rank").count(), 24);
+    assert!(hot.contains("Popular 24"));
+    assert!(hot.contains("/reads?view=hot&amp;lang=en"));
+    assert!(!hot.contains("rel=next"));
+    assert_eq!(
+        before,
+        calls.load(Ordering::SeqCst),
+        "SSR must not call Stats"
+    );
+    // A later batch failing must not publish the earlier batch's changed counts.
+    fail_at.store(before + 1, Ordering::SeqCst);
+    assert!(stats::refresh(state, &endpoint).await.is_err());
+    let unchanged: Vec<(Uuid, i64, Option<i16>)> = sqlx::query_as("SELECT item_id, views, hot_rank FROM read_articles WHERE views IS NOT NULL ORDER BY item_id")
+        .fetch_all(&state.pool).await.unwrap();
+    assert_eq!(unchanged, snapshot);
+    let ranked = snapshot.iter().find(|row| row.2 == Some(1)).unwrap().0;
+    sqlx::query("UPDATE items SET hidden=true WHERE id=$1")
+        .bind(ranked)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    let hot = client
+        .get(format!("{base}/reads?view=hot"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(!hot.contains(&format!("/reads/{ranked}")));
+    sqlx::query(
+        "UPDATE items SET hidden=false, first_seen_at = NOW() - INTERVAL '31 days' WHERE id=$1",
+    )
+    .bind(ranked)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    let hot = client
+        .get(format!("{base}/reads?view=hot"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(!hot.contains(&format!("/reads/{ranked}")));
+    sqlx::query("UPDATE topics SET enabled=false WHERE id='reads'")
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    let before = calls.load(Ordering::SeqCst);
+    stats::refresh(state, &endpoint).await.unwrap();
+    assert_eq!(before, calls.load(Ordering::SeqCst));
+    sqlx::query("UPDATE topics SET enabled=true WHERE id='reads'")
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    server.abort();
 }

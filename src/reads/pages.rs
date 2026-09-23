@@ -21,7 +21,7 @@ use uuid::Uuid;
 const PAGE_SIZE: i64 = 12;
 const SITEMAP_SIZE: i64 = 10000;
 const VISIBLE: &str = "FROM items i JOIN read_articles a ON a.item_id = i.id JOIN topics t ON t.id = i.topic_id WHERE i.topic_id = 'reads' AND t.enabled AND t.owner_user_id IS NULL AND NOT i.hidden";
-const CARD: &str = "i.id, i.title, i.title_en, i.summary, i.summary_en, i.source, i.url, i.first_seen_at, a.mode, a.author";
+const CARD: &str = "i.id, i.title, i.title_en, i.summary, i.summary_en, i.source, i.url, i.first_seen_at, a.mode, a.author, a.views";
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
@@ -37,6 +37,7 @@ pub(crate) fn router() -> Router<AppState> {
 struct Params {
     lang: Option<String>,
     page: Option<u32>,
+    view: Option<String>,
 }
 
 impl Params {
@@ -63,6 +64,7 @@ struct Card {
     first_seen_at: DateTime<Utc>,
     mode: String,
     author: String,
+    views: Option<i64>,
 }
 
 #[derive(FromRow)]
@@ -123,34 +125,70 @@ async fn index(
     if !enabled {
         return Err(AppError::NotFound("主题不存在".into()));
     }
-    let mut query = sqlx::QueryBuilder::new("SELECT ");
-    query
-        .push(CARD)
-        .push(" ")
-        .push(VISIBLE)
-        .push(" ORDER BY i.pinned DESC, i.first_seen_at DESC, i.id DESC LIMIT ")
-        .push_bind(PAGE_SIZE + 1)
-        .push(" OFFSET ")
-        .push_bind(i64::from(page - 1) * PAGE_SIZE);
-    let mut rows = query
-        .build_query_as::<Card>()
-        .fetch_all(&state.pool)
-        .await?;
+    let requested_hot = params.view.as_deref() == Some("hot");
+    if requested_hot && page != 1 {
+        return Err(AppError::NotFound("页面不存在".into()));
+    }
+    let mut rows = Vec::new();
+    if requested_hot {
+        let mut query = sqlx::QueryBuilder::new("SELECT ");
+        query.push(CARD).push(" ").push(VISIBLE).push(
+            " AND a.hot_rank IS NOT NULL AND i.first_seen_at >= NOW() - INTERVAL '30 days' ORDER BY a.hot_rank LIMIT 24"
+        );
+        rows = query
+            .build_query_as::<Card>()
+            .fetch_all(&state.pool)
+            .await?;
+    }
+    // During cold start the normal reading list remains useful, without invented ranks.
+    let hot = rows.len() >= 8;
+    if !hot {
+        let mut query = sqlx::QueryBuilder::new("SELECT ");
+        query
+            .push(CARD)
+            .push(" ")
+            .push(VISIBLE)
+            .push(" ORDER BY i.pinned DESC, i.first_seen_at DESC, i.id DESC LIMIT ")
+            .push_bind(PAGE_SIZE + 1)
+            .push(" OFFSET ")
+            .push_bind(i64::from(page - 1) * PAGE_SIZE);
+        rows = query
+            .build_query_as::<Card>()
+            .fetch_all(&state.pool)
+            .await?;
+    }
     if page > 1 && rows.is_empty() {
         return Err(AppError::NotFound("页面不存在".into()));
     }
-    let more = rows.len() > PAGE_SIZE as usize;
-    rows.truncate(PAGE_SIZE as usize);
+    let more = !hot && rows.len() > PAGE_SIZE as usize;
+    if !hot {
+        rows.truncate(PAGE_SIZE as usize);
+    }
     let description = choose(
         en,
         "值得读完的文章与观点",
         "Ideas and stories worth your time",
     );
-    let mut content = format!(
-        "<header class=reads-heading><h1>𝑹𝒆𝒂𝒅𝒔</h1><p>{description}</p></header><div class=reads-list>"
+    let mut content =
+        format!("<header class=reads-heading><h1>𝑹𝒆𝒂𝒅𝒔</h1><p>{description}</p></header>");
+    let _ = write!(
+        content,
+        "<nav class=reads-views aria-label=\"{}\"><a href=\"{}\"{}>{}</a><a href=\"{}\"{}>{}</a></nav><div class=reads-list>",
+        choose(en, "阅读排序", "Reading order"),
+        localized("/reads", en),
+        if !hot { " aria-current=\"page\"" } else { "" },
+        choose(en, "最新", "Latest"),
+        escape(&localized("/reads?view=hot", en)),
+        if hot { " aria-current=\"page\"" } else { "" },
+        choose(en, "热读 24", "Popular 24")
     );
-    for row in &rows {
-        content.push_str(&card(row, en));
+    for (index, row) in rows.iter().enumerate() {
+        content.push_str(&card(
+            row,
+            en,
+            hot.then_some(index + 1),
+            state.config.timezone,
+        ));
     }
     if rows.is_empty() {
         content.push_str(choose(
@@ -177,8 +215,14 @@ async fn index(
         );
     }
     content.push_str("</nav>");
-    let path = listing(page, false);
-    let title = if page == 1 {
+    let path = if hot {
+        "/reads?view=hot".into()
+    } else {
+        listing(page, false)
+    };
+    let title = if hot {
+        format!("{} · 𝑹𝒆𝒂𝒅𝒔", choose(en, "热读 24", "Popular 24"))
+    } else if page == 1 {
         "𝑹𝒆𝒂𝒅𝒔 · 𝑵𝒆𝒘𝒔".to_owned()
     } else {
         format!("𝑹𝒆𝒂𝒅𝒔 · {page} · 𝑵𝒆𝒘𝒔")
@@ -268,6 +312,11 @@ async fn detail(
     }
     let _ = write!(
         content,
+        "<span class=read-views data-page-views hidden title=\"{}\">{EYE}<span data-page-views-value></span></span>",
+        choose(en, "累计阅读次数", "Total page views")
+    );
+    let _ = write!(
+        content,
         "</footer><div class=read-actions><a href=\"{}\">← 𝑹𝒆𝒂𝒅𝒔</a><button id=copyRead class=\"button button-quiet button-small\" type=button hidden>{}</button><span id=copyStatus class=muted role=status></span></div></article>",
         localized("/reads", en),
         choose(en, "复制链接", "Copy link")
@@ -309,7 +358,7 @@ async fn detail(
             choose(en, "继续阅读", "Keep reading")
         );
         for row in &related {
-            content.push_str(&card(row, en));
+            content.push_str(&card(row, en, None, state.config.timezone));
         }
         content.push_str("</aside>");
     }
@@ -351,11 +400,30 @@ fn kind(mode: &str, en: bool) -> &'static str {
     }
 }
 
-fn card(item: &Card, en: bool) -> String {
+const EYE: &str = r#"<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>"#;
+
+fn card(item: &Card, en: bool, rank: Option<usize>, timezone: chrono_tz::Tz) -> String {
+    let rank = rank
+        .map(|rank| format!("<span class=read-rank aria-hidden=true>{rank:02}</span>"))
+        .unwrap_or_default();
+    let views = item
+        .views
+        .filter(|views| *views > 0 && item.first_seen_at >= Utc::now() - chrono::Duration::days(30))
+        .map(|views| {
+            format!(
+                "<span class=read-views title=\"{}\">{EYE}<span>{views}</span></span>",
+                choose(en, "累计阅读次数", "Total page views")
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "<article class=item><div class=item-meta><span>{}</span> · <span>{}</span></div><h2 class=item-title><a href=\"{}\">{}</a></h2><p class=item-summary>{}</p></article>",
+        "<article class=item>{rank}<div class=read-card><div class=item-meta><span>{}</span> · <span>{}</span> · <time datetime=\"{}\">{}</time>{views}</div><h2 class=item-title><a href=\"{}\">{}</a></h2><p class=item-summary>{}</p></div></article>",
         kind(&item.mode, en),
         escape(&item.source),
+        item.first_seen_at.to_rfc3339(),
+        item.first_seen_at
+            .with_timezone(&timezone)
+            .format("%Y-%m-%d"),
         localized(&format!("/reads/{}", item.id), en),
         escape(choose(en, &item.title, &item.title_en)),
         escape(choose(en, &item.summary, &item.summary_en))
@@ -428,9 +496,11 @@ async fn layout(
 <title>{title}</title><meta name="description" content="{description}"><meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f6f4"><meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1115">
 <link rel="canonical" href="{canonical}"><link rel="alternate" hreflang="zh-CN" href="{zh}"><link rel="alternate" hreflang="en" href="{english}"><link rel="alternate" hreflang="x-default" href="{zh}">
 <meta property="og:type" content="{og_type}"><meta property="og:title" content="{title}"><meta property="og:description" content="{description}"><meta property="og:url" content="{canonical}"><meta property="og:site_name" content="News"><meta name="twitter:card" content="summary">
-<link rel="icon" type="image/svg+xml" href="/icon.svg"><link rel="alternate" type="application/atom+xml" title="Reads" href="/feed.xml?topic=reads"><link rel="stylesheet" href="/styles.css?v=reads-v1"><link rel="stylesheet" href="/reads.css?v=1">{schema}</head>
+<link rel="icon" type="image/svg+xml" href="/icon.svg"><link rel="alternate" type="application/atom+xml" title="Reads" href="/feed.xml?topic=reads"><link rel="stylesheet" href="/styles.css?v=reads-v2"><link rel="stylesheet" href="/reads.css?v=2">{schema}</head>
 <body class="public reads"><header class="topbar"><a class="brand" href="{home}" aria-label="News"><img class="brand-logo" src="/icon.svg" alt=""><span>𝑵𝒆𝒘𝒔</span></a><nav class="tabs" aria-label="{topics_label}">{tabs}</nav><div class="tools"><a class="space-link button button-quiet button-small" href="/me/">{workspace}</a><a class="space-link button button-quiet button-small" href="{other_lang}" hreflang="{other_code}">{language_label}</a></div></header>
-<main class="shell">{content}</main><script src="/reads.js?v=1" defer></script><script src="/stats.js" data-track-url="https://stats.xairouter.com/track/pk-c994c1ce749548c8b45c55d21fdfc4cf" defer></script></body></html>"##,
+<main class="shell">{content}</main>
+<button id="backToTop" class="button back-to-top" type="button" aria-label="{back_to_top}" title="{back_to_top}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 12 6-6 6 6M12 6v12"/></svg></button>
+<script src="/public.js?v=1" defer></script><script src="/reads.js?v=2" defer></script><script src="/stats.js?v=2" data-track-url="{track_url}" defer></script></body></html>"##,
         lang = choose(en, "zh-CN", "en"),
         title = escape(title),
         description = escape(description),
@@ -448,6 +518,8 @@ async fn layout(
         other_lang = escape(&localized(path, !en)),
         other_code = choose(en, "en", "zh-CN"),
         language_label = choose(en, "EN", "中文"),
+        back_to_top = choose(en, "回到顶部", "Back to top"),
+        track_url = super::stats::TRACK_URL,
     ))
 }
 

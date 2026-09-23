@@ -37,6 +37,7 @@ pub fn spawn(state: AppState) -> BackgroundTasks {
         state.shutdown.clone(),
     ));
     tasks.spawn(media_refresh_loop(state.clone()));
+    tasks.spawn(reads::refresh_loop(state.clone()));
     if state.config.scheduler_enabled {
         tasks.spawn(schedule_loop(state.clone()));
         tasks.spawn(maintenance_loop(state.clone()));
@@ -605,9 +606,18 @@ async fn execute(
     run_id: Uuid,
     window: NewsWindow,
 ) -> Result<Completed> {
+    let started = Instant::now();
     let today = state.digest.today();
     let yesterday = today.pred_opt().expect("date in range");
     let is_reads = topic.id == "reads" && topic.owner_user_id.is_none();
+    let window = if is_reads {
+        NewsWindow {
+            start: window.end - ChronoDuration::days(30),
+            ..window
+        }
+    } else {
+        window
+    };
     if is_reads && reads::daily_count(state, today).await? >= reads::DAILY_LIMIT {
         return Ok(Completed {
             response_id: None,
@@ -629,7 +639,11 @@ async fn execute(
     .bind(is_reads)
     .fetch_all(&state.pool)
     .await?;
-    let mut fetched = fetch::fetch(state, topic, &known, window).await?;
+    let mut fetched = if is_reads {
+        reads::discover(state, topic, &known, window).await?
+    } else {
+        fetch::fetch(state, topic, &known, window).await?
+    };
 
     let mut fingerprints = known
         .iter()
@@ -676,12 +690,27 @@ async fn execute(
         let limit = reads::ROUND_LIMIT
             .min(topic.max_items as usize)
             .min(available);
-        dropped += items.len().saturating_sub(limit) as i32;
-        items.truncate(limit);
         let mut prepared = Vec::new();
         let mut skipped = Vec::new();
         for mut item in items {
-            match reads::prepare(state, topic, &mut item, &mut fetched.usage).await {
+            if prepared.len() == limit {
+                break;
+            }
+            // Leave time to publish the successful articles even if later sources are slow.
+            let remaining = state
+                .config
+                .fetch_timeout
+                .saturating_sub(started.elapsed() + Duration::from_secs(15));
+            if remaining < Duration::from_secs(10) {
+                break;
+            }
+            let result = tokio::time::timeout(
+                remaining.min(Duration::from_secs(180)),
+                reads::prepare(state, topic, &mut item, &mut fetched.usage),
+            )
+            .await
+            .unwrap_or_else(|_| Err(AppError::Internal("Reads 单篇处理超时".into())));
+            match result {
                 Ok(Some(article)) => {
                     articles.insert(item.fingerprint.clone(), article);
                     prepared.push(item);
@@ -807,7 +836,7 @@ pub(crate) async fn persist_items(
                 let article = articles
                     .remove(&item.fingerprint)
                     .ok_or_else(|| AppError::Internal("Reads 缺少正文，取消发布".into()))?;
-                reads::insert(&mut tx, id, article).await?;
+                reads::insert(&mut tx, id, &item.fingerprint, article).await?;
                 available -= 1;
             }
             new += 1;

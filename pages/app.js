@@ -17,9 +17,6 @@ const ROLE_COOKIE = "news_role";
 // Keep the simple timeline bounded to the archive window exposed by the API.
 const DAYS_LIMIT = 366;
 const PRELOAD_MARGIN = "0px 0px 70% 0px";
-const SWIPE_MIN_DISTANCE = 48;
-const SWIPE_AXIS_RATIO = 1.2;
-const MOBILE_QUERY = "(max-width: 768px)";
 const INSIGHT_ID = "insight";
 const storage = (() => {
   try {
@@ -131,9 +128,9 @@ async function init() {
   setInterval(() => {
     if (document.visibilityState === "visible" && !state.day) load(true);
   }, REFRESH_MS);
-  setupScrollControls();
+  PublicPage.init({ canSwipe: (target) => Boolean(target.closest("#digest"))
+    || (!el.digest.childElementCount && !target.closest("a")) });
   setupInfiniteScroll();
-  setupTopicSwipe();
 
   // Everything the first screen needs leaves in one round trip: the role cookie replaces the
   // old `/api/me` probe, and the catalogue loads beside the digest instead of before it.
@@ -585,75 +582,6 @@ function insertBefore(sentinel, nodes) {
   sentinel.before(...nodes);
   if (NATIVE_SCROLL_ANCHORING || before >= 0) return;
   window.scrollBy(0, sentinel.getBoundingClientRect().top - before);
-}
-
-// On a phone, a horizontal gesture over the feed moves between topics. The tab
-// strip stays native, while article links can still be tapped normally.
-function setupTopicSwipe() {
-  if (typeof window.PointerEvent !== "function" || typeof window.matchMedia !== "function") return;
-  const mobile = window.matchMedia(MOBILE_QUERY);
-  let gesture = null;
-  let suppressClickUntil = 0;
-
-  const reset = () => { gesture = null; };
-  const isControl = (target) => Boolean(target?.closest?.("button, input, textarea, select, [contenteditable]"));
-  const isFeed = (target) => Boolean(target?.closest?.("#digest"));
-
-  // A swipe replaces the feed before its synthetic click can fire. Clear that
-  // one-shot guard on any later pointerdown, including a tap on the top bar.
-  document.addEventListener("pointerdown", (event) => {
-    if (event.isPrimary) suppressClickUntil = 0;
-  }, true);
-
-  el.shell.addEventListener("pointerdown", (event) => {
-    const inFeed = isFeed(event.target);
-    const outsideLink = !inFeed && event.target?.closest?.("a");
-    // Keep the stable shell as a gesture surface while a new topic is loading
-    // and the digest has temporarily been cleared. Links outside the feed and
-    // explicit controls keep their normal interaction semantics.
-    if (!event.isPrimary || event.pointerType !== "touch" || !mobile.matches
-      || isControl(event.target) || outsideLink || (!inFeed && el.digest.childElementCount)) {
-      reset();
-      return;
-    }
-    gesture = { id: event.pointerId, x: event.clientX, y: event.clientY };
-  }, { passive: true });
-
-  window.addEventListener("pointerup", (event) => {
-    if (!gesture || event.pointerId !== gesture.id) return;
-    const { x, y } = gesture;
-    reset();
-    const dx = event.clientX - x;
-    const dy = event.clientY - y;
-    if (Math.abs(dx) < SWIPE_MIN_DISTANCE || Math.abs(dx) <= Math.abs(dy) * SWIPE_AXIS_RATIO) return;
-    // A horizontal gesture can begin on an article link, especially on the image
-    // feed where the card's image covers most of the surface. Keep that gesture
-    // from also activating the link's synthetic click.
-    if (changeTopic(dx < 0 ? 1 : -1)) suppressClickUntil = performance.now() + 500;
-  }, { passive: true });
-  window.addEventListener("pointercancel", (event) => {
-    if (gesture?.id === event.pointerId) reset();
-  }, { passive: true });
-  document.addEventListener("click", (event) => {
-    if (!suppressClickUntil || performance.now() > suppressClickUntil || event.detail === 0) return;
-    suppressClickUntil = 0;
-    event.preventDefault();
-    event.stopPropagation();
-  }, true);
-}
-
-function changeTopic(direction) {
-  const topicIds = ["", INSIGHT_ID, ...state.topics.map((topic) => topic.id)];
-  const current = topicIds.indexOf(state.topic);
-  // A deep link can be rendered before the async catalogue arrives. Wait for
-  // that catalogue instead of treating the unknown topic as ALL.
-  if (current < 0) return false;
-  const next = (current + direction + topicIds.length) % topicIds.length;
-
-  el.topbar.classList.remove("is-hidden");
-  document.scrollingElement.scrollTop = 0;
-  navigate({ topic: topicIds[next], day: "" });
-  return true;
 }
 
 function updateHistoryLoader() {
@@ -1165,6 +1093,8 @@ function card(item, reading = false) {
   // Publication dates are often only known to the day and arrive as midnight UTC;
   // the collection time is the reliable freshness signal shown in the feed.
   meta.append(span(item.source || hostOf(item.url), "item-source"), "·", span(relativeTime(item.first_seen_at), "item-time"));
+  const tags = state.lang === "en" && item.tags_en?.length ? item.tags_en : item.tags;
+  if (tags.length) meta.append("·", ...tags.map((tag) => span(tag, "tag")));
   if (item.importance >= 4) meta.append(span(t().top, "badge badge-top"));
   if (Date.parse(item.first_seen_at) > state.lastVisit) meta.append(span(t().fresh, "badge badge-new"));
 
@@ -1184,47 +1114,7 @@ function card(item, reading = false) {
   summary.textContent = pick(item, "summary");
 
   article.append(meta, title, summary);
-  const tags = state.lang === "en" && item.tags_en?.length ? item.tags_en : item.tags;
-  if (tags.length) {
-    const tagList = document.createElement("div");
-    tagList.className = "item-tags";
-    tagList.append(...tags.map((tag) => span(tag, "tag")));
-    article.append(tagList);
-  }
   return article;
-}
-
-// The bar slides away while reading down and returns on the first upward scroll, so the
-// list gets the whole screen without losing the controls.
-function setupScrollControls() {
-  let last = window.scrollY;
-  let backToTopVisible = false;
-  let scrollAnchor = last;
-  const update = () => {
-    const y = Math.max(0, window.scrollY);
-    if (y <= 48 || Math.abs(y - last) > 4) el.topbar.classList.toggle("is-hidden", y > last && y > 48);
-    // Track the turning point so slow scrolling counts without reacting to tiny reversals.
-    scrollAnchor = backToTopVisible ? Math.min(scrollAnchor, y) : Math.max(scrollAnchor, y);
-    if (y <= 100) {
-      backToTopVisible = false;
-      scrollAnchor = y;
-    } else if (Math.abs(y - scrollAnchor) >= 8) {
-      backToTopVisible = y < scrollAnchor && y > window.innerHeight;
-      scrollAnchor = y;
-    }
-    el.backToTop.classList.toggle("is-visible", backToTopVisible);
-    last = y;
-  };
-  window.addEventListener("scroll", update, { passive: true });
-  window.addEventListener("resize", update);
-  window.addEventListener("pageshow", update);
-  el.backToTop.addEventListener("click", () => {
-    el.topbar.classList.remove("is-hidden");
-    el.topbar.querySelector(".brand").focus({ preventScroll: true });
-    // The existing CSS handles smooth scrolling and reduced-motion preferences.
-    window.scrollTo({ top: 0, behavior: "auto" });
-  });
-  update();
 }
 
 // ---------------------------------------------------------------------------

@@ -33,6 +33,7 @@
 
   const referrer = canonicalize(document.referrer);
   let currentUrl = "";
+  let generation = 0;
 
   const track = () => {
     const url = canonicalize(window.location.href);
@@ -40,6 +41,9 @@
 
     const referer = currentUrl || referrer;
     currentUrl = url;
+    const request = ++generation;
+    const counter = document.querySelector("[data-page-views]");
+    if (counter) counter.hidden = true;
     void fetch(trackUrl, {
       method: "POST",
       credentials: "omit",
@@ -47,6 +51,12 @@
       referrerPolicy: "no-referrer",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url, referer }),
+    }).then(async (response) => {
+      if (!counter || !response.ok) return;
+      const { views } = await response.json();
+      if (request !== generation || !counter.isConnected || !Number.isSafeInteger(views) || views < 1) return;
+      counter.querySelector("[data-page-views-value]").textContent = new Intl.NumberFormat(document.documentElement.lang).format(views);
+      counter.hidden = false;
     }).catch(() => {});
   };
 

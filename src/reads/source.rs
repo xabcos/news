@@ -34,6 +34,7 @@ pub(super) struct Source {
     pub language: String,
     pub body: String,
     pub license: Option<License>,
+    pub published_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 pub(crate) fn license_grants(value: &str) -> Result<Vec<LicenseGrant>> {
@@ -73,7 +74,7 @@ pub(super) async fn fetch(value: &str, grants: &[LicenseGrant]) -> Result<Source
         if let Some(id) = x_status(&url) {
             return fetch_post(&id).await;
         }
-        let (url, bytes) = download(url, false).await?;
+        let (url, bytes) = download(url, Content::Html).await?;
         let html =
             std::str::from_utf8(&bytes).map_err(|_| invalid_source("原文不是 UTF-8 文本"))?;
         extract(url, html, grants)
@@ -82,7 +83,20 @@ pub(super) async fn fetch(value: &str, grants: &[LicenseGrant]) -> Result<Source
     .map_err(|_| invalid_source("读取原文超时"))?
 }
 
-async fn download(mut url: Url, json: bool) -> Result<(Url, Vec<u8>)> {
+#[derive(Clone, Copy)]
+pub(super) enum Content {
+    Html,
+    Json,
+    Feed,
+}
+
+pub(super) async fn download(url: Url, content: Content) -> Result<(Url, Vec<u8>)> {
+    tokio::time::timeout(Duration::from_secs(30), download_inner(url, content))
+        .await
+        .map_err(|_| invalid_source("读取来源超时"))?
+}
+
+async fn download_inner(mut url: Url, content: Content) -> Result<(Url, Vec<u8>)> {
     for _ in 0..5 {
         if !public_url(&url) {
             return Err(invalid_source("原文必须是公开 HTTPS 地址"));
@@ -123,12 +137,24 @@ async fn download(mut url: Url, json: bool) -> Result<(Url, Vec<u8>)> {
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .unwrap_or("");
-        if !(if json {
-            content_type.starts_with("application/json")
-        } else {
-            content_type.starts_with("text/html")
-                || content_type.starts_with("application/xhtml+xml")
-        }) {
+        let accepted = match content {
+            Content::Json => content_type.starts_with("application/json"),
+            Content::Html => {
+                content_type.starts_with("text/html")
+                    || content_type.starts_with("application/xhtml+xml")
+            }
+            Content::Feed => [
+                "application/rss+xml",
+                "application/atom+xml",
+                "application/xml",
+                "text/xml",
+                "application/feed+json",
+                "application/json",
+            ]
+            .iter()
+            .any(|kind| content_type.starts_with(kind)),
+        };
+        if !accepted {
             return Err(invalid_source("原文不是可读取的网页"));
         }
         if response
@@ -203,7 +229,7 @@ async fn fetch_post(id: &str) -> Result<Source> {
         .append_pair("url", url.as_str())
         .append_pair("omit_script", "true")
         .append_pair("dnt", "true");
-    let (_, bytes) = download(endpoint, true).await?;
+    let (_, bytes) = download(endpoint, Content::Json).await?;
     #[derive(Deserialize)]
     struct Embed {
         html: String,
@@ -230,6 +256,7 @@ async fn fetch_post(id: &str) -> Result<Source> {
         language: paragraph.attr("lang").unwrap_or("und").into(),
         body,
         license: None,
+        published_at: None,
     })
 }
 
@@ -261,20 +288,37 @@ fn extract(url: Url, text: &str, grants: &[LicenseGrant]) -> Result<Source> {
         return Err(invalid_source("原文标注为非公开全文"));
     }
     let grant = grants.iter().find(|grant| grant.matches(&url));
-    if grant.is_none() && (url.path() == "/" || html.select(&selector("article")).count() > 1) {
+    let article_meta = meta(&html, "meta[property='og:type']") == "article";
+    let body_selector = article_selector(&url);
+    if grant.is_none()
+        && (url.path() == "/"
+            || (body_selector.is_none()
+                && !article_meta
+                && html.select(&selector("article")).count() > 1))
+    {
         return Err(invalid_source("原文链接不是独立文章页"));
     }
-    let selectors = grant
+    let mut selectors = grant
         .map(|grant| vec![grant.selector.as_str()])
         .unwrap_or_else(|| {
             vec![
                 "[itemprop='articleBody']",
                 ".entry-content",
                 ".post-content",
+                ".article-body",
+                ".post-body",
+                ".rich-editor",
+                ".markdown-body",
+                "#article_body",
                 "article",
                 "main",
             ]
         });
+    if grant.is_none()
+        && let Some(query) = body_selector
+    {
+        selectors.insert(0, query);
+    }
     let (root, body, semantic) = selectors
         .iter()
         .find_map(|query| {
@@ -303,6 +347,11 @@ fn extract(url: Url, text: &str, grants: &[LicenseGrant]) -> Result<Source> {
         "subscribe to read the rest",
         "订阅后继续阅读",
         "登录后阅读全文",
+        "nur für abonnenten",
+        "weiterlesen mit",
+        "réservé aux abonnés",
+        "abonnez-vous pour lire",
+        "続きを読むにはログイン",
     ]
     .iter()
     .any(|phrase| lower.contains(phrase))
@@ -344,6 +393,10 @@ fn extract(url: Url, text: &str, grants: &[LicenseGrant]) -> Result<Source> {
     } else {
         None
     };
+    let published_at = crate::fetch::parse_time(&meta(
+        &html,
+        "meta[property='article:published_time'], meta[name='date'], meta[itemprop='datePublished']",
+    ));
     Ok(Source {
         url,
         title: title.trim().chars().take(300).collect(),
@@ -358,7 +411,24 @@ fn extract(url: Url, text: &str, grants: &[LicenseGrant]) -> Result<Source> {
             .collect(),
         body,
         license,
+        published_at,
     })
+}
+
+// Extraction hints only; CSS selectors do not grant republication rights.
+fn article_selector(url: &Url) -> Option<&'static str> {
+    match url.host_str()?.trim_start_matches("www.") {
+        "blog.cloudflare.com" | "shopify.engineering" | "heise.de" => Some(".article-content"),
+        "github.blog" => Some(".post__content"),
+        "stackoverflow.blog" => Some(".s-prose"),
+        "theregister.com" => Some("#main .bodytext"),
+        "zenn.dev" => Some(".znc"),
+        "qiita.com" => Some(".mdContent-inner"),
+        "huggingface.co" => Some(".blog-content"),
+        "blog.octo.com" => Some(".articleContent"),
+        "t3n.de" => Some("#article"),
+        _ => None,
+    }
 }
 
 fn open_license(url: Url) -> Option<License> {
@@ -566,6 +636,29 @@ mod tests {
         );
         assert!(!grants[0].matches(&Url::parse("https://evil.example/posts/one").unwrap()));
         assert!(extract(url, &document("<p>Subscribe to continue</p>", ""), &[]).is_err());
+    }
+
+    #[test]
+    fn article_body_hints_exclude_recommendations_and_do_not_grant_a_license() {
+        let text = "A useful detailed original observation about how a team evaluates its work. "
+            .repeat(20);
+        for (url, class) in [
+            ("https://zenn.dev/author/articles/example", "znc"),
+            ("https://github.blog/engineering/example", "post__content"),
+            ("https://blog.octo.com/example", "articleContent"),
+        ] {
+            let html = format!(
+                "<html lang='en'><head><meta property='article:published_time' content='2026-09-22T10:00:00Z'></head><body><div class='{class}'><h1>Real article</h1><p>{text}</p></div><aside><article>Unrelated recommendation</article><article>Another recommendation</article></aside><footer><a rel='license' href='https://creativecommons.org/licenses/by/4.0/'>Site assets</a></footer></body></html>"
+            );
+            let source = extract(Url::parse(url).unwrap(), &html, &[]).unwrap();
+            assert!(source.body.contains("original observation"));
+            assert!(!source.body.contains("recommendation"));
+            assert!(source.license.is_none());
+            assert_eq!(
+                source.published_at.unwrap().to_rfc3339(),
+                "2026-09-22T10:00:00+00:00"
+            );
+        }
     }
 
     #[test]
