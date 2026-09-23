@@ -1093,8 +1093,6 @@ function card(item, reading = false) {
   // Publication dates are often only known to the day and arrive as midnight UTC;
   // the collection time is the reliable freshness signal shown in the feed.
   meta.append(span(item.source || hostOf(item.url), "item-source"), "·", span(relativeTime(item.first_seen_at), "item-time"));
-  const tags = state.lang === "en" && item.tags_en?.length ? item.tags_en : item.tags;
-  if (tags.length) meta.append("·", ...tags.map((tag) => span(tag, "tag")));
   if (item.importance >= 4) meta.append(span(t().top, "badge badge-top"));
   if (Date.parse(item.first_seen_at) > state.lastVisit) meta.append(span(t().fresh, "badge badge-new"));
 
@@ -1114,6 +1112,13 @@ function card(item, reading = false) {
   summary.textContent = pick(item, "summary");
 
   article.append(meta, title, summary);
+  const tags = state.lang === "en" && item.tags_en?.length ? item.tags_en : item.tags || [];
+  if (tags.length) {
+    const list = document.createElement("div");
+    list.className = "item-tags";
+    list.append(...tags.map((tag) => span(tag, "tag")));
+    article.append(list);
+  }
   return article;
 }
 
