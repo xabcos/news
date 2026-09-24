@@ -704,9 +704,10 @@ async fn execute(
             if remaining < Duration::from_secs(10) {
                 break;
             }
-            let result = tokio::time::timeout(
-                remaining.min(Duration::from_secs(600)),
-                reads::prepare(state, topic, &mut item, &mut fetched.usage),
+            let deadline = tokio::time::Instant::now() + remaining.min(Duration::from_secs(600));
+            let result = tokio::time::timeout_at(
+                deadline,
+                reads::prepare(state, topic, &mut item, &mut fetched.usage, deadline),
             )
             .await
             .unwrap_or_else(|_| Err(AppError::Internal("Reads 单篇处理超时".into())));

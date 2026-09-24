@@ -23,6 +23,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Transaction};
+use std::time::Duration;
+use tokio::time::{Instant, timeout_at};
 use uuid::Uuid;
 
 pub(crate) const DAILY_LIMIT: i64 = 32;
@@ -53,13 +55,14 @@ pub(crate) async fn prepare(
     topic: &Topic,
     item: &mut NewItem,
     usage: &mut Usage,
+    deadline: Instant,
 ) -> Result<Option<Article>> {
     let candidate = item.fingerprint.clone();
     sqlx::query("UPDATE read_candidates SET attempts = attempts + 1, next_attempt_at = NOW() + INTERVAL '6 hours' WHERE fingerprint = $1 AND attempts < 3")
         .bind(&candidate).execute(&state.pool).await?;
     let result = async {
         let source = source::fetch(&item.url).await?;
-        prepare_source(state, topic, item, usage, source).await
+        prepare_source(state, topic, item, usage, source, deadline).await
     }
     .await;
     if !matches!(result, Ok(Some(_))) {
@@ -80,6 +83,7 @@ async fn prepare_source(
     item: &mut NewItem,
     usage: &mut Usage,
     mut source: source::Source,
+    deadline: Instant,
 ) -> Result<Option<Article>> {
     if discovery::allowed_url(source.url.as_str()).is_none()
         || source.language.to_ascii_lowercase().starts_with("zh")
@@ -105,13 +109,22 @@ async fn prepare_source(
     {
         return Ok(None);
     }
-    let reply = crate::ai::request(state, editorial_request(topic, &source)).await?;
+    tracing::info!(url = %source.url, chars = source.body.chars().count(), "Reads source loaded");
+    let reply = timeout_at(
+        (Instant::now() + Duration::from_secs(180)).min(deadline - Duration::from_secs(1)),
+        crate::ai::request(state, editorial_request(topic, &source)),
+    )
+    .await
+    .map_err(|_| invalid_source("精读审核超时"))??;
     add_usage(
         usage,
         serde_json::from_value(reply["usage"].clone()).unwrap_or_default(),
     );
     let draft: Draft = serde_json::from_value(crate::ai::parse_payload(&reply)?)?;
     if !valid_draft(&draft, &source) {
+        tracing::info!(url = %source.url, worthy = draft.worthy,
+            zh_chars = draft.body.chars().count(), en_chars = draft.body_en.chars().count(),
+            "Reads editorial rejected");
         return Ok(None);
     }
     if matches!(source.language.as_str(), "" | "und") {
@@ -140,13 +153,23 @@ async fn prepare_source(
         .trim_start_matches("www.")
         .into();
     item.image = None;
-    let full_text = match full_text::prepare(state, topic, &source, usage).await {
+    tracing::info!(url = %source.url, "Reads guide ready");
+    // Leave a margin before the caller's deadline: an optional full translation must
+    // never cancel a guide that has already passed the editorial review.
+    let full_text = match timeout_at(
+        deadline - Duration::from_secs(5),
+        full_text::prepare(state, topic, &source, usage),
+    )
+    .await
+    .unwrap_or_else(|_| Err(invalid_source("全文处理达到单篇时间预算")))
+    {
         Ok(document) => Some(document),
         Err(error) => {
             tracing::warn!(url = %source.url, %error, "Reads full text unavailable; publishing the reading guide");
             None
         }
     };
+    tracing::info!(url = %source.url, full_text = full_text.is_some(), "Reads article prepared");
     Ok(Some(Article {
         author: source.author,
         source_title: source.title,

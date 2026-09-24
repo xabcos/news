@@ -67,6 +67,24 @@ fn article(index: usize) -> Article {
     }
 }
 
+async fn prepare_source(
+    state: &AppState,
+    topic: &Topic,
+    item: &mut NewItem,
+    usage: &mut Usage,
+    source: source::Source,
+) -> crate::error::Result<Option<Article>> {
+    super::prepare_source(
+        state,
+        topic,
+        item,
+        usage,
+        source,
+        Instant::now() + Duration::from_secs(600),
+    )
+    .await
+}
+
 #[tokio::test]
 #[ignore = "requires NEWS_READS_TEST_DATABASE_URL and local test configuration"]
 async fn postgres_reads_publication_visibility_and_permanent_archive() {
@@ -99,6 +117,9 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             let input: Value = serde_json::from_str(request["input"].as_str().unwrap()).unwrap();
             assert!(request.get("tools").is_none());
             let draft = if request["text"]["format"]["name"] == "reads_translation" {
+                if input["title"] == "Slow translation fixture" {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
                 if input["title"] == "Incomplete translation fixture" { json!({"texts":[]}) } else {
                 json!({"texts":input["texts"].as_array().unwrap().iter().map(|text| json!({"id":text["id"],"zh": if text["text"].as_str().unwrap().starts_with("Start") { "从一个问题开始" } else { "原文指出，团队通过缩小任务范围，并使用真实样例检验结果，减少了复核工作。实验的范围比功能数量更重要。" }, "en":if input["english_needed"] == true { text["text"].as_str().unwrap() } else { "" }})).collect::<Vec<_>>()}) }
             } else {
@@ -586,6 +607,26 @@ async fn check_full_text_variants(
     assert_eq!(
         usage.input_tokens, 80,
         "Failed translation usage is still accounted for"
+    );
+    let mut slow = source("slow-translation");
+    slow.title = "Slow translation fixture".into();
+    let deadline = Instant::now() + Duration::from_secs(5) + Duration::from_millis(30);
+    let prepared = super::prepare_source(
+        state,
+        topic,
+        &mut item(705),
+        &mut Usage::default(),
+        slow,
+        deadline,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(prepared.full_text.is_none());
+    assert_eq!(prepared.body, article(0).body.repeat(2));
+    assert!(
+        Instant::now() < deadline,
+        "Keep the completed guide before the outer timeout"
     );
 }
 
