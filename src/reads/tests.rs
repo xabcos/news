@@ -117,6 +117,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             let input: Value = serde_json::from_str(request["input"].as_str().unwrap()).unwrap();
             assert!(request.get("tools").is_none());
             let draft = if request["text"]["format"]["name"] == "reads_translation" {
+                assert!(!input["texts"].to_string().contains("Subscribe to our newsletter"));
                 if input["title"] == "Slow translation fixture" {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
@@ -124,8 +125,12 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
                 json!({"texts":input["texts"].as_array().unwrap().iter().map(|text| json!({"id":text["id"],"zh": if text["text"].as_str().unwrap().starts_with("Start") { "从一个问题开始" } else { "原文指出，团队通过缩小任务范围，并使用真实样例检验结果，减少了复核工作。实验的范围比功能数量更重要。" }, "en":if input["english_needed"] == true { text["text"].as_str().unwrap() } else { "" }})).collect::<Vec<_>>()}) }
             } else {
                 assert_eq!(request["text"]["format"]["name"], "reads_editorial");
-                assert!(input["source_text"].as_str().unwrap().contains("scope of the experiment"));
-                json!({"worthy":!input["url"].as_str().unwrap().ends_with("/rejected"),
+                assert!(input["source_blocks"].as_array().unwrap().iter().any(|block| block["text"].as_str().unwrap().contains("scope of the experiment")));
+                let remove = input["source_blocks"].as_array().unwrap().iter().filter(|block| block["text"].as_str().unwrap().starts_with("Subscribe to our newsletter")).map(|block| {
+                    assert_eq!(block["removable"], true);
+                    block["id"].clone()
+                }).collect::<Vec<_>>();
+                json!({"remove_blocks":remove,"worthy":!input["url"].as_str().unwrap().ends_with("/rejected"),
                 "source_language":if input["source_language"] == "und" { "en" } else { input["source_language"].as_str().unwrap() },
                 "title":"让 AI 工具真正有用，从一个可验证的问题开始", "title_en":"Making AI useful starts with a question you can test",
                 "summary":"从小团队的实践中，理解任务范围、验证成本与反馈速度之间的取舍。", "summary_en":"A reading of the tradeoffs between task scope, review costs and the speed of feedback.",
@@ -183,7 +188,11 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
     assert_eq!(daily_count(&state, today).await.unwrap(), 0);
     let mut usage = Usage::default();
     let mut full_item = item(0);
-    let full = prepare_source(&state, &topic, &mut full_item, &mut usage, source("essay"))
+    let mut with_widget = source("essay");
+    with_widget
+        .body
+        .push_str("\n\nSubscribe to our newsletter.\n");
+    let full = prepare_source(&state, &topic, &mut full_item, &mut usage, with_widget)
         .await
         .unwrap()
         .unwrap();
@@ -191,7 +200,11 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
     assert_eq!(full.body, article(0).body.repeat(2));
     assert!(!full.body_en.is_empty());
     let document = full.full_text.as_ref().unwrap();
-    assert_eq!(document.original, source("essay").body);
+    assert_eq!(document.original, source("essay").body.trim());
+    assert_eq!(
+        full.source_hash,
+        Sha256::digest(document.original.as_bytes()).to_vec()
+    );
     assert!(document.zh.is_some());
     assert!(document.en.is_none());
     let mut brief_item = item(1);

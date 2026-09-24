@@ -269,6 +269,7 @@ fn extract(url: Url, text: &str) -> Result<Source> {
         ".post-content",
         ".article-body",
         ".post-body",
+        ".body.markup",
         ".rich-editor",
         ".markdown-body",
         "#article_body",
@@ -278,18 +279,23 @@ fn extract(url: Url, text: &str) -> Result<Source> {
     if let Some(query) = body_selector {
         selectors.insert(0, query);
     }
-    let (root, body, images) = selectors
-        .iter()
-        .find_map(|query| {
-            html.select(&selector(query)).find_map(|root| {
-                let (body, images) = markdown(root, &url).ok()?;
-                (body.chars().count() >= 600).then_some((root, body, images))
-            })
-        })
-        .ok_or_else(|| invalid_source("未找到完整的文章正文"))?;
-    if body.chars().count() > 80000 {
-        return Err(invalid_source("原文超出阅读长度限制"));
+    let mut extracted = None;
+    for query in selectors {
+        if query == "main" && !article_meta {
+            continue;
+        }
+        let Some(root) = html.select(&selector(query)).next() else {
+            continue;
+        };
+        let (body, images) = markdown(root, &url)?;
+        // A short or broken body must not fall back to a larger page full of widgets.
+        if !(600..=80000).contains(&body.chars().count()) {
+            return Err(invalid_source("原文正文过短或超出阅读长度限制"));
+        }
+        extracted = Some((root, body, images));
+        break;
     }
+    let (root, body, images) = extracted.ok_or_else(|| invalid_source("未找到完整的文章正文"))?;
     let lower = body.to_lowercase();
     if root
         .select(&selector(
@@ -367,11 +373,82 @@ fn article_selector(url: &Url) -> Option<&'static str> {
         "theregister.com" => Some("#main .bodytext"),
         "zenn.dev" => Some(".znc"),
         "qiita.com" => Some(".mdContent-inner"),
-        "huggingface.co" => Some(".blog-content"),
+        "huggingface.co" => Some(".blog-content > div.relative"),
+        "infoq.com" => Some(".article__data"),
+        "quantamagazine.org" => Some("#postBody"),
         "blog.octo.com" => Some(".articleContent"),
         "t3n.de" => Some("#article"),
         _ => None,
     }
+}
+
+fn excluded(element: ElementRef<'_>, base: &Url) -> bool {
+    matches!(
+        element.value().name(),
+        "script"
+            | "style"
+            | "nav"
+            | "aside"
+            | "footer"
+            | "form"
+            | "button"
+            | "noscript"
+            | "svg"
+            | "input"
+            | "select"
+            | "textarea"
+            | "dialog"
+            | "audio"
+            | "iframe"
+    ) || element.attr("hidden").is_some()
+        || element.attr("aria-hidden") == Some("true")
+        || matches!(
+            element.attr("role"),
+            Some("navigation" | "complementary" | "contentinfo" | "dialog" | "toolbar")
+        )
+        || (matches!(element.value().name(), "div" | "section")
+            && matches!(
+                element.attr("id"),
+                Some("comments" | "respond" | "disqus_thread" | "newsletter")
+            ))
+        || element.value().classes().any(|class| {
+            matches!(
+                class,
+                "sharedaddy"
+                    | "a2a_kit"
+                    | "addthis_toolbox"
+                    | "addthis_inline_share_toolbox"
+                    | "share-buttons"
+                    | "sharing-buttons"
+                    | "social-share"
+                    | "social-sharing"
+                    | "related-posts"
+                    | "related-articles"
+                    | "related-content"
+                    | "post-navigation"
+                    | "comments-area"
+                    | "comment-list"
+                    | "comment-respond"
+                    | "newsletter-signup"
+                    | "subscription-widget-wrap"
+                    | "subscribe-widget"
+                    | "button-wrapper"
+                    | "author-bio"
+                    | "author-box"
+                    | "author-section-full"
+            ) || (base.host_str() == Some("huggingface.co") && class == "not-prose")
+                || (base
+                    .host_str()
+                    .is_some_and(|host| host.trim_start_matches("www.") == "quantamagazine.org")
+                    && matches!(
+                        class,
+                        "post__title__kicker"
+                            | "post__title__title"
+                            | "post__title__author-date"
+                            | "post__title__actions"
+                            | "post__footer"
+                    ))
+        })
 }
 
 fn markdown(root: ElementRef<'_>, base: &Url) -> Result<(String, Vec<super::full_text::Image>)> {
@@ -417,33 +494,7 @@ fn markdown(root: ElementRef<'_>, base: &Url) -> Result<(String, Vec<super::full
                 return Err(invalid_source("原文结构过于复杂"));
             }
             let tag = element.value().name();
-            if matches!(
-                tag,
-                "script"
-                    | "style"
-                    | "nav"
-                    | "aside"
-                    | "footer"
-                    | "form"
-                    | "button"
-                    | "noscript"
-                    | "svg"
-            ) || element.attr("hidden").is_some()
-                || element.attr("aria-hidden") == Some("true")
-                || element.value().classes().any(|class| {
-                    matches!(
-                        class,
-                        "sharedaddy"
-                            | "a2a_kit"
-                            | "addthis_toolbox"
-                            | "addthis_inline_share_toolbox"
-                            | "share-buttons"
-                            | "sharing-buttons"
-                            | "social-share"
-                            | "social-sharing"
-                    )
-                })
-            {
+            if excluded(element, self.base) {
                 return Ok(String::new());
             }
             if tag == "pre" || tag == "code" {
@@ -752,6 +803,87 @@ mod tests {
         assert!(!source.body.contains("Share on social media"));
         assert_eq!(source.images.len(), 1);
         assert_eq!(source.images[0].origin, "https://example.com/diagram.png");
+    }
+
+    #[test]
+    fn publisher_body_containers_keep_article_content_and_exclude_page_widgets() {
+        let prose =
+            "This experiment examines comments and subscriptions as real product features. "
+                .repeat(15);
+        for (url, open, close) in [
+            (
+                "https://www.infoq.com/news/example",
+                "<div class='article__data'>",
+                "</div>",
+            ),
+            (
+                "https://www.quantamagazine.org/example",
+                "<div id='postBody'>",
+                "</div>",
+            ),
+            (
+                "https://huggingface.co/blog/example",
+                "<div class='blog-content'><div class='relative'>",
+                "</div></div>",
+            ),
+            (
+                "https://example.substack.com/p/example",
+                "<div class='body markup'>",
+                "</div>",
+            ),
+        ] {
+            let header = if url.contains("quantamagazine.org") {
+                "<div class='post__title__wrapper'><h1 class='post__title__title'>Unrelated repeated title</h1><div class='post__title__author-date'>Unrelated date</div><div class='post__title__excerpt'>The article's introductory standfirst.</div><div class='post__title__actions'>Unrelated controls</div></div>"
+            } else {
+                ""
+            };
+            let html = format!(
+                "<main><article><p>Page navigation</p>{open}{header}<h2 id='comments'>Experiment</h2><p>{prose}</p>\
+                 <figure><img src='/plot.png'><figcaption>A caption with attribution</figcaption></figure>\
+                 <div class='subscription-widget-wrap'><p>Unrelated subscription offer</p></div>\
+                 <div role='toolbar'>Unrelated controls</div><section id='comments'>Unrelated comments</section>\
+                 <div class='related-posts'><img src='/advert.png'>Unrelated recommendations</div>\
+                 <div class='author-section-full'>Unrelated author panel</div>\
+                 <p>Final observation.</p><h2>References</h2><ol><li><a href='/paper'>Research paper</a></li></ol>\
+                 {close}<section>Unrelated footer</section></article></main>"
+            );
+            let source = extract(Url::parse(url).unwrap(), &html).unwrap();
+            assert!(source.body.contains(prose.trim()), "{url}");
+            assert!(source.body.contains("A caption with attribution"));
+            assert!(source.body.contains("Final observation"));
+            assert!(source.body.contains("Research paper"));
+            if !header.is_empty() {
+                assert!(source.body.contains("introductory standfirst"));
+            }
+            assert!(!source.body.contains("Page navigation"));
+            assert!(!source.body.contains("Unrelated"), "{url}: {}", source.body);
+            assert_eq!(source.images.len(), 1);
+        }
+    }
+
+    #[test]
+    fn short_article_body_never_falls_back_to_surrounding_page_text() {
+        let clutter = "Unrelated navigation and recommendation text. ".repeat(40);
+        for (url, body) in [
+            (
+                "https://www.infoq.com/news/example",
+                "<div class='article__data'><p>Only an excerpt.</p></div>",
+            ),
+            (
+                "https://example.com/post",
+                "<div class='entry-content'><p>Only an excerpt.</p></div>",
+            ),
+        ] {
+            let html = format!("<article>{body}<p>{clutter}</p></article>");
+            assert!(extract(Url::parse(url).unwrap(), &html).is_err());
+        }
+        assert!(
+            extract(
+                Url::parse("https://example.com/page").unwrap(),
+                &format!("<main>{clutter}</main>")
+            )
+            .is_err()
+        );
     }
 
     #[test]
