@@ -430,6 +430,19 @@ fn markdown(root: ElementRef<'_>, base: &Url) -> Result<(String, Vec<super::full
                     | "svg"
             ) || element.attr("hidden").is_some()
                 || element.attr("aria-hidden") == Some("true")
+                || element.value().classes().any(|class| {
+                    matches!(
+                        class,
+                        "sharedaddy"
+                            | "a2a_kit"
+                            | "addthis_toolbox"
+                            | "addthis_inline_share_toolbox"
+                            | "share-buttons"
+                            | "sharing-buttons"
+                            | "social-share"
+                            | "social-sharing"
+                    )
+                })
             {
                 return Ok(String::new());
             }
@@ -712,6 +725,33 @@ mod tests {
                 "2026-09-22T10:00:00+00:00"
             );
         }
+    }
+
+    #[test]
+    fn article_body_excludes_embedded_sharing_widgets() {
+        let prose =
+            "Share this approach with your team: verify the data before making a decision. "
+                .repeat(15);
+        let html = format!(
+            "<article><div class='entry-content'><h2>Sharing data safely</h2><p>{prose}</p>\
+             <figure><img src='/diagram.png'><figcaption>How data is shared</figcaption></figure>\
+             <pre><code>share(data);</code></pre>\
+             <div class='sharedaddy sd-sharing-enabled'><div class='sd-sharing'><h3>Share this:</h3>\
+             <ul><li><a href='?share=facebook'>Facebook</a></li><li><a href='?share=x'>X</a></li></ul></div></div>\
+             <div class='share-buttons'><a href='/share'><img src='/share-icon.png'>Share on social media</a></div>\
+             <p>The final observation belongs to the article.</p></div></article>"
+        );
+        let source = extract(Url::parse("https://example.com/post").unwrap(), &html).unwrap();
+        assert!(source.body.contains(prose.trim()));
+        assert!(source.body.contains("Sharing data safely"));
+        assert!(source.body.contains("How data is shared"));
+        assert!(source.body.contains("share(data);"));
+        assert!(source.body.contains("The final observation"));
+        assert!(!source.body.contains("Share this:"));
+        assert!(!source.body.contains("?share="));
+        assert!(!source.body.contains("Share on social media"));
+        assert_eq!(source.images.len(), 1);
+        assert_eq!(source.images[0].origin, "https://example.com/diagram.png");
     }
 
     #[test]
