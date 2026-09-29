@@ -282,7 +282,7 @@ p { margin-top: 0; }
   }
 }
 
-.day-block:not(:first-child) {
+.day-block {
   content-visibility: auto;
   contain-intrinsic-size: auto 28rem;
 }
