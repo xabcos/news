@@ -145,6 +145,9 @@ function endSession() {
   $("#accountEmail").textContent = "";
   $("#statusLine").textContent = "";
   $("#briefingPanel").classList.add("hidden");
+  $("#equityPanel").classList.add("hidden");
+  $("#equityMeta").textContent = "";
+  message("equityMessage", "");
   $("#briefingImages").classList.add("hidden");
   $("#briefingImages").replaceChildren();
   $("#briefingDrafts").classList.add("hidden");
@@ -193,6 +196,7 @@ async function enterApp(data) {
   $("#dateTools").classList.toggle("hidden", !s.admin);
   $("#runsPanel").classList.toggle("hidden", !s.admin);
   $("#briefingPanel").classList.toggle("hidden", !s.admin);
+  $("#equityPanel").classList.toggle("hidden", !s.admin);
   $("#newTopicButton").disabled = true;
   message("topicsMessage", "");
   try { await refresh(s); }
@@ -229,7 +233,7 @@ async function refresh(s) {
       if (finished || contentChanged) await loadItems(s);
     }
     if (s.admin && $("#runsPanel").open) await loadRuns(s);
-    if (s.admin) await loadBriefing(s);
+    if (s.admin) await Promise.all([loadBriefing(s), loadEquity(s)]);
   } finally {
     s.refreshing = false;
     if (session === s) scheduleRefresh(s);
@@ -257,6 +261,30 @@ async function loadBriefing(s) {
     if (session === s) message("briefingMessage", error.message);
   }
 }
+
+async function loadEquity(s) {
+  try {
+    const { briefing, enabled } = await s.request("/api/admin/equity-insight");
+    if (session !== s) return;
+    const status = { running: "采集与生成中", ok: "已完成", failed: "失败" };
+    $("#equityMeta").textContent = briefing
+      ? `${briefing.briefing_day} · ${briefing.edition === "evening" ? "晚间" : "早间"} · ${status[briefing.status]} · ${formatTime(briefing.finished_at || briefing.started_at, s.timezone)}`
+      : "每天早晚两期，研判近 7 天股市资料，保留历史笔记";
+    $("#runEquityButton").disabled = !enabled || briefing?.status === "running";
+    message("equityMessage", !enabled ? "启用 equity 主题抓取后可生成研判；前台展示可保持关闭。" : briefing?.error || "");
+  } catch (error) {
+    if (session === s) message("equityMessage", error.message);
+  }
+}
+
+$("#runEquityButton").addEventListener("click", () => {
+  const s = session;
+  if (!s?.admin) return;
+  void withBusy($("#runEquityButton"), "提交中…", async () => {
+    await s.request("/api/admin/equity-insight", { method: "POST" });
+    toast("股市研判已开始生成");
+  }).then(() => { if (session === s) return loadEquity(s); }).catch(reportError);
+});
 
 function renderBriefing(s) {
   const briefing = s.briefing;
@@ -391,7 +419,7 @@ function renderTopics(s) {
     const interval = s.admin ? topic.interval_minutes : Math.max(topic.interval_minutes, s.user.limits.min_interval_minutes);
     const detail = topic.plan_locked ? "当前套餐不包含 · 升级 Pro 后恢复" : !topic.enabled ? "已暂停" : running ? "正在抓取…"
       : `${interval} 分钟${topic.next_run_at ? ` · 下次 ${formatTime(topic.next_run_at, s.timezone)}` : " · 等待排程"}${topic.last_status === "failed" ? " · 上次失败" : ""}`;
-    select.append(title, node("span", "topic-meta", detail));
+    select.append(title, node("span", "topic-meta", `${detail}${topic.visible ? "" : " · 前台隐藏"}`));
     select.addEventListener("click", () => void selectTopic(s, topic.id));
     const actions = node("div", "topic-actions");
     const run = button(running ? "抓取中" : "抓取", () => runTopic(s, topic), "button-secondary");
@@ -519,6 +547,7 @@ function openEditor(topic = null) {
   for (const key of ["name", "brief", "id", "interval_minutes", ...publicFields, ...numericFields]) form.elements.namedItem(key).value = values[key];
   $("#topicId").readOnly = Boolean(topic);
   $("#topicEnabled").checked = topic?.enabled ?? true;
+  $("#topicVisible").checked = topic?.visible ?? true;
   $("#scheduleTimezone").textContent = `排程时区：${s.timezone} · 结束早于开始表示运行到次日`;
   $("#weekdays").querySelectorAll("input").forEach((input) => { input.checked = (topic?.weekdays || [1, 2, 3, 4, 5]).includes(Number(input.value)); });
   updateEditorPlanState(s);
@@ -535,7 +564,7 @@ function saveTopic(event) {
     return;
   }
   const data = new FormData(form);
-  const body = { name: data.get("name").trim(), brief: data.get("brief").trim(), interval_minutes: Number(data.get("interval_minutes")), enabled: $("#topicEnabled").checked };
+  const body = { name: data.get("name").trim(), brief: data.get("brief").trim(), interval_minutes: Number(data.get("interval_minutes")), enabled: $("#topicEnabled").checked, visible: $("#topicVisible").checked };
   if (!body.name || !body.brief) return message("topicFormMessage", "请填写名称和关注方向");
   if (s.admin) {
     for (const key of publicFields) body[key] = data.get(key).trim();

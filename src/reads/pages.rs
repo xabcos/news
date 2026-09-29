@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 const PAGE_SIZE: i64 = 12;
 const SITEMAP_SIZE: i64 = 10000;
-const VISIBLE: &str = "FROM items i JOIN read_articles a ON a.item_id = i.id JOIN topics t ON t.id = i.topic_id WHERE i.topic_id = 'reads' AND t.enabled AND t.owner_user_id IS NULL AND NOT i.hidden";
+const VISIBLE: &str = "FROM items i JOIN read_articles a ON a.item_id = i.id JOIN topics t ON t.id = i.topic_id WHERE i.topic_id = 'reads' AND t.enabled AND t.visible AND t.owner_user_id IS NULL AND NOT i.hidden";
 const CARD: &str = "i.id, i.title, i.title_en, i.summary, i.summary_en, i.source, i.url, i.first_seen_at, a.author, a.views";
 
 pub(crate) fn router() -> Router<AppState> {
@@ -118,7 +118,7 @@ async fn index(
 ) -> Result<Response> {
     let en = params.english();
     let page = params.page()?;
-    let enabled: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM topics WHERE id='reads' AND enabled AND owner_user_id IS NULL)")
+    let enabled: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM topics WHERE id='reads' AND enabled AND visible AND owner_user_id IS NULL)")
         .fetch_one(&state.pool).await?;
     if !enabled {
         return Err(AppError::NotFound("主题不存在".into()));
@@ -346,7 +346,7 @@ async fn detail(
         .push(
             " FROM related r JOIN items i ON i.id = r.id
             JOIN read_articles a ON a.item_id = i.id JOIN topics t ON t.id = i.topic_id
-            WHERE t.enabled AND t.owner_user_id IS NULL
+            WHERE t.enabled AND t.visible AND t.owner_user_id IS NULL
             ORDER BY r.matches DESC, r.first_seen_at DESC, r.id DESC",
         );
     let related = query
@@ -438,13 +438,20 @@ async fn layout(
     content: &str,
     structured: Option<serde_json::Value>,
 ) -> Result<String> {
-    let topics: Vec<(String, String, String)> = sqlx::query_as("SELECT id, name, name_en FROM topics WHERE enabled AND owner_user_id IS NULL ORDER BY sort_weight, id")
+    let topics: Vec<(String, String, String)> = sqlx::query_as("SELECT id, name, name_en FROM topics WHERE enabled AND visible AND owner_user_id IS NULL ORDER BY sort_weight, id")
         .fetch_all(&state.pool).await?;
     let mut tabs = format!(
         "<a class=tab href=\"{}\">𝐀𝐋𝐋</a><a class=tab href=\"{}\">𝐀𝐈</a>",
         localized("/", en),
         escape(&localized("/?topic=insight", en))
     );
+    let equity_tab = format!(
+        "<a class=tab href=\"{}\">𝑬</a>",
+        escape(&localized("/?topic=equity-insight", en))
+    );
+    if !topics.iter().any(|(id, _, _)| id == "overseas-ai") {
+        tabs.push_str(&equity_tab);
+    }
     for (id, name, name_en) in topics {
         let href = if id == "reads" {
             localized("/reads", en)
@@ -467,6 +474,9 @@ async fn layout(
             },
             escape(choose(en, &name, &name_en))
         );
+        if id == "overseas-ai" {
+            tabs.push_str(&equity_tab);
+        }
     }
     let schema = structured
         .map(|value| {

@@ -10,7 +10,7 @@
   <title>𝑵𝒆𝒘𝒔 · 工作台</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
   <link rel="stylesheet" href="/styles.css?v=tags-row-v1">
-  <link rel="stylesheet" href="/me/styles.css?v=xai-brief-v8">
+  <link rel="stylesheet" href="/me/styles.css?v=equity-xai-brief-v8">
 </head>
 <body>
   <main class="workspace-shell">
@@ -61,6 +61,13 @@
           </div>
         </div>
       </section>
+      <section id="equityPanel" class="panel briefing-panel hidden" aria-labelledby="equityTitle">
+        <div class="panel-heading">
+          <div><h2 id="equityTitle"><a href="/?topic=equity-insight" target="_blank" rel="noopener">𝑬 股市观察 ↗</a></h2><p id="equityMeta" class="muted small" role="status"></p></div>
+          <button id="runEquityButton" class="button button-primary button-small" type="button">生成研判</button>
+        </div>
+        <p id="equityMessage" class="empty-state hidden" role="status"></p>
+      </section>
       <section class="panel topics-panel" aria-label="主题列表">
         <div class="panel-heading"><h2>主题</h2><button id="refreshButton" class="button button-quiet button-small" type="button">刷新</button></div>
         <p id="topicsMessage" class="empty-state hidden" role="status"></p><ul id="topicList" class="topic-list"></ul>
@@ -90,7 +97,8 @@
       <div class="field"><label for="topicBrief">关注方向</label><textarea id="topicBrief" name="brief" maxlength="2000" rows="4" placeholder="关注的领域、地区、来源偏好或排除项……" required></textarea></div>
       <div class="form-row">
         <div class="field"><label for="topicInterval">抓取间隔（分钟）</label><input id="topicInterval" name="interval_minutes" type="number" min="15" max="1440" step="1" required><p id="intervalHint" class="field-hint muted"></p></div>
-        <label class="switch"><input id="topicEnabled" name="enabled" type="checkbox" checked> 启用抓取</label>
+        <div class="topic-switches"><label class="switch"><input id="topicEnabled" name="enabled" type="checkbox" checked> 启用抓取</label>
+        <label class="switch"><input id="topicVisible" name="visible" type="checkbox" checked> 前台展示</label></div>
       </div>
       <details id="advancedSettings" class="advanced-settings hidden">
         <summary>发布与抓取设置</summary>
@@ -138,6 +146,6 @@
     <div class="dialog-actions"><button class="button button-quiet" type="button" data-close-dialog>取消</button><button id="confirmActionButton" class="button button-danger" type="button">确认删除</button></div>
   </dialog>
   <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
-  <script src="/me/app.js?v=9" type="module"></script>
+  <script src="/me/app.js?v=11" type="module"></script>
 </body>
 </html>

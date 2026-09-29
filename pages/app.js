@@ -18,6 +18,7 @@ const ROLE_COOKIE = "news_role";
 const DAYS_LIMIT = 366;
 const PRELOAD_MARGIN = "0px 0px 70% 0px";
 const INSIGHT_ID = "insight";
+const EQUITY_ID = "equity-insight";
 const storage = (() => {
   try {
     const store = window.localStorage;
@@ -74,6 +75,7 @@ const state = {
   lang: initial.has("lang") ? (initial.get("lang") === "en" ? "en" : "zh") : (storage.getItem("news.lang") === "en" ? "en" : "zh"),
   topic: initial.get("topic") || "",
   day: initial.get("day") || "",
+  at: initial.get("topic") === EQUITY_ID ? initial.get("at") || "" : "",
   topics: [],
   days: [],
   // One digest per loaded day; navigation/reload starts a fresh, bounded timeline.
@@ -116,17 +118,19 @@ async function init() {
     applyLang();
     renderTabs();
     if (state.topic === INSIGHT_ID) renderInsight(state.insight, true, scrollTop);
+    else if (state.topic === EQUITY_ID) renderEquity(true, scrollTop);
     else render(true, scrollTop);
   });
   window.addEventListener("popstate", () => {
     const params = new URLSearchParams(location.search);
     state.topic = params.get("topic") || "";
     state.day = state.topic === INSIGHT_ID ? "" : params.get("day") || "";
+    state.at = state.topic === EQUITY_ID ? params.get("at") || "" : "";
     renderTabs();
     load();
   });
   setInterval(() => {
-    if (document.visibilityState === "visible" && !state.day) load(true);
+    if (document.visibilityState === "visible" && !state.day && !state.at) load(true);
   }, REFRESH_MS);
   PublicPage.init({ canSwipe: (target) => Boolean(target.closest("#digest"))
     || (!el.digest.childElementCount && !target.closest("a")) });
@@ -225,6 +229,7 @@ function search(extra = {}) {
   const params = new URLSearchParams();
   if (state.topic) params.set("topic", state.topic);
   if (state.day) params.set("day", state.day);
+  if (state.topic === EQUITY_ID && state.at) params.set("at", state.at);
   Object.entries(extra).forEach(([key, value]) => params.set(key, value));
   const query = params.toString();
   return query ? `?${query}` : "";
@@ -296,7 +301,7 @@ function clearDigest() {
 }
 
 async function load(silent = false) {
-  if (state.topic === INSIGHT_ID) return loadInsight(silent);
+  if ([INSIGHT_ID, EQUITY_ID].includes(state.topic)) return loadInsight(silent);
   const controller = startLoad();
   const { signal } = controller;
   const epoch = ++state.epoch;
@@ -386,10 +391,12 @@ async function load(silent = false) {
 }
 
 async function loadInsight(silent = false) {
+  const equity = state.topic === EQUITY_ID;
+  const key = equity ? "equity" : "insight";
   const controller = startLoad();
   const { signal } = controller;
   const epoch = ++state.epoch;
-  if (state.day) {
+  if (!equity && state.day) {
     state.day = "";
     history.replaceState({}, "", `${location.pathname}${search()}`);
   }
@@ -405,8 +412,9 @@ async function loadInsight(silent = false) {
   }
   try {
     const needCatalog = state.personal && !state.topics.length;
+    const selector = state.at ? `at=${encodeURIComponent(state.at)}` : state.day ? `day=${encodeURIComponent(state.day)}` : "";
     const [{ data: payload, etag }, catalog] = await Promise.all([
-      fetchJson("/insight", { signal, withEtag: true }),
+      fetchJson(equity ? `/equity-insight${selector ? `?${selector}` : ""}` : "/insight", { signal, withEtag: true }),
       needCatalog ? personalCatalog(signal) : null,
     ]);
     if (epoch !== state.epoch) return;
@@ -418,20 +426,21 @@ async function loadInsight(silent = false) {
       state.topics = catalog.topics;
       renderTabs();
     }
-    if (silent && etag && etag === state.insightEtag) {
+    if (silent && etag && etag === state[`${key}Etag`]) {
       state.historyLoading = false;
       state.historyError = false;
       state.historyDone = true;
       setStatus("");
       return;
     }
-    state.insightEtag = etag;
-    state.insight = payload.insight;
+    state[`${key}Etag`] = etag;
+    state[key] = equity ? payload : payload.insight;
     state.historyLoading = false;
     state.historyError = false;
     state.historyDone = true;
     setStatus("");
-    renderInsight(state.insight, silent);
+    if (equity) renderEquity(silent);
+    else renderInsight(state.insight, silent);
   } catch (error) {
     if (error.name === "AbortError") return;
     if (epoch === state.epoch && !silent) setStatus(t().failed, true);
@@ -599,7 +608,7 @@ function navigate(changes) {
     location.assign(`/reads${state.lang === "en" ? "?lang=en" : ""}`);
     return;
   }
-  Object.assign(state, changes);
+  Object.assign(state, { at: "" }, changes);
   history.pushState({}, "", `${location.pathname}${search()}`);
   renderTabs();
   load();
@@ -630,12 +639,14 @@ function renderTabs() {
   document.body.classList.toggle("p-topic", state.topic === "p");
   document.title = state.topic === INSIGHT_ID
     ? `𝑵𝒆𝒘𝒔 · ${state.lang === "en" ? "XAI Daily" : "XAI 日报"}`
-    : "𝑵𝒆𝒘𝒔";
+    : state.topic === EQUITY_ID ? `𝑵𝒆𝒘𝒔 · ${state.lang === "en" ? "Equity notes" : "股市观察"}` : "𝑵𝒆𝒘𝒔";
   const tabs = [
     { id: "", label: t().all },
     { id: INSIGHT_ID, label: t().insight },
     ...state.topics.map((topic) => ({ id: topic.id, label: name(topic) })),
   ];
+  const overseas = tabs.findIndex((tab) => tab.id === "overseas-ai");
+  tabs.splice(overseas < 0 ? 2 : overseas + 1, 0, { id: EQUITY_ID, label: "𝑬" });
   el.tabs.replaceChildren(...tabs.map(({ id, label }) => {
     if (id === "reads") {
       const tab = document.createElement("a");
@@ -694,6 +705,13 @@ function render(preserveScroll = false, scrollTop = window.scrollY, { latestOnly
     }));
   }
   window.setTimeout(maybeLoadOlder, 0);
+}
+
+function renderEquity(preserveScroll = false, scrollTop = window.scrollY) {
+  clearDigest();
+  el.digest.append(EquityNotes.render(state.equity, { lang: state.lang, onEdition: (at) => navigate({ topic: EQUITY_ID, day: "", at }) }));
+  el.shell.classList.remove("is-loading");
+  if (preserveScroll) window.requestAnimationFrame(() => { document.scrollingElement.scrollTop = scrollTop; });
 }
 
 function renderInsight(insight, preserveScroll = false, scrollTop = window.scrollY) {

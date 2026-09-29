@@ -4,7 +4,7 @@ WITH news AS (
     SELECT DISTINCT ON (i.fingerprint)
            i.topic_id, t.name AS topic, i.tags, i.published_at AS event_at
     FROM items i JOIN topics t ON t.id = i.topic_id
-    WHERE t.enabled AND t.owner_user_id IS NULL AND NOT i.hidden
+    WHERE t.enabled AND t.visible AND t.owner_user_id IS NULL AND NOT i.hidden
       AND i.topic_id = ANY($4)
       AND i.published_at >= $1 AND i.published_at < $3
     ORDER BY i.fingerprint, i.importance DESC, i.first_seen_at, i.id

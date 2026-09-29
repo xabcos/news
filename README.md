@@ -19,6 +19,24 @@ NEWS 按主题采集、去重并整理中英文新闻，提供新闻首页、Ato
 
 初始化配置采用 2026-09-24 的线上公共主题配置。栏目方向、关注来源和采集参数定义在 [初始化文件](migrations/0001_schema.sql)，可通过管理员工作台调整。采集要求具体事实、原文链接、明确时间和事件去重；Gossip 明确区分已确认消息、爆料、回应与推测。
 
+主题编辑中的“启用抓取”和“前台展示”独立保存，只有两者同时开启才进入前台导航、ALL、日期列表、订阅和阅读接口，管理员阅读端也不例外。个人主题同样遵守展示开关，原有账户访问范围保持不变。关闭展示不影响采集及工作台管理；恢复展示会读取仍保留的可见历史内容。
+
+## 𝑬 股市观察
+
+`𝑬` 位于 `𝑶` 后，入口为 `/?topic=equity-insight`，独立展示基于最近 7 天股市新闻的研判笔记。原始 `equity` 主题通过新增迁移默认关闭前台展示，保留已有采集设置；全新数据库会创建这个内部资料源。重新开启 `equity` 展示只恢复原始资讯栏目，不改变 `𝑬` 的内容与入口。
+
+股市观察每天早晚两期，周末照常整理披露。早间沿用 `NEWS_TIMEZONE` / `NEWS_BRIEFING_TIME`（默认北京时间 06:00），晚间固定纽约时间 08:45，对应北京时间夏令时 20:45、冬令时 21:45。到点开始补采和生成，完成后发布；AI 日报仍每天一期。两类研判复用模型配置、采集检查点、并发额度、重试和存储流程。
+
+近 7 天有明确披露日期的资料按日均衡取样，最多 240 条；模型合并事件，按相同的证据标准精选至多 6 只 A 股、港股或美股，输出关注理由、下一项验证条件和风险。三个市场的筛选入口固定展示，没有入选时显示空态。证券代码必须存在于引用资料，事件引用及连续原文摘录经过程序核验；证据不足时允许空名单。
+
+页面支持市场筛选、中英文、直接展示研判依据、历史笔记与事件时间图。历史反馈默认展开，对照上期原判断、观察条件与风险，展示本期新事实及“得到支持／部分支持／出现反证／尚待验证／资料不足”的复核结果。本期未入选的上期股票放在“上期跟踪”，新股票显示“本期新增，开始跟踪”；旧笔记继续保留原有变化标签。
+
+历史复核与本期选股使用同一次模型调用，上期每只股票都必须得到反馈。支持、部分支持和反证必须引用上期截止后、本期截止前披露的新资料，并核验证券代码与原文摘录；没有新证据时明确显示暂无可验证进展。两期间隔超过 7 天时，另取最多 120 条中间资料用于复核，不能用这些较早资料作为本期选股依据。每期保存固定的上期版本和结论快照，同一期重新生成保持该对照，后续反馈不改写历史结论。
+
+事件日期由原始记录计算，公开接口只返回研判及必要引用，不返回内部新闻摘要。当前没有接入日线行情，历史反馈复核公告和经营事实，事件图不表示股价、量价信号或全市场热度，也不提供模型编造的价格、技术指标和收益概率。
+
+两类研判按类型隔离任务、查询和缓存。股市笔记保留一年及重生成版本，前台提供最近 180 期，同一期的重生成版本合并为一个历史选项。默认展示最新一期；晚间对照当天早间、次日早间对照前晚，缺期时使用此前最近成功一期。失败继续提供上一份成功笔记，页面明确显示日期、早晚期次和新闻截止时间。工作台可单独重生成最近截止的一期。
+
 ## Reads
 
 `/reads` 展示长期保留的精选文章。默认每 64 分钟全天采集，覆盖欧美、日本、德国、法国等地区，暂不采集中文互联网媒体。30 个精选 RSS/Atom 来源与 X、全网搜索共同发现线索，优先近 72 小时新作，以近 30 天仍有价值的文章补充。品质优先，每天最多 32 篇、每轮最多 8 篇，不设最低数量，没有合格内容时允许不收录。Reads 初始化使用 `grok-4.6`，其他公共栏目使用 `grok-4.7`，均可在后台调整。订阅候选与 X／全网检索作为独立来源汇入候选池；搜索为空或失败时仍会筛选已有订阅候选。初筛仅根据真实元数据挑选值得阅读全文的链接，返回编号和筛选说明，不生成尚未核验的文章摘要；再逐篇抓取并审核正文。初筛明确不选的内容不会自动发布，不为凑数放宽标准。候选池只保留 30 天的 URL、标题、来源、日期和重试状态，永久去重沿用文章指纹；单源失败独立跳过，临时失败间隔 6 小时、最多尝试 3 次。
@@ -78,7 +96,7 @@ docker compose config >/dev/null
 docker compose up -d
 ```
 
-服务绑定宿主机 `127.0.0.1:8793`。将 [Nginx 配置](deploy/nginx/xabcnews.com.conf) 加入网关的 `http` 配置，为 `xabcnews.com` 提供入口。空库通过唯一初始化迁移 `0001_schema.sql` 创建完整表结构、Free / Pro 套餐和 10 个公共栏目；调度器按栏目配置采集，并生成最近一期已截止日报。
+服务绑定宿主机 `127.0.0.1:8793`。将 [Nginx 配置](deploy/nginx/xabcnews.com.conf) 加入网关的 `http` 配置，为 `xabcnews.com` 提供入口。空库依次执行初始化及后续迁移，创建表结构、Free / Pro 套餐、10 个默认公开栏目和内部股市资料源；调度器按栏目配置采集，并生成最近一期已截止研判。
 
 当前初始化基线用于全新数据库。运行记录、账号和内容从空白开始，配置中的管理员邮箱首次登录即创建管理员；后续结构变更使用新迁移。主题的 `daily_run_cap` 限制每日运行次数，Reads 的每日 32 篇是独立的发布上限。
 
@@ -112,6 +130,8 @@ GET /topics
 GET /days?topic=x&limit=30
 GET /feed.xml?topic=overseas-ai
 GET /insight
+GET /equity-insight?day=YYYY-MM-DD
+GET /equity-insight?at=2026-09-29T12:45:00Z
 GET /reads?page=1&lang=en
 GET /reads?view=hot&lang=en
 GET /reads/{uuid}
@@ -120,14 +140,14 @@ GET /sitemap.xml
 
 省略 `topic` 读取全部公共栏目，省略 `day` 读取最近有内容的日期。`limit` 为 1–128，`next` 为后续分页游标。公共响应支持 ETag 和短期缓存，私有响应不缓存。
 
-账户与个人主题使用 `/api/auth/*`、`/api/me/*`；公共主题管理使用 `/api/admin/topics`；日报状态和生成使用 `GET /api/admin/insight`、`POST /api/admin/insight`。套餐、订单和支付回调分别位于 `/api/plans`、`/api/orders`、`/api/webhooks/payment`。Free 用户阅读公共内容，Pro 用户可创建最多 4 个个人主题。
+账户与个人主题使用 `/api/auth/*`、`/api/me/*`；公共主题管理使用 `/api/admin/topics`；日报状态和生成使用 `GET /api/admin/insight`、`POST /api/admin/insight`；股市笔记使用 `GET /api/admin/equity-insight`、`POST /api/admin/equity-insight`。股市公开接口返回 `note` 与 `editions`，不带参数时读取最新成功笔记，`day` 读取当日最新一期，`at` 按历史列表中的 `window_end` 读取指定一期；网页链接也支持 `/?topic=equity-insight&at=...`。套餐、订单和支付回调分别位于 `/api/plans`、`/api/orders`、`/api/webhooks/payment`。Free 用户阅读公共内容，Pro 用户可创建最多 4 个个人主题。
 
 ## 验证
 
 ```bash
 make release-check
 NEWS_DAILY_TEST_DATABASE_URL=postgres://.../news_daily_test_check cargo test --locked postgres_daily_pipeline -- --ignored
-NEWS_DAILY_TEST_DATABASE_URL=postgres://.../news_daily_test_check NEWS_PAYMENT_TEST_DATABASE_URL=postgres://.../news_payment_audit_check NEWS_READS_TEST_DATABASE_URL=postgres://.../news_reads_test_check make integration-test
+NEWS_DAILY_TEST_DATABASE_URL=postgres://.../news_daily_test_check NEWS_PAYMENT_TEST_DATABASE_URL=postgres://.../news_payment_audit_check NEWS_READS_TEST_DATABASE_URL=postgres://.../news_reads_test_check NEWS_EQUITY_TEST_DATABASE_URL=postgres://.../news_equity_test_check make integration-test
 ```
 
-`release-check` 执行格式检查、单元测试、Clippy、前端语法和 Compose 配置检查。`integration-test` 使用三个独立空库，名称分别以 `news_daily_test`、`news_payment_audit_` 和 `news_reads_test` 开头，并需要本地测试配置。模拟接口覆盖日报与支付流程，以及 Reads 的全文翻译与失败回退、用量累计、永久去重、并发发布上限、事务回滚、长期保留、服务端正文、语言版本、缓存、隐藏和删除。CI 自动执行。
+`release-check` 执行格式检查、单元测试、Clippy、前端语法和 Compose 配置检查。`integration-test` 使用四个独立空库，名称分别以 `news_daily_test`、`news_payment_audit_`、`news_reads_test` 和 `news_equity_test` 开头，并需要本地测试配置。模拟接口覆盖日报与支付流程，Reads 的全文、发布与归档，以及主题开关四种组合、各角色阅读可见性、股市研判生成、引用隐私、采集复用、同日版本、缓存和历史读取。CI 自动执行。

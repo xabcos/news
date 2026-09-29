@@ -47,6 +47,7 @@ pub struct Topic {
     pub description: String,
     pub brief: String,
     pub enabled: bool,
+    pub visible: bool,
     pub interval_minutes: i32,
     pub window_start: i32,
     pub window_end: i32,
@@ -133,6 +134,7 @@ struct TopicFields {
     description: Option<String>,
     brief: Option<String>,
     enabled: Option<bool>,
+    visible: Option<bool>,
     interval_minutes: Option<i32>,
     window_start: Option<i32>,
     window_end: Option<i32>,
@@ -563,6 +565,12 @@ async fn create_topic(
     } else {
         generated_topic_id()
     };
+    if matches!(
+        id.trim().to_ascii_lowercase().as_str(),
+        "insight" | "equity-insight"
+    ) {
+        return Err(AppError::BadRequest("该 ID 已用于研判入口".into()));
+    }
     let owner_user_id = (!scope.is_public()).then_some(user.id);
     let model = if scope.is_public() {
         f.model
@@ -625,12 +633,12 @@ async fn create_topic(
         INSERT INTO topics (
             id, owner_user_id, name, name_en, description, brief, enabled, interval_minutes, window_start,
             window_end, weekdays, model, reasoning_effort, max_items, lookback_hours,
-            daily_run_cap, sort_weight
+            daily_run_cap, sort_weight, visible
         ) VALUES (
             LOWER(BTRIM($1)), $2, BTRIM($3), BTRIM(COALESCE($4, '')), BTRIM(COALESCE($5, '')), BTRIM($6),
             COALESCE($7, TRUE), $8, COALESCE($9, 6), COALESCE($10, 24),
             COALESCE($11, '{1,2,3,4,5}'), COALESCE(NULLIF(BTRIM($12), ''), $18), COALESCE($13, 'low'),
-            COALESCE($14, 8), COALESCE($15, 24), COALESCE($16, 24), COALESCE($17, 0)
+            COALESCE($14, 8), COALESCE($15, 24), COALESCE($16, 24), COALESCE($17, 0), COALESCE($19, TRUE)
         )
         RETURNING *
         "#,
@@ -653,6 +661,7 @@ async fn create_topic(
     .bind(daily_run_cap)
     .bind(sort_weight)
     .bind(&state.config.ai_default_model)
+    .bind(f.visible)
     .fetch_one(&mut *transaction)
     .await
     .map_err(map_db_error)?;
@@ -725,6 +734,7 @@ async fn update_topic(
             lookback_hours = COALESCE($14, lookback_hours),
             daily_run_cap = COALESCE($15, daily_run_cap),
             sort_weight = COALESCE($16, sort_weight),
+            visible = COALESCE($19, visible),
             updated_at = NOW()
         WHERE id = $1 AND (($17 AND owner_user_id IS NULL) OR (NOT $17 AND owner_user_id = $18))
         RETURNING *
@@ -748,12 +758,17 @@ async fn update_topic(
     .bind(sort_weight)
     .bind(scope.is_public())
     .bind(user.id)
+    .bind(f.visible)
     .fetch_optional(&state.pool)
     .await
     .map_err(map_db_error)?
     .ok_or_else(|| AppError::NotFound("主题不存在".into()))?;
     let topic = runner::reschedule_or_defer(&state, &topic).await?;
     if scope.is_public() {
+        if current.enabled != topic.enabled || current.visible != topic.visible {
+            state.digest.forget_topic(&state, &id).await;
+            state.insight.invalidate();
+        }
         state.digest.reload_topics(&state).await?;
     }
     Ok(Json(topic))
@@ -1156,6 +1171,7 @@ mod tests {
             description: String::new(),
             brief: "AI".into(),
             enabled: true,
+            visible: true,
             interval_minutes: 60,
             window_start: 6,
             window_end: 24,

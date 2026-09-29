@@ -266,7 +266,7 @@ impl DigestCache {
     pub async fn reload_topics(&self, state: &AppState) -> Result<()> {
         let _cache_guard = self.0.cache_write.lock().await;
         let topics = sqlx::query_as::<_, TopicMeta>(
-            "SELECT id, name, name_en, description FROM topics WHERE enabled AND owner_user_id IS NULL ORDER BY sort_weight, created_at",
+            "SELECT id, name, name_en, description FROM topics WHERE enabled AND visible AND owner_user_id IS NULL ORDER BY sort_weight, created_at",
         )
         .fetch_all(&state.pool)
         .await?;
@@ -346,7 +346,7 @@ impl DigestCache {
         let topic_guard = self.topic_write(topic);
         let _cache_guard = topic_guard.lock().await;
         let visible = sqlx::query_scalar::<_, bool>(
-            "SELECT enabled FROM topics WHERE id = $1 AND owner_user_id IS NULL",
+            "SELECT enabled AND visible FROM topics WHERE id = $1 AND owner_user_id IS NULL",
         )
         .bind(topic)
         .fetch_optional(&state.pool)
@@ -435,7 +435,7 @@ impl DigestCache {
         }
         let generation = self.0.generation.load(Ordering::Acquire);
         let day = sqlx::query_scalar::<_, Option<NaiveDate>>(
-            "SELECT MAX(items.day) FROM items JOIN topics ON topics.id = items.topic_id WHERE items.topic_id = $1 AND topics.enabled AND topics.owner_user_id IS NULL AND NOT items.hidden",
+            "SELECT MAX(items.day) FROM items JOIN topics ON topics.id = items.topic_id WHERE items.topic_id = $1 AND topics.enabled AND topics.visible AND topics.owner_user_id IS NULL AND NOT items.hidden",
         )
         .bind(topic)
         .fetch_one(&state.pool)
@@ -479,7 +479,7 @@ impl DigestCache {
         let days = sqlx::query_as::<_, DayCount>(
             "SELECT items.day, COUNT(*) AS count FROM items \
              JOIN topics ON topics.id = items.topic_id \
-             WHERE ($1::text IS NULL OR items.topic_id = $1) AND topics.enabled AND topics.owner_user_id IS NULL AND NOT items.hidden \
+             WHERE ($1::text IS NULL OR items.topic_id = $1) AND topics.enabled AND topics.visible AND topics.owner_user_id IS NULL AND NOT items.hidden \
              GROUP BY items.day ORDER BY items.day DESC LIMIT $2",
         )
         .bind(topic)
@@ -620,7 +620,7 @@ async fn load(state: &AppState, topic: &str, day: NaiveDate) -> Result<Snapshot>
     let mut items = sqlx::query_as::<_, PublicItem>(
         "SELECT items.id, items.title, items.summary, items.title_en, items.summary_en, items.url, items.source, items.published_at, items.first_seen_at, items.tags, items.tags_en, items.importance, items.pinned, items.image \
          FROM items JOIN topics ON topics.id = items.topic_id \
-         WHERE items.topic_id = $1 AND items.day = $2 AND topics.enabled AND topics.owner_user_id IS NULL AND NOT items.hidden \
+         WHERE items.topic_id = $1 AND items.day = $2 AND topics.enabled AND topics.visible AND topics.owner_user_id IS NULL AND NOT items.hidden \
          ORDER BY items.pinned DESC, items.published_at DESC NULLS LAST, items.first_seen_at DESC, items.id DESC",
     )
     .bind(topic)
@@ -744,6 +744,7 @@ pub(crate) fn router() -> Router<AppState> {
     let public = Router::new()
         .route("/digest", get(digest))
         .route("/insight", get(crate::insight::latest))
+        .route("/equity-insight", get(crate::equity::latest))
         .route("/topics", get(topics))
         .route("/days", get(days))
         .route("/feed.xml", get(feed))
@@ -1095,7 +1096,7 @@ async fn personal_topic_cards(state: &AppState, user_id: i64) -> Result<Vec<Pers
         LEFT JOIN items
           ON items.topic_id = topics.id
          AND NOT items.hidden
-        WHERE topics.enabled
+        WHERE topics.enabled AND topics.visible
           AND topics.owner_user_id = $1
         GROUP BY topics.id, topics.name, topics.name_en, topics.description,
                  topics.owner_user_id, topics.sort_weight, topics.created_at, topics.feed_revision
@@ -1120,7 +1121,7 @@ async fn personal_days(
         SELECT items.day, COUNT(*) AS count
         FROM items
         JOIN topics ON topics.id = items.topic_id
-        WHERE topics.enabled
+        WHERE topics.enabled AND topics.visible
           AND topics.owner_user_id = $1
           AND NOT items.hidden
           AND ($2::text IS NULL OR items.topic_id = $2)
@@ -1149,7 +1150,7 @@ async fn personal_day_stats(
                MAX(items.first_seen_at) AS updated_at
         FROM items
         JOIN topics ON topics.id = items.topic_id
-        WHERE topics.enabled
+        WHERE topics.enabled AND topics.visible
           AND topics.owner_user_id = $1
           AND NOT items.hidden
           AND items.day = $2
@@ -1213,7 +1214,7 @@ async fn personal_items(
             JOIN topics ON topics.id = items.topic_id
             WHERE items.topic_id = selected.topic_id
               AND topics.owner_user_id = $2
-              AND topics.enabled
+              AND topics.enabled AND topics.visible
               AND items.day = $3
               AND NOT items.hidden
               AND ($5::boolean IS NULL OR

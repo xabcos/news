@@ -479,7 +479,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         .execute(&state.pool)
         .await
         .unwrap();
-    sqlx::query("UPDATE topics SET enabled=false WHERE id='reads'")
+    sqlx::query("UPDATE topics SET visible=false WHERE id='reads'")
         .execute(&state.pool)
         .await
         .unwrap();
@@ -492,7 +492,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             .status(),
         404
     );
-    sqlx::query("UPDATE topics SET enabled=true WHERE id='reads'")
+    sqlx::query("UPDATE topics SET visible=true WHERE id='reads'")
         .execute(&state.pool)
         .await
         .unwrap();

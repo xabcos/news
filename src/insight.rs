@@ -36,17 +36,6 @@ const FAILED_RETRY_MINUTES: i64 = 10;
 const FINISH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 const STAT_TOPICS: [&str; 6] = ["x", "p", "china-ai", "overseas-ai", "gossip", "cases"];
 
-fn cutoff_for_day(state: &AppState, day: NaiveDate) -> DateTime<Utc> {
-    crate::topics::to_utc(
-        state.config.timezone,
-        day.and_time(state.config.briefing_time),
-    )
-}
-
-fn window_start_for_day(state: &AppState, day: NaiveDate) -> DateTime<Utc> {
-    cutoff_for_day(state, day) - ChronoDuration::hours(24)
-}
-
 fn due_day(now: DateTime<Utc>, timezone: chrono_tz::Tz, cutoff: NaiveTime) -> NaiveDate {
     let local = now.with_timezone(&timezone);
     let day = local.date_naive();
@@ -57,8 +46,55 @@ fn due_day(now: DateTime<Utc>, timezone: chrono_tz::Tz, cutoff: NaiveTime) -> Na
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Ai,
+    Equity,
+}
+
+impl Kind {
+    pub(crate) fn cutoff(
+        self,
+        now: DateTime<Utc>,
+        timezone: chrono_tz::Tz,
+        briefing_time: NaiveTime,
+    ) -> DateTime<Utc> {
+        let latest = |timezone, time| {
+            crate::topics::to_utc(timezone, due_day(now, timezone, time).and_time(time))
+        };
+        let morning = latest(timezone, briefing_time);
+        match self {
+            Self::Ai => morning,
+            Self::Equity => morning.max(latest(
+                chrono_tz::America::New_York,
+                crate::equity::US_BRIEFING_TIME,
+            )),
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            Self::Ai => "ai",
+            Self::Equity => "equity",
+        }
+    }
+    fn key(self) -> &'static str {
+        match self {
+            Self::Ai => IN_FLIGHT_KEY,
+            Self::Equity => "__equity_insight__",
+        }
+    }
+    fn cache(self, state: &AppState) -> &InsightCache {
+        match self {
+            Self::Ai => &state.insight,
+            Self::Equity => &state.equity,
+        }
+    }
+}
+
 pub(crate) fn is_running(state: &AppState) -> bool {
-    state.in_flight().contains(IN_FLIGHT_KEY)
+    let running = state.in_flight();
+    running.contains(Kind::Ai.key()) || running.contains(Kind::Equity.key())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -237,10 +273,10 @@ struct InsightArticles {
     images: Vec<InsightArticleImage>,
 }
 
-struct Completed {
-    response_id: Option<String>,
-    usage: Usage,
-    payload: Value,
+pub(crate) struct Completed {
+    pub(crate) response_id: Option<String>,
+    pub(crate) usage: Usage,
+    pub(crate) payload: Value,
 }
 
 struct GeneratedAnalysis {
@@ -263,7 +299,7 @@ struct InsightCacheInner {
 }
 
 impl InsightCache {
-    fn get(&self) -> Option<Arc<Rendered>> {
+    pub(crate) fn get(&self) -> Option<Arc<Rendered>> {
         self.0
             .rendered
             .read()
@@ -271,11 +307,11 @@ impl InsightCache {
             .clone()
     }
 
-    fn generation(&self) -> u64 {
+    pub(crate) fn generation(&self) -> u64 {
         self.0.generation.load(Ordering::Acquire)
     }
 
-    fn store(&self, generation: u64, rendered: Arc<Rendered>) {
+    pub(crate) fn store(&self, generation: u64, rendered: Arc<Rendered>) {
         let mut slot = self
             .0
             .rendered
@@ -299,28 +335,33 @@ impl InsightCache {
 
 /// The latest closed edition is also the recovery target after downtime.
 pub(crate) async fn tick(state: &AppState) -> Result<()> {
+    let now = Utc::now();
+    tick_kind(state, Kind::Ai, now).await?;
+    if crate::equity::enabled(state).await? {
+        tick_kind(state, Kind::Equity, now).await?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn tick_kind(state: &AppState, kind: Kind, now: DateTime<Utc>) -> Result<()> {
     if is_running(state) {
         return Ok(());
     }
-    let day = due_day(
-        Utc::now(),
-        state.config.timezone,
-        state.config.briefing_time,
-    );
-    let cutoff = cutoff_for_day(state, day);
+    let cutoff = kind.cutoff(now, state.config.timezone, state.config.briefing_time);
+    let day = cutoff.with_timezone(&state.config.timezone).date_naive();
     let already_started = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM ai_insights
-         WHERE briefing_day = $1 AND (
-             status = 'running' OR (status = 'ok' AND window_end = $2)
-             OR (status = 'failed' AND finished_at >= NOW() - ($3 * INTERVAL '1 minute'))))",
+         WHERE kind = $1 AND (status = 'running' OR (window_end = $2 AND (
+             status = 'ok'
+             OR (status = 'failed' AND finished_at >= NOW() - ($3 * INTERVAL '1 minute'))))))",
     )
-    .bind(day)
+    .bind(kind.id())
     .bind(cutoff)
     .bind(FAILED_RETRY_MINUTES)
     .fetch_one(&state.pool)
     .await?;
     if !already_started {
-        match start_generation(state, day, cutoff).await {
+        match start_generation(state, day, cutoff, kind).await {
             Ok(_) | Err(AppError::Conflict(_)) => {}
             Err(error) => return Err(error),
         }
@@ -330,59 +371,71 @@ pub(crate) async fn tick(state: &AppState) -> Result<()> {
 
 /// Manual regeneration uses the same closed 24-hour window as the scheduler.
 pub(crate) async fn trigger(state: &AppState) -> Result<Uuid> {
-    let day = due_day(
+    trigger_kind(state, Kind::Ai).await
+}
+
+pub(crate) async fn trigger_kind(state: &AppState, kind: Kind) -> Result<Uuid> {
+    if kind == Kind::Equity && !crate::equity::enabled(state).await? {
+        return Err(AppError::Conflict("请先启用 equity 主题抓取".into()));
+    }
+    let cutoff = kind.cutoff(
         Utc::now(),
         state.config.timezone,
         state.config.briefing_time,
     );
-    start_generation(state, day, cutoff_for_day(state, day)).await
+    let day = cutoff.with_timezone(&state.config.timezone).date_naive();
+    start_generation(state, day, cutoff, kind).await
 }
 
 async fn start_generation(
     state: &AppState,
     day: NaiveDate,
     window_end: DateTime<Utc>,
+    kind: Kind,
 ) -> Result<Uuid> {
-    if !state.in_flight().insert(IN_FLIGHT_KEY.to_owned()) {
-        return Err(AppError::Conflict("XAI 日报正在生成中".into()));
+    if !state.in_flight().insert(kind.key().to_owned()) {
+        return Err(AppError::Conflict("研判正在生成中".into()));
     }
     let run_id = Uuid::new_v4();
     let now = Utc::now();
-    let window_start = window_start_for_day(state, day);
+    let window_start = window_end - ChronoDuration::hours(24);
     let inserted = async {
         let mut transaction = state.pool.begin().await?;
-        let locked: bool = sqlx::query_scalar(
-            "SELECT pg_try_advisory_xact_lock(hashtextextended('news:xai_briefing', 0))",
-        )
-        .fetch_one(&mut *transaction)
-        .await?;
+        let locked: bool =
+            sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))")
+                .bind(kind.key())
+                .fetch_one(&mut *transaction)
+                .await?;
         if !locked {
             transaction.rollback().await?;
-            return Err(AppError::Conflict("XAI 日报正在生成中".into()));
+            return Err(AppError::Conflict("研判正在生成中".into()));
         }
         let running = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(
                  SELECT 1 FROM ai_insights
-                 WHERE briefing_day = $1 AND status = 'running'
+                 WHERE kind = $1 AND status = 'running'
              )",
         )
-        .bind(day)
+        .bind(kind.id())
         .fetch_one(&mut *transaction)
         .await?;
         if running {
             transaction.rollback().await?;
-            return Err(AppError::Conflict("XAI 日报正在生成中".into()));
+            return Err(AppError::Conflict("研判正在生成中".into()));
         }
-        // Keep retries for a day compact. A previous successful brief remains
+        // Keep retries for an edition compact. A previous successful brief remains
         // available to readers until this attempt succeeds.
-        sqlx::query("DELETE FROM ai_insights WHERE briefing_day = $1 AND status = 'failed'")
-            .bind(day)
-            .execute(&mut *transaction)
-            .await?;
+        sqlx::query(
+            "DELETE FROM ai_insights WHERE window_end = $1 AND kind = $2 AND status = 'failed'",
+        )
+        .bind(window_end)
+        .bind(kind.id())
+        .execute(&mut *transaction)
+        .await?;
         sqlx::query(
             "INSERT INTO ai_insights
-             (id, status, started_at, window_start, briefing_day, model, window_end)
-             VALUES ($1, 'running', $2, $3, $4, $5, $6)",
+             (id, status, started_at, window_start, briefing_day, model, window_end, kind)
+             VALUES ($1, 'running', $2, $3, $4, $5, $6, $7)",
         )
         .bind(run_id)
         .bind(now)
@@ -390,6 +443,7 @@ async fn start_generation(
         .bind(day)
         .bind(&state.config.ai_insight_model)
         .bind(window_end)
+        .bind(kind.id())
         .execute(&mut *transaction)
         .await?;
         transaction.commit().await?;
@@ -397,10 +451,17 @@ async fn start_generation(
     }
     .await;
     if let Err(error) = inserted {
-        state.in_flight().remove(IN_FLIGHT_KEY);
+        state.in_flight().remove(kind.key());
         return Err(error);
     }
-    state.spawn_worker(run(state.clone(), run_id, window_start, window_end, now));
+    state.spawn_worker(run(
+        state.clone(),
+        run_id,
+        window_start,
+        window_end,
+        now,
+        kind,
+    ));
     Ok(run_id)
 }
 
@@ -442,7 +503,7 @@ pub(crate) async fn admin_latest(
     let row = sqlx::query_as::<_, AdminInsightRow>(
         "WITH latest AS (
              SELECT status, started_at, finished_at, briefing_day, error, payload
-             FROM ai_insights
+             FROM ai_insights WHERE kind = 'ai'
              ORDER BY briefing_day DESC, started_at DESC
              LIMIT 1
          )
@@ -453,7 +514,7 @@ pub(crate) async fn admin_latest(
          LEFT JOIN LATERAL (
              SELECT payload
              FROM ai_insights
-             WHERE status = 'ok'
+             WHERE status = 'ok' AND kind = 'ai'
                AND briefing_day = latest.briefing_day
              ORDER BY finished_at DESC
              LIMIT 1
@@ -501,7 +562,7 @@ pub(crate) async fn admin_run(
 async fn render_latest(state: &AppState) -> Result<Rendered> {
     let row = sqlx::query_as::<_, InsightRow>(
         "SELECT finished_at, window_start, window_end, briefing_day, model, payload
-         FROM ai_insights WHERE status = 'ok'
+         FROM ai_insights WHERE status = 'ok' AND kind = 'ai'
          ORDER BY briefing_day DESC, finished_at DESC LIMIT 1",
     )
     .fetch_optional(&state.pool)
@@ -519,8 +580,10 @@ async fn render_latest(state: &AppState) -> Result<Rendered> {
             // Resolve selected media before reducing the list to cited sources.
             let images = selected_article_images(&analysis, &sources);
             let image_indexes = images.iter().map(|image| image.index).collect::<Vec<_>>();
+            let visible = state.digest.topics();
             let sources = cited_sources(&analysis, sources, &image_indexes)
                 .into_iter()
+                .filter(|source| visible.iter().any(|topic| topic.id == source.topic_id))
                 .map(|mut source| {
                     source.image = source.image.map(public_image);
                     source
@@ -582,13 +645,15 @@ async fn run(
     window_start: DateTime<Utc>,
     window_end: DateTime<Utc>,
     started_at: DateTime<Utc>,
+    kind: Kind,
 ) {
     let window = NewsWindow {
         start: window_start,
         end: window_end,
     };
     let outcome = async {
-        runner::collect_briefing(&state, window).await?;
+        let topic = (kind == Kind::Equity).then_some("equity");
+        runner::collect_briefing(&state, window, topic).await?;
         let _permit = tokio::select! {
             _ = state.shutdown.cancelled() => return Err(AppError::Internal("XAI 日报因服务关闭而中断".into())),
             permit = state.run_slots.clone().acquire_owned() =>
@@ -596,7 +661,12 @@ async fn run(
         };
         tokio::select! {
             _ = state.shutdown.cancelled() => Err(AppError::Internal("XAI 日报因服务关闭而中断".into())),
-            result = tokio::time::timeout(state.config.fetch_timeout, execute(&state, window_start, window_end)) =>
+            result = tokio::time::timeout(state.config.fetch_timeout, async {
+                match kind {
+                    Kind::Ai => execute(&state, window_start, window_end).await,
+                    Kind::Equity => crate::equity::execute(&state, window).await,
+                }
+            }) =>
                 result.unwrap_or_else(|_| Err(AppError::Internal("XAI 日报生成超时".into()))),
         }
     }.await;
@@ -604,7 +674,7 @@ async fn run(
     // Keep the completed result and its run reservation until PostgreSQL accepts it.
     // Retrying this idempotent write never repeats a paid model request.
     loop {
-        match finish(&state, run_id, started_at, &outcome).await {
+        match finish(&state, run_id, started_at, &outcome, kind).await {
             Ok(()) => break,
             Err(error) => {
                 tracing::error!(%error, %run_id, status, "AI insight persistence failed; retrying");
@@ -615,7 +685,7 @@ async fn run(
             }
         }
     }
-    state.in_flight().remove(IN_FLIGHT_KEY);
+    state.in_flight().remove(kind.key());
 }
 
 async fn execute(
@@ -1218,6 +1288,7 @@ async fn finish(
     run_id: Uuid,
     started_at: DateTime<Utc>,
     outcome: &Result<Completed>,
+    kind: Kind,
 ) -> Result<()> {
     match outcome {
         Ok(done) => {
@@ -1241,21 +1312,23 @@ async fn finish(
             .bind(&done.payload)
             .execute(&mut *transaction)
             .await?;
-            // A manual regeneration replaces the successful result for the same
-            // local day once the new article is safely written.
-            sqlx::query(
-                "DELETE FROM ai_insights old
-                 USING ai_insights current
-                 WHERE current.id = $1
-                   AND old.briefing_day = current.briefing_day
-                   AND old.id <> current.id
-                   AND old.status <> 'running'",
-            )
-            .bind(run_id)
-            .execute(&mut *transaction)
-            .await?;
+            // AI editions replace same-day results; equity keeps all published versions.
+            if kind == Kind::Ai {
+                sqlx::query(
+                    "DELETE FROM ai_insights old
+                     USING ai_insights current
+                     WHERE current.id = $1
+                       AND old.kind = 'ai' AND current.kind = 'ai'
+                       AND old.briefing_day = current.briefing_day
+                       AND old.id <> current.id
+                       AND old.status <> 'running'",
+                )
+                .bind(run_id)
+                .execute(&mut *transaction)
+                .await?;
+            }
             transaction.commit().await?;
-            state.insight.invalidate();
+            kind.cache(state).invalidate();
         }
         Err(error) => {
             sqlx::query(

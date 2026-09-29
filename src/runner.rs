@@ -284,14 +284,20 @@ async fn tick(state: &AppState) -> Result<()> {
 
 /// Each completed topic is checkpointed by cutoff, so a retry only collects missing topics.
 /// The coordinator holds no semaphore permit; even a single-slot deployment can progress.
-pub(crate) async fn collect_briefing(state: &AppState, window: NewsWindow) -> Result<()> {
+pub(crate) async fn collect_briefing(
+    state: &AppState,
+    window: NewsWindow,
+    topic: Option<&str>,
+) -> Result<()> {
     let topics = sqlx::query_as::<_, Topic>(
         "SELECT * FROM topics WHERE enabled AND owner_user_id IS NULL AND id <> 'reads'
+         AND ($2::text IS NULL OR id = $2)
          AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.topic_id = topics.id
                          AND triggered_by = 'briefing' AND status = 'ok' AND window_end = $1)
          ORDER BY sort_weight, id",
     )
     .bind(window.end)
+    .bind(topic)
     .fetch_all(&state.pool)
     .await?;
     let mut jobs = JoinSet::new();
@@ -943,7 +949,11 @@ async fn finish(
         }
     };
     reschedule_or_defer(state, &topic).await?;
-    if public_topic && let Some(day) = refreshed_day {
+    if public_topic
+        && topic.enabled
+        && topic.visible
+        && let Some(day) = refreshed_day
+    {
         state.digest.refresh(state, topic_id, day).await?;
     }
     Ok(())
@@ -1031,6 +1041,7 @@ async fn prune(state: &AppState, today: NaiveDate) -> Result<()> {
     }
     // Batches commit one by one, so a failed pass may still have removed the newest row.
     state.insight.invalidate();
+    state.equity.invalidate();
     if state.config.retention_days > 0 {
         let keep_from = today - ChronoDuration::days(i64::from(state.config.retention_days));
         if let Err(error) = cleanup_items(state, keep_from).await {
@@ -1081,7 +1092,7 @@ async fn cleanup_insights(state: &AppState) -> Result<()> {
             SELECT id
             FROM ai_insights
             WHERE status <> 'running'
-              AND started_at < NOW() - ($2 * INTERVAL '1 day')
+              AND started_at < NOW() - (CASE WHEN kind = 'equity' THEN 365 ELSE $2 END * INTERVAL '1 day')
             ORDER BY started_at
             LIMIT $1
             FOR UPDATE SKIP LOCKED

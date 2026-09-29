@@ -119,6 +119,8 @@ fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
   .topic-actions { gap: .15rem; }
   .topic-actions .button { padding: .3rem .5rem; }
   .dialog-card { padding: 1.25rem; }
+  .form-row { grid-template-columns: 1fr; gap: .2rem; }
+  .topic-switches { margin-bottom: 1rem; }
   .dialog-actions { gap: .3rem; }
   .dialog-actions .button { padding: .55rem .7rem; font-size: .8rem; }
   .plan-offer { align-items: flex-start; flex-direction: column; }
@@ -126,3 +128,5 @@ fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
 }
 @media (prefers-reduced-motion: reduce) { .dot.running { animation: none; } }
 .briefing-image-source { display: block; margin-top: .4rem; font-size: .78rem; }
+
+.topic-switches { display: flex; flex-wrap: wrap; gap: .8rem; align-items: center; }
