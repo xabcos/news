@@ -63,6 +63,8 @@ pub(crate) struct Order {
     pub(crate) expires_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) paid_at: Option<DateTime<Utc>>,
+    /// The provider's checkout; `OrderResponse::payment` exposes it while it is usable.
+    #[serde(skip_serializing)]
     pub(crate) payment: Value,
     #[serde(skip_serializing)]
     pub(crate) payment_started_at: Option<DateTime<Utc>>,
@@ -214,10 +216,7 @@ pub(crate) async fn create_order(
     .await?;
     let mut order = if let Some(order) = sqlx::query_as::<_, Order>(
         r#"
-        SELECT id, plan_code, out_trade_no, provider_trade_no,
-               amount_fen, duration_days, status, expires_at, paid_at, payment,
-               payment_started_at,
-               created_at, updated_at
+        SELECT *
         FROM orders
         WHERE user_id = $1 AND plan_code = $2 AND status = 'pending' AND expires_at > NOW()
         ORDER BY created_at DESC, id DESC
@@ -238,10 +237,7 @@ pub(crate) async fn create_order(
             INSERT INTO orders
                 (user_id, plan_code, out_trade_no, amount_fen, duration_days)
             VALUES ($1, $2, $3, $4, $5)
-            RETURNING id, plan_code, out_trade_no, provider_trade_no,
-                      amount_fen, duration_days, status, expires_at, paid_at, payment,
-                      payment_started_at,
-                      created_at, updated_at
+            RETURNING *
             "#,
         )
         .bind(user_id)
@@ -284,9 +280,7 @@ pub(crate) async fn create_order(
             INSERT INTO orders
                 (user_id, plan_code, out_trade_no, amount_fen, duration_days)
             VALUES ($1, $2, $3, $4, $5)
-            RETURNING id, plan_code, out_trade_no, provider_trade_no,
-                      amount_fen, duration_days, status, expires_at, paid_at, payment,
-                      payment_started_at, created_at, updated_at
+            RETURNING *
             "#,
         )
         .bind(user_id)
@@ -302,9 +296,7 @@ pub(crate) async fn create_order(
         UPDATE orders
         SET payment_started_at = NOW(), updated_at = NOW()
         WHERE id = $1 AND status = 'pending'
-        RETURNING id, plan_code, out_trade_no, provider_trade_no,
-                  amount_fen, duration_days, status, expires_at, paid_at, payment,
-                  payment_started_at, created_at, updated_at
+        RETURNING *
         "#,
     )
     .bind(order.id)
@@ -326,9 +318,7 @@ pub(crate) async fn create_order(
         SET payment = $2, expires_at = LEAST(COALESCE($3, expires_at), created_at + INTERVAL '1 hour'),
             payment_started_at = NULL, updated_at = NOW()
         WHERE id = $1 AND status = 'pending' AND payment_started_at = $4
-        RETURNING id, plan_code, out_trade_no, provider_trade_no,
-                  amount_fen, duration_days, status, expires_at, paid_at, payment,
-                  payment_started_at, created_at, updated_at
+        RETURNING *
         "#,
     )
     .bind(order.id)
@@ -363,10 +353,7 @@ pub(crate) async fn list_orders(
     close_expired_orders(&state, user.id).await?;
     let orders = sqlx::query_as::<_, Order>(
         r#"
-        SELECT id, plan_code, out_trade_no, provider_trade_no,
-               amount_fen, duration_days, status, expires_at, paid_at, payment,
-               payment_started_at,
-               created_at, updated_at
+        SELECT *
         FROM orders
         WHERE user_id = $1
         ORDER BY created_at DESC, id DESC
@@ -594,9 +581,7 @@ async fn cleanup_orders(pool: &PgPool, day: NaiveDate) -> Result<Option<u64>> {
 async fn load_user_order(state: &AppState, user_id: i64, out_trade_no: &str) -> Result<Order> {
     sqlx::query_as::<_, Order>(
         r#"
-        SELECT id, plan_code, out_trade_no, provider_trade_no,
-               amount_fen, duration_days, status, expires_at, paid_at, payment,
-               payment_started_at, created_at, updated_at
+        SELECT *
         FROM orders
         WHERE user_id = $1 AND out_trade_no = $2
         "#,
@@ -611,9 +596,7 @@ async fn load_user_order(state: &AppState, user_id: i64, out_trade_no: &str) -> 
 async fn load_order(state: &AppState, order_id: i64) -> Result<Order> {
     sqlx::query_as::<_, Order>(
         r#"
-        SELECT id, plan_code, out_trade_no, provider_trade_no,
-               amount_fen, duration_days, status, expires_at, paid_at, payment,
-               payment_started_at, created_at, updated_at
+        SELECT *
         FROM orders
         WHERE id = $1
         "#,

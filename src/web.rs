@@ -29,6 +29,7 @@ pub(crate) fn router(state: AppState) -> Router {
     let pages_dir = state.config.pages_dir.clone();
     Router::new()
         .route("/api/auth/email/start", post(auth::start_email_login))
+        .route("/api/auth/email/check", post(auth::check_email_login))
         .route("/api/auth/email/consume", post(auth::consume_email_login))
         .route("/api/auth/logout", post(auth::logout))
         .route("/api/me", get(auth::me))

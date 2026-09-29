@@ -233,8 +233,11 @@ pub(crate) async fn execute(state: &AppState, window: NewsWindow) -> Result<Comp
             },
         )?;
         history::validate(&analysis.reviews, baseline.as_ref(), &sources, window.end)?;
-        let usage = serde_json::from_value(reply["usage"].clone()).unwrap_or_default();
-        (analysis, reply["id"].as_str().map(str::to_owned), usage)
+        (
+            analysis,
+            reply["id"].as_str().map(str::to_owned),
+            Usage::from_reply(&reply),
+        )
     };
     let mut stocks: Vec<_> = analysis
         .stocks

@@ -130,7 +130,8 @@ pub struct AppState {
     pub(crate) pool: PgPool,
     pub(crate) redis: Option<ConnectionManager>,
     pub(crate) http: reqwest::Client,
-    pub(crate) image_http: reqwest::Client,
+    /// Untrusted origins only: news images and Reads sources, see `media::origin_client`.
+    pub(crate) origin_http: reqwest::Client,
     pub(crate) config: Arc<Config>,
     pub(crate) digest: DigestCache,
     pub(crate) insight: InsightCache,
@@ -171,25 +172,13 @@ impl AppState {
             .connect_timeout(HTTP_CONNECT_TIMEOUT)
             .timeout(config.fetch_timeout)
             .build()?;
-        let image_http = reqwest::Client::builder()
-            .connect_timeout(HTTP_CONNECT_TIMEOUT)
-            .timeout(config.image_timeout)
-            .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                if attempt.previous().len() >= 5
-                    || !crate::media::is_public_https_url(attempt.url())
-                {
-                    attempt.stop()
-                } else {
-                    attempt.follow()
-                }
-            }))
-            .build()?;
+        let origin_http = crate::media::origin_client(config.image_timeout)?;
         let max_concurrent_runs = config.max_concurrent_runs;
         let state = Self {
             pool,
             redis,
             http,
-            image_http,
+            origin_http,
             digest: DigestCache::new(config.timezone),
             insight: InsightCache::default(),
             equity: InsightCache::default(),

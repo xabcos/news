@@ -5,9 +5,9 @@ use crate::{
     state::AppState,
 };
 use axum::{
-    Json, Router,
-    extract::{Path, State},
-    http::StatusCode,
+    Extension, Json, Router,
+    extract::{FromRequestParts, Path, State},
+    http::{StatusCode, request::Parts},
     response::{IntoResponse, Response},
     routing::{get, patch, post},
 };
@@ -79,6 +79,30 @@ enum TopicScope {
 impl TopicScope {
     fn is_public(self) -> bool {
         matches!(self, Self::Public)
+    }
+}
+
+/// A workspace request's account and the catalogue it manages. The route prefix sets the
+/// scope, and the account's role has to match it.
+struct Scoped {
+    user: User,
+    scope: TopicScope,
+}
+
+impl FromRequestParts<AppState> for Scoped {
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self> {
+        let scope = *parts
+            .extensions
+            .get::<TopicScope>()
+            .expect("workspace routes carry their scope");
+        let user = User::from_request_parts(parts, state).await?;
+        match scope {
+            TopicScope::Personal => auth::require_personal(&user)?,
+            TopicScope::Public => auth::require_admin(&user)?,
+        }
+        Ok(Self { user, scope })
     }
 }
 
@@ -280,37 +304,22 @@ fn validate_interval(interval: Option<i32>, limits: PlanLimits) -> Result<()> {
     Ok(())
 }
 
+/// `/api/me` is one personal account; `/api/admin` is the public editorial catalogue.
 pub(crate) fn router() -> Router<AppState> {
+    let scoped = |scope: TopicScope| {
+        Router::new()
+            .route("/topics", get(list_topics).post(create_topic))
+            .route("/topics/{id}", patch(update_topic).delete(delete_topic))
+            .route("/topics/{id}/run", post(run_topic))
+            .route("/topics/{id}/runs", get(list_runs))
+            .route("/topics/{id}/items", get(list_items))
+            .route("/items/{id}", patch(update_item).delete(delete_item))
+            .route("/status", get(status))
+            .layer(Extension(scope))
+    };
     Router::new()
-        .route("/api/me/topics", get(me_list_topics).post(me_create_topic))
-        .route(
-            "/api/me/topics/{id}",
-            patch(me_update_topic).delete(me_delete_topic),
-        )
-        .route("/api/me/topics/{id}/run", post(me_run_topic))
-        .route("/api/me/topics/{id}/runs", get(me_list_runs))
-        .route("/api/me/topics/{id}/items", get(me_list_items))
-        .route(
-            "/api/me/items/{id}",
-            patch(me_update_item).delete(me_delete_item),
-        )
-        .route("/api/me/status", get(me_status))
-        .route(
-            "/api/admin/topics",
-            get(admin_list_topics).post(admin_create_topic),
-        )
-        .route(
-            "/api/admin/topics/{id}",
-            patch(admin_update_topic).delete(admin_delete_topic),
-        )
-        .route("/api/admin/topics/{id}/run", post(admin_run_topic))
-        .route("/api/admin/topics/{id}/runs", get(admin_list_runs))
-        .route("/api/admin/topics/{id}/items", get(admin_list_items))
-        .route(
-            "/api/admin/items/{id}",
-            patch(admin_update_item).delete(admin_delete_item),
-        )
-        .route("/api/admin/status", get(admin_status))
+        .nest("/api/me", scoped(TopicScope::Personal))
+        .nest("/api/admin", scoped(TopicScope::Public))
 }
 
 // ---------------------------------------------------------------------------
@@ -446,8 +455,7 @@ pub fn to_utc(tz: Tz, local: NaiveDateTime) -> DateTime<Utc> {
 
 async fn status(
     State(state): State<AppState>,
-    user: User,
-    scope: TopicScope,
+    Scoped { user, scope }: Scoped,
 ) -> Result<Json<serde_json::Value>> {
     let mut running = state.in_flight().iter().cloned().collect::<Vec<_>>();
     let since = day_start(&state);
@@ -507,8 +515,7 @@ async fn status(
 
 async fn list_topics(
     State(state): State<AppState>,
-    user: User,
-    scope: TopicScope,
+    Scoped { user, scope }: Scoped,
 ) -> Result<Json<Vec<Topic>>> {
     let mut topics = if scope.is_public() {
         sqlx::query_as::<_, Topic>(
@@ -535,9 +542,8 @@ async fn list_topics(
 
 async fn create_topic(
     State(state): State<AppState>,
-    user: User,
+    Scoped { user, scope }: Scoped,
     ApiJson(request): ApiJson<CreateTopic>,
-    scope: TopicScope,
 ) -> Result<(StatusCode, Json<Topic>)> {
     if !scope.is_public() && !user.can_create_personal_topic() {
         return Err(AppError::Forbidden(
@@ -675,10 +681,9 @@ async fn create_topic(
 
 async fn update_topic(
     State(state): State<AppState>,
-    user: User,
+    Scoped { user, scope }: Scoped,
     Path(id): Path<String>,
     ApiJson(f): ApiJson<TopicFields>,
-    scope: TopicScope,
 ) -> Result<Json<Topic>> {
     // Resolve ownership before applying the patch; an inaccessible id is
     // intentionally indistinguishable from a missing one.
@@ -767,7 +772,6 @@ async fn update_topic(
     if scope.is_public() {
         if current.enabled != topic.enabled || current.visible != topic.visible {
             state.digest.forget_topic(&state, &id).await;
-            state.insight.invalidate();
         }
         state.digest.reload_topics(&state).await?;
     }
@@ -776,9 +780,8 @@ async fn update_topic(
 
 async fn delete_topic(
     State(state): State<AppState>,
-    user: User,
+    Scoped { user, scope }: Scoped,
     Path(id): Path<String>,
-    scope: TopicScope,
 ) -> Result<Response> {
     let mut transaction = state.pool.begin().await?;
     if !scope.is_public() {
@@ -813,9 +816,8 @@ async fn delete_topic(
 
 async fn run_topic(
     State(state): State<AppState>,
-    user: User,
+    Scoped { user, scope }: Scoped,
     Path(id): Path<String>,
-    scope: TopicScope,
 ) -> Result<(StatusCode, Json<serde_json::Value>)> {
     let topic = load_topic(&state, &id, &user, scope).await?;
     let run_id = runner::start(&state, &topic, "manual").await?;
@@ -824,10 +826,9 @@ async fn run_topic(
 
 async fn list_runs(
     State(state): State<AppState>,
-    user: User,
+    Scoped { user, scope }: Scoped,
     Path(id): Path<String>,
     ApiQuery(query): ApiQuery<RunsQuery>,
-    scope: TopicScope,
 ) -> Result<Json<Vec<Run>>> {
     load_topic(&state, &id, &user, scope).await?;
     let runs = sqlx::query_as::<_, Run>(
@@ -846,10 +847,9 @@ async fn list_runs(
 
 async fn list_items(
     State(state): State<AppState>,
-    user: User,
+    Scoped { user, scope }: Scoped,
     Path(id): Path<String>,
     ApiQuery(query): ApiQuery<ItemsQuery>,
-    scope: TopicScope,
 ) -> Result<Json<Vec<Item>>> {
     load_topic(&state, &id, &user, scope).await?;
     let day = match query.day {
@@ -878,10 +878,9 @@ async fn list_items(
 
 async fn update_item(
     State(state): State<AppState>,
-    user: User,
+    Scoped { user, scope }: Scoped,
     Path(id): Path<Uuid>,
     ApiJson(request): ApiJson<UpdateItem>,
-    scope: TopicScope,
 ) -> Result<Json<Item>> {
     let mut transaction = state.pool.begin().await?;
     let item = sqlx::query_as::<_, Item>(
@@ -920,9 +919,8 @@ async fn update_item(
 
 async fn delete_item(
     State(state): State<AppState>,
-    user: User,
+    Scoped { user, scope }: Scoped,
     Path(id): Path<Uuid>,
-    scope: TopicScope,
 ) -> Result<Response> {
     let mut transaction = state.pool.begin().await?;
     let (topic_id, day) = sqlx::query_as::<_, (String, NaiveDate)>(
@@ -943,183 +941,6 @@ async fn delete_item(
         state.digest.refresh(&state, &topic_id, day).await?;
     }
     Ok(StatusCode::NO_CONTENT.into_response())
-}
-
-// API wrappers make the data scope explicit: `/api/me` is one personal account,
-// while `/api/admin` is limited to the public editorial catalogue.
-async fn me_status(State(state): State<AppState>, user: User) -> Result<Json<serde_json::Value>> {
-    auth::require_personal(&user)?;
-    status(State(state), user, TopicScope::Personal).await
-}
-
-async fn me_list_topics(State(state): State<AppState>, user: User) -> Result<Json<Vec<Topic>>> {
-    auth::require_personal(&user)?;
-    list_topics(State(state), user, TopicScope::Personal).await
-}
-
-async fn me_create_topic(
-    State(state): State<AppState>,
-    user: User,
-    request: ApiJson<CreateTopic>,
-) -> Result<(StatusCode, Json<Topic>)> {
-    auth::require_personal(&user)?;
-    create_topic(State(state), user, request, TopicScope::Personal).await
-}
-
-async fn me_update_topic(
-    State(state): State<AppState>,
-    user: User,
-    path: Path<String>,
-    fields: ApiJson<TopicFields>,
-) -> Result<Json<Topic>> {
-    auth::require_personal(&user)?;
-    update_topic(State(state), user, path, fields, TopicScope::Personal).await
-}
-
-async fn me_delete_topic(
-    State(state): State<AppState>,
-    user: User,
-    path: Path<String>,
-) -> Result<Response> {
-    auth::require_personal(&user)?;
-    delete_topic(State(state), user, path, TopicScope::Personal).await
-}
-
-async fn me_run_topic(
-    State(state): State<AppState>,
-    user: User,
-    path: Path<String>,
-) -> Result<(StatusCode, Json<serde_json::Value>)> {
-    auth::require_personal(&user)?;
-    run_topic(State(state), user, path, TopicScope::Personal).await
-}
-
-async fn me_list_runs(
-    State(state): State<AppState>,
-    user: User,
-    path: Path<String>,
-    query: ApiQuery<RunsQuery>,
-) -> Result<Json<Vec<Run>>> {
-    auth::require_personal(&user)?;
-    list_runs(State(state), user, path, query, TopicScope::Personal).await
-}
-
-async fn me_list_items(
-    State(state): State<AppState>,
-    user: User,
-    path: Path<String>,
-    query: ApiQuery<ItemsQuery>,
-) -> Result<Json<Vec<Item>>> {
-    auth::require_personal(&user)?;
-    list_items(State(state), user, path, query, TopicScope::Personal).await
-}
-
-async fn me_update_item(
-    State(state): State<AppState>,
-    user: User,
-    path: Path<Uuid>,
-    request: ApiJson<UpdateItem>,
-) -> Result<Json<Item>> {
-    auth::require_personal(&user)?;
-    update_item(State(state), user, path, request, TopicScope::Personal).await
-}
-
-async fn me_delete_item(
-    State(state): State<AppState>,
-    user: User,
-    path: Path<Uuid>,
-) -> Result<Response> {
-    auth::require_personal(&user)?;
-    delete_item(State(state), user, path, TopicScope::Personal).await
-}
-
-async fn admin_status(
-    State(state): State<AppState>,
-    user: User,
-) -> Result<Json<serde_json::Value>> {
-    auth::require_admin(&user)?;
-    status(State(state), user, TopicScope::Public).await
-}
-
-async fn admin_list_topics(State(state): State<AppState>, user: User) -> Result<Json<Vec<Topic>>> {
-    auth::require_admin(&user)?;
-    list_topics(State(state), user, TopicScope::Public).await
-}
-
-async fn admin_create_topic(
-    State(state): State<AppState>,
-    user: User,
-    request: ApiJson<CreateTopic>,
-) -> Result<(StatusCode, Json<Topic>)> {
-    auth::require_admin(&user)?;
-    create_topic(State(state), user, request, TopicScope::Public).await
-}
-
-async fn admin_update_topic(
-    State(state): State<AppState>,
-    user: User,
-    path: Path<String>,
-    fields: ApiJson<TopicFields>,
-) -> Result<Json<Topic>> {
-    auth::require_admin(&user)?;
-    update_topic(State(state), user, path, fields, TopicScope::Public).await
-}
-
-async fn admin_delete_topic(
-    State(state): State<AppState>,
-    user: User,
-    path: Path<String>,
-) -> Result<Response> {
-    auth::require_admin(&user)?;
-    delete_topic(State(state), user, path, TopicScope::Public).await
-}
-
-async fn admin_run_topic(
-    State(state): State<AppState>,
-    user: User,
-    path: Path<String>,
-) -> Result<(StatusCode, Json<serde_json::Value>)> {
-    auth::require_admin(&user)?;
-    run_topic(State(state), user, path, TopicScope::Public).await
-}
-
-async fn admin_list_runs(
-    State(state): State<AppState>,
-    user: User,
-    path: Path<String>,
-    query: ApiQuery<RunsQuery>,
-) -> Result<Json<Vec<Run>>> {
-    auth::require_admin(&user)?;
-    list_runs(State(state), user, path, query, TopicScope::Public).await
-}
-
-async fn admin_list_items(
-    State(state): State<AppState>,
-    user: User,
-    path: Path<String>,
-    query: ApiQuery<ItemsQuery>,
-) -> Result<Json<Vec<Item>>> {
-    auth::require_admin(&user)?;
-    list_items(State(state), user, path, query, TopicScope::Public).await
-}
-
-async fn admin_update_item(
-    State(state): State<AppState>,
-    user: User,
-    path: Path<Uuid>,
-    request: ApiJson<UpdateItem>,
-) -> Result<Json<Item>> {
-    auth::require_admin(&user)?;
-    update_item(State(state), user, path, request, TopicScope::Public).await
-}
-
-async fn admin_delete_item(
-    State(state): State<AppState>,
-    user: User,
-    path: Path<Uuid>,
-) -> Result<Response> {
-    auth::require_admin(&user)?;
-    delete_item(State(state), user, path, TopicScope::Public).await
 }
 
 /// Translates the schema's own guarantees back into the API's error contract, so the

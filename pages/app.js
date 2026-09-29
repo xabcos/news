@@ -928,22 +928,6 @@ function opportunityDetails(item) {
   return details;
 }
 
-function sourceLink(url, label, title = "") {
-  try {
-    const parsed = new URL(url);
-    if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) return null;
-    const link = document.createElement("a");
-    link.href = parsed.href;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    link.title = title;
-    link.textContent = label;
-    return link;
-  } catch {
-    return null;
-  }
-}
-
 // Some Responses providers put citations in the JSON text as Markdown, including
 // already stored briefings. Preserve those references without interpreting HTML.
 function insightText(text) {
@@ -962,13 +946,20 @@ function insightText(text) {
   return fragment;
 }
 
-function sourceList(label, links) {
+function sourceList(label, sources) {
   const seen = new Set();
-  const anchors = links.map((source) => sourceLink(
-    source.url,
-    `${source.source || hostOf(source.url)} ↗`,
-    pick(source, "title"),
-  )).filter((link) => link && !seen.has(link.href) && seen.add(link.href));
+  const repeats = new Map();
+  const anchors = sources.map((source) => {
+    const link = sourceLink(source.url, "", pick(source, "title"));
+    if (!link || seen.has(link.href)) return null;
+    seen.add(link.href);
+    // Several links from one outlet stay distinguishable: "Reuters ↗ Reuters 2 ↗".
+    const name = source.source || hostOf(source.url);
+    const count = (repeats.get(name) || 0) + 1;
+    repeats.set(name, count);
+    link.textContent = `${name}${count > 1 ? ` ${count}` : ""} ↗`;
+    return link;
+  }).filter(Boolean);
   if (!anchors.length) return null;
   const list = document.createElement("div");
   list.className = "insight-sources";
@@ -1065,11 +1056,11 @@ function imageNewsCard(item) {
   element.addEventListener("error", () => link.remove(), { once: true });
   link.append(element);
   article.prepend(link);
+  // The headline follows the photograph; its caption and credit close the card.
   const caption = pick(item.image, "caption");
   if (caption) {
     const credit = item.image.credit ? ` · ${item.image.credit}` : "";
-    const note = span(`${caption}${credit}`, "image-news-caption");
-    article.insertBefore(note, article.querySelector(".item-meta"));
+    article.append(span(`${caption}${credit}`, "image-news-caption"));
   }
   return article;
 }
@@ -1146,6 +1137,7 @@ function card(item, reading = false) {
 
 const name = (topic) => (state.lang === "en" && topic.name_en) || topic.name;
 const pick = (item, field) => (state.lang === "en" && item[`${field}_en`]) || item[field];
+const sourceLink = PublicPage.link;
 const formatterCache = new Map();
 
 function formatter(kind, locale, options) {

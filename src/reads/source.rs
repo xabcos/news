@@ -1,15 +1,13 @@
 use super::invalid_source;
-use crate::error::Result;
-use reqwest::{Client, redirect::Policy};
+use crate::{error::Result, media::is_public_origin, state::AppState};
+use reqwest::header::USER_AGENT;
 use scraper::{ElementRef, Html, Node, Selector};
 use serde::Deserialize;
-use std::{
-    net::{IpAddr, SocketAddr},
-    time::Duration,
-};
+use std::time::Duration;
 use url::Url;
 
 const MAX_BYTES: usize = 2 * 1024 * 1024;
+const TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) struct Source {
     pub url: Url,
@@ -21,19 +19,14 @@ pub(super) struct Source {
     pub published_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-pub(super) async fn fetch(value: &str) -> Result<Source> {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        let url = Url::parse(value).map_err(|_| invalid_source("原文 URL 无效"))?;
-        if let Some(id) = x_status(&url) {
-            return fetch_post(&id).await;
-        }
-        let (url, bytes) = download(url, Content::Html).await?;
-        let html =
-            std::str::from_utf8(&bytes).map_err(|_| invalid_source("原文不是 UTF-8 文本"))?;
-        extract(url, html)
-    })
-    .await
-    .map_err(|_| invalid_source("读取原文超时"))?
+pub(super) async fn fetch(state: &AppState, value: &str) -> Result<Source> {
+    let url = Url::parse(value).map_err(|_| invalid_source("原文 URL 无效"))?;
+    if let Some(id) = x_status(&url) {
+        return fetch_post(state, &id).await;
+    }
+    let (url, bytes) = download(state, url, Content::Html).await?;
+    let html = std::str::from_utf8(&bytes).map_err(|_| invalid_source("原文不是 UTF-8 文本"))?;
+    extract(url, html)
 }
 
 #[derive(Clone, Copy)]
@@ -44,136 +37,84 @@ pub(super) enum Content {
     Image(usize),
 }
 
-pub(super) async fn download(url: Url, content: Content) -> Result<(Url, Vec<u8>)> {
-    tokio::time::timeout(Duration::from_secs(30), download_inner(url, content))
-        .await
-        .map_err(|_| invalid_source("读取来源超时"))?
-}
-
-async fn download_inner(mut url: Url, content: Content) -> Result<(Url, Vec<u8>)> {
+/// `origin_http` resolves every hop to public addresses and keeps redirects on public
+/// HTTPS; this bounds time, content type and size, and sends no credentials or cookies.
+pub(super) async fn download(
+    state: &AppState,
+    url: Url,
+    content: Content,
+) -> Result<(Url, Vec<u8>)> {
+    if !is_public_origin(&url) {
+        return Err(invalid_source("原文必须是公开 HTTPS 地址"));
+    }
     let max_bytes = match content {
         Content::Image(limit) => limit,
         _ => MAX_BYTES,
     };
-    for _ in 0..5 {
-        if !public_url(&url) {
-            return Err(invalid_source("原文必须是公开 HTTPS 地址"));
+    let mut response = state
+        .origin_http
+        .get(url)
+        .timeout(TIMEOUT)
+        .header(
+            USER_AGENT,
+            "XABCNews-Reads/1.0 (+https://xabcnews.com/reads)",
+        )
+        .send()
+        .await?
+        .error_for_status()?;
+    let url = response.url().clone();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    let accepted = match content {
+        Content::Image(_) => [
+            "image/png",
+            "image/jpeg",
+            "image/webp",
+            "image/gif",
+            "image/avif",
+            "image/bmp",
+        ]
+        .contains(&content_type.split(';').next().unwrap_or("").trim()),
+        Content::Json => content_type.starts_with("application/json"),
+        Content::Html => {
+            content_type.starts_with("text/html")
+                || content_type.starts_with("application/xhtml+xml")
         }
-        let host = url
-            .host_str()
-            .ok_or_else(|| invalid_source("原文缺少域名"))?;
-        let addresses: Vec<SocketAddr> = tokio::net::lookup_host((host, 443))
-            .await
-            .map_err(|_| invalid_source("原文域名无法解析"))?
-            .collect();
-        if addresses.is_empty() || addresses.iter().any(|address| !public_ip(address.ip())) {
-            return Err(invalid_source("原文地址不可公开访问"));
-        }
-        // Pin validated addresses, including each redirect, so a DNS rebind cannot
-        // reach internal services. Never forward application credentials or cookies.
-        let client = Client::builder()
-            .no_proxy()
-            .redirect(Policy::none())
-            .resolve_to_addrs(host, &addresses)
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(15))
-            .user_agent("XABCNews-Reads/1.0 (+https://xabcnews.com/reads)")
-            .build()?;
-        let mut response = client.get(url.clone()).send().await?;
-        if response.status().is_redirection() {
-            url = response
-                .headers()
-                .get(reqwest::header::LOCATION)
-                .and_then(|header| header.to_str().ok())
-                .and_then(|location| url.join(location).ok())
-                .ok_or_else(|| invalid_source("原文重定向无效"))?;
-            continue;
-        }
-        response = response.error_for_status()?;
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("");
-        let accepted = match content {
-            Content::Image(_) => [
-                "image/png",
-                "image/jpeg",
-                "image/webp",
-                "image/gif",
-                "image/avif",
-                "image/bmp",
-            ]
-            .contains(&content_type.split(';').next().unwrap_or("").trim()),
-            Content::Json => content_type.starts_with("application/json"),
-            Content::Html => {
-                content_type.starts_with("text/html")
-                    || content_type.starts_with("application/xhtml+xml")
-            }
-            Content::Feed => [
-                "application/rss+xml",
-                "application/atom+xml",
-                "application/xml",
-                "text/xml",
-                "application/feed+json",
-                "application/json",
-            ]
-            .iter()
-            .any(|kind| content_type.starts_with(kind)),
-        };
-        if !accepted {
-            return Err(invalid_source("原文不是可读取的网页"));
-        }
-        if response
-            .content_length()
-            .is_some_and(|size| size > max_bytes as u64)
-        {
+        Content::Feed => [
+            "application/rss+xml",
+            "application/atom+xml",
+            "application/xml",
+            "text/xml",
+            "application/feed+json",
+            "application/json",
+        ]
+        .iter()
+        .any(|kind| content_type.starts_with(kind)),
+    };
+    if !accepted {
+        return Err(invalid_source("原文不是可读取的网页"));
+    }
+    if response
+        .content_length()
+        .is_some_and(|size| size > max_bytes as u64)
+    {
+        return Err(invalid_source("原文网页过大"));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if bytes.len() + chunk.len() > max_bytes {
             return Err(invalid_source("原文网页过大"));
         }
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await? {
-            if bytes.len() + chunk.len() > max_bytes {
-                return Err(invalid_source("原文网页过大"));
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        return Ok((url, bytes));
+        bytes.extend_from_slice(&chunk);
     }
-    Err(invalid_source("原文重定向过多"))
-}
-
-fn public_url(url: &Url) -> bool {
-    crate::media::is_public_https_url(url) && url.port_or_known_default() == Some(443)
-}
-
-fn public_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => {
-            let [a, b, c, _] = ip.octets();
-            !(ip.is_private()
-                || ip.is_loopback()
-                || ip.is_link_local()
-                || ip.is_broadcast()
-                || ip.is_documentation()
-                || a == 0
-                || a >= 224
-                || (a == 100 && (64..128).contains(&b))
-                || (a == 198 && (b == 18 || b == 19))
-                || (a == 192 && b == 0 && c == 0))
-        }
-        IpAddr::V6(ip) => {
-            let [a, b, ..] = ip.segments();
-            // Global unicast only; exclude transition, documentation and protocol ranges.
-            (0x2000..0x4000).contains(&a)
-                && a != 0x2002
-                && !(a == 0x2001 && (b < 0x200 || b == 0xdb8))
-                && !(a == 0x3fff && b < 0x1000)
-        }
-    }
+    Ok((url, bytes))
 }
 
 pub(super) fn x_status(url: &Url) -> Option<String> {
-    if !public_url(url)
+    if !is_public_origin(url)
         || !matches!(
             url.host_str()?,
             "x.com" | "www.x.com" | "twitter.com" | "www.twitter.com" | "mobile.twitter.com"
@@ -188,7 +129,7 @@ pub(super) fn x_status(url: &Url) -> Option<String> {
         .then(|| id.to_owned())
 }
 
-async fn fetch_post(id: &str) -> Result<Source> {
+async fn fetch_post(state: &AppState, id: &str) -> Result<Source> {
     let url = Url::parse(&format!("https://x.com/i/status/{id}")).expect("fixed X URL");
     let mut endpoint = Url::parse("https://publish.twitter.com/oembed").expect("fixed oEmbed URL");
     endpoint
@@ -196,7 +137,7 @@ async fn fetch_post(id: &str) -> Result<Source> {
         .append_pair("url", url.as_str())
         .append_pair("omit_script", "true")
         .append_pair("dnt", "true");
-    let (_, bytes) = download(endpoint, Content::Json).await?;
+    let (_, bytes) = download(state, endpoint, Content::Json).await?;
     #[derive(Deserialize)]
     struct Embed {
         html: String,
@@ -528,7 +469,7 @@ fn markdown(root: ElementRef<'_>, base: &Url) -> Result<(String, Vec<super::full
                 let origin = [element.attr("data-src"), element.attr("src")]
                     .into_iter()
                     .flatten()
-                    .find_map(|src| self.base.join(src).ok().filter(public_url));
+                    .find_map(|src| self.base.join(src).ok().filter(is_public_origin));
                 if let Some(origin) = origin {
                     let index = if let Some(index) = self
                         .images
@@ -541,6 +482,8 @@ fn markdown(root: ElementRef<'_>, base: &Url) -> Result<(String, Vec<super::full
                         self.images.push(super::full_text::Image {
                             origin: origin.to_string(),
                             stored: None,
+                            failures: 0,
+                            next_retry_at: None,
                         });
                         index
                     } else {
@@ -708,29 +651,6 @@ mod tests {
         assert_eq!(html.select(&selector("ol ul li")).count(), 1);
         assert_eq!(html.select(&selector("table tbody td")).count(), 2);
         assert_eq!(html.select(&selector("blockquote")).count(), 1);
-    }
-
-    #[test]
-    fn refuses_private_and_special_networks() {
-        for ip in [
-            "127.0.0.1",
-            "10.1.2.3",
-            "169.254.169.254",
-            "100.64.0.1",
-            "198.18.0.1",
-            "192.0.2.1",
-            "224.0.0.1",
-            "::1",
-            "::ffff:127.0.0.1",
-            "fc00::1",
-            "2001:db8::1",
-            "2002:7f00:1::",
-        ] {
-            assert!(!public_ip(ip.parse().unwrap()), "{ip}");
-        }
-        for ip in ["1.1.1.1", "8.8.8.8", "2606:4700:4700::1111"] {
-            assert!(public_ip(ip.parse().unwrap()));
-        }
     }
 
     #[test]

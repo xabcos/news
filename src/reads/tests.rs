@@ -31,11 +31,12 @@ fn feed_tracking_does_not_create_duplicate_articles() {
 #[test]
 fn copied_passages_are_rejected_across_whitespace() {
     let original = "A specific original argument with enough supporting detail to count as a substantive passage, rather than a common phrase that might appear in unrelated works.";
-    assert!(copies_passage(&original.replace(' ', "\n"), original));
-    assert!(!copies_passage(
-        "An independent explanation of the practical tradeoffs.",
-        original
+    let independent = "An independent explanation of the practical tradeoffs.";
+    assert!(copies_passage(
+        original,
+        [independent, &original.replace(' ', "\n")]
     ));
+    assert!(!copies_passage(original, [independent, independent]));
 }
 
 fn source(path: &str) -> source::Source {
@@ -662,7 +663,17 @@ async fn check_full_text_image_renewal(state: &AppState, id: Uuid) {
     document.images.push(full_text::Image {
         origin: "https://127.0.0.1/private.png".into(),
         stored: Some(stored.clone()),
+        failures: 0,
+        next_retry_at: None,
     });
+    let retry_at = Utc::now() + chrono::Duration::hours(8);
+    let waiting = full_text::Image {
+        origin: "https://127.0.0.1/waiting.png".into(),
+        stored: Some(stored.clone()),
+        failures: 3,
+        next_retry_at: Some(retry_at),
+    };
+    document.images.push(waiting.clone());
     sqlx::query("UPDATE read_articles SET full_text=$2, images_renew_at=NOW() - INTERVAL '1 hour' WHERE item_id=$1")
         .bind(id).bind(Json(&document)).execute(&state.pool).await.unwrap();
     // Disabled topics have no image traffic or renewal updates.
@@ -698,6 +709,14 @@ async fn check_full_text_image_renewal(state: &AppState, id: Uuid) {
         updated.images[0].stored.as_ref().unwrap().expires_at,
         stored.expires_at
     );
+    assert_eq!(updated.images[0].failures, 1);
+    assert_eq!(
+        updated.images[0].next_retry_at.unwrap().timestamp_micros(),
+        next.timestamp_micros()
+    );
+    assert!((next - Utc::now()).num_minutes() >= 119);
+    assert!(next < retry_at);
+    assert_eq!(updated.images[1], waiting);
     assert_eq!(updated.original, document.original);
     assert_eq!(updated.zh, document.zh);
 }

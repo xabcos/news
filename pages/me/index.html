@@ -9,8 +9,8 @@
   <meta name="referrer" content="no-referrer">
   <title>𝑵𝒆𝒘𝒔 · 工作台</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
-  <link rel="stylesheet" href="/styles.css?v=tags-row-v1">
-  <link rel="stylesheet" href="/me/styles.css?v=equity-xai-brief-v8">
+  <link rel="stylesheet" href="/styles.css?v=pretty-titles-v1">
+  <link rel="stylesheet" href="/me/styles.css?v=login-confirm-v1">
 </head>
 <body>
   <main class="workspace-shell">
@@ -27,6 +27,11 @@
           <h2>请查收邮件</h2><p class="muted">登录链接已发送至 <strong id="sentEmail"></strong>。</p>
           <a id="devLoginLink" class="button button-primary button-wide hidden">打开登录链接</a>
           <button id="sendAgain" class="button button-quiet" type="button">重新输入邮箱</button>
+        </div>
+        <div id="loginConfirm" class="hidden">
+          <h2>确认登录</h2><p class="muted">将以 <strong id="confirmEmail"></strong> 登录工作台。</p>
+          <button id="confirmLogin" class="button button-primary button-wide" type="button">继续登录</button>
+          <button id="rejectLogin" class="button button-quiet" type="button">不是我的邮箱</button>
         </div>
       </div>
     </section>
@@ -146,6 +151,6 @@
     <div class="dialog-actions"><button class="button button-quiet" type="button" data-close-dialog>取消</button><button id="confirmActionButton" class="button button-danger" type="button">确认删除</button></div>
   </dialog>
   <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
-  <script src="/me/app.js?v=11" type="module"></script>
+  <script src="/me/app.js?v=12" type="module"></script>
 </body>
 </html>

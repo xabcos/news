@@ -1,31 +1,36 @@
-//! Server-side mirroring of news photographs into tmpfile.
+//! Server-side mirroring of news photographs into tmpfile, and the HTTP client that
+//! reaches untrusted origins.
 //!
 //! News sources often put images behind hotlink protection or short-lived URLs. The
 //! browser therefore receives only the capability URL returned by tmpfile; the original
 //! image URL is retained in the stored metadata so a later startup can renew it.
 
 use crate::{error::Result, fetch::NewsImage, state::AppState};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use reqwest::{
+    dns::{Addrs, Name, Resolve, Resolving},
     header,
     multipart::{Form, Part},
+    redirect::Policy,
 };
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, time::Duration};
-use tokio::{task::JoinSet, time::Instant};
+use std::{collections::HashMap, future::Future, net::IpAddr, sync::Arc, time::Duration};
+use tokio::{sync::OwnedSemaphorePermit, task::JoinSet, time::Instant};
 use url::Url;
 use uuid::Uuid;
 
-const RENEW_BEFORE_SECS: i64 = 6 * 3600;
+/// Mirrored copies are renewed this long before tmpfile expires them.
+pub(crate) const RENEW_BEFORE: TimeDelta = TimeDelta::hours(6);
 const IMAGE_BATCH_TIMEOUT: Duration = Duration::from_secs(90);
+const ORIGIN_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 // Tiny square thumbnails are commonly used by publishers for "image unavailable"
 // placeholders. They are not useful as visual-news cards even when they return 200.
-const MIN_IMAGE_BYTES: usize = 4096;
-const MIN_IMAGE_DIMENSION: u32 = 320;
+pub(crate) const MIN_IMAGE_BYTES: usize = 4096;
+pub(crate) const MIN_IMAGE_DIMENSION: u32 = 320;
 
-#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, Deserialize)]
 pub(crate) struct UploadResponse {
     pub direct_link: String,
     pub expires_at: DateTime<Utc>,
@@ -45,10 +50,45 @@ struct StoredPayloadRow {
     payload: Option<Value>,
 }
 
-/// One transfer per origin, preserving each story's caption and attribution. Unfinished
-/// images become None at the batch deadline; dropping JoinSet cancels their requests.
-pub(crate) async fn mirror_images(state: &AppState, images: &mut [Option<NewsImage>]) {
+/// Image jobs share `image_slots` and one batch budget. Each job owns its slot permit, so
+/// blocking work that outlives a cancelled batch still counts against the limit. Jobs
+/// unfinished at the deadline or on shutdown are dropped, cancelling their requests.
+pub(crate) async fn batch<J, F, T>(state: &AppState, jobs: impl IntoIterator<Item = J>) -> Vec<T>
+where
+    J: FnOnce(OwnedSemaphorePermit) -> F + Send + 'static,
+    F: Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
     let deadline = Instant::now() + IMAGE_BATCH_TIMEOUT;
+    let mut tasks = JoinSet::new();
+    for job in jobs {
+        let slots = Arc::clone(&state.image_slots);
+        tasks.spawn(async move {
+            job(slots.acquire_owned().await.expect("image slots stay open")).await
+        });
+    }
+    let mut done = Vec::new();
+    loop {
+        let result = tokio::select! {
+            _ = state.shutdown.cancelled() => break,
+            result = tokio::time::timeout_at(deadline, tasks.join_next()) => result,
+        };
+        match result {
+            Ok(Some(Ok(value))) => done.push(value),
+            Ok(Some(Err(error))) => tracing::warn!(%error, "image task failed"),
+            Ok(None) => break,
+            Err(_) => {
+                tracing::debug!("image batch reached its time budget");
+                break;
+            }
+        }
+    }
+    done
+}
+
+/// One transfer per origin, preserving each story's caption and attribution. Images still
+/// unfinished at the batch deadline become None.
+pub(crate) async fn mirror_images(state: &AppState, images: &mut [Option<NewsImage>]) {
     let mut origins = HashMap::new();
     let mut groups: Vec<Vec<(usize, NewsImage)>> = Vec::new();
     for (index, slot) in images.iter_mut().enumerate() {
@@ -62,56 +102,46 @@ pub(crate) async fn mirror_images(state: &AppState, images: &mut [Option<NewsIma
         });
         groups[group].push((index, image));
     }
-    let mut jobs = JoinSet::new();
+    let mut jobs = Vec::new();
     for group in groups {
-        let state = state.clone();
-        jobs.spawn(async move {
-            let image = group
-                .iter()
-                .find(|(_, image)| is_fresh_tmpfile_url(&state, image))
-                .unwrap_or(&group[0])
-                .1
-                .clone();
-            (group, mirror_image(&state, image).await)
-        });
+        // A copy that is still fresh serves its whole group without a transfer or a slot.
+        let fresh = group
+            .iter()
+            .find(|(_, image)| is_fresh_tmpfile_url(state, image))
+            .map(|(_, image)| image.clone());
+        match fresh {
+            Some(fresh) => share(images, group, &fresh),
+            None => {
+                let state = state.clone();
+                jobs.push(move |slot| async move {
+                    let _slot = slot;
+                    let image = group[0].1.clone();
+                    let mirrored = tokio::time::timeout(
+                        state.config.image_timeout,
+                        transfer_image(&state, image),
+                    )
+                    .await
+                    .ok()
+                    .flatten();
+                    (group, mirrored)
+                });
+            }
+        }
     }
-    loop {
-        let result = tokio::select! {
-            _ = state.shutdown.cancelled() => break,
-            result = tokio::time::timeout_at(deadline, jobs.join_next()) => result,
-        };
-        match result {
-            Ok(Some(Ok((group, Some(mirrored))))) => {
-                for (index, mut image) in group {
-                    image.url.clone_from(&mirrored.url);
-                    image.origin_url.clone_from(&mirrored.origin_url);
-                    image.expires_at = mirrored.expires_at;
-                    image.content_hash.clone_from(&mirrored.content_hash);
-                    images[index] = Some(image);
-                }
-            }
-            Ok(Some(Ok((_, None)))) => {}
-            Ok(Some(Err(error))) => tracing::warn!(%error, "image task failed"),
-            Ok(None) => break,
-            Err(_) => {
-                tracing::debug!("image batch reached its time budget");
-                break;
-            }
+    for (group, mirrored) in batch(state, jobs).await {
+        if let Some(mirrored) = mirrored {
+            share(images, group, &mirrored);
         }
     }
 }
 
-async fn mirror_image(state: &AppState, image: NewsImage) -> Option<NewsImage> {
-    if is_fresh_tmpfile_url(state, &image) {
-        return Some(image);
-    }
-    let _permit = state.image_slots.acquire().await.ok()?;
-    match tokio::time::timeout(state.config.image_timeout, transfer_image(state, image)).await {
-        Ok(image) => image,
-        Err(_) => {
-            tracing::debug!("image transfer reached its time budget");
-            None
-        }
+fn share(images: &mut [Option<NewsImage>], group: Vec<(usize, NewsImage)>, mirrored: &NewsImage) {
+    for (index, mut image) in group {
+        image.url.clone_from(&mirrored.url);
+        image.origin_url.clone_from(&mirrored.origin_url);
+        image.expires_at = mirrored.expires_at;
+        image.content_hash.clone_from(&mirrored.content_hash);
+        images[index] = Some(image);
     }
 }
 
@@ -158,8 +188,9 @@ pub(crate) async fn upload_image(
         }
     };
     let upload_url = format!("{}/upload", base_url.as_str().trim_end_matches('/'));
+    // tmpfile is configured and trusted, so it may sit on a private network.
     let response = match state
-        .image_http
+        .http
         .post(upload_url)
         .bearer_auth(&state.config.tmpfile_api_key)
         .multipart(Form::new().part("file", part))
@@ -216,7 +247,7 @@ pub(crate) async fn download_image(
     accept: &str,
 ) -> Option<(Vec<u8>, &'static str)> {
     let mut response = match state
-        .image_http
+        .origin_http
         .get(url)
         .header(header::USER_AGENT, "xabcnews.com image mirror")
         .header(header::ACCEPT, accept)
@@ -233,11 +264,6 @@ pub(crate) async fn download_image(
             return None;
         }
     };
-    if !is_public_https_url(response.url()) {
-        tracing::debug!(url = %url, "news image redirected to an insecure URL");
-        return None;
-    }
-
     let content_type = response
         .headers()
         .get(header::CONTENT_TYPE)
@@ -355,14 +381,82 @@ pub(crate) fn is_public_https_url(url: &Url) -> bool {
         && url.password().is_none()
 }
 
+/// Public HTTPS on the default port: where Reads downloads start and every redirect lands.
+pub(crate) fn is_public_origin(url: &Url) -> bool {
+    is_public_https_url(url) && url.port_or_known_default() == Some(443)
+}
+
+/// The client for untrusted origins: news images and every Reads download. Each host,
+/// redirect hops included, must resolve only to public addresses, and the connection uses
+/// exactly the addresses checked, so neither a redirect nor DNS rebinding reaches internal
+/// services. No proxy, cookies or application credentials are involved.
+pub(crate) fn origin_client(timeout: Duration) -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .dns_resolver(PublicDns)
+        .connect_timeout(ORIGIN_CONNECT_TIMEOUT)
+        .timeout(timeout)
+        .redirect(Policy::custom(|attempt| {
+            if attempt.previous().len() >= 5 {
+                attempt.error("too many redirects")
+            } else if is_public_origin(attempt.url()) {
+                attempt.follow()
+            } else {
+                attempt.error("redirect leaves public HTTPS")
+            }
+        }))
+        .build()
+}
+
+struct PublicDns;
+
+impl Resolve for PublicDns {
+    fn resolve(&self, name: Name) -> Resolving {
+        Box::pin(async move {
+            let addresses: Vec<_> = tokio::net::lookup_host((name.as_str(), 0)).await?.collect();
+            if addresses.is_empty() || !addresses.iter().all(|address| public_ip(address.ip())) {
+                return Err("origin does not resolve to public addresses".into());
+            }
+            let addresses: Addrs = Box::new(addresses.into_iter());
+            Ok(addresses)
+        })
+    }
+}
+
+fn public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let [a, b, c, _] = ip.octets();
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_broadcast()
+                || ip.is_documentation()
+                || a == 0
+                || a >= 224
+                || (a == 100 && (64..128).contains(&b))
+                || (a == 198 && (b == 18 || b == 19))
+                || (a == 192 && b == 0 && c == 0))
+        }
+        IpAddr::V6(ip) => {
+            let [a, b, ..] = ip.segments();
+            // Global unicast only; exclude transition, documentation and protocol ranges.
+            (0x2000..0x4000).contains(&a)
+                && a != 0x2002
+                && !(a == 0x2001 && (b < 0x200 || b == 0xdb8))
+                && !(a == 0x3fff && b < 0x1000)
+        }
+    }
+}
+
 fn is_fresh_tmpfile_url(state: &AppState, image: &NewsImage) -> bool {
     let Ok(image_url) = Url::parse(&image.url) else {
         return false;
     };
     same_origin(&image_url, &state.config.tmpfile_base_url)
-        && image.expires_at.is_some_and(|expires_at| {
-            expires_at > Utc::now() + chrono::Duration::seconds(RENEW_BEFORE_SECS)
-        })
+        && image
+            .expires_at
+            .is_some_and(|expires_at| expires_at > Utc::now() + RENEW_BEFORE)
 }
 
 fn same_origin(left: &Url, right: &Url) -> bool {
@@ -524,8 +618,12 @@ pub async fn startup_sync(state: &AppState) -> Result<()> {
     if insight_changed {
         state.insight.invalidate();
     }
+    // The rows are committed; one failed refresh must not leave the other feeds serving
+    // links that are about to expire.
     for (topic, day) in changed_topics {
-        state.digest.refresh(state, &topic, day).await?;
+        if let Err(error) = state.digest.refresh(state, &topic, day).await {
+            tracing::warn!(%error, topic, %day, "news cache refresh after image renewal failed");
+        }
     }
     Ok(())
 }
@@ -596,6 +694,36 @@ mod tests {
             &Url::parse("http://media.example.com:8080/files/token").unwrap(),
             &base,
         ));
+    }
+
+    #[test]
+    fn refuses_private_and_special_networks() {
+        for ip in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "169.254.169.254",
+            "100.64.0.1",
+            "198.18.0.1",
+            "192.0.2.1",
+            "224.0.0.1",
+            "::1",
+            "::ffff:127.0.0.1",
+            "fc00::1",
+            "2001:db8::1",
+            "2002:7f00:1::",
+        ] {
+            assert!(!public_ip(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in ["1.1.1.1", "8.8.8.8", "2606:4700:4700::1111"] {
+            assert!(public_ip(ip.parse().unwrap()));
+        }
+    }
+
+    #[tokio::test]
+    async fn origin_client_refuses_hosts_that_resolve_privately() {
+        let client = origin_client(Duration::from_secs(5)).unwrap();
+        let error = client.get("https://localhost:9/").send().await.unwrap_err();
+        assert!(error.is_dns(), "{error:?}");
     }
 
     #[test]

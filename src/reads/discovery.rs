@@ -1,7 +1,7 @@
 use super::{fingerprint, invalid_source, source};
 use crate::{
     error::Result,
-    fetch::{self, Candidate, Fetched, Known, NewsWindow},
+    fetch::{self, Candidate, Fetched, Known, NewsWindow, Usage},
     state::AppState,
     topics::Topic,
 };
@@ -188,10 +188,7 @@ async fn select_pending(
         )
         .await
         .map_err(|_| invalid_source("候选初筛超时"))??;
-        super::add_usage(
-            &mut fetched.usage,
-            serde_json::from_value(reply["usage"].clone()).unwrap_or_default(),
-        );
+        fetched.usage += Usage::from_reply(&reply);
         let selection: Selection = serde_json::from_value(crate::ai::parse_payload(&reply)?)?;
         fetched.payload["selection_reason"] = json!(selection.reason);
         fetched.payload["selection_response_id"] = reply["id"].clone();
@@ -319,9 +316,11 @@ async fn refresh_pool(state: &AppState, window: NewsWindow) -> Result<()> {
             let Some((name, language, address)) = feeds.next() else {
                 break;
             };
+            let state = state.clone();
             tasks.spawn(async move {
                 let result = async {
                     let (url, bytes) = source::download(
+                        &state,
                         Url::parse(address).expect("fixed feed URL"),
                         source::Content::Feed,
                     )

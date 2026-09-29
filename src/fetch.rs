@@ -76,6 +76,28 @@ pub struct ToolDetails {
     pub x_search_calls: i32,
 }
 
+impl Usage {
+    /// A missing or malformed block counts as zero; it only feeds the run history.
+    pub fn from_reply(reply: &Value) -> Self {
+        Self::deserialize(&reply["usage"]).unwrap_or_default()
+    }
+}
+
+/// Runs that make several requests report their combined usage.
+impl std::ops::AddAssign for Usage {
+    fn add_assign(&mut self, other: Self) {
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+        self.cost_in_usd_ticks += other.cost_in_usd_ticks;
+        self.input_tokens_details.cached_tokens += other.input_tokens_details.cached_tokens;
+        self.output_tokens_details.reasoning_tokens += other.output_tokens_details.reasoning_tokens;
+        self.server_side_tool_usage_details.web_search_calls +=
+            other.server_side_tool_usage_details.web_search_calls;
+        self.server_side_tool_usage_details.x_search_calls +=
+            other.server_side_tool_usage_details.x_search_calls;
+    }
+}
+
 /// One story as the model returned it, before validation.
 #[derive(Debug, Deserialize)]
 pub struct Candidate {
@@ -337,7 +359,7 @@ pub(crate) fn parse_reply(reply: Value) -> Result<Fetched> {
     payload["cover"] = serde_json::to_value(cover)?;
     Ok(Fetched {
         response_id: reply["id"].as_str().map(str::to_owned),
-        usage: serde_json::from_value(reply["usage"].clone()).unwrap_or_default(),
+        usage: Usage::from_reply(&reply),
         candidates: digest.items,
         payload,
     })

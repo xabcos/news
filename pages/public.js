@@ -3,6 +3,23 @@
 
   // Shared by the news feed and the server-rendered Reads pages.
   window.PublicPage = {
+    // An external link opened in a new tab, or null for anything but plain http(s).
+    link(url, label, title = "") {
+      try {
+        const parsed = new URL(url);
+        if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) return null;
+        const link = document.createElement("a");
+        link.href = parsed.href;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.title = title;
+        link.textContent = label;
+        return link;
+      } catch {
+        return null;
+      }
+    },
+
     init({ canSwipe = () => true } = {}) {
       const topbar = document.querySelector(".topbar");
       const backToTop = document.querySelector("#backToTop");

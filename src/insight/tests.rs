@@ -480,7 +480,7 @@ async fn image_origin(state: &mut AppState) -> (String, tokio::task::JoinHandle<
     let certified = rcgen::generate_simple_self_signed(vec![host.into()]).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    state.image_http = reqwest::Client::builder()
+    state.origin_http = reqwest::Client::builder()
         .no_proxy()
         .tls_certs_only([reqwest::Certificate::from_der(certified.cert.der()).unwrap()])
         .resolve(host, addr)
@@ -729,7 +729,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             .fetch_all(&state.pool)
             .await
             .unwrap();
-    assert_eq!(migrations, [1, 2]);
+    assert_eq!(migrations, [1, 2, 3]);
     sqlx::query("INSERT INTO topics (id,name,brief,enabled) VALUES ('inactive','Inactive','Inactive',false)")
         .execute(&state.pool).await.unwrap();
     sqlx::query("TRUNCATE items, runs, ai_insights CASCADE")
@@ -1286,7 +1286,7 @@ async fn check_media_limits(mut state: AppState) {
     // A local socket that never completes TLS represents an unresponsive image host.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    state.image_http = reqwest::Client::builder()
+    state.origin_http = reqwest::Client::builder()
         .no_proxy()
         .resolve("slow.example.com", addr)
         .build()

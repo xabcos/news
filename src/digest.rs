@@ -281,6 +281,8 @@ impl DigestCache {
         // A reader may have started in the small window between the first
         // fence and the catalogue swap; fence that reader as well.
         self.0.generation.fetch_add(1, Ordering::AcqRel);
+        // The briefing keeps only sources from this catalogue; render it again after the swap.
+        state.insight.invalidate();
         Ok(())
     }
 
@@ -617,6 +619,13 @@ struct TopicDigest<'a> {
 }
 
 async fn load(state: &AppState, topic: &str, day: NaiveDate) -> Result<Snapshot> {
+    // The revision is read first. Items committed in between only make the snapshot newer
+    // than its revision, so a client that trusts the revision loads it again, instead of
+    // keeping stale items under a revision that already covers the new ones.
+    let revision = sqlx::query_scalar::<_, i64>("SELECT feed_revision FROM topics WHERE id = $1")
+        .bind(topic)
+        .fetch_one(&state.pool)
+        .await?;
     let mut items = sqlx::query_as::<_, PublicItem>(
         "SELECT items.id, items.title, items.summary, items.title_en, items.summary_en, items.url, items.source, items.published_at, items.first_seen_at, items.tags, items.tags_en, items.importance, items.pinned, items.image \
          FROM items JOIN topics ON topics.id = items.topic_id \
@@ -630,10 +639,6 @@ async fn load(state: &AppState, topic: &str, day: NaiveDate) -> Result<Snapshot>
     for item in &mut items {
         item.image = public_image(item.image.take());
     }
-    let revision = sqlx::query_scalar::<_, i64>("SELECT feed_revision FROM topics WHERE id = $1")
-        .bind(topic)
-        .fetch_one(&state.pool)
-        .await?;
     Ok(Snapshot {
         updated_at: items.iter().map(|item| item.first_seen_at).max(),
         revision,

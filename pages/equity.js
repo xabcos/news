@@ -27,9 +27,11 @@ const EquityNotes = (() => {
       const date = new Date(start + i * 86400000).toISOString().slice(0, 10);
       const events = stock.events.filter((event) => event.date === date);
       const x = 20 + i * 240 / (count - 1);
-      const group = svgNode("g", { tabindex: "0", "aria-label": `${date} · ${events.length} ${t.events}` });
+      const summary = `${date} · ${events.length} ${t.events}`;
+      // Only days with events are keyboard stops.
+      const group = svgNode("g", events.length ? { tabindex: "0", "aria-label": summary } : {});
       const title = svgNode("title", {});
-      title.textContent = `${date} · ${events.length} ${t.events}\n${events.map((event) => pick(event, "fact")).join("\n")}`;
+      title.textContent = `${summary}\n${events.map((event) => pick(event, "fact")).join("\n")}`;
       const height = events.length * 10;
       group.append(title, svgNode("rect", { x: x - 8, y: 72 - Math.max(height, 2), width: 16, height: Math.max(height, 2), rx: 2, class: events.length ? "equity-event-bar" : "equity-event-empty" }));
       if (events.length) {
@@ -101,7 +103,6 @@ const EquityNotes = (() => {
       identity.append(node("h3", "item-title", pick(stock, "name")), node("span", "muted small", `${stock.symbol} · ${t[stock.market]}`));
       heading.append(identity, node("span", "equity-signal", t[stock.signal]));
       article.append(heading, node("p", "item-summary equity-reason", pick(stock, "reason")));
-      const body = node("div", "equity-stock-body");
       const facts = node("div", "equity-facts");
       facts.append(node("p", "equity-event-count", `${stock.events.length} ${t.events}`));
       for (const [label, key] of [[t.next, "watch"], [t.invalid, "risk"]]) {
@@ -109,8 +110,14 @@ const EquityNotes = (() => {
         row.append(node("span", "equity-condition-label", label), document.createTextNode(pick(stock, key)));
         facts.append(row);
       }
-      body.append(facts, chart(stock, note, t, pick));
-      article.append(body);
+      // A single disclosure date is already in the evidence below; a timeline needs two.
+      if (new Set(stock.events.map((event) => event.date)).size > 1) {
+        const body = node("div", "equity-stock-body");
+        body.append(facts, chart(stock, note, t, pick));
+        article.append(body);
+      } else {
+        article.append(facts);
+      }
       if (stock.feedback) {
         article.append(renderFeedback(stock.feedback));
       } else {
@@ -126,16 +133,10 @@ const EquityNotes = (() => {
     function eventEntry(event) {
       const entry = node("div", "equity-event");
       entry.append(node("time", "muted small", event.date), node("p", "", pick(event, "fact")));
+      // A missing source link does not hide the cited fact.
       for (const source of event.sources) {
-        try {
-          const url = new URL(source.url);
-          if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) continue;
-          const link = node("a", "equity-source", `${source.source || t.source} ↗`);
-          link.href = url.href;
-          link.target = "_blank";
-          link.rel = "noopener noreferrer";
-          entry.append(link);
-        } catch { /* A missing source link does not hide the cited fact. */ }
+        const link = PublicPage.link(source.url, `${source.source || t.source} ↗`);
+        if (link) entry.append(Object.assign(link, { className: "equity-source" }));
       }
       return entry;
     }

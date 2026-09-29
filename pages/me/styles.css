@@ -51,7 +51,7 @@ details[open] > summary { margin-bottom: 1rem; }
 .auth-panel h1 { font-size: 1.35rem; margin: 0 0 .5rem; }
 .auth-panel p { font-size: .86rem; margin: .6rem 0 1.2rem; overflow-wrap: anywhere; }
 .auth-panel .button { margin-top: 1rem; }
-#mailSent { text-align: center; }
+#mailSent, #loginConfirm { text-align: center; }
 
 label, legend { display: block; margin-bottom: .35rem; font-size: .82rem; font-weight: 600; }
 input, textarea, select { width: 100%; padding: .65rem .75rem; border: 1px solid var(--line-strong); border-radius: var(--radius-m); color: var(--text); background: var(--surface-solid); }

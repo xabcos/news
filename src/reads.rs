@@ -24,7 +24,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Transaction};
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 use tokio::time::{Instant, timeout_at};
 use uuid::Uuid;
 
@@ -62,7 +62,7 @@ pub(crate) async fn prepare(
     sqlx::query("UPDATE read_candidates SET attempts = attempts + 1, next_attempt_at = NOW() + INTERVAL '6 hours' WHERE fingerprint = $1 AND attempts < 3")
         .bind(&candidate).execute(&state.pool).await?;
     let result = async {
-        let source = source::fetch(&item.url).await?;
+        let source = source::fetch(state, &item.url).await?;
         prepare_source(state, topic, item, usage, source, deadline).await
     }
     .await;
@@ -117,10 +117,7 @@ async fn prepare_source(
     )
     .await
     .map_err(|_| invalid_source("精读审核超时"))??;
-    add_usage(
-        usage,
-        serde_json::from_value(reply["usage"].clone()).unwrap_or_default(),
-    );
+    *usage += Usage::from_reply(&reply);
     let draft: Draft = serde_json::from_value(crate::ai::parse_payload(&reply)?)?;
     if draft.worthy {
         source.body = cleanup::clean(&source.body, &draft.remove_blocks)?;
@@ -288,30 +285,26 @@ fn valid_draft(draft: &Draft, source: &source::Source) -> bool {
         && in_range(&draft.title_en, 4, 200)
         && in_range(&draft.summary, 12, 600)
         && in_range(&draft.summary_en, 12, 600)
-        && (in_range(&draft.body, 400, 8000)
-            && in_range(&draft.body_en, 800, 16000)
-            && !copies_passage(&draft.body, &source.body)
-            && !copies_passage(&draft.body_en, &source.body))
+        && in_range(&draft.body, 400, 8000)
+        && in_range(&draft.body_en, 800, 16000)
+        && !copies_passage(&source.body, [&draft.body, &draft.body_en])
 }
 
-fn copies_passage(body: &str, source: &str) -> bool {
-    let source: String = source.chars().filter(|c| !c.is_whitespace()).collect();
-    let body: Vec<char> = body.chars().filter(|c| !c.is_whitespace()).collect();
-    // Reject long verbatim passages in either language, including across line breaks.
-    body.windows(100)
-        .any(|window| source.contains(&window.iter().collect::<String>()))
-}
-
-fn add_usage(total: &mut Usage, extra: Usage) {
-    total.input_tokens += extra.input_tokens;
-    total.output_tokens += extra.output_tokens;
-    total.cost_in_usd_ticks += extra.cost_in_usd_ticks;
-    total.input_tokens_details.cached_tokens += extra.input_tokens_details.cached_tokens;
-    total.output_tokens_details.reasoning_tokens += extra.output_tokens_details.reasoning_tokens;
-    total.server_side_tool_usage_details.web_search_calls +=
-        extra.server_side_tool_usage_details.web_search_calls;
-    total.server_side_tool_usage_details.x_search_calls +=
-        extra.server_side_tool_usage_details.x_search_calls;
+/// Rejects long verbatim passages in either language, including across line breaks. The
+/// source's 100-character windows are hashed once, so the check stays linear.
+fn copies_passage(source: &str, bodies: [&str; 2]) -> bool {
+    let chars = |text: &str| {
+        text.chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<Vec<_>>()
+    };
+    let source = chars(source);
+    let passages: HashSet<&[char]> = source.windows(100).collect();
+    bodies.into_iter().any(|body| {
+        chars(body)
+            .windows(100)
+            .any(|window| passages.contains(window))
+    })
 }
 
 fn invalid_source(message: &'static str) -> AppError {

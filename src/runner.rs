@@ -284,6 +284,8 @@ async fn tick(state: &AppState) -> Result<()> {
 
 /// Each completed topic is checkpointed by cutoff, so a retry only collects missing topics.
 /// The coordinator holds no semaphore permit; even a single-slot deployment can progress.
+/// Without a topic it collects what the briefing reads, the visible public topics, so an
+/// internal source such as `equity` cannot hold the briefing back.
 pub(crate) async fn collect_briefing(
     state: &AppState,
     window: NewsWindow,
@@ -291,7 +293,7 @@ pub(crate) async fn collect_briefing(
 ) -> Result<()> {
     let topics = sqlx::query_as::<_, Topic>(
         "SELECT * FROM topics WHERE enabled AND owner_user_id IS NULL AND id <> 'reads'
-         AND ($2::text IS NULL OR id = $2)
+         AND (($2::text IS NULL AND visible) OR id = $2)
          AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.topic_id = topics.id
                          AND triggered_by = 'briefing' AND status = 'ok' AND window_end = $1)
          ORDER BY sort_weight, id",
@@ -1033,15 +1035,18 @@ async fn prune(state: &AppState, today: NaiveDate) -> Result<()> {
         tracing::warn!(%error, "run history pruning failed");
         first_error = Some(error);
     }
-    if let Err(error) = cleanup_insights(state).await {
+    let insights = cleanup_insights(state).await;
+    // Batches commit one by one, so a failed pass may still have removed the newest row.
+    if !matches!(insights, Ok(0)) {
+        state.insight.invalidate();
+        state.equity.invalidate();
+    }
+    if let Err(error) = insights {
         tracing::warn!(%error, "AI insight history pruning failed");
         if first_error.is_none() {
             first_error = Some(error);
         }
     }
-    // Batches commit one by one, so a failed pass may still have removed the newest row.
-    state.insight.invalidate();
-    state.equity.invalidate();
     if state.config.retention_days > 0 {
         let keep_from = today - ChronoDuration::days(i64::from(state.config.retention_days));
         if let Err(error) = cleanup_items(state, keep_from).await {
@@ -1060,7 +1065,7 @@ async fn prune(state: &AppState, today: NaiveDate) -> Result<()> {
     first_error.map_or(Ok(()), Err)
 }
 
-async fn cleanup_runs(state: &AppState) -> Result<()> {
+async fn cleanup_runs(state: &AppState) -> Result<u64> {
     cleanup_in_batches(
         state,
         "runs",
@@ -1083,7 +1088,7 @@ async fn cleanup_runs(state: &AppState) -> Result<()> {
     .await
 }
 
-async fn cleanup_insights(state: &AppState) -> Result<()> {
+async fn cleanup_insights(state: &AppState) -> Result<u64> {
     cleanup_in_batches(
         state,
         "ai_insights",
@@ -1145,12 +1150,13 @@ pub(crate) async fn cleanup_items(state: &AppState, keep_from: NaiveDate) -> Res
 }
 
 /// Deletes in bounded batches so a large backlog never holds locks for a whole pass.
+/// Returns how many rows went.
 async fn cleanup_in_batches(
     state: &AppState,
     table: &'static str,
     statement: &'static str,
     cutoff_days: i64,
-) -> Result<()> {
+) -> Result<u64> {
     let mut total = 0_u64;
     for batch_index in 0..CLEANUP_MAX_BATCHES {
         let deleted = sqlx::query(statement)
@@ -1161,7 +1167,7 @@ async fn cleanup_in_batches(
             .rows_affected();
         total += deleted;
         if deleted < CLEANUP_BATCH_SIZE as u64 {
-            return Ok(());
+            return Ok(total);
         }
         if batch_index + 1 == CLEANUP_MAX_BATCHES {
             tracing::warn!(
@@ -1171,5 +1177,5 @@ async fn cleanup_in_batches(
             );
         }
     }
-    Ok(())
+    Ok(total)
 }

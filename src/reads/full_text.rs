@@ -1,19 +1,21 @@
 //! Originals, translated text slots and mirrored illustrations. Markdown
 //! owns the structure; translation cannot change code, links or image destinations.
 
-use super::{add_usage, invalid_source, source};
+use super::{invalid_source, source};
 use crate::{error::Result, fetch::Usage, media, state::AppState, topics::Topic};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::types::Json;
 use std::time::Duration;
-use tokio::task::JoinSet;
 use uuid::Uuid;
 
 pub(super) const OPTIONS: Options = Options::ENABLE_STRIKETHROUGH.union(Options::ENABLE_TABLES);
 const CHUNK_CHARS: usize = 6000;
+/// Retries back off 2, 4 and 8 hours; an origin that fails this often is given up and the
+/// image keeps its text alternative.
+const MAX_IMAGE_FAILURES: u8 = 4;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct Document {
@@ -23,10 +25,42 @@ pub(super) struct Document {
     pub images: Vec<Image>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(super) struct Image {
     pub origin: String,
     pub stored: Option<media::UploadResponse>,
+    /// Consecutive failed transfers; a success resets it.
+    #[serde(default)]
+    pub failures: u8,
+    /// Kept per image so another illustration's renewal cannot shorten its backoff.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_retry_at: Option<DateTime<Utc>>,
+}
+
+impl Image {
+    fn due(&self, now: DateTime<Utc>) -> bool {
+        self.failures < MAX_IMAGE_FAILURES
+            && self.next_retry_at.is_none_or(|at| at <= now)
+            && self
+                .stored
+                .as_ref()
+                .is_none_or(|stored| stored.expires_at <= now + media::RENEW_BEFORE)
+    }
+
+    fn record_transfer(&mut self, stored: Option<media::UploadResponse>, now: DateTime<Utc>) {
+        match stored {
+            Some(stored) => {
+                self.stored = Some(stored);
+                self.failures = 0;
+                self.next_retry_at = None;
+            }
+            None => {
+                self.failures += 1;
+                self.next_retry_at = (self.failures < MAX_IMAGE_FAILURES)
+                    .then(|| now + TimeDelta::hours(1 << self.failures));
+            }
+        }
+    }
 }
 
 impl Document {
@@ -56,12 +90,16 @@ impl Document {
             .collect()
     }
 
+    /// Before the first copy expires, or after the backoff of an origin that keeps failing.
     pub fn renew_at(&self) -> Option<DateTime<Utc>> {
+        let now = Utc::now();
         self.images
             .iter()
+            .filter(|image| image.failures < MAX_IMAGE_FAILURES)
             .map(|image| {
-                image.stored.as_ref().map_or_else(Utc::now, |stored| {
-                    stored.expires_at - chrono::Duration::hours(6)
+                image.next_retry_at.unwrap_or_else(|| match &image.stored {
+                    Some(stored) if image.failures == 0 => stored.expires_at - media::RENEW_BEFORE,
+                    _ => now + TimeDelta::hours(1 << image.failures),
                 })
             })
             .min()
@@ -120,10 +158,7 @@ pub(super) async fn prepare(
                 }}
             }}}
         }))).await.map_err(|_| invalid_source("全文翻译超时"))??;
-        add_usage(
-            usage,
-            serde_json::from_value(reply["usage"].clone()).unwrap_or_default(),
-        );
+        *usage += Usage::from_reply(&reply);
         let translated: Translation = serde_json::from_value(crate::ai::parse_payload(&reply)?)?;
         validate_translation(&translated, chunk, english)?;
         for text in translated.texts {
@@ -211,65 +246,55 @@ fn validate_translation(translation: &Translation, source: &[String], english: b
 }
 
 async fn mirror_images(state: &AppState, images: &mut [Image]) {
-    let mut jobs = JoinSet::new();
-    for (index, image) in images.iter().enumerate() {
-        if image
-            .stored
-            .as_ref()
-            .is_some_and(|stored| stored.expires_at > Utc::now() + chrono::Duration::hours(6))
-        {
-            continue;
-        }
-        let state = state.clone();
-        let origin = image.origin.clone();
-        jobs.spawn(async move {
-            let _permit = state.image_slots.acquire().await.ok()?;
-            let image = tokio::time::timeout(state.config.image_timeout, async {
-                let (_, bytes) = source::download(
-                    origin.parse().ok()?,
-                    source::Content::Image(state.config.image_max_bytes as usize),
-                )
+    let now = Utc::now();
+    let jobs = images
+        .iter()
+        .enumerate()
+        .filter(|(_, image)| image.due(now))
+        .map(|(index, image)| {
+            let state = state.clone();
+            let origin = image.origin.clone();
+            move |slot| async move {
+                let _slot = slot;
+                let stored = tokio::time::timeout(state.config.image_timeout, async {
+                    let (_, bytes) = source::download(
+                        &state,
+                        origin.parse().ok()?,
+                        source::Content::Image(state.config.image_max_bytes as usize),
+                    )
+                    .await
+                    .ok()?;
+                    let format = image::guess_format(&bytes).ok()?;
+                    // Raster images only; small diagrams are useful here, unlike news covers.
+                    if !matches!(
+                        format,
+                        image::ImageFormat::Png
+                            | image::ImageFormat::Jpeg
+                            | image::ImageFormat::Gif
+                            | image::ImageFormat::WebP
+                            | image::ImageFormat::Avif
+                            | image::ImageFormat::Bmp
+                    ) || bytes.len() < 128
+                        || media::image_dimensions(&bytes).is_some_and(|(w, h)| w < 16 || h < 16)
+                    {
+                        return None;
+                    }
+                    media::upload_image(&state, bytes, format.to_mime_type()).await
+                })
                 .await
-                .ok()?;
-                let format = image::guess_format(&bytes).ok()?;
-                // Raster images only; small diagrams are useful here, unlike news covers.
-                if !matches!(
-                    format,
-                    image::ImageFormat::Png
-                        | image::ImageFormat::Jpeg
-                        | image::ImageFormat::Gif
-                        | image::ImageFormat::WebP
-                        | image::ImageFormat::Avif
-                        | image::ImageFormat::Bmp
-                ) || bytes.len() < 128
-                    || media::image_dimensions(&bytes).is_some_and(|(w, h)| w < 16 || h < 16)
-                {
-                    return None;
-                }
-                media::upload_image(&state, bytes, format.to_mime_type()).await
-            })
-            .await
-            .ok()
-            .flatten()?;
-            Some((index, image))
-        });
-    }
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
-    loop {
-        let result = tokio::select! {
-            _ = state.shutdown.cancelled() => break,
-            result = tokio::time::timeout_at(deadline, jobs.join_next()) => result,
-        };
-        match result {
-            Ok(Some(Ok(Some((index, stored))))) => images[index].stored = Some(stored),
-            Ok(Some(_)) => {}
-            Ok(None) | Err(_) => break,
-        }
+                .ok()
+                .flatten();
+                (index, stored)
+            }
+        })
+        .collect::<Vec<_>>();
+    for (index, stored) in media::batch(state, jobs).await {
+        images[index].record_transfer(stored, Utc::now());
     }
 }
 
 /// The existing hourly media task renews a bounded, indexed batch, including archived
-/// Reads. Failed transfers retain the previous URL and retry on a later maintenance run.
+/// Reads. Failed transfers keep the previous URL and retry after their backoff.
 pub(crate) async fn refresh_images(state: &AppState) -> Result<()> {
     let mut rows: Vec<(Uuid, Json<Document>)> = sqlx::query_as(
         "SELECT a.item_id, a.full_text FROM read_articles a JOIN items i ON i.id=a.item_id JOIN topics t ON t.id=i.topic_id \
@@ -286,15 +311,19 @@ pub(crate) async fn refresh_images(state: &AppState) -> Result<()> {
         if state.shutdown.is_cancelled() {
             break;
         }
+        let mut changed = false;
         for image in &mut document.images {
-            *image = images.next().expect("one result per image");
+            let renewed = images.next().expect("one result per image");
+            changed |= *image != renewed;
+            *image = renewed;
         }
         let next = document
             .renew_at()
-            .map(|at| at.max(Utc::now() + chrono::Duration::hours(1)));
-        sqlx::query("UPDATE read_articles SET full_text=$2, images_renew_at=$3 WHERE item_id=$1")
+            .map(|at| at.max(Utc::now() + TimeDelta::hours(1)));
+        // A document up to 2 MiB is rewritten only when one of its images changed.
+        sqlx::query("UPDATE read_articles SET full_text=COALESCE($2, full_text), images_renew_at=$3 WHERE item_id=$1")
             .bind(*id)
-            .bind(Json(document))
+            .bind(changed.then_some(Json(&*document)))
             .bind(next)
             .execute(&state.pool)
             .await?;
@@ -333,6 +362,127 @@ mod tests {
         assert!(html.contains("alt=\"示意图\""));
         let original: Vec<_> = Parser::new_ext(&document.original, OPTIONS).collect();
         assert_eq!(document.events(true), original);
+    }
+
+    #[test]
+    fn failing_images_back_off_and_are_eventually_given_up() {
+        let mut now = Utc::now();
+        let stored = media::UploadResponse {
+            direct_link: "https://media.example.test/figure.png".into(),
+            expires_at: now + TimeDelta::hours(1),
+        };
+        let mut image = Image {
+            origin: "https://example.com/figure.png".into(),
+            stored: Some(stored.clone()),
+            failures: 0,
+            next_retry_at: None,
+        };
+        for hours in [2, 4, 8] {
+            assert!(image.due(now));
+            image.record_transfer(None, now);
+            let retry_at = now + TimeDelta::hours(hours);
+            assert_eq!(image.next_retry_at, Some(retry_at));
+            assert_eq!(image.stored, Some(stored.clone()));
+            assert!(!image.due(retry_at - TimeDelta::seconds(1)));
+            assert!(image.due(retry_at));
+            let document = Document {
+                original: String::new(),
+                zh: None,
+                en: None,
+                images: vec![image.clone()],
+            };
+            assert_eq!(document.renew_at(), Some(retry_at));
+            now = retry_at;
+        }
+        image.record_transfer(None, now);
+        assert_eq!(image.failures, MAX_IMAGE_FAILURES);
+        assert_eq!(image.next_retry_at, None);
+        assert!(!image.due(now + TimeDelta::days(1)));
+        assert_eq!(image.stored, Some(stored));
+        let document = Document {
+            original: String::new(),
+            zh: None,
+            en: None,
+            images: vec![image],
+        };
+        assert_eq!(document.renew_at(), None);
+    }
+
+    #[test]
+    fn renewing_another_image_does_not_shorten_or_restart_backoff() {
+        let now = Utc::now();
+        let retry_at = now + TimeDelta::hours(8);
+        let document = Document {
+            original: String::new(),
+            zh: None,
+            en: None,
+            images: vec![
+                Image {
+                    origin: "https://example.com/failing.png".into(),
+                    stored: None,
+                    failures: 3,
+                    next_retry_at: Some(retry_at),
+                },
+                Image {
+                    origin: "https://example.com/fresh.png".into(),
+                    stored: Some(media::UploadResponse {
+                        direct_link: "https://media.example.test/fresh.png".into(),
+                        expires_at: now + TimeDelta::hours(7),
+                    }),
+                    failures: 0,
+                    next_retry_at: None,
+                },
+            ],
+        };
+        let mut document: Document =
+            serde_json::from_value(serde_json::to_value(document).unwrap()).unwrap();
+        let earlier = now + TimeDelta::hours(1);
+        assert_eq!(document.renew_at(), Some(earlier));
+        assert!(!document.images[0].due(earlier));
+        assert!(document.images[1].due(earlier));
+        document.images[1].record_transfer(
+            Some(media::UploadResponse {
+                direct_link: "https://media.example.test/renewed.png".into(),
+                expires_at: earlier + TimeDelta::days(7),
+            }),
+            earlier,
+        );
+        assert_eq!(document.renew_at(), Some(retry_at));
+        assert_eq!(document.images[0].failures, 3);
+        assert!(!document.images[0].due(retry_at - TimeDelta::seconds(1)));
+        assert!(document.images[0].due(retry_at));
+    }
+
+    #[test]
+    fn successful_transfer_clears_backoff_and_legacy_images_still_load() {
+        let now = Utc::now();
+        let mut image: Image = serde_json::from_value(json!({
+            "origin": "https://example.com/figure.png", "stored": null
+        }))
+        .unwrap();
+        assert_eq!(image.failures, 0);
+        assert_eq!(image.next_retry_at, None);
+        assert!(image.due(now));
+        image.record_transfer(None, now);
+        let retry_at = image.next_retry_at.unwrap();
+        let stored = media::UploadResponse {
+            direct_link: "https://media.example.test/renewed.png".into(),
+            expires_at: retry_at + TimeDelta::days(7),
+        };
+        image.record_transfer(Some(stored.clone()), retry_at);
+        assert_eq!(image.failures, 0);
+        assert_eq!(image.next_retry_at, None);
+        assert_eq!(image.stored, Some(stored.clone()));
+        let next_renewal = stored.expires_at - media::RENEW_BEFORE;
+        assert!(!image.due(next_renewal - TimeDelta::seconds(1)));
+        assert!(image.due(next_renewal));
+        let document = Document {
+            original: String::new(),
+            zh: None,
+            en: None,
+            images: vec![image],
+        };
+        assert_eq!(document.renew_at(), Some(next_renewal));
     }
 
     #[test]

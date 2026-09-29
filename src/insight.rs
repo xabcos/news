@@ -90,6 +90,13 @@ impl Kind {
             Self::Equity => &state.equity,
         }
     }
+    /// Names the edition in errors recorded on its runs.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Ai => "XAI 日报",
+            Self::Equity => "股市观察",
+        }
+    }
 }
 
 pub(crate) fn is_running(state: &AppState) -> bool {
@@ -655,19 +662,19 @@ async fn run(
         let topic = (kind == Kind::Equity).then_some("equity");
         runner::collect_briefing(&state, window, topic).await?;
         let _permit = tokio::select! {
-            _ = state.shutdown.cancelled() => return Err(AppError::Internal("XAI 日报因服务关闭而中断".into())),
+            _ = state.shutdown.cancelled() => return Err(AppError::Internal(format!("{}因服务关闭而中断", kind.label()).into())),
             permit = state.run_slots.clone().acquire_owned() =>
                 permit.map_err(|_| AppError::Internal("调度器已关闭".into()))?,
         };
         tokio::select! {
-            _ = state.shutdown.cancelled() => Err(AppError::Internal("XAI 日报因服务关闭而中断".into())),
+            _ = state.shutdown.cancelled() => Err(AppError::Internal(format!("{}因服务关闭而中断", kind.label()).into())),
             result = tokio::time::timeout(state.config.fetch_timeout, async {
                 match kind {
                     Kind::Ai => execute(&state, window_start, window_end).await,
                     Kind::Equity => crate::equity::execute(&state, window).await,
                 }
             }) =>
-                result.unwrap_or_else(|_| Err(AppError::Internal("XAI 日报生成超时".into()))),
+                result.unwrap_or_else(|_| Err(AppError::Internal(format!("{}生成超时", kind.label()).into()))),
         }
     }.await;
     let status = if outcome.is_ok() { "ok" } else { "failed" };
@@ -867,15 +874,7 @@ async fn generate_analysis(
         let reply = crate::ai::request(state, body.clone()).await?;
         citations.extend(research_citations(&reply));
         let (mut analysis, used, response_id) = parse_reply(&reply)?;
-        usage.input_tokens += used.input_tokens;
-        usage.input_tokens_details.cached_tokens += used.input_tokens_details.cached_tokens;
-        usage.output_tokens += used.output_tokens;
-        usage.output_tokens_details.reasoning_tokens += used.output_tokens_details.reasoning_tokens;
-        usage.server_side_tool_usage_details.web_search_calls +=
-            used.server_side_tool_usage_details.web_search_calls;
-        usage.server_side_tool_usage_details.x_search_calls +=
-            used.server_side_tool_usage_details.x_search_calls;
-        usage.cost_in_usd_ticks += used.cost_in_usd_ticks;
+        usage += used;
         normalize_images(&mut analysis, images);
         match validate_selection(&analysis, sources) {
             Ok(()) => break (analysis, response_id),
@@ -1279,8 +1278,11 @@ fn parse_reply(reply: &Value) -> Result<(InsightAnalysis, Usage, Option<String>)
     let payload = crate::ai::parse_payload(reply)?;
     let analysis: InsightAnalysis = serde_json::from_value(payload)
         .map_err(|_| AppError::Internal("AI 响应不符合约定的结构".into()))?;
-    let usage = serde_json::from_value(reply["usage"].clone()).unwrap_or_default();
-    Ok((analysis, usage, reply["id"].as_str().map(str::to_owned)))
+    Ok((
+        analysis,
+        Usage::from_reply(reply),
+        reply["id"].as_str().map(str::to_owned),
+    ))
 }
 
 async fn finish(
