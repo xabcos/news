@@ -108,6 +108,74 @@ enum Visit {
     Missed(String),
 }
 
+/// Official pages an administrator wrote into the topic's brief. Each one on a provider's
+/// domains becomes one of its price pages once it can be read.
+pub(crate) async fn adopt(state: &AppState, topic: &Topic) -> Result<Vec<String>> {
+    let hints = hinted(&topic.brief);
+    if hints.is_empty() {
+        return Ok(Vec::new());
+    }
+    let known = store::known(state).await?;
+    let mut adopted = Vec::new();
+    for url in hints {
+        let Some(vendor) = known
+            .iter()
+            .find(|vendor| source::official(&url, &vendor.domains))
+        else {
+            continue;
+        };
+        if vendor
+            .urls
+            .iter()
+            .any(|registered| registered == url.as_str())
+        {
+            continue;
+        }
+        let assumed = if vendor.region == "cn" {
+            Currency::Cny
+        } else {
+            Currency::Usd
+        };
+        let trial = Source {
+            id: 0,
+            kind: Kind::Pricing,
+            url: url.to_string(),
+            currency: Some(assumed),
+            content_hash: None,
+        };
+        match source::fetch(state, &trial, &vendor.domains).await {
+            Ok(page) => {
+                let currency = currency_of(&page.text()).unwrap_or(assumed);
+                store::register(state, &vendor.id, url.as_str(), currency).await?;
+                adopted.push(format!("{} {url}", vendor.id));
+            }
+            Err(error) => {
+                tracing::info!(%error, vendor = %vendor.id, %url, "LLM brief page not readable")
+            }
+        }
+    }
+    Ok(adopted)
+}
+
+/// The https addresses written in a brief.
+pub(crate) fn hinted(brief: &str) -> Vec<Url> {
+    let mut urls: Vec<Url> = Vec::new();
+    for (start, _) in brief.match_indices("https://") {
+        let rest = &brief[start..];
+        let end = rest
+            .find(|c: char| c.is_whitespace() || "，。；、：（）【】「」《》\"'<>".contains(c))
+            .unwrap_or(rest.len());
+        let written = rest[..end].trim_end_matches(['.', ',', ';', ':', '!', '?', ')']);
+        if let Ok(url) = Url::parse(written)
+            && is_public_origin(&url)
+            && !urls.contains(&url)
+        {
+            urls.push(url);
+        }
+    }
+    urls
+}
+
 /// Runs after the day's reads. It never fails the run: the catalogue itself is up to date.
 pub(crate) async fn run(state: &AppState, topic: &Topic, deadline: Instant) -> Pass {
     let mut pass = Pass::default();

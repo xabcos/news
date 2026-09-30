@@ -8,10 +8,12 @@ use crate::{
 };
 use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, USER_AGENT};
 use scraper::{ElementRef, Html, Node, Selector};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::HashSet, time::Duration};
 use url::Url;
+
+pub(crate) mod markdown;
 
 const MAX_BYTES: usize = 4 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -147,8 +149,39 @@ pub(crate) fn official(url: &Url, domains: &[String]) -> bool {
 
 pub(crate) async fn fetch(state: &AppState, source: &Source, domains: &[String]) -> Result<Page> {
     let english = source.currency != Some(Currency::Cny);
-    let (url, html) = official_html(state, &source.url, domains, english).await?;
-    let (lines, links) = read(&html, &url, domains, source.kind.limit());
+    let limit = source.kind.limit();
+    let (url, lines, links) = match Url::parse(&source.url)
+        .ok()
+        .and_then(|url| volcengine_doc(&url))
+    {
+        Some(api) => {
+            let (_, body) =
+                official_body(state, api.as_str(), domains, english, Body::Json).await?;
+            let document: Document = serde_json::from_str(&body)
+                .map_err(|_| AppError::BadRequest("官方文档接口的内容无法识别".into()))?;
+            let base = Url::parse(&source.url)
+                .map_err(|_| AppError::BadRequest("官方页面地址无效".into()))?;
+            let text = format!("# {}\n{}", document.result.title, document.result.content);
+            let (lines, links) = markdown::read(&text, &base, domains, limit);
+            (base, lines, links)
+        }
+        None => {
+            let (url, html) =
+                official_body(state, &source.url, domains, english, Body::Html).await?;
+            let (mut lines, mut links) = read(&html, &url, domains, limit);
+            // A price list without table rows is drawn in the browser; the Markdown version
+            // the page links for machine readers has the tables.
+            if source.kind == Kind::Pricing
+                && !lines.iter().any(|line| line.starts_with('|'))
+                && let Some(alternate) = markdown_alternate(&html, &url)
+                && let Ok((_, text)) =
+                    official_body(state, alternate.as_str(), domains, english, Body::Markdown).await
+            {
+                (lines, links) = markdown::read(&text, &url, domains, limit);
+            }
+            (url, lines, links)
+        }
+    };
     if lines.iter().map(|line| line.chars().count()).sum::<usize>() < MIN_CHARS {
         return Err(AppError::BadRequest("官方页面没有可读取的正文".into()));
     }
@@ -172,7 +205,7 @@ pub(crate) async fn links(
     domains: &[String],
     english: bool,
 ) -> Result<Vec<Link>> {
-    let (url, html) = official_html(state, url, domains, english).await?;
+    let (url, html) = official_body(state, url, domains, english, Body::Html).await?;
     Ok(anchors(&html, &url, domains))
 }
 
@@ -185,12 +218,94 @@ pub(crate) fn anchors(html: &str, base: &Url, domains: &[String]) -> Vec<Link> {
     writer.links
 }
 
-/// A page on the provider's own domains, retried once, that did not leave them.
-async fn official_html(
+/// The Markdown version a page links for machine readers.
+fn markdown_alternate(html: &str, base: &Url) -> Option<Url> {
+    Html::parse_document(html)
+        .select(&selector(
+            r#"link[rel="alternate"][type="text/markdown"][href]"#,
+        ))
+        .next()
+        .and_then(|link| base.join(link.value().attr("href")?).ok())
+}
+
+/// Volcengine draws its documentation in the browser, and its documentation API serves the
+/// same document as Markdown. Pages name the document by library and document, as codes on
+/// the console and docs site or as numbers on www.volcengine.com.
+pub(crate) fn volcengine_doc(url: &Url) -> Option<Url> {
+    let host = url.host_str()?;
+    if host != "volcengine.com" && !host.ends_with(".volcengine.com") {
+        return None;
+    }
+    let segments: Vec<&str> = url.path_segments()?.collect();
+    let at = segments.iter().position(|segment| *segment == "docs")?;
+    let (library, document) = (*segments.get(at + 1)?, *segments.get(at + 2)?);
+    if library.is_empty() || document.is_empty() {
+        return None;
+    }
+    let numbered = [library, document]
+        .iter()
+        .all(|part| part.bytes().all(|b| b.is_ascii_digit()));
+    let (library_key, document_key) = if numbered {
+        ("LibraryID", "DocumentID")
+    } else {
+        ("LibraryCode", "DocumentCode")
+    };
+    let mut api = Url::parse("https://docs.volcengine.com/api/doc/getDocDetail").ok()?;
+    api.query_pairs_mut()
+        .append_pair(library_key, library)
+        .append_pair(document_key, document)
+        .append_pair("type", "online");
+    Some(api)
+}
+
+#[derive(Deserialize)]
+struct Document {
+    #[serde(rename = "Result")]
+    result: DocumentBody,
+}
+
+#[derive(Deserialize)]
+struct DocumentBody {
+    #[serde(rename = "Title", default)]
+    title: String,
+    #[serde(rename = "MDContent", default)]
+    content: String,
+}
+
+/// What a download must be.
+#[derive(Clone, Copy)]
+enum Body {
+    Html,
+    Markdown,
+    Json,
+}
+
+impl Body {
+    fn accept(self) -> &'static str {
+        match self {
+            Self::Html => "text/html,application/xhtml+xml",
+            Self::Markdown => "text/markdown,text/plain",
+            Self::Json => "application/json",
+        }
+    }
+
+    fn allows(self, content_type: &str) -> bool {
+        let types: &[&str] = match self {
+            Self::Html => &["text/html", "application/xhtml+xml"],
+            Self::Markdown => &["text/markdown", "text/plain"],
+            Self::Json => &["application/json"],
+        };
+        types.iter().any(|kind| content_type.starts_with(kind))
+    }
+}
+
+/// A document on the provider's own domains, retried once, that did not leave them.
+async fn official_body(
     state: &AppState,
     url: &str,
     domains: &[String],
     english: bool,
+    body: Body,
 ) -> Result<(Url, String)> {
     let url = Url::parse(url).map_err(|_| AppError::BadRequest("官方页面地址无效".into()))?;
     if !is_public_origin(&url) || !official(&url, domains) {
@@ -198,11 +313,11 @@ async fn official_html(
             "官方页面必须是服务商域名下的公开 HTTPS 地址".into(),
         ));
     }
-    let (url, bytes) = match download(state, url.clone(), english).await {
+    let (url, bytes) = match download(state, url.clone(), english, body).await {
         Ok(page) => page,
         Err(_) => {
             tokio::time::sleep(RETRY_DELAY).await;
-            download(state, url, english).await?
+            download(state, url, english, body).await?
         }
     };
     if !official(&url, domains) {
@@ -215,13 +330,13 @@ async fn official_html(
 
 /// The hardened origin client resolves every hop to public addresses and keeps redirects
 /// on public HTTPS; this bounds time, type and size and sends no credentials.
-async fn download(state: &AppState, url: Url, english: bool) -> Result<(Url, Vec<u8>)> {
+async fn download(state: &AppState, url: Url, english: bool, body: Body) -> Result<(Url, Vec<u8>)> {
     let mut response = state
         .origin_http
         .get(url)
         .timeout(TIMEOUT)
         .header(USER_AGENT, AGENT)
-        .header(ACCEPT, "text/html,application/xhtml+xml")
+        .header(ACCEPT, body.accept())
         .header(
             ACCEPT_LANGUAGE,
             if english {
@@ -239,9 +354,8 @@ async fn download(state: &AppState, url: Url, english: bool) -> Result<(Url, Vec
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("");
-    if !content_type.starts_with("text/html") && !content_type.starts_with("application/xhtml+xml")
-    {
-        return Err(AppError::BadRequest("官方页面不是 HTML".into()));
+    if !body.allows(content_type) {
+        return Err(AppError::BadRequest("官方页面的内容类型不符".into()));
     }
     if response
         .content_length()
@@ -403,16 +517,14 @@ impl<'a> Writer<'a> {
         }
     }
 
+    /// One finished line of text.
+    fn push(&mut self, line: &str) {
+        self.line = line.to_owned();
+        self.flush();
+    }
+
     fn link(&mut self, anchor: ElementRef<'_>) {
-        if self.links.len() >= MAX_LINKS {
-            return;
-        }
-        let Some(url) = anchor
-            .value()
-            .attr("href")
-            .and_then(|href| self.base.join(href).ok())
-            .filter(|url| is_public_origin(url) && official(url, self.domains))
-        else {
+        let Some(href) = anchor.value().attr("href") else {
             return;
         };
         let mut text = String::new();
@@ -427,8 +539,24 @@ impl<'a> Writer<'a> {
                     .unwrap_or(""),
             );
         }
+        self.add_link(&text, href);
+    }
+
+    /// Keeps a link on the provider's own domains, once per address.
+    fn add_link(&mut self, text: &str, href: &str) {
+        if self.links.len() >= MAX_LINKS || text.is_empty() {
+            return;
+        }
+        let Some(url) = self
+            .base
+            .join(href)
+            .ok()
+            .filter(|url| is_public_origin(url) && official(url, self.domains))
+        else {
+            return;
+        };
         let url = url.to_string();
-        if !text.is_empty() && self.seen.insert(url.clone()) {
+        if self.seen.insert(url.clone()) {
             self.links.push(Link {
                 text: text.chars().take(120).collect(),
                 url,

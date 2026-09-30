@@ -712,9 +712,17 @@ fn verify_row(
     } else {
         String::new()
     };
-    let threshold = draft
-        .context_threshold
-        .filter(|threshold| token_counts(&place.context).contains(threshold));
+    // A table giving input lengths in thousands of tokens writes the 32K tier as 32.
+    let in_thousands = PER_THOUSAND
+        .iter()
+        .any(|mark| place.context.to_lowercase().contains(mark));
+    let threshold = draft.context_threshold.filter(|threshold| {
+        token_counts(&place.context).contains(threshold)
+            || (in_thousands
+                && written
+                    .iter()
+                    .any(|count| (count * 1000.0).round() as i64 == *threshold))
+    });
     let [input, cached_input, cache_write, cache_write_1h, output] = values;
     Ok((
         Price {

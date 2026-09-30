@@ -1300,7 +1300,9 @@ fn news_adds_a_provider_reported_twice_once_from_its_own_site() {
         id: "qwen".into(),
         name: "通义千问".into(),
         name_en: "Qwen".into(),
+        region: "cn".into(),
         domains: vec!["aliyun.com".into(), "qwen.ai".into()],
+        urls: Vec::new(),
     }];
     let news = [
         "https://mimo.xiaomi.com/mimo-v2-6",
@@ -1587,4 +1589,198 @@ fn each_context_tier_is_quoted_from_its_own_row() {
     );
     assert!(verified.models[0].prices.is_none());
     assert_eq!(verified.rejected[0].reason, "摘录不在官方页面中");
+}
+
+/// Volcengine's model price document as its documentation API serves it.
+const DOUBAO_MARKDOWN: &str = r#"不同模型服务支持的能力及单价各不相同，本文为您介绍各模型的计费公式及单价。
+
+# 大语言模型
+
+## 在线推理（常规）
+
+<div data-tips="true" data-tips-type="warning">空闲时段：除上述高峰时段外，其余均为空闲时段。</div>
+
+<span aceTableMode="list" aceTableWidth="1.5,1.5,1,1,1"></span>
+|模型名称 |条件<br><br>输入长度：千 token |输入(非音频)<br><br>元/百万token |缓存存储<br><br>元/百万token/小时 |缓存命中(非音频)<br><br>元/百万token |输出<br><br>元/百万token |
+|---|---|---|---|---|---|
+|doubao\-seed\-2.1\-pro |输入长度 [0, 1024] |6.00 |0.017 |1.20 |30.00 |
+|doubao\-seed\-2.0\-pro |输入长度 [0, 32] |3.2 |0.017 |0.64 |16.0 |
+||输入长度 (32, 128] |4.8 |0.017 |0.96 |24.0 |
+||输入长度 (128, 256] |9.6 |0.017 |1.92 |48.0 |
+|deepseek\-v4\-flash正式版<br><br>> 调整前价格，2026\-08\-21 起不适用 |\- |1.00 |0.017 |0.20 |2.00 |
+
+> * 分段计费：部分模型适用，不同输入长度，token单价不同。
+~~旧价 9.00~~ 详见[计费说明](/docs/82379/1099320)。
+"#;
+
+/// Kimi's price page as the Markdown version its HTML links.
+const KIMI_MARKDOWN: &str = r#"# 模型推理价格说明
+
+export const DocTable = ({columns = [], rows = []}) => {
+  return <div className="doc-table-wrap">
+      <table className="doc-table">
+        {rows.map((row, rowIndex) => <tr key={rowIndex}></tr>)}
+      </table>
+    </div>;
+};
+
+## 模型定价
+
+### K2 系列模型
+
+<DocTable
+  columns={[
+{ title: "模型", width: "24%" },
+{ title: "计费单位", width: "12%" },
+{ title: "输入价格（缓存命中）", width: "16%" },
+{ title: "输出价格", width: "14%" },
+]}
+  rows={[
+["kimi-k2.7-code", "1M tokens", "¥1.30", "¥27.00"],
+["kimi-k2.6", "1M tokens", "¥1.10", "¥27.00"],
+]}
+/>
+
+<Note>
+此处 1M = 1,000,000，表格中的价格代表每消耗 1M tokens 的价格。
+</Note>
+"#;
+
+#[test]
+fn documentation_markdown_reads_like_a_page() {
+    let base = url::Url::parse("https://www.volcengine.com/docs/82379/1544106").unwrap();
+    let (lines, links) =
+        super::source::markdown::read(DOUBAO_MARKDOWN, &base, &["volcengine.com".into()], 150_000);
+    assert_eq!(
+        lines[1..8],
+        [
+            "# 大语言模型",
+            "## 在线推理（常规）",
+            "空闲时段：除上述高峰时段外，其余均为空闲时段。",
+            "| 模型名称 | 条件 输入长度：千 token | 输入(非音频) 元/百万token | 缓存存储 元/百万token/小时 | 缓存命中(非音频) 元/百万token | 输出 元/百万token |",
+            "| doubao-seed-2.1-pro | 输入长度 [0, 1024] | 6.00 | 0.017 | 1.20 | 30.00 |",
+            "| doubao-seed-2.0-pro | 输入长度 [0, 32] | 3.2 | 0.017 | 0.64 | 16.0 |",
+            "| 输入长度 (32, 128] | 4.8 | 0.017 | 0.96 | 24.0 |",
+        ]
+    );
+    assert_eq!(
+        lines[9],
+        "| deepseek-v4-flash正式版 > 调整前价格，2026-08-21 起不适用 | - | 1.00 | 0.017 | 0.20 | 2.00 |"
+    );
+    assert_eq!(
+        lines[10],
+        "- 分段计费：部分模型适用，不同输入长度，token单价不同。"
+    );
+    // Struck-through text is not read; links on the provider's domains are kept.
+    assert_eq!(lines[11], "详见计费说明。");
+    assert_eq!(
+        links[0].url,
+        "https://www.volcengine.com/docs/82379/1099320"
+    );
+
+    let base = url::Url::parse("https://platform.kimi.com/docs/pricing/chat").unwrap();
+    let (lines, _) =
+        super::source::markdown::read(KIMI_MARKDOWN, &base, &["kimi.com".into()], 150_000);
+    assert_eq!(
+        lines,
+        [
+            "# 模型推理价格说明",
+            "## 模型定价",
+            "### K2 系列模型",
+            "| 模型 | 计费单位 | 输入价格（缓存命中） | 输出价格 |",
+            "| kimi-k2.7-code | 1M tokens | ¥1.30 | ¥27.00 |",
+            "| kimi-k2.6 | 1M tokens | ¥1.10 | ¥27.00 |",
+            "此处 1M = 1,000,000，表格中的价格代表每消耗 1M tokens 的价格。",
+        ]
+    );
+}
+
+#[test]
+fn a_doubao_price_read_from_its_documentation_verifies() {
+    let base = url::Url::parse("https://www.volcengine.com/docs/82379/1544106").unwrap();
+    let (lines, _) =
+        super::source::markdown::read(DOUBAO_MARKDOWN, &base, &["volcengine.com".into()], 150_000);
+    let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let pages = [page(Kind::Pricing, Some(Currency::Cny), &lines)];
+    let tier = |threshold: Option<i64>, values: [f64; 3], quote: &str| DraftPrice {
+        context: if threshold.is_some() {
+            Band::Long
+        } else {
+            Band::Short
+        },
+        context_threshold: threshold,
+        ..price_draft(Period::All, values, quote)
+    };
+    let verified = verify::models(
+        vec![draft(
+            "doubao-seed-2.0-pro",
+            vec![
+                tier(
+                    None,
+                    [3.2, 0.64, 16.0],
+                    "| doubao-seed-2.0-pro | 输入长度 [0, 32] | 3.2 | 0.017 | 0.64 | 16.0 |",
+                ),
+                tier(
+                    Some(32_000),
+                    [4.8, 0.96, 24.0],
+                    "| 输入长度 (32, 128] | 4.8 | 0.017 | 0.96 | 24.0 |",
+                ),
+                tier(
+                    Some(128_000),
+                    [9.6, 1.92, 48.0],
+                    "| 输入长度 (128, 256] | 9.6 | 0.017 | 1.92 | 48.0 |",
+                ),
+            ],
+        )],
+        &pages,
+        &[],
+    );
+    assert!(verified.rejected.is_empty(), "{:?}", verified.rejected);
+    // Lengths are given in thousands of tokens: (32, 128] is the tier from 32K.
+    let thresholds: Vec<Option<i64>> = verified.models[0]
+        .prices
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|price| price.context_threshold)
+        .collect();
+    assert_eq!(thresholds, [None, Some(32_000), Some(128_000)]);
+}
+
+#[test]
+fn volcengine_documents_are_read_through_their_documentation_api() {
+    let api = |url: &str| {
+        super::source::volcengine_doc(&url::Url::parse(url).unwrap()).map(|api| api.to_string())
+    };
+    assert_eq!(
+        api("https://console.volcengine.com/ark/region:cn-beijing/docs/ark/model-pricing?lang=zh")
+            .as_deref(),
+        Some(
+            "https://docs.volcengine.com/api/doc/getDocDetail?LibraryCode=ark&DocumentCode=model-pricing&type=online"
+        )
+    );
+    assert_eq!(
+        api("https://www.volcengine.com/docs/82379/1544106").as_deref(),
+        Some(
+            "https://docs.volcengine.com/api/doc/getDocDetail?LibraryID=82379&DocumentID=1544106&type=online"
+        )
+    );
+    assert_eq!(api("https://www.volcengine.com/product/ark"), None);
+    assert_eq!(api("https://docs.example.com/docs/ark/model-pricing"), None);
+}
+
+#[test]
+fn official_pages_can_be_named_in_the_brief() {
+    let brief = "中文：收录主流大语言模型。官方价格页：豆包 https://console.volcengine.com/ark/region:cn-beijing/docs/ark/model-pricing?lang=zh；Kimi（https://platform.kimi.com/docs/pricing/chat）。http://insecure.example.com https://platform.kimi.com/docs/pricing/chat.";
+    let urls: Vec<String> = super::lifecycle::hinted(brief)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(
+        urls,
+        [
+            "https://console.volcengine.com/ark/region:cn-beijing/docs/ark/model-pricing?lang=zh",
+            "https://platform.kimi.com/docs/pricing/chat",
+        ]
+    );
 }

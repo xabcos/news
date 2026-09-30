@@ -637,15 +637,49 @@ pub(crate) struct Known {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) name_en: String,
+    pub(crate) region: String,
     pub(crate) domains: Vec<String>,
+    /// Its registered pages.
+    pub(crate) urls: Vec<String>,
 }
 
 pub(crate) async fn known(state: &AppState) -> Result<Vec<Known>> {
     Ok(sqlx::query_as(
-        "SELECT id, name, name_en, domains FROM llm_vendors ORDER BY sort_weight, id",
+        "SELECT v.id, v.name, v.name_en, v.region, v.domains,
+                COALESCE(array_agg(s.url) FILTER (WHERE s.url IS NOT NULL), '{}') AS urls
+         FROM llm_vendors v LEFT JOIN llm_sources s ON s.vendor_id = v.id
+         GROUP BY v.id ORDER BY v.sort_weight, v.id",
     )
     .fetch_all(&state.pool)
     .await?)
+}
+
+/// Registers a price page an administrator pointed to; a provider not listed yet is tried
+/// by this run.
+pub(crate) async fn register(
+    state: &AppState,
+    vendor: &str,
+    url: &str,
+    currency: Currency,
+) -> Result<()> {
+    let mut transaction = state.pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO llm_sources (vendor_id, kind, url, currency, sort_weight)
+         SELECT $1, 'pricing', $2, $3, COALESCE(MAX(sort_weight), 0) + 10
+         FROM llm_sources WHERE vendor_id = $1
+         ON CONFLICT (vendor_id, url) DO NOTHING",
+    )
+    .bind(vendor)
+    .bind(url)
+    .bind(currency.as_str())
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query("UPDATE llm_vendors SET checked_at = NULL WHERE id = $1 AND state <> 'active'")
+        .bind(vendor)
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+    Ok(())
 }
 
 /// A provider the news reported, to be tried before it is listed.

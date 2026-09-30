@@ -488,6 +488,12 @@ enum Report {
 /// when no provider could be reached.
 pub(crate) async fn execute(state: &AppState, topic: &Topic) -> Result<Outcome> {
     let deadline = Instant::now() + state.config.fetch_timeout.saturating_sub(RUN_MARGIN);
+    let adopted = lifecycle::adopt(state, topic)
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "failed to register LLM pages from the brief");
+            Vec::new()
+        });
     let vendors = store::vendors(state, store::Selection::Listed).await?;
     let slots = Arc::new(Semaphore::new(VENDOR_CONCURRENCY));
     let mut jobs = JoinSet::new();
@@ -556,7 +562,7 @@ pub(crate) async fn execute(state: &AppState, topic: &Topic) -> Result<Outcome> 
     let pass = lifecycle::run(state, topic, deadline).await;
     outcome.usage += pass.usage;
     outcome.changes += pass.changes;
-    outcome.payload = json!({ "vendors": vendors, "lifecycle": pass.payload });
+    outcome.payload = json!({ "vendors": vendors, "adopted": adopted, "lifecycle": pass.payload });
     Ok(outcome)
 }
 
