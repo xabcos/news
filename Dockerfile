@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM rust:bookworm AS builder
+FROM rust:trixie AS builder
 WORKDIR /app
 
 COPY Cargo.toml Cargo.lock ./

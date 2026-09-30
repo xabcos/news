@@ -2,7 +2,7 @@
 name = "news"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.94"
+rust-version = "1.98"
 
 [dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
@@ -33,7 +33,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 zeroize = "1"
-feed-rs = { version = "2", default-features = false }
+feed-rs = { version = "3", default-features = false }
 
 [dev-dependencies]
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "aws_lc_rs"] }
