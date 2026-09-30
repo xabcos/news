@@ -30,7 +30,7 @@ pub(super) async fn fetch(state: &AppState, value: &str) -> Result<Source> {
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum Content {
+pub(crate) enum Content {
     Html,
     Json,
     Feed,
@@ -39,7 +39,7 @@ pub(super) enum Content {
 
 /// `origin_http` resolves every hop to public addresses and keeps redirects on public
 /// HTTPS; this bounds time, content type and size, and sends no credentials or cookies.
-pub(super) async fn download(
+pub(crate) async fn download(
     state: &AppState,
     url: Url,
     content: Content,
@@ -113,7 +113,7 @@ pub(super) async fn download(
     Ok((url, bytes))
 }
 
-pub(super) fn x_status(url: &Url) -> Option<String> {
+pub(crate) fn x_status(url: &Url) -> Option<String> {
     if !is_public_origin(url)
         || !matches!(
             url.host_str()?,

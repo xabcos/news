@@ -19,6 +19,8 @@ const DAYS_LIMIT = 366;
 const PRELOAD_MARGIN = "0px 0px 70% 0px";
 const INSIGHT_ID = "insight";
 const EQUITY_ID = "equity-insight";
+// The photograph gallery: rows of photographs at their own ratio, opened in a lightbox.
+const PHOTO_TOPIC = "w";
 const storage = (() => {
   try {
     const store = window.localStorage;
@@ -54,7 +56,8 @@ const TEXT = {
     risks: "风险预警", actions: "观察方向",
     kind: "类型", horizon: "时间", beneficiaries: "受益者", entry: "切入方式", watch: "观察信号", risk: "主要风险",
     confidence: (n, grade) => `证据强度 ${n}/5${grade ? ` · 证据 ${grade}` : ""}`, sources: "来源",
-    items: (n) => `${n} 条`,
+    items: (n) => `${n} 条`, photos: (n) => `${n} 张`,
+    close: "关闭", previous: "上一张", next: "下一张",
   },
   en: {
     locale: "en", lang: "中文", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", today: "Today", top: "Top",
@@ -66,7 +69,8 @@ const TEXT = {
     risks: "Risk alerts", actions: "What to watch",
     kind: "Type", horizon: "Horizon", beneficiaries: "Who may benefit", entry: "Entry path", watch: "Signals to watch", risk: "Main risk",
     confidence: (n, grade) => `Evidence ${n}/5${grade ? ` · Grade ${grade}` : ""}`, sources: "Sources",
-    items: (n) => `${n} ${n === 1 ? "item" : "items"}`,
+    items: (n) => `${n} ${n === 1 ? "item" : "items"}`, photos: (n) => `${n} ${n === 1 ? "photo" : "photos"}`,
+    close: "Close", previous: "Previous", next: "Next",
   },
 };
 
@@ -641,6 +645,7 @@ function renderTabs() {
   // The visual feed gets a wider desktop canvas while every other topic keeps the
   // narrow reading measure. This class also updates when navigating between tabs.
   document.body.classList.toggle("p-topic", state.topic === "p");
+  document.body.classList.toggle("w-topic", state.topic === PHOTO_TOPIC);
   document.title = state.topic === INSIGHT_ID
     ? `𝑵𝒆𝒘𝒔 · ${state.lang === "en" ? "XAI Daily" : "XAI 日报"}`
     : state.topic === EQUITY_ID ? `𝑵𝒆𝒘𝒔 · ${state.lang === "en" ? "Equity notes" : "股市观察"}` : "𝑵𝒆𝒘𝒔";
@@ -1019,6 +1024,7 @@ function renderGroups(digest) {
     const section = document.createElement("section");
     section.className = "group";
     section.classList.toggle("image-news-group", group.id === "p");
+    section.classList.toggle("photo-group", group.id === PHOTO_TOPIC);
     if (!single) {
       const heading = document.createElement("div");
       heading.className = "group-title";
@@ -1026,7 +1032,7 @@ function renderGroups(digest) {
       title.textContent = name(group);
       const count = document.createElement("p");
       count.className = "muted small";
-      count.textContent = t().items(group.total);
+      count.textContent = group.id === PHOTO_TOPIC ? t().photos(group.total) : t().items(group.total);
       heading.append(title, count);
       section.append(heading);
     }
@@ -1037,7 +1043,130 @@ function renderGroups(digest) {
 }
 
 function renderGroupItem(group, item) {
+  if (group.id === PHOTO_TOPIC) return photoCard(item);
   return group.id === "p" ? imageNewsCard(item) : card(item, group.id === "reads");
+}
+
+// Photographs of one row share a height; each keeps its own ratio, so none is cropped.
+const photoItems = new WeakMap();
+let lightbox = null;
+
+function photoCard(item) {
+  const figure = document.createElement("figure");
+  figure.className = "photo";
+  const { url = "", width, height } = item.image || {};
+  figure.style.setProperty("--ratio", String(width > 0 && height > 0 ? width / height : 0.75));
+  const link = document.createElement("a");
+  link.className = "photo-media";
+  link.href = item.url;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  const image = document.createElement("img");
+  image.src = url;
+  image.alt = pick(item.image || {}, "caption") || pick(item, "title");
+  image.loading = "lazy";
+  image.decoding = "async";
+  image.referrerPolicy = "no-referrer";
+  // A photograph the file server no longer keeps leaves with its card.
+  image.addEventListener("error", () => figure.remove(), { once: true });
+  link.append(image);
+  // A plain click opens the lightbox; modified clicks still open the post.
+  link.addEventListener("click", (event) => {
+    if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    openLightbox(figure);
+  });
+  figure.append(link);
+  if ([...(item.tags || []), ...(item.tags_en || [])].includes("AI")) figure.append(span("AI", "photo-badge"));
+  const caption = document.createElement("figcaption");
+  caption.className = "photo-caption";
+  caption.append(span(pick(item, "title"), "photo-title"), span(photoCredit(item), "photo-credit"));
+  figure.append(caption);
+  photoItems.set(figure, item);
+  return figure;
+}
+
+const photoCredit = (item) => item.image?.credit || item.source || hostOf(item.url);
+
+function openLightbox(figure) {
+  lightbox ||= createLightbox();
+  document.body.classList.add("dialog-open");
+  if (!lightbox.dialog.open) {
+    lightbox.dialog.showModal();
+    // Focus the lightbox itself: the arrow keys work at once and no button shows a ring.
+    lightbox.dialog.focus();
+  }
+  showPhoto(figure);
+}
+
+function createLightbox() {
+  const dialog = document.createElement("dialog");
+  dialog.className = "lightbox";
+  dialog.tabIndex = -1;
+  const figure = document.createElement("figure");
+  figure.className = "lightbox-figure";
+  const image = document.createElement("img");
+  image.className = "lightbox-image";
+  image.decoding = "async";
+  image.referrerPolicy = "no-referrer";
+  const caption = document.createElement("figcaption");
+  caption.className = "lightbox-caption";
+  figure.append(image, caption);
+  const close = button("×", () => dialog.close(), "lightbox-button lightbox-close");
+  const previous = button("‹", () => stepPhoto(-1), "lightbox-button lightbox-previous");
+  const next = button("›", () => stepPhoto(1), "lightbox-button lightbox-next");
+  dialog.append(figure, close, previous, next);
+  dialog.addEventListener("close", () => document.body.classList.remove("dialog-open"));
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog || event.target === figure) dialog.close();
+  });
+  dialog.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowLeft") stepPhoto(-1);
+    else if (event.key === "ArrowRight") stepPhoto(1);
+  });
+  // A horizontal swipe turns the page on touch screens.
+  let start = null;
+  dialog.addEventListener("pointerdown", (event) => {
+    start = event.isPrimary ? { x: event.clientX, y: event.clientY } : null;
+  });
+  dialog.addEventListener("pointercancel", () => { start = null; });
+  dialog.addEventListener("pointerup", (event) => {
+    if (!start) return;
+    const dx = event.clientX - start.x;
+    const dy = event.clientY - start.y;
+    start = null;
+    if (Math.abs(dx) >= 48 && Math.abs(dx) > Math.abs(dy) * 1.2) stepPhoto(dx < 0 ? 1 : -1);
+  });
+  document.body.append(dialog);
+  return { dialog, image, caption, close, previous, next, current: null };
+}
+
+// The lightbox remembers the photograph by id: a background refresh draws new cards.
+function stepPhoto(offset) {
+  const photos = [...el.digest.querySelectorAll(".photo")];
+  const index = photos.findIndex((figure) => photoItems.get(figure)?.id === lightbox.current);
+  const target = index < 0 ? null : photos[index + offset];
+  if (target) showPhoto(target);
+}
+
+function showPhoto(figure) {
+  const item = photoItems.get(figure);
+  if (!item) return;
+  const { image, caption, close, previous, next } = lightbox;
+  lightbox.current = item.id;
+  image.src = item.image?.url || "";
+  image.alt = figure.querySelector("img")?.alt || "";
+  caption.replaceChildren(span(pick(item, "title"), "lightbox-title"));
+  const source = sourceLink(item.url, `${photoCredit(item)} ↗`);
+  if (source) caption.append(source);
+  const photos = [...el.digest.querySelectorAll(".photo")];
+  const index = photos.indexOf(figure);
+  previous.disabled = index <= 0;
+  next.disabled = index < 0 || index >= photos.length - 1;
+  for (const [control, label] of [[close, t().close], [previous, t().previous], [next, t().next]]) {
+    control.setAttribute("aria-label", label);
+    control.title = label;
+  }
 }
 
 function imageNewsCard(item) {

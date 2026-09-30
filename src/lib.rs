@@ -8,6 +8,7 @@ pub mod email;
 pub mod equity;
 pub mod error;
 pub mod fetch;
+mod gallery;
 pub mod insight;
 mod llm;
 pub mod media;

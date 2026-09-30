@@ -23,6 +23,8 @@ use uuid::Uuid;
 
 /// Mirrored copies are renewed this long before tmpfile expires them.
 pub(crate) const RENEW_BEFORE: TimeDelta = TimeDelta::hours(6);
+/// News images of this many recent days are renewed, even after a copy has lapsed.
+pub(crate) const RENEW_DAYS: i64 = 7;
 const IMAGE_BATCH_TIMEOUT: Duration = Duration::from_secs(90);
 const ORIGIN_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 // Tiny square thumbnails are commonly used by publishers for "image unavailable"
@@ -505,7 +507,7 @@ fn extension_for(content_type: &str) -> &'static str {
 /// Renews one week's media in one batch so stored copies of the same photograph
 /// reuse a transfer. Published daily images enter the batch before archive cards.
 pub async fn startup_sync(state: &AppState) -> Result<()> {
-    let keep_from = state.digest.today() - chrono::Duration::days(7);
+    let keep_from = state.digest.today() - chrono::Duration::days(RENEW_DAYS);
     let rows = sqlx::query_as::<_, StoredImageRow>(
         "SELECT items.id, items.topic_id, items.day, items.image FROM items JOIN topics ON topics.id = items.topic_id WHERE items.image IS NOT NULL AND items.day >= $1 AND topics.owner_user_id IS NULL ORDER BY items.day DESC LIMIT 500",
     )

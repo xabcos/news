@@ -8,6 +8,7 @@ NEWS 按主题采集、去重并整理中英文新闻，提供新闻首页、Ato
 | --- | --- | --- |
 | 𝐗 | `x` | 全球 AI、科技产品、硬件、支付、创业与产业趋势 |
 | 𝑷 | `p` | AI、科技、军事、财经热点图片和公开视觉内容 |
+| 𝑾 | `w` | X 上正在传播的美丽女性照片，真人摄影与 AI 美图 |
 | 𝑪 | `china-ai` | 中国模型、开发平台、开源与应用生态 |
 | 𝑶 | `overseas-ai` | OpenAI、Anthropic、Grok、Gemini、Mistral 等海外 LLM 的产品、研究与商业动态 |
 | 𝑮𝒐𝒔𝒔𝒊𝒑 | `gossip` | AI 圈爆料、回应、公开热议与网络安全事件 |
@@ -23,6 +24,16 @@ NEWS 按主题采集、去重并整理中英文新闻，提供新闻首页、Ato
 主题编辑中的“启用抓取”和“前台展示”独立保存，只有两者同时开启才进入前台导航、ALL、日期列表、订阅和阅读接口，管理员阅读端也不例外。个人主题同样遵守展示开关，原有账户访问范围保持不变。关闭展示不影响采集及工作台管理；恢复展示会读取仍保留的可见历史内容。
 
 排程的开始时间精确到分钟、结束时间为整点。间隔 1440 分钟表示每个运行日在开始时间运行一次：成功后固定到下一个开始时间，手动运行和启动时间的延迟都不会让它后移；失败仍按退避重试，受每日运行上限约束。
+
+## 𝑾
+
+`𝑾` 位于 `𝑷` 后，收录 X 上正在传播的美丽女性照片。真人摄影与 AI 生成图都可以，以欣赏艺术的眼光挑选，泳装、比基尼、写真与 Cosplay 都在范围内；不设点赞门槛，没有合适的照片时允许不收录。默认每 6 小时采集一轮，只用 X 检索并开启图片理解，每轮最多 8 张。
+
+模型只提出帖子和选中的照片。程序逐条读取 X 网页嵌入组件使用的公开数据（`cdn.syndication.twimg.com/tweet-result`，无需账号），核对帖子公开存在、发布时间在采集窗口内、确有照片；地址、作者、发布时间、照片及其宽高都以 X 返回的为准。X 标记为敏感内容（帖子的 `possibly_sensitive` 或照片的敏感提示）和长边不足 1000 像素的照片不收，同一账号两天内只收一张，帖子按编号去重；读不到的帖子直接丢弃，不回退为相信模型。丢弃原因写入运行记录。AI 生成的图片以 `AI` 为第一个标签，页面显示角标。
+
+照片按 X 的 medium 规格（最长边 1200 像素）转存到 `TMPFILE_BASE_URL`，续期与 𝑷 相同：收录后 7 天内自动续期，之后以文件服务器的有效期为准。超出续期天数且转存副本已过期的条目在每小时的数据清理中删除；续期天数内的照片即使因服务中断暂时过期，也留待续期恢复，期间页面不显示。
+
+页面沿用 𝑷 的宽屏画布，照片按原始比例排成等高的行，不裁切；悬停显示标题与作者，点击在灯箱中看大图，可用方向键或左右滑动翻页，并链接原帖。𝑾 出现在 ALL 页（位于 𝑷 之后）和订阅中，不参与 XAI 日报的补采、素材、配图与统计。
 
 ## 𝑬 股市观察
 
@@ -84,7 +95,7 @@ Reads 默认按收录时间连续展示，不按天分组，每页 12 篇。最�
 
 ## XAI 日报
 
-首页的 `AI` 入口展示 XAI 日报。默认每天北京时间 06:00 补采启用且前台展示的公共栏目，然后生成前 24 小时的新闻与最近 7 天的趋势。新闻窗口固定为 `[昨日06:00, 今日06:00)`，手动生成与自动重试共用这一窗口。
+首页的 `AI` 入口展示 XAI 日报。默认每天北京时间 06:00 补采启用且前台展示的公共栏目（𝑾 除外），然后生成前 24 小时的新闻与最近 7 天的趋势。新闻窗口固定为 `[昨日06:00, 今日06:00)`，手动生成与自动重试共用这一窗口。
 
 统计范围为 **`x`、`p`、`china-ai`、`overseas-ai`、`gossip`、`cases`**。本期数量、栏目与标签分布、7 天统计和此前 6 日日均均使用这一范围：先筛选启用的公共栏目、有效发布时间和可见条目，再按原文 URL 指纹去重。统计表示报道收录数量，Gossip 被收录不代表其说法已证实。
 
@@ -111,7 +122,7 @@ docker compose config >/dev/null
 docker compose up -d
 ```
 
-服务绑定宿主机 `127.0.0.1:8793`。将 [Nginx 配置](deploy/nginx/xabcnews.com.conf) 加入网关的 `http` 配置，为 `xabcnews.com` 提供入口。空库依次执行初始化及后续迁移，创建表结构、Free / Pro 套餐、11 个默认公开栏目、内部股市资料源和 𝑳𝑳𝑴 服务商目录；调度器按栏目配置采集，并生成最近一期已截止研判。
+服务绑定宿主机 `127.0.0.1:8793`。将 [Nginx 配置](deploy/nginx/xabcnews.com.conf) 加入网关的 `http` 配置，为 `xabcnews.com` 提供入口。空库依次执行初始化及后续迁移，创建表结构、Free / Pro 套餐、12 个默认公开栏目、内部股市资料源和 𝑳𝑳𝑴 服务商目录；调度器按栏目配置采集，并生成最近一期已截止研判。
 
 当前初始化基线用于全新数据库。运行记录、账号和内容从空白开始，配置中的管理员邮箱首次登录即创建管理员；后续结构变更使用新迁移。主题的 `daily_run_cap` 限制每日运行次数，Reads 的每日 32 篇是独立的发布上限。
 
@@ -165,7 +176,7 @@ GET /sitemap.xml
 ```bash
 make release-check
 NEWS_DAILY_TEST_DATABASE_URL=postgres://.../news_daily_test_check cargo test --locked postgres_daily_pipeline -- --ignored
-NEWS_DAILY_TEST_DATABASE_URL=postgres://.../news_daily_test_check NEWS_PAYMENT_TEST_DATABASE_URL=postgres://.../news_payment_audit_check NEWS_READS_TEST_DATABASE_URL=postgres://.../news_reads_test_check NEWS_EQUITY_TEST_DATABASE_URL=postgres://.../news_equity_test_check NEWS_LLM_TEST_DATABASE_URL=postgres://.../news_llm_test_check make integration-test
+NEWS_DAILY_TEST_DATABASE_URL=postgres://.../news_daily_test_check NEWS_PAYMENT_TEST_DATABASE_URL=postgres://.../news_payment_audit_check NEWS_READS_TEST_DATABASE_URL=postgres://.../news_reads_test_check NEWS_EQUITY_TEST_DATABASE_URL=postgres://.../news_equity_test_check NEWS_LLM_TEST_DATABASE_URL=postgres://.../news_llm_test_check NEWS_GALLERY_TEST_DATABASE_URL=postgres://.../news_gallery_test_check make integration-test
 ```
 
-`release-check` 执行格式检查、单元测试、Clippy、前端语法和 Compose 配置检查。`integration-test` 使用五个独立空库，名称分别以 `news_daily_test`、`news_payment_audit_`、`news_reads_test`、`news_equity_test` 和 `news_llm_test` 开头，并需要本地测试配置。模拟接口覆盖日报与支付流程，Reads 的全文、发布与归档，以及主题开关四种组合、各角色阅读可见性、股市研判生成、引用隐私、采集复用、同日版本、缓存和历史读取；𝑳𝑳𝑴 覆盖首次导入、调价与下线记录、暂缓与确认下线、服务商下线与恢复收录、一天清理与候选清理、隐藏模型和公开页面、JSON 与订阅。CI 自动执行。
+`release-check` 执行格式检查、单元测试、Clippy、前端语法和 Compose 配置检查。`integration-test` 使用六个独立空库，名称分别以 `news_daily_test`、`news_payment_audit_`、`news_reads_test`、`news_equity_test`、`news_llm_test` 和 `news_gallery_test` 开头，并需要本地测试配置。模拟接口覆盖日报与支付流程，Reads 的全文、发布与归档，以及主题开关四种组合、各角色阅读可见性、股市研判生成、引用隐私、采集复用、同日版本、缓存和历史读取；𝑳𝑳𝑴 覆盖首次导入、调价与下线记录、暂缓与确认下线、服务商下线与恢复收录、一天清理与候选清理、隐藏模型和公开页面、JSON 与订阅；𝑾 覆盖 X 核验、敏感与时间窗口过滤、同账号去重、照片转存、日报排除与过期清理。CI 自动执行。

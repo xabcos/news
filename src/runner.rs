@@ -2,7 +2,7 @@ use crate::{
     auth::{self, PlanLimits},
     error::{AppError, Result},
     fetch::{self, Known, NewsWindow},
-    insight, media, reads,
+    gallery, insight, media, reads,
     state::AppState,
     topics::{self, Topic},
 };
@@ -284,15 +284,15 @@ async fn tick(state: &AppState) -> Result<()> {
 
 /// Each completed topic is checkpointed by cutoff, so a retry only collects missing topics.
 /// The coordinator holds no semaphore permit; even a single-slot deployment can progress.
-/// Without a topic it collects what the briefing reads, the visible public topics, so an
-/// internal source such as `equity` cannot hold the briefing back.
+/// Without a topic it collects what the briefing reads, the visible public news topics, so
+/// an internal source such as `equity` or the 𝑾 gallery cannot hold the briefing back.
 pub(crate) async fn collect_briefing(
     state: &AppState,
     window: NewsWindow,
     topic: Option<&str>,
 ) -> Result<()> {
     let topics = sqlx::query_as::<_, Topic>(
-        "SELECT * FROM topics WHERE enabled AND owner_user_id IS NULL AND id NOT IN ('reads', 'llm')
+        "SELECT * FROM topics WHERE enabled AND owner_user_id IS NULL AND id NOT IN ('reads', 'llm', 'w')
          AND (($2::text IS NULL AND visible) OR id = $2)
          AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.topic_id = topics.id
                          AND triggered_by = 'briefing' AND status = 'ok' AND window_end = $1)
@@ -632,6 +632,7 @@ async fn execute(
     }
     let yesterday = today.pred_opt().expect("date in range");
     let is_reads = topic.id == "reads" && topic.owner_user_id.is_none();
+    let is_gallery = gallery::is_gallery(topic);
     let window = if is_reads {
         NewsWindow {
             start: window.end - ChronoDuration::days(30),
@@ -686,9 +687,12 @@ async fn execute(
             dropped += 1;
             continue;
         };
-        if is_reads {
+        // Reads and 𝑾 know an X post by its id, whichever address the model used.
+        if is_reads || is_gallery {
             item.fingerprint =
                 reads::fingerprint(&url::Url::parse(&item.url).expect("validated URL"));
+        }
+        if is_reads {
             item.image = None;
         }
         if topic.id == "p" && item.image.is_none() {
@@ -703,6 +707,12 @@ async fn execute(
         }
         titles.push(title);
         items.push(item);
+    }
+
+    if is_gallery {
+        let proposed = items.len();
+        items = gallery::select(state, items, &known, window, &mut fetched.payload).await;
+        dropped += (proposed - items.len()) as i32;
     }
 
     let mut articles = HashMap::new();
@@ -763,7 +773,7 @@ async fn execute(
         item.image = image;
     }
     items.retain(|item| {
-        let keep = topic.id != "p" || item.image.is_some();
+        let keep = (topic.id != "p" && !is_gallery) || item.image.is_some();
         if !keep {
             dropped += 1;
         }
@@ -1065,6 +1075,12 @@ async fn prune(state: &AppState, today: NaiveDate) -> Result<()> {
     }
     if let Err(error) = crate::llm::prune(state).await {
         tracing::warn!(%error, "LLM catalogue pruning failed");
+        if first_error.is_none() {
+            first_error = Some(error);
+        }
+    }
+    if let Err(error) = gallery::prune(state).await {
+        tracing::warn!(%error, "gallery pruning failed");
         if first_error.is_none() {
             first_error = Some(error);
         }
