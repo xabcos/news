@@ -898,6 +898,39 @@ async fn postgres_llm_catalog_import_changes_and_pages() {
             .unwrap();
     assert_eq!(urls, [deepseek().url]);
 
+    // A change is news for a day, then it is gone from the page, the JSON and the feed.
+    sqlx::query("UPDATE llm_changes SET detected_at = detected_at - INTERVAL '25 hours'")
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(super::prune(&state).await.unwrap(), 2);
+    let html = http
+        .get(format!("{base}/llm"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(!html.contains("llm-changes") && html.contains("¥9.00"));
+    let data: Value = http
+        .get(format!("{base}/llm.json"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(data["changes"].as_array().unwrap().is_empty());
+    // A withdrawn model leaves with its last change.
+    sqlx::query(
+        "UPDATE llm_models SET removed_at = NOW() - INTERVAL '25 hours' WHERE vendor_id = 'deepseek'",
+    )
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(super::prune(&state).await.unwrap(), 1);
+
     // Providers from the news wait as candidates and are forgotten if never listed.
     let proposal = super::store::Proposal {
         id: "xiaomi-mimo".into(),
@@ -938,7 +971,14 @@ async fn postgres_llm_catalog_import_changes_and_pages() {
     .execute(&state.pool)
     .await
     .unwrap();
-    assert_eq!(super::store::prune(&state).await.unwrap(), ["xiaomi-mimo"]);
+    assert_eq!(super::prune(&state).await.unwrap(), 1);
+    assert!(
+        !super::store::known(&state)
+            .await
+            .unwrap()
+            .iter()
+            .any(|vendor| vendor.id == "xiaomi-mimo")
+    );
     server.abort();
 }
 

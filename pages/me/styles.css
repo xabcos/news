@@ -133,7 +133,7 @@ fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
 .catalog-sources { margin: .45rem 0 0; padding: 0; list-style: none; font-size: .8rem; }
 .catalog-sources li { display: flex; flex-wrap: wrap; gap: .2rem .6rem; padding: .15rem 0; }
 .catalog-models li.is-hidden { opacity: .55; }
-.item-row .catalog-sources a, .item-row a.catalog-link { font-size: .8rem; font-weight: 600; }
+.item-row .catalog-sources a { font-size: .8rem; font-weight: 600; }
 .catalog-error { margin: .3rem 0 0; color: var(--danger); font-size: .78rem; }
 .catalog-models { margin-top: .5rem; font-size: .8rem; }
 .catalog-models summary { cursor: pointer; color: var(--muted); }

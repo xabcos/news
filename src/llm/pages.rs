@@ -20,17 +20,14 @@ use chrono_tz::Tz;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::{FromRow, types::Json};
-use std::{
-    collections::{HashMap, HashSet},
-    fmt::Write,
-};
+use std::{collections::HashSet, fmt::Write};
 
 const CHANGES_SHOWN: i64 = 20;
 const FEED_SIZE: i64 = 50;
 const CHROME: Chrome<'static> = Chrome {
     current: "llm",
     section: "llm",
-    stylesheet: "/llm.css?v=3",
+    stylesheet: "/llm.css?v=4",
     script: "/llm.js?v=3",
     feed: ("𝑳𝑳𝑴", "/llm/feed.xml"),
 };
@@ -122,21 +119,13 @@ impl Catalog {
     }
 }
 
-/// Recent history, read wider than shown: changes to models readers no longer see are
+/// Every kept change (they last a day); changes to models readers no longer see are
 /// dropped after the catalogue has chosen what it lists.
 const RECENT_CHANGES: &str = "SELECT c.id, c.vendor_id, c.model_id, m.name, c.kind, c.before, c.after, c.source_url, c.detected_at
      FROM llm_changes c JOIN llm_vendors v ON v.id = c.vendor_id
      LEFT JOIN llm_models m ON m.vendor_id = c.vendor_id AND m.model_id = c.model_id
      WHERE v.enabled AND (c.model_id IS NULL OR NOT m.hidden)
-     ORDER BY c.detected_at DESC, c.id DESC LIMIT $1";
-/// The latest five changes of every model, for its expanded row.
-const HISTORY: &str = "SELECT id, vendor_id, model_id, name, kind, before, after, source_url, detected_at FROM (
-        SELECT c.id, c.vendor_id, c.model_id, m.name, c.kind, c.before, c.after, c.source_url, c.detected_at,
-               ROW_NUMBER() OVER (PARTITION BY c.vendor_id, c.model_id ORDER BY c.detected_at DESC, c.id DESC) AS rank
-        FROM llm_changes c JOIN llm_vendors v ON v.id = c.vendor_id
-        JOIN llm_models m ON m.vendor_id = c.vendor_id AND m.model_id = c.model_id
-        WHERE v.enabled AND NOT m.hidden
-     ) ranked WHERE rank <= 5 ORDER BY detected_at DESC, id DESC";
+     ORDER BY c.detected_at DESC, c.id DESC";
 
 /// The published catalogue, or `None` while the topic is switched off or hidden.
 async fn load(state: &AppState, changes: i64) -> Result<Option<Catalog>> {
@@ -214,7 +203,6 @@ async fn load(state: &AppState, changes: i64) -> Result<Option<Catalog>> {
     .collect();
     models.retain(|model| shown.contains(&(model.vendor_id.clone(), model.model_id.clone())));
     let mut recent: Vec<ChangeRow> = sqlx::query_as(RECENT_CHANGES)
-        .bind(changes * 4)
         .fetch_all(&state.pool)
         .await?;
     // Lines readers see, for telling a line that ended from an old version being retired.
@@ -261,21 +249,6 @@ fn deprecated(change: &ChangeRow) -> bool {
         .after
         .as_ref()
         .is_some_and(|after| after.0["status"] == "deprecated")
-}
-
-/// Recent history per model, for the expanded rows.
-async fn history(state: &AppState) -> Result<HashMap<(String, String), Vec<ChangeRow>>> {
-    let rows: Vec<ChangeRow> = sqlx::query_as(HISTORY).fetch_all(&state.pool).await?;
-    let mut map: HashMap<(String, String), Vec<ChangeRow>> = HashMap::new();
-    for row in rows {
-        let Some(model) = row.model_id.clone() else {
-            continue;
-        };
-        map.entry((row.vendor_id.clone(), model))
-            .or_default()
-            .push(row);
-    }
-    Ok(map)
 }
 
 fn not_found() -> AppError {
@@ -649,7 +622,6 @@ async fn index(
 ) -> Result<Response> {
     let en = params.lang.as_deref() == Some("en");
     let catalog = load(&state, CHANGES_SHOWN).await?.ok_or_else(not_found)?;
-    let history = history(&state).await?;
     let timezone = state.config.timezone;
     let description = choose(
         en,
@@ -684,23 +656,14 @@ async fn index(
     meta.push(choose(en, "价格为每百万 tokens", "Prices per 1M tokens").to_owned());
     let _ = write!(content, "<p class=llm-meta>{}</p>", meta.join(" · "));
 
-    content.push_str("<section class=llm-changes aria-labelledby=llm-changes-title>");
-    let _ = write!(
-        content,
-        "<h2 id=llm-changes-title>{}</h2>",
-        choose(en, "最近变化", "Recent changes")
-    );
-    if catalog.changes.is_empty() {
+    // Changes are kept for a day; without any the page starts with the catalogue.
+    if !catalog.changes.is_empty() {
+        content.push_str("<section class=llm-changes aria-labelledby=llm-changes-title>");
         let _ = write!(
             content,
-            "<p class=llm-empty>{}</p>",
-            choose(
-                en,
-                "新发布、调价和下线会在这里按时间列出。",
-                "New models, price changes and removals will be listed here as they happen."
-            )
+            "<h2 id=llm-changes-title>{}</h2>",
+            choose(en, "最近变化", "Recent changes")
         );
-    } else {
         content.push_str("<ol class=llm-change-list>");
         for change in &catalog.changes {
             let Some(vendor) = catalog.vendor(&change.vendor_id) else {
@@ -745,9 +708,8 @@ async fn index(
                 },
             );
         }
-        content.push_str("</ol>");
+        content.push_str("</ol></section>");
     }
-    content.push_str("</section>");
 
     let _ = write!(
         content,
@@ -813,14 +775,7 @@ async fn index(
             },
         );
         for model in models {
-            let key = (model.vendor_id.clone(), model.model_id.clone());
-            content.push_str(&model_row(
-                model,
-                vendor,
-                history.get(&key).map_or(&[][..], Vec::as_slice),
-                timezone,
-                en,
-            ));
+            content.push_str(&model_row(model, vendor, timezone, en));
         }
         content.push_str("</section>");
     }
@@ -860,13 +815,7 @@ async fn index(
     ))
 }
 
-fn model_row(
-    model: &ModelRow,
-    vendor: &VendorRow,
-    history: &[ChangeRow],
-    timezone: Tz,
-    en: bool,
-) -> String {
+fn model_row(model: &ModelRow, vendor: &VendorRow, timezone: Tz, en: bool) -> String {
     let prices = &model.prices.0;
     let currency = primary(&vendor.region, prices);
     let row = headline(prices, currency);
@@ -1024,20 +973,6 @@ fn model_row(
     }
     if !links.is_empty() {
         let _ = write!(html, "<p class=llm-links>{}</p>", links.join(""));
-    }
-    if !history.is_empty() {
-        html.push_str("<ol class=llm-history>");
-        for change in history {
-            let (kind, detail) = describe(change, &vendor.region, en);
-            let _ = write!(
-                html,
-                "<li><time datetime=\"{}\">{}</time> {kind} {}</li>",
-                change.detected_at.to_rfc3339(),
-                day(change.detected_at, timezone),
-                escape(&detail)
-            );
-        }
-        html.push_str("</ol>");
     }
     let _ = write!(
         html,

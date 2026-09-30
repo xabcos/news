@@ -35,6 +35,11 @@ pub(crate) fn router() -> Router<AppState> {
     pages::router().merge(admin::router())
 }
 
+/// Removes history past its use; see `store::prune`.
+pub(crate) async fn prune(state: &AppState) -> Result<u64> {
+    store::prune(state).await
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub(crate) enum Currency {

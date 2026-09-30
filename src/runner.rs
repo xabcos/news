@@ -1063,6 +1063,12 @@ async fn prune(state: &AppState, today: NaiveDate) -> Result<()> {
             first_error = Some(error);
         }
     }
+    if let Err(error) = crate::llm::prune(state).await {
+        tracing::warn!(%error, "LLM catalogue pruning failed");
+        if first_error.is_none() {
+            first_error = Some(error);
+        }
+    }
     if state.config.retention_days > 0 {
         let keep_from = today - ChronoDuration::days(i64::from(state.config.retention_days));
         if let Err(error) = cleanup_items(state, keep_from).await {

@@ -24,7 +24,7 @@ const PAGE_CHARS: usize = 150_000;
 const CHANGELOG_CHARS: usize = 16_000;
 /// Below this a page is an error, consent or region notice, not documentation.
 const MIN_CHARS: usize = 500;
-const MAX_LINKS: usize = 400;
+pub(crate) const MAX_LINKS: usize = 400;
 const MAX_DEPTH: usize = 128;
 const AGENT: &str = "XABCNews-LLM/1.0 (+https://xabcnews.com/llm)";
 

@@ -38,7 +38,6 @@ struct VendorStatus {
     state: String,
     /// `seed` or `discovered`.
     origin: String,
-    state_changed_at: Option<DateTime<Utc>>,
     held_since: Option<DateTime<Utc>>,
     checked_at: Option<DateTime<Utc>>,
     verified_at: Option<DateTime<Utc>>,
@@ -52,10 +51,10 @@ struct ModelStatus {
     vendor_id: String,
     model_id: String,
     name: String,
-    status: String,
     hidden: bool,
     removed_at: Option<DateTime<Utc>>,
-    verified_at: DateTime<Utc>,
+    #[serde(skip)]
+    status: String,
     #[serde(skip)]
     priced: bool,
     #[serde(skip)]
@@ -67,13 +66,9 @@ struct ModelStatus {
 
 #[derive(Serialize, FromRow)]
 struct ChangeRow {
-    id: i64,
     vendor_id: String,
     model_id: Option<String>,
     kind: String,
-    before: Option<Jsonb<Value>>,
-    after: Option<Jsonb<Value>>,
-    source_url: String,
     detected_at: DateTime<Utc>,
 }
 
@@ -81,10 +76,10 @@ async fn overview(State(state): State<AppState>, user: auth::User) -> Result<Jso
     auth::require_admin(&user)?;
     let vendors: Vec<VendorStatus> = sqlx::query_as(
         "SELECT v.id, v.name, v.region, v.homepage, v.enabled, v.state, v.origin,
-                v.state_changed_at, v.held_since, v.checked_at, v.verified_at, v.error,
+                v.held_since, v.checked_at, v.verified_at, v.error,
                 (SELECT COUNT(*) FROM llm_models m WHERE m.vendor_id = v.id AND m.removed_at IS NULL) AS models,
                 COALESCE((SELECT jsonb_agg(jsonb_build_object(
-                    'id', s.id, 'kind', s.kind, 'url', s.url, 'currency', s.currency,
+                    'kind', s.kind, 'url', s.url, 'currency', s.currency,
                     'checked_at', s.checked_at, 'changed_at', s.changed_at, 'failures', s.failures, 'error', s.error
                 ) ORDER BY s.sort_weight, s.id) FROM llm_sources s WHERE s.vendor_id = v.id), '[]') AS sources
          FROM llm_vendors v
@@ -94,7 +89,7 @@ async fn overview(State(state): State<AppState>, user: auth::User) -> Result<Jso
     .fetch_all(&state.pool)
     .await?;
     let mut models: Vec<ModelStatus> = sqlx::query_as(
-        "SELECT m.vendor_id, m.model_id, m.name, m.status, m.hidden, m.removed_at, m.verified_at,
+        "SELECT m.vendor_id, m.model_id, m.name, m.status, m.hidden, m.removed_at,
                 jsonb_array_length(m.prices) > 0 AS priced,
                 v.enabled AND v.state = 'active' AND NOT m.hidden AND m.removed_at IS NULL AS listed
          FROM llm_models m JOIN llm_vendors v ON v.id = m.vendor_id
@@ -117,7 +112,7 @@ async fn overview(State(state): State<AppState>, user: auth::User) -> Result<Jso
         model.shown = shown.contains(&(model.vendor_id.clone(), model.model_id.clone()));
     }
     let changes: Vec<ChangeRow> = sqlx::query_as(
-        "SELECT id, vendor_id, model_id, kind, before, after, source_url, detected_at
+        "SELECT vendor_id, model_id, kind, detected_at
          FROM llm_changes ORDER BY detected_at DESC, id DESC LIMIT 30",
     )
     .fetch_all(&state.pool)

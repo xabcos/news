@@ -1,5 +1,5 @@
 //! The catalogue in PostgreSQL: providers and their pages, the published models and the
-//! append-only change history. One provider's read is applied in one transaction.
+//! changes of the last day. One provider's read is applied in one transaction.
 use super::{
     Currency, Links, Model, Price, Status, current, headline,
     pages::tokens,
@@ -738,15 +738,24 @@ pub(crate) async fn propose(state: &AppState, proposal: &Proposal) -> Result<boo
     Ok(true)
 }
 
-/// Discovered providers that have not been listed for eight weeks are forgotten, so the
-/// news can propose them afresh.
-pub(crate) async fn prune(state: &AppState) -> Result<Vec<String>> {
-    Ok(sqlx::query_scalar(
+/// The catalogue keeps no history nobody reads: a change is news for a day, a withdrawn
+/// model leaves with its last change, and a discovered provider not listed within eight
+/// weeks is forgotten, so the news can propose it afresh.
+pub(crate) async fn prune(state: &AppState) -> Result<u64> {
+    let mut transaction = state.pool.begin().await?;
+    let mut total = 0;
+    for statement in [
+        "DELETE FROM llm_changes WHERE detected_at < NOW() - INTERVAL '1 day'",
+        "DELETE FROM llm_models WHERE removed_at < NOW() - INTERVAL '1 day'",
         "DELETE FROM llm_vendors
          WHERE origin = 'discovered' AND state <> 'active'
-           AND COALESCE(state_changed_at, created_at) < NOW() - INTERVAL '56 days'
-         RETURNING id",
-    )
-    .fetch_all(&state.pool)
-    .await?)
+           AND COALESCE(state_changed_at, created_at) < NOW() - INTERVAL '56 days'",
+    ] {
+        total += sqlx::query(statement)
+            .execute(&mut *transaction)
+            .await?
+            .rows_affected();
+    }
+    transaction.commit().await?;
+    Ok(total)
 }

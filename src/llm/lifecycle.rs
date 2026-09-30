@@ -38,9 +38,8 @@ const VISIT_BUDGET: Duration = Duration::from_secs(360);
 /// Candidates and providers that left, visited per run.
 const MAX_VISITS: usize = 6;
 const ASK_TIMEOUT: Duration = Duration::from_secs(300);
-/// Pages the model may open while looking for a price list, and links it is shown.
+/// Pages the model may open while looking for a price list.
 const MAX_OPENED: usize = 3;
-const MAX_LINKS: usize = 400;
 /// Hosts that carry anyone's pages, and bare public suffixes: never a provider's own domain.
 const SHARED_HOSTS: [&str; 46] = [
     "github.com",
@@ -262,10 +261,6 @@ async fn steps(state: &AppState, topic: &Topic, deadline: Instant, pass: &mut Pa
     }
     if !report.is_empty() {
         pass.payload.insert("waiting".into(), Value::Object(report));
-    }
-    let pruned = store::prune(state).await?;
-    if !pruned.is_empty() {
-        pass.payload.insert("forgotten".into(), json!(pruned));
     }
     Ok(())
 }
@@ -535,7 +530,7 @@ async fn gather(
             }
         }
     }
-    links.truncate(MAX_LINKS);
+    links.truncate(source::MAX_LINKS);
     links
 }
 

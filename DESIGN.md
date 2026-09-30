@@ -14,7 +14,7 @@ Rust / Axum 提供 API、页面与后台调度。PostgreSQL 保存业务数据�
 
 ## 数据模型
 
-`users`、`sessions`、`email_login_tokens` 管理账户和登录；`topics`、`runs`、`items` 管理栏目、采集和新闻；`read_articles` 保存 Reads 精读、全文和热度，`read_candidates` 保存临时候选；`ai_insights` 保存日报；`llm_vendors`、`llm_sources` 登记模型服务商（在线、候选或已下线）与其官方页面，`llm_models` 保存当前核验的模型、价格与原文证据，`llm_changes` 追加记录变化；`plans`、`orders`、`payment_events` 管理套餐和支付。`user_metrics` 维护注册数量，`maintenance_state` 记录清理进度。表、约束、索引与线上公共主题初始化配置在 `migrations/0001_schema.sql` 中统一定义。
+`users`、`sessions`、`email_login_tokens` 管理账户和登录；`topics`、`runs`、`items` 管理栏目、采集和新闻；`read_articles` 保存 Reads 精读、全文和热度，`read_candidates` 保存临时候选；`ai_insights` 保存日报；`llm_vendors`、`llm_sources` 登记模型服务商（在线、候选或已下线）与其官方页面，`llm_models` 保存当前核验的模型、价格与原文证据，`llm_changes` 追加记录变化并只保留 1 天；`plans`、`orders`、`payment_events` 管理套餐和支付。`user_metrics` 维护注册数量，`maintenance_state` 记录清理进度。表、约束、索引与线上公共主题初始化配置在 `migrations/0001_schema.sql` 中统一定义。
 
 主题通过 `owner_user_id` 区分公共和个人数据。新闻按栏目、日期和原文 URL 指纹去重；发布时间未知时保留空值。日报日期和时间窗口必填，成功结果必须有完成时间及内容。订单保存成交时的价格与权益期限，支付事件按事件键幂等处理。
 
@@ -36,7 +36,7 @@ Reads 复用调度与并发额度，每轮最多发布 8 篇、每天最多 32 �
 
 𝑳𝑳𝑴 是 `llm` 公共栏目，复用调度、运行记录、开关与信号量，但不写新闻条目。每次运行先把主题“关注方向”中落在服务商域名下、能读取的地址登记为定价页，再按服务商（最多 3 家并发）用源站客户端读取登记的官方页面；没有表格行的定价页改读其 `rel="alternate" type="text/markdown"` 版本，火山引擎文档改读文档接口的 Markdown，二者由 `source::markdown` 转为与 HTML 相同的行。只取正文并按行保留表格；页面文本摘要与上次一致时跳过模型调用。页面变化时模型按严格 Schema 输出草稿，程序核验模型 ID、价格摘录、数字、所属模型（章节、最近命名行，按列排列的表格只认该列）、计价单位、价格顺序和规格摘录，一个服务商的结果在一个事务内写入并生成变化记录；变化按两次读取都列出的档位比较，避免把标注差异记为调价。价格只取自定价页，按官方计价单位折算为每百万 tokens，保留币种，不做汇率换算。首次收录只导入；模型只有在官方页面都不再提及时下线，一次移除多数模型时暂缓，`held_since` 满一周仍如此才确认。页面、JSON 与 Atom 直接查询数据库，公共响应带 ETag；每个系列只展示最新的在售有价版本（`lineage` 从模型 ID 解析系列与版本，`current` 选出展示集合），最近变化随之过滤。
 
-服务商的增减由每日运行末尾的 `llm::lifecycle` 完成，受本次运行剩余时间约束，从不让运行失败。`verified_at` 两周未更新的在线服务商先从官网重新定位页面，找不到即转为 `offline`，模型删除并记 `vendor_removed`；超过半数同时过期时不处理。`maintenance_state` 的 `llm_discovery` 控制每周一次的发现：模型读取 𝑪 与 𝑶 近两周条目给出提名，程序要求域名合法、不属公共平台且不与已登记服务商重叠、官网在其域名下、至少两篇不同报道且一篇来自其域名，每周最多 3 家，写为 `origin = discovered` 的候选。候选与下线服务商按 `checked_at` 约每周访问一次：已登记页面、官网链接中由模型挑选的定价与模型页（可再打开最多 3 页）依次试读，至少一个价格通过核验即在同一事务中替换登记页面、导入模型、转为在线并记 `vendor_added`。八周未上线的自动发现候选被删除。
+服务商的增减由每日运行末尾的 `llm::lifecycle` 完成，受本次运行剩余时间约束，从不让运行失败。`verified_at` 两周未更新的在线服务商先从官网重新定位页面，找不到即转为 `offline`，模型删除并记 `vendor_removed`；超过半数同时过期时不处理。`maintenance_state` 的 `llm_discovery` 控制每周一次的发现：模型读取 𝑪 与 𝑶 近两周条目给出提名，程序要求域名合法、不属公共平台且不与已登记服务商重叠、官网在其域名下、至少两篇不同报道且一篇来自其域名，每周最多 3 家，写为 `origin = discovered` 的候选。候选与下线服务商按 `checked_at` 约每周访问一次：已登记页面、官网链接中由模型挑选的定价与模型页（可再打开最多 3 页）依次试读，至少一个价格通过核验即在同一事务中替换登记页面、导入模型、转为在线并记 `vendor_added`。每小时的数据清理（`runner::prune` 调用 `llm::prune`）删除 1 天前的变化、下线超过 1 天的模型和八周未上线的自动发现候选。
 
 ## 日报
 
