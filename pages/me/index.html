@@ -10,7 +10,7 @@
   <title>𝑵𝒆𝒘𝒔 · 工作台</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
   <link rel="stylesheet" href="/styles.css?v=pretty-titles-v1">
-  <link rel="stylesheet" href="/me/styles.css?v=login-confirm-v1">
+  <link rel="stylesheet" href="/me/styles.css?v=llm-v2">
 </head>
 <body>
   <main class="workspace-shell">
@@ -114,7 +114,7 @@
           </div>
           <div class="field"><label for="topicDescription">公开说明</label><input id="topicDescription" name="description" maxlength="200" placeholder="显示在新闻首页的一句话"></div>
           <div class="field-grid">
-            <div><label for="windowStart">开始（时）</label><select id="windowStart" name="window_start"></select></div>
+            <div><label for="windowStart">开始时间</label><input id="windowStart" name="window_start_time" type="time" step="60" required></div>
             <div><label for="windowEnd">结束（时）</label><select id="windowEnd" name="window_end"></select></div>
           </div>
           <p id="scheduleTimezone" class="field-hint muted"></p>
@@ -122,8 +122,8 @@
           <div class="field-grid">
             <div><label for="topicModel">模型</label><input id="topicModel" name="model" maxlength="64" placeholder="使用服务默认模型"></div>
             <div><label for="topicEffort">推理强度</label><select id="topicEffort" name="reasoning_effort"><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></div>
-            <div><label for="topicMaxItems">每次最多条数</label><input id="topicMaxItems" name="max_items" type="number" min="1" max="30" required></div>
-            <div><label for="topicLookback">回看（小时）</label><input id="topicLookback" name="lookback_hours" type="number" min="1" max="72" required></div>
+            <div data-news-only><label for="topicMaxItems">每次最多条数</label><input id="topicMaxItems" name="max_items" type="number" min="1" max="30" required></div>
+            <div data-news-only><label for="topicLookback">回看（小时）</label><input id="topicLookback" name="lookback_hours" type="number" min="1" max="72" required></div>
             <div><label for="topicCap">每日运行上限</label><input id="topicCap" name="daily_run_cap" type="number" min="1" max="96" required></div>
             <div><label for="topicSort">排序权重</label><input id="topicSort" name="sort_weight" type="number" required></div>
           </div>
@@ -151,6 +151,6 @@
     <div class="dialog-actions"><button class="button button-quiet" type="button" data-close-dialog>取消</button><button id="confirmActionButton" class="button button-danger" type="button">确认删除</button></div>
   </dialog>
   <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
-  <script src="/me/app.js?v=12" type="module"></script>
+  <script src="/me/app.js?v=14" type="module"></script>
 </body>
 </html>

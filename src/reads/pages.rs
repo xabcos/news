@@ -1,6 +1,7 @@
 use crate::{
     digest::{Rendered, conditional},
     error::{AppError, Result},
+    site::{Chrome, absolute, choose, escape, localized},
     state::AppState,
 };
 use axum::{
@@ -22,6 +23,35 @@ const PAGE_SIZE: i64 = 12;
 const SITEMAP_SIZE: i64 = 10000;
 const VISIBLE: &str = "FROM items i JOIN read_articles a ON a.item_id = i.id JOIN topics t ON t.id = i.topic_id WHERE i.topic_id = 'reads' AND t.enabled AND t.visible AND t.owner_user_id IS NULL AND NOT i.hidden";
 const CARD: &str = "i.id, i.title, i.title_en, i.summary, i.summary_en, i.source, i.url, i.first_seen_at, a.author, a.views";
+const CHROME: Chrome<'static> = Chrome {
+    current: "reads",
+    section: "reads",
+    stylesheet: "/reads.css?v=6",
+    script: "/reads.js?v=4",
+    feed: ("Reads", "/feed.xml?topic=reads"),
+};
+
+async fn layout(
+    state: &AppState,
+    en: bool,
+    path: &str,
+    title: &str,
+    description: &str,
+    content: &str,
+    structured: Option<serde_json::Value>,
+) -> Result<String> {
+    crate::site::layout(
+        state,
+        en,
+        path,
+        title,
+        description,
+        content,
+        structured,
+        &CHROME,
+    )
+    .await
+}
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
@@ -75,29 +105,6 @@ struct Detail {
     source_title: String,
     source_language: String,
     full_text: Option<sqlx::types::Json<super::full_text::Document>>,
-}
-
-fn choose<'a>(en: bool, zh: &'a str, english: &'a str) -> &'a str {
-    if en && !english.is_empty() {
-        english
-    } else {
-        zh
-    }
-}
-
-fn localized(path: &str, en: bool) -> String {
-    format!(
-        "{path}{}",
-        if en {
-            if path.contains('?') {
-                "&lang=en"
-            } else {
-                "?lang=en"
-            }
-        } else {
-            ""
-        }
-    )
 }
 
 fn listing(page: u32, en: bool) -> String {
@@ -420,109 +427,6 @@ fn card(item: &Card, en: bool, rank: Option<usize>, timezone: chrono_tz::Tz) -> 
     )
 }
 
-fn absolute(state: &AppState, path: &str) -> String {
-    format!(
-        "{}{}",
-        state.config.public_base_url.as_str().trim_end_matches('/'),
-        path
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn layout(
-    state: &AppState,
-    en: bool,
-    path: &str,
-    title: &str,
-    description: &str,
-    content: &str,
-    structured: Option<serde_json::Value>,
-) -> Result<String> {
-    let topics: Vec<(String, String, String)> = sqlx::query_as("SELECT id, name, name_en FROM topics WHERE enabled AND visible AND owner_user_id IS NULL ORDER BY sort_weight, id")
-        .fetch_all(&state.pool).await?;
-    let mut tabs = format!(
-        "<a class=tab href=\"{}\">𝐀𝐋𝐋</a><a class=tab href=\"{}\">𝐀𝐈</a>",
-        localized("/", en),
-        escape(&localized("/?topic=insight", en))
-    );
-    let equity_tab = format!(
-        "<a class=tab href=\"{}\">𝑬</a>",
-        escape(&localized("/?topic=equity-insight", en))
-    );
-    if !topics.iter().any(|(id, _, _)| id == "overseas-ai") {
-        tabs.push_str(&equity_tab);
-    }
-    for (id, name, name_en) in topics {
-        let href = if id == "reads" {
-            localized("/reads", en)
-        } else {
-            let mut query = url::form_urlencoded::Serializer::new(String::new());
-            query.append_pair("topic", &id);
-            if en {
-                query.append_pair("lang", "en");
-            }
-            format!("/?{}", query.finish())
-        };
-        let _ = write!(
-            tabs,
-            "<a class=tab href=\"{}\"{}>{}</a>",
-            escape(&href),
-            if id == "reads" {
-                " aria-current=\"true\""
-            } else {
-                ""
-            },
-            escape(choose(en, &name, &name_en))
-        );
-        if id == "overseas-ai" {
-            tabs.push_str(&equity_tab);
-        }
-    }
-    let schema = structured
-        .map(|value| {
-            format!(
-                "<script type=\"application/ld+json\">{}</script>",
-                value
-                    .to_string()
-                    .replace('&', "\\u0026")
-                    .replace('<', "\\u003c")
-                    .replace('>', "\\u003e")
-            )
-        })
-        .unwrap_or_default();
-    Ok(format!(
-        r##"<!doctype html>
-<html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title}</title><meta name="description" content="{description}"><meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f6f4"><meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1115">
-<link rel="canonical" href="{canonical}"><link rel="alternate" hreflang="zh-CN" href="{zh}"><link rel="alternate" hreflang="en" href="{english}"><link rel="alternate" hreflang="x-default" href="{zh}">
-<meta property="og:type" content="{og_type}"><meta property="og:title" content="{title}"><meta property="og:description" content="{description}"><meta property="og:url" content="{canonical}"><meta property="og:site_name" content="News"><meta name="twitter:card" content="summary">
-<link rel="icon" type="image/svg+xml" href="/icon.svg"><link rel="alternate" type="application/atom+xml" title="Reads" href="/feed.xml?topic=reads"><link rel="stylesheet" href="/styles.css?v=pretty-titles-v1"><link rel="stylesheet" href="/reads.css?v=6">{schema}</head>
-<body class="public reads"><header class="topbar"><a class="brand" href="{home}" aria-label="News"><img class="brand-logo" src="/icon.svg" alt=""><span>𝑵𝒆𝒘𝒔</span></a><nav class="tabs" aria-label="{topics_label}">{tabs}</nav><div class="tools"><a class="space-link button button-quiet button-small" href="/me/">{workspace}</a><a class="space-link button button-quiet button-small" href="{other_lang}" hreflang="{other_code}">{language_label}</a></div></header>
-<main class="shell">{content}</main>
-<button id="backToTop" class="button back-to-top" type="button" aria-label="{back_to_top}" title="{back_to_top}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 12 6-6 6 6M12 6v12"/></svg></button>
-<script src="/public.js?v=2" defer></script><script src="/reads.js?v=4" defer></script><script src="/stats.js?v=2" data-track-url="{track_url}" defer></script></body></html>"##,
-        lang = choose(en, "zh-CN", "en"),
-        title = escape(title),
-        description = escape(description),
-        canonical = escape(&absolute(state, &localized(path, en))),
-        zh = escape(&absolute(state, path)),
-        english = escape(&absolute(state, &localized(path, true))),
-        og_type = if schema.is_empty() {
-            "website"
-        } else {
-            "article"
-        },
-        home = localized("/", en),
-        topics_label = choose(en, "主题", "Topics"),
-        workspace = choose(en, "工作台", "Workspace"),
-        other_lang = escape(&localized(path, !en)),
-        other_code = choose(en, "en", "zh-CN"),
-        language_label = choose(en, "EN", "中文"),
-        back_to_top = choose(en, "回到顶部", "Back to top"),
-        track_url = super::stats::TRACK_URL,
-    ))
-}
-
 fn render_markdown(value: &str) -> String {
     render_events(Parser::new_ext(value, super::full_text::OPTIONS), &[], None)
 }
@@ -577,15 +481,6 @@ fn render_events<'a>(
     let mut html = String::new();
     html::push_html(&mut html, parser);
     html
-}
-
-fn escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
 }
 
 async fn robots(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -643,7 +538,15 @@ async fn sitemap_page(
     }
     let mut xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">".to_owned();
     if page == 1 {
-        for path in ["/", "/reads", "/reads?lang=en"] {
+        let catalog: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM topics WHERE id = 'llm' AND enabled AND visible AND owner_user_id IS NULL)")
+            .fetch_one(&state.pool)
+            .await?;
+        let listed: &[&str] = if catalog {
+            &["/llm", "/llm?lang=en"]
+        } else {
+            &[]
+        };
+        for path in ["/", "/reads", "/reads?lang=en"].iter().chain(listed) {
             let _ = write!(
                 xml,
                 "<url><loc>{}</loc></url>",

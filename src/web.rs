@@ -53,6 +53,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .merge(topics::router())
         .merge(digest::router())
         .merge(crate::reads::router())
+        .merge(crate::llm::router())
         .route("/api", any(api_not_found))
         .route("/api/{*path}", any(api_not_found))
         .fallback_service(

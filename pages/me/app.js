@@ -5,9 +5,17 @@ let session = null;
 let authController;
 let loginToken = null;
 const form = $("#topicForm");
-const numericFields = ["window_start", "window_end", "max_items", "lookback_hours", "daily_run_cap", "sort_weight"];
+const numericFields = ["window_end", "max_items", "lookback_hours", "daily_run_cap", "sort_weight"];
 const publicFields = ["name_en", "description", "model", "reasoning_effort"];
 const statusText = { ok: "完成", failed: "失败", running: "运行中", interrupted: "已中断" };
+// 𝑳𝑳𝑴 keeps a model catalogue instead of news items; its panel shows providers and changes.
+const CATALOG_ID = "llm";
+const DAILY_INTERVAL = 1440;
+const pad = (value) => String(value ?? 0).padStart(2, "0");
+const startTime = (topic) => `${pad(topic.window_start)}:${pad(topic.window_start_minute)}`;
+const sourceKinds = { pricing: "定价页", models: "模型页", changelog: "更新日志" };
+const changeKinds = { added: "新增", price: "调价", spec: "规格", status: "状态", removed: "下线", vendor_added: "服务商上线", vendor_removed: "服务商下线" };
+const vendorStates = { active: "在线", candidate: "候选", offline: "已下线" };
 
 bindDialogs();
 bindEvents();
@@ -116,13 +124,11 @@ function bindEvents() {
 }
 
 function buildScheduleInputs() {
-  for (const [id, start] of [["windowStart", 0], ["windowEnd", 1]]) {
-    $(`#${id}`).replaceChildren(...Array.from({ length: 24 }, (_, i) => {
-      const option = node("option", "", `${i + start}:00`);
-      option.value = String(i + start);
-      return option;
-    }));
-  }
+  $("#windowEnd").replaceChildren(...Array.from({ length: 24 }, (_, i) => {
+    const option = node("option", "", `${i + 1}:00`);
+    option.value = String(i + 1);
+    return option;
+  }));
   $("#weekdays").replaceChildren(...["一", "二", "三", "四", "五", "六", "日"].map((day, i) => {
     const label = node("label");
     const input = node("input");
@@ -413,7 +419,7 @@ function updateEditorPlanState(s) {
   const minimum = s.admin ? 15 : s.user.limits.min_interval_minutes;
   $("#topicInterval").min = String(minimum);
   $("#intervalHint").textContent = s.admin
-    ? "最短 15 分钟 · 结束时间早于开始时间表示跨午夜"
+    ? "最短 15 分钟 · 1440 表示每天在开始时间运行一次 · 结束时间早于开始时间表示跨午夜"
     : !canCreate && !topic
       ? `可先配置任务，购买 Pro 后创建 · 最短 ${minimum} 分钟`
       : `${s.user.plan === "pro" ? "Pro" : "Free"} 最短 ${minimum} 分钟 · 结束时间早于开始时间表示跨午夜`;
@@ -443,8 +449,9 @@ function renderTopics(s) {
     dot.setAttribute("aria-hidden", "true");
     title.append(dot, topic.name);
     const interval = s.admin ? topic.interval_minutes : Math.max(topic.interval_minutes, s.user.limits.min_interval_minutes);
+    const cadence = interval >= DAILY_INTERVAL ? `每天 ${startTime(topic)}` : `${interval} 分钟`;
     const detail = topic.plan_locked ? "当前套餐不包含 · 升级 Pro 后恢复" : !topic.enabled ? "已暂停" : running ? "正在抓取…"
-      : `${interval} 分钟${topic.next_run_at ? ` · 下次 ${formatTime(topic.next_run_at, s.timezone)}` : " · 等待排程"}${topic.last_status === "failed" ? " · 上次失败" : ""}`;
+      : `${cadence}${topic.next_run_at ? ` · 下次 ${formatTime(topic.next_run_at, s.timezone)}` : " · 等待排程"}${topic.last_status === "failed" ? " · 上次失败" : ""}`;
     select.append(title, node("span", "topic-meta", `${detail}${topic.visible ? "" : " · 前台隐藏"}`));
     select.addEventListener("click", () => void selectTopic(s, topic.id));
     const actions = node("div", "topic-actions");
@@ -483,6 +490,9 @@ async function loadItems(s) {
   const day = s.admin ? $("#itemsDay").value : "";
   $("#contentTitle").textContent = topic.name;
   message("itemsMessage", "");
+  const catalog = s.admin && id === CATALOG_ID;
+  $("#dateTools").classList.toggle("hidden", !s.admin || catalog);
+  if (catalog) return loadCatalog(s, version);
   // Switching topics clears the list first; a reload of the same list replaces it in place.
   try {
     const items = await s.request(`${s.base}/topics/${encodeURIComponent(id)}/items${day ? `?day=${day}` : ""}`);
@@ -565,11 +575,13 @@ function openEditor(topic = null) {
   const minimum = s.admin ? 15 : s.user.limits.min_interval_minutes;
   const values = {
     name: "", brief: "", id: "", name_en: "", description: "", model: "", reasoning_effort: "low",
-    window_start: 6, window_end: 24, max_items: 8, lookback_hours: 24, daily_run_cap: 24, sort_weight: 0,
+    window_start: 6, window_start_minute: 0, window_end: 24, max_items: 8, lookback_hours: 24, daily_run_cap: 24, sort_weight: 0,
     ...topic,
     interval_minutes: Math.max(minimum, topic?.interval_minutes || (s.admin ? 60 : minimum)),
   };
   for (const key of ["name", "brief", "id", "interval_minutes", ...publicFields, ...numericFields]) form.elements.namedItem(key).value = values[key];
+  $("#windowStart").value = startTime(values);
+  document.querySelectorAll("[data-news-only]").forEach((field) => { field.hidden = topic?.id === CATALOG_ID; });
   $("#topicId").readOnly = Boolean(topic);
   $("#topicEnabled").checked = topic?.enabled ?? true;
   $("#topicVisible").checked = topic?.visible ?? true;
@@ -594,6 +606,9 @@ function saveTopic(event) {
   if (s.admin) {
     for (const key of publicFields) body[key] = data.get(key).trim();
     for (const key of numericFields) body[key] = Number(data.get(key));
+    const [hour, minute] = String(data.get("window_start_time")).split(":").map(Number);
+    body.window_start = hour;
+    body.window_start_minute = minute || 0;
     body.weekdays = data.getAll("weekdays").map(Number);
     if (body.window_start === body.window_end || !body.weekdays.length) {
       $("#advancedSettings").open = true;
@@ -658,4 +673,95 @@ async function runTopic(s, topic) {
   }
   toast("抓取已开始，完成后会自动刷新");
   await refresh(s);
+}
+
+async function loadCatalog(s, version) {
+  try {
+    const data = await s.request("/api/admin/llm");
+    if (session !== s || version !== s.itemsVersion) return;
+    const shown = data.models.filter((model) => model.shown).length;
+    const online = data.vendors.filter((vendor) => vendor.enabled && vendor.state === "active").length;
+    const waiting = data.vendors.filter((vendor) => vendor.state === "candidate").length;
+    $("#itemsMeta").textContent = `${online} 家在线${waiting ? ` · ${waiting} 家候选` : ""} · ${shown} 个模型展示中`;
+    const rows = data.vendors.map((vendor) => renderVendor(s, vendor, data.models.filter((model) => model.vendor_id === vendor.id)));
+    if (data.changes.length) rows.push(renderChanges(s, data.changes));
+    $("#itemList").replaceChildren(...rows);
+  } catch (error) {
+    if (session === s && version === s.itemsVersion) message("itemsMessage", error.message);
+  }
+}
+
+function catalogLink(text, url) {
+  const href = safeUrl(url);
+  const link = node(href ? "a" : "span", "", text);
+  if (href) { link.href = href; link.target = "_blank"; link.rel = "noopener noreferrer"; }
+  return link;
+}
+
+// Values come only from the providers' pages and providers join and leave on their own;
+// the workspace can pause a provider or hide a model.
+function renderVendor(s, vendor, models) {
+  const listed = vendor.enabled && vendor.state === "active";
+  const row = node("li", `item-row catalog-vendor${listed ? "" : " is-hidden"}`);
+  const meta = node("div", "item-meta");
+  meta.append(node("span", "", vendor.region === "cn" ? "国内" : "海外"),
+    node("span", "", vendor.enabled ? vendorStates[vendor.state] || vendor.state : "已暂停"));
+  if (vendor.origin === "discovered") meta.append(node("span", "", "自动发现"));
+  if (vendor.state === "active") meta.append(node("span", "", `${vendor.models} 个模型`));
+  meta.append(node("span", "", vendor.verified_at ? `核验于 ${formatTime(vendor.verified_at, s.timezone)}`
+    : vendor.checked_at ? `尝试于 ${formatTime(vendor.checked_at, s.timezone)}` : "尚未读取"));
+  if (vendor.held_since) meta.append(node("span", "", `暂缓下线自 ${formatTime(vendor.held_since, s.timezone)}`));
+  const title = node("strong");
+  title.append(catalogLink(vendor.name, vendor.homepage));
+  row.append(title, meta);
+  if (vendor.error) row.append(node("p", "catalog-error", vendor.error));
+  const sources = node("ul", "catalog-sources");
+  for (const source of vendor.sources) {
+    const item = node("li");
+    const state = source.error ? `失败 ${source.failures} 次：${source.error}`
+      : source.checked_at ? `检查于 ${formatTime(source.checked_at, s.timezone)}${source.changed_at ? ` · 内容更新于 ${formatTime(source.changed_at, s.timezone)}` : ""}` : "尚未检查";
+    item.append(catalogLink(`${sourceKinds[source.kind] || source.kind}${source.currency ? ` · ${source.currency}` : ""}`, source.url),
+      node("span", source.error ? "catalog-error" : "muted", state));
+    sources.append(item);
+  }
+  if (!vendor.sources.length) sources.append(node("li", "muted", "尚未登记官方页面"));
+  row.append(sources);
+  if (models.length) {
+    const details = node("details", "catalog-models");
+    details.append(node("summary", "", `模型（${models.length}）`));
+    const list = node("ul");
+    for (const model of models) {
+      const item = node("li", model.shown ? "" : "is-hidden");
+      const state = model.removed_at ? " · 已下线" : model.hidden ? " · 已隐藏" : model.shown ? "" : " · 未展示（旧版本或无价格）";
+      const label = node("span", "", `${model.model_id} · ${model.name}${state}`);
+      item.append(label);
+      if (!model.removed_at) {
+        item.append(button(model.hidden ? "显示" : "隐藏", async () => {
+          await s.request(`/api/admin/llm/models/${encodeURIComponent(model.vendor_id)}/${encodeURIComponent(model.model_id)}`, { method: "PATCH", body: { hidden: !model.hidden } });
+          await loadItems(s);
+        }));
+      }
+      list.append(item);
+    }
+    details.append(list);
+    row.append(details);
+  }
+  const actions = node("div", "item-actions");
+  actions.append(button(vendor.enabled ? "暂停该服务商" : "启用该服务商", async () => {
+    await s.request(`/api/admin/llm/vendors/${encodeURIComponent(vendor.id)}`, { method: "PATCH", body: { enabled: !vendor.enabled } });
+    await loadItems(s);
+  }));
+  row.append(actions);
+  return row;
+}
+
+function renderChanges(s, changes) {
+  const row = node("li", "item-row");
+  const list = node("ul", "catalog-sources");
+  for (const change of changes) {
+    const subject = change.model_id ? `${change.vendor_id} · ${change.model_id}` : change.vendor_id;
+    list.append(node("li", "", `${formatTime(change.detected_at, s.timezone)} · ${changeKinds[change.kind] || change.kind} · ${subject}`));
+  }
+  row.append(catalogLink("最近变化 ↗", "/llm"), list);
+  return row;
 }

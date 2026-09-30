@@ -292,7 +292,7 @@ pub(crate) async fn collect_briefing(
     topic: Option<&str>,
 ) -> Result<()> {
     let topics = sqlx::query_as::<_, Topic>(
-        "SELECT * FROM topics WHERE enabled AND owner_user_id IS NULL AND id <> 'reads'
+        "SELECT * FROM topics WHERE enabled AND owner_user_id IS NULL AND id NOT IN ('reads', 'llm')
          AND (($2::text IS NULL AND visible) OR id = $2)
          AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.topic_id = topics.id
                          AND triggered_by = 'briefing' AND status = 'ok' AND window_end = $1)
@@ -616,6 +616,20 @@ async fn execute(
 ) -> Result<Completed> {
     let started = Instant::now();
     let today = state.digest.today();
+    if crate::llm::is_catalog(topic) {
+        // The catalogue keeps its own records; the run counts providers and changes.
+        let outcome = crate::llm::execute(state, topic).await?;
+        return Ok(Completed {
+            response_id: None,
+            usage: outcome.usage,
+            payload: outcome.payload,
+            day: today,
+            returned: outcome.read,
+            new: outcome.changes,
+            dup: outcome.unchanged,
+            dropped: outcome.rejected,
+        });
+    }
     let yesterday = today.pred_opt().expect("date in range");
     let is_reads = topic.id == "reads" && topic.owner_user_id.is_none();
     let window = if is_reads {
@@ -914,7 +928,9 @@ async fn finish(
                 defer_after_finish_error(state, topic_id).await;
                 return Err(error.into());
             }
-            ("ok", (done.new > 0).then_some(done.day))
+            // 𝑳𝑳𝑴 changes live outside the news snapshots.
+            let news = topic_id != crate::llm::TOPIC_ID;
+            ("ok", (news && done.new > 0).then_some(done.day))
         }
         Err(error) => {
             if let Err(update_error) = sqlx::query(

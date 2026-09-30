@@ -763,7 +763,7 @@ pub(crate) fn router() -> Router<AppState> {
 
 /// Applied outside the handlers so failures are readable cross-origin too; without it a
 /// third-party `fetch` sees an opaque network error instead of the JSON error body.
-async fn public_cors(request: Request, next: Next) -> Response {
+pub(crate) async fn public_cors(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     response.headers_mut().insert(
         header::ACCESS_CONTROL_ALLOW_ORIGIN,

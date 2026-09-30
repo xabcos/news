@@ -50,6 +50,7 @@ pub struct Topic {
     pub visible: bool,
     pub interval_minutes: i32,
     pub window_start: i32,
+    pub window_start_minute: i32,
     pub window_end: i32,
     pub weekdays: Vec<i16>,
     pub model: String,
@@ -161,6 +162,7 @@ struct TopicFields {
     visible: Option<bool>,
     interval_minutes: Option<i32>,
     window_start: Option<i32>,
+    window_start_minute: Option<i32>,
     window_end: Option<i32>,
     weekdays: Option<Vec<i16>>,
     model: Option<String>,
@@ -326,12 +328,17 @@ pub(crate) fn router() -> Router<AppState> {
 // Schedule
 // ---------------------------------------------------------------------------
 
+/// An interval covering a whole day means "once per active day, at the start time".
+pub(crate) const DAILY_INTERVAL_MINUTES: i32 = 1440;
+
 /// When the topic should run next, in UTC. `last` is the run the cadence continues from;
 /// `None` (a new or re-enabled topic) asks for the first run as soon as the window allows.
 /// Failures back off exponentially from 15 minutes, never beyond the normal interval, and
 /// a topic that has hit its daily cap waits for the next day's window. When
 /// `window_end` is earlier than `window_start`, the window crosses midnight and
-/// weekdays are attached to the day on which the window starts.
+/// weekdays are attached to the day on which the window starts. A daily topic that last
+/// succeeded waits for the next start time instead, so neither the time a run happened to
+/// start nor a manual run moves its clock time.
 pub fn next_run(
     topic: &Topic,
     tz: Tz,
@@ -360,7 +367,14 @@ pub fn next_run_with_min_interval(
         min_interval_minutes,
     ));
     let now = local(now);
-    let mut candidate = last.map_or(now, |at| local(at) + delay).max(now);
+    let daily = topic.interval_minutes >= DAILY_INTERVAL_MINUTES && topic.consecutive_failures <= 0;
+    let mut candidate = match last {
+        Some(at) if daily => next_start_after(topic, local(at)),
+        Some(at) => local(at) + delay,
+        None => now,
+    }
+    .max(now);
+    let start = window_start_time(topic);
     let overnight = topic.window_start > topic.window_end;
     if today_runs >= i64::from(topic.daily_run_cap) {
         let anchor_day = if overnight && (now.hour() as i32) < topic.window_end {
@@ -381,7 +395,7 @@ pub fn next_run_with_min_interval(
             } else {
                 day
             };
-            let in_window = hour >= topic.window_start || hour < topic.window_end;
+            let in_window = candidate.time() >= start || hour < topic.window_end;
             if in_window
                 && topic
                     .weekdays
@@ -394,7 +408,7 @@ pub fn next_run_with_min_interval(
             let weekday = day.weekday().number_from_monday() as i16;
             if !topic.weekdays.contains(&weekday) || hour >= topic.window_end {
                 candidate = next_window_start(topic, next_day(day));
-            } else if hour < topic.window_start {
+            } else if candidate.time() < start {
                 candidate = next_window_start(topic, day);
             } else {
                 break;
@@ -414,7 +428,12 @@ pub(crate) fn effective_run_delay_minutes(
 ) -> i64 {
     let interval = i64::from(interval_minutes.max(min_interval_minutes));
     if consecutive_failures <= 0 {
-        return interval;
+        // A daily topic follows its start time; only the floor separates two of its runs.
+        return if interval_minutes >= DAILY_INTERVAL_MINUTES {
+            i64::from(min_interval_minutes)
+        } else {
+            interval
+        };
     }
     let backoff = 15_i64 * 2_i64.pow((consecutive_failures.clamp(1, 7) - 1) as u32);
     interval.min(backoff).max(i64::from(min_interval_minutes))
@@ -424,16 +443,32 @@ fn next_day(day: NaiveDate) -> NaiveDate {
     day.succ_opt().expect("date in range")
 }
 
+fn window_start_time(topic: &Topic) -> NaiveTime {
+    NaiveTime::from_hms_opt(
+        topic.window_start as u32,
+        topic.window_start_minute as u32,
+        0,
+    )
+    .expect("hour below 24 and minute below 60")
+}
+
 fn next_window_start(topic: &Topic, from: NaiveDate) -> NaiveDateTime {
     let mut day = from;
     loop {
         let weekday = day.weekday().number_from_monday() as i16;
         if topic.weekdays.contains(&weekday) {
-            return day
-                .and_hms_opt(topic.window_start as u32, 0, 0)
-                .expect("hour below 24");
+            return day.and_time(window_start_time(topic));
         }
         day = next_day(day);
+    }
+}
+
+/// The first window start strictly after `at`.
+fn next_start_after(topic: &Topic, at: NaiveDateTime) -> NaiveDateTime {
+    if at.time() < window_start_time(topic) {
+        next_window_start(topic, at.date())
+    } else {
+        next_window_start(topic, next_day(at.date()))
     }
 }
 
@@ -608,12 +643,17 @@ async fn create_topic(
     } else {
         Some(0)
     };
-    let (window_start, window_end, weekdays) = if scope.is_public() {
-        (f.window_start, f.window_end, f.weekdays)
+    let (window_start, window_start_minute, window_end, weekdays) = if scope.is_public() {
+        (
+            f.window_start,
+            f.window_start_minute,
+            f.window_end,
+            f.weekdays,
+        )
     } else {
         // Personal scheduling stays deliberately small: run every day in the
         // normal daytime window; calendar controls remain administrator-only.
-        (Some(6), Some(24), Some(vec![1, 2, 3, 4, 5, 6, 7]))
+        (Some(6), Some(0), Some(24), Some(vec![1, 2, 3, 4, 5, 6, 7]))
     };
     let mut transaction = state.pool.begin().await?;
     if !scope.is_public() {
@@ -639,12 +679,13 @@ async fn create_topic(
         INSERT INTO topics (
             id, owner_user_id, name, name_en, description, brief, enabled, interval_minutes, window_start,
             window_end, weekdays, model, reasoning_effort, max_items, lookback_hours,
-            daily_run_cap, sort_weight, visible
+            daily_run_cap, sort_weight, visible, window_start_minute
         ) VALUES (
             LOWER(BTRIM($1)), $2, BTRIM($3), BTRIM(COALESCE($4, '')), BTRIM(COALESCE($5, '')), BTRIM($6),
             COALESCE($7, TRUE), $8, COALESCE($9, 6), COALESCE($10, 24),
             COALESCE($11, '{1,2,3,4,5}'), COALESCE(NULLIF(BTRIM($12), ''), $18), COALESCE($13, 'low'),
-            COALESCE($14, 8), COALESCE($15, 24), COALESCE($16, 24), COALESCE($17, 0), COALESCE($19, TRUE)
+            COALESCE($14, 8), COALESCE($15, 24), COALESCE($16, 24), COALESCE($17, 0), COALESCE($19, TRUE),
+            COALESCE($20, 0)
         )
         RETURNING *
         "#,
@@ -668,6 +709,7 @@ async fn create_topic(
     .bind(sort_weight)
     .bind(&state.config.ai_default_model)
     .bind(f.visible)
+    .bind(window_start_minute)
     .fetch_one(&mut *transaction)
     .await
     .map_err(map_db_error)?;
@@ -713,11 +755,16 @@ async fn update_topic(
             // while model/cost knobs stay on the service defaults.
             (None, None, None, None, Some(limits.daily_run_cap), None)
         };
-    let (window_start, window_end, weekdays) = if scope.is_public() {
-        (f.window_start, f.window_end, f.weekdays)
+    let (window_start, window_start_minute, window_end, weekdays) = if scope.is_public() {
+        (
+            f.window_start,
+            f.window_start_minute,
+            f.window_end,
+            f.weekdays,
+        )
     } else {
         // Keep personal topics on the simple every-day daytime schedule.
-        (Some(6), Some(24), Some(vec![1, 2, 3, 4, 5, 6, 7]))
+        (Some(6), Some(0), Some(24), Some(vec![1, 2, 3, 4, 5, 6, 7]))
     };
     // COALESCE merges the provided fields in the database, so no read-before-write is
     // needed and the schema's CHECK constraints validate exactly what changed.
@@ -740,6 +787,7 @@ async fn update_topic(
             daily_run_cap = COALESCE($15, daily_run_cap),
             sort_weight = COALESCE($16, sort_weight),
             visible = COALESCE($19, visible),
+            window_start_minute = COALESCE($20, window_start_minute),
             updated_at = NOW()
         WHERE id = $1 AND (($17 AND owner_user_id IS NULL) OR (NOT $17 AND owner_user_id = $18))
         RETURNING *
@@ -764,6 +812,7 @@ async fn update_topic(
     .bind(scope.is_public())
     .bind(user.id)
     .bind(f.visible)
+    .bind(window_start_minute)
     .fetch_optional(&state.pool)
     .await
     .map_err(map_db_error)?
@@ -959,6 +1008,7 @@ fn map_db_error(error: sqlx::Error) -> AppError {
                 Some("topics_description_valid") => "说明不超过 200 字",
                 Some("topics_brief_valid") => "方向描述不能为空且不超过 2000 字",
                 Some("topics_interval_valid") => "间隔必须在 15 到 1440 分钟之间",
+                Some("topics_window_minute_valid") => "开始分钟必须在 0 到 59 之间",
                 Some("topics_window_valid") => {
                     "时间窗必须有效；结束时间早于开始时间表示跨午夜，且两者不能相同"
                 }
@@ -995,6 +1045,7 @@ mod tests {
             visible: true,
             interval_minutes: 60,
             window_start: 6,
+            window_start_minute: 0,
             window_end: 24,
             weekdays: vec![1, 2, 3, 4, 5],
             model: "grok-4.7".into(),
@@ -1161,5 +1212,133 @@ mod tests {
         assert_eq!(effective_run_delay_minutes(120, 1, 15), 15);
         assert_eq!(effective_run_delay_minutes(120, 3, 15), 60);
         assert_eq!(effective_run_delay_minutes(60, 1, 120), 120);
+        // A daily topic keeps its start time, so only the floor spaces manual runs.
+        assert_eq!(effective_run_delay_minutes(1440, 0, 15), 15);
+        assert_eq!(effective_run_delay_minutes(1440, 2, 15), 30);
+    }
+
+    fn daily_topic() -> Topic {
+        let mut topic = topic();
+        topic.interval_minutes = 1440;
+        topic.window_start = 4;
+        topic.window_start_minute = 30;
+        topic.weekdays = vec![1, 2, 3, 4, 5, 6, 7];
+        topic.daily_run_cap = 3;
+        topic
+    }
+
+    #[test]
+    fn daily_topics_keep_their_start_minute() {
+        let daily = daily_topic();
+        // A run that started late does not move tomorrow's slot.
+        assert_eq!(
+            next_run(
+                &daily,
+                Shanghai,
+                local(2026, 9, 3, 4, 41),
+                Some(local(2026, 9, 3, 4, 31)),
+                1
+            ),
+            local(2026, 9, 4, 4, 30)
+        );
+        // Manual runs before and after the start leave the daily slot in place.
+        assert_eq!(
+            next_run(
+                &daily,
+                Shanghai,
+                local(2026, 9, 3, 2, 5),
+                Some(local(2026, 9, 3, 2, 0)),
+                1
+            ),
+            local(2026, 9, 3, 4, 30)
+        );
+        assert_eq!(
+            next_run(
+                &daily,
+                Shanghai,
+                local(2026, 9, 3, 15, 1),
+                Some(local(2026, 9, 3, 15, 0)),
+                2
+            ),
+            local(2026, 9, 4, 4, 30)
+        );
+        // After downtime the missed day runs as soon as the window allows.
+        assert_eq!(
+            next_run(
+                &daily,
+                Shanghai,
+                local(2026, 9, 5, 9, 0),
+                Some(local(2026, 9, 3, 4, 30)),
+                0
+            ),
+            local(2026, 9, 5, 9, 0)
+        );
+        // Before the start minute a new topic waits for it.
+        assert_eq!(
+            next_run(&daily, Shanghai, local(2026, 9, 3, 4, 10), None, 0),
+            local(2026, 9, 3, 4, 30)
+        );
+    }
+
+    #[test]
+    fn daily_topics_retry_failures_and_respect_weekdays() {
+        let mut failing = daily_topic();
+        failing.consecutive_failures = 1;
+        let at = local(2026, 9, 3, 4, 30);
+        assert_eq!(
+            next_run(&failing, Shanghai, at, Some(at), 1),
+            local(2026, 9, 3, 4, 45)
+        );
+        failing.consecutive_failures = 3;
+        assert_eq!(
+            next_run(
+                &failing,
+                Shanghai,
+                local(2026, 9, 3, 5, 50),
+                Some(local(2026, 9, 3, 5, 45)),
+                3
+            ),
+            local(2026, 9, 4, 4, 30)
+        );
+        let mut weekdays = daily_topic();
+        weekdays.weekdays = vec![1, 2, 3, 4, 5];
+        // Friday's run is followed by Monday's.
+        assert_eq!(
+            next_run(
+                &weekdays,
+                Shanghai,
+                local(2026, 9, 4, 4, 35),
+                Some(local(2026, 9, 4, 4, 30)),
+                1
+            ),
+            local(2026, 9, 7, 4, 30)
+        );
+        // A narrow window closes at its end hour.
+        let mut narrow = daily_topic();
+        narrow.window_end = 5;
+        assert_eq!(
+            next_run(&narrow, Shanghai, local(2026, 9, 3, 5, 10), None, 0),
+            local(2026, 9, 4, 4, 30)
+        );
+    }
+
+    #[test]
+    fn start_minutes_apply_to_regular_and_overnight_windows() {
+        let mut regular = topic();
+        regular.window_start_minute = 15;
+        assert_eq!(
+            next_run(&regular, Shanghai, local(2026, 9, 3, 6, 5), None, 0),
+            local(2026, 9, 3, 6, 15)
+        );
+        let mut overnight = overnight_topic();
+        overnight.window_start_minute = 30;
+        assert_eq!(
+            next_run(&overnight, Shanghai, local(2026, 9, 3, 22, 10), None, 0),
+            local(2026, 9, 3, 22, 30)
+        );
+        assert_eq!(
+            next_run(&overnight, Shanghai, local(2026, 9, 4, 2, 0), None, 0),
+            local(2026, 9, 4, 2, 0)
+        );
     }
 }

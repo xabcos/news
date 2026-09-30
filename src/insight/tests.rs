@@ -682,7 +682,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         .json()
         .await
         .unwrap();
-    assert_eq!(first["topics"].as_array().unwrap().len(), 10);
+    assert_eq!(first["topics"].as_array().unwrap().len(), 11);
     state
         .http
         .get(format!("{first_request_url}/digest?topic=x"))
@@ -713,6 +713,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             "events",
             "cases",
             "issues",
+            "llm",
             "reads",
             "equity"
         ]
@@ -729,7 +730,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             .fetch_all(&state.pool)
             .await
             .unwrap();
-    assert_eq!(migrations, [1, 2, 3]);
+    assert_eq!(migrations, [1, 2, 3, 4]);
     sqlx::query("INSERT INTO topics (id,name,brief,enabled) VALUES ('inactive','Inactive','Inactive',false)")
         .execute(&state.pool).await.unwrap();
     sqlx::query("TRUNCATE items, runs, ai_insights CASCADE")

@@ -166,7 +166,8 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
     assert_eq!(topic.weekdays, [1, 2, 3, 4, 5, 6, 7]);
     assert_eq!(topic.model, "grok-4.6");
     assert_eq!(topic.daily_run_cap, 32);
-    assert_eq!(topic.sort_weight, 81);
+    // 𝑳𝑳𝑴 takes 81 and moves Reads after it on a fresh database.
+    assert_eq!(topic.sort_weight, 82);
     let run_id = Uuid::new_v4();
     sqlx::query("INSERT INTO runs (id,topic_id,triggered_by,status,model) VALUES ($1,'reads','manual','ok','test')")
         .bind(run_id).execute(&state.pool).await.unwrap();

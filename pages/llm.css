@@ -1,0 +1,78 @@
+.llm [hidden] { display: none; }
+.llm-heading { display: flex; align-items: baseline; gap: 1rem; margin-bottom: .3rem; }
+.llm-heading h1 { flex-shrink: 0; margin: 0; font-size: 1.75rem; }
+.llm-heading p { min-width: 0; margin: 0; color: var(--muted); font-size: .9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.llm-meta { margin: 0 0 1.6rem; color: var(--muted); font-size: .75rem; line-height: 1.6; }
+.llm-changes > h2, .llm-vendor-heading { padding-bottom: .5rem; border-bottom: 2px solid var(--text); }
+.llm-changes > h2, .llm-vendor-heading h2 { margin: 0; font-size: 1rem; font-weight: 750; letter-spacing: .02em; }
+.llm-changes { margin-bottom: 2.2rem; }
+.llm-change-list { margin: 0; padding: 0; list-style: none; }
+.llm-change { display: grid; grid-template-columns: 2.8rem 2.6rem minmax(0, 1fr); column-gap: .6rem; row-gap: .15rem; align-items: baseline; padding: .6rem 0; border-bottom: 1px solid var(--line); font-size: .84rem; }
+.llm-change time { color: var(--muted); font-size: .75rem; font-variant-numeric: tabular-nums; }
+.llm-change-kind { color: var(--muted); font-size: .72rem; font-weight: 700; }
+.llm-change-added .llm-change-kind, .llm-change-vendor_added .llm-change-kind { color: var(--primary-strong); }
+.llm-change-price .llm-change-kind { color: var(--gold); }
+.llm-change-model { min-width: 0; color: var(--text); text-decoration: none; overflow-wrap: anywhere; }
+.llm-change-model span { color: var(--muted); }
+a.llm-change-model:hover code { color: var(--primary-strong); }
+.llm-change-detail, .llm-change .llm-source { grid-column: 3; }
+.llm-change-detail { color: color-mix(in srgb, var(--text) 82%, var(--muted)); font-variant-numeric: tabular-nums; }
+.llm-source { color: var(--muted); font-size: .72rem; text-decoration: none; }
+.llm-source:hover, .llm-vendor-meta a:hover { color: var(--primary-strong); }
+.llm-empty { margin: 0; padding: .8rem 0; color: var(--muted); font-size: .84rem; }
+.llm-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem; margin-bottom: .2rem; }
+.llm-regions { display: flex; gap: .25rem; }
+.llm-regions button[aria-pressed="true"] { background: var(--primary-soft); color: var(--primary-strong); }
+.llm-search { flex: 0 1 14rem; min-width: 0; padding: .36rem .7rem; border: 1px solid var(--line-strong); border-radius: var(--radius-m); background: var(--surface-solid); color: var(--text); font-size: .82rem; }
+.llm-vendor { margin-top: 1.5rem; }
+.llm-vendor-heading { display: flex; align-items: baseline; justify-content: space-between; gap: .75rem; }
+.llm-vendor-meta { color: var(--muted); font-size: .75rem; white-space: nowrap; }
+.llm-vendor-meta a { color: inherit; text-decoration: none; }
+.llm-columns, .llm-model > summary { display: grid; grid-template-columns: minmax(0, 1fr) 4rem repeat(3, 5.2rem); column-gap: .75rem; align-items: baseline; }
+.llm-columns { padding: .45rem 0 .35rem; border-bottom: 1px solid var(--line); color: var(--muted); font-size: .7rem; }
+.llm-columns span:not(:first-child), .llm-num { text-align: right; }
+.llm-model { border-bottom: 1px solid var(--line); scroll-margin-top: 3.5rem; }
+.llm-model > summary { padding: .7rem 0; list-style: none; cursor: pointer; }
+.llm-model > summary::-webkit-details-marker { display: none; }
+.llm-model > summary:hover code, .llm-model[open] > summary code { color: var(--primary-strong); }
+.llm-model-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem .45rem; min-width: 0; }
+.llm-model-name code { font-size: .92rem; font-weight: 650; overflow-wrap: anywhere; }
+.llm-model-name small { flex-basis: 100%; color: var(--muted); font-size: .75rem; }
+.llm-badge { padding: .02rem .35rem; border-radius: .25rem; background: var(--surface-soft); color: var(--muted); font-size: .66rem; font-weight: 650; }
+.llm-flag { color: var(--muted); font-size: .66rem; }
+.llm-num { font-size: .88rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.llm-detail { padding: 0 0 1.1rem; font-size: .82rem; }
+.llm-summary { margin: 0 0 .8rem; color: color-mix(in srgb, var(--text) 82%, var(--muted)); font-size: .88rem; line-height: 1.6; }
+.llm-prices-wrap { margin: 0 0 .8rem; overflow-x: auto; }
+.llm-prices { width: 100%; border-collapse: collapse; font-size: .8rem; font-variant-numeric: tabular-nums; }
+.llm-prices caption { padding-bottom: .3rem; color: var(--muted); font-size: .7rem; text-align: left; }
+.llm-prices th, .llm-prices td { padding: .35rem .5rem; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+.llm-prices th:first-child { padding-left: 0; font-weight: 500; text-align: left; }
+.llm-prices td:last-child { padding-right: 0; }
+.llm-prices thead th { color: var(--muted); font-size: .7rem; font-weight: 500; }
+.llm-specs { display: grid; grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr)); gap: .55rem 1rem; margin: 0 0 .8rem; }
+.llm-specs dt { color: var(--muted); font-size: .7rem; }
+.llm-specs dd { margin: .1rem 0 0; }
+.llm-links { display: flex; flex-wrap: wrap; gap: .35rem 1.1rem; margin: 0 0 .6rem; }
+.llm-links a { color: var(--primary-strong); text-decoration: none; }
+.llm-links a:hover { text-decoration: underline; text-underline-offset: .15em; }
+.llm-history { margin: 0 0 .6rem; padding: 0; list-style: none; color: color-mix(in srgb, var(--text) 82%, var(--muted)); font-size: .76rem; }
+.llm-history time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.llm-provenance { margin: 0; color: var(--muted); font-size: .7rem; }
+.llm-footnote { margin-top: 2rem; color: var(--muted); font-size: .72rem; line-height: 1.7; }
+.llm-footnote a { color: inherit; }
+@media (max-width: 768px) {
+  .llm-heading, .llm-changes, .llm-catalog, .llm-footnote { touch-action: pan-y pinch-zoom; }
+}
+@media (max-width: 600px) {
+  .llm-heading { gap: .5rem; }
+  .llm-heading h1 { font-size: 1.25rem; }
+  .llm-heading p { font-size: .75rem; }
+  .llm-change { grid-template-columns: 2.5rem 2.4rem minmax(0, 1fr); font-size: .8rem; }
+  .llm-search { flex-basis: 100%; }
+  .llm-columns { display: none; }
+  .llm-model > summary { grid-template-columns: repeat(4, minmax(0, 1fr)); row-gap: .4rem; }
+  .llm-model-name { grid-column: 1 / -1; }
+  .llm-num { font-size: .82rem; text-align: left; }
+  .llm-num::before { content: attr(data-label); display: block; color: var(--muted); font-size: .64rem; }
+}

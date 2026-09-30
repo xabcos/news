@@ -105,9 +105,13 @@ let activeLoadController = null;
 
 document.addEventListener("DOMContentLoaded", init);
 
+// Topics with their own server-rendered page instead of a news feed.
+const PAGE_TOPICS = ["reads", "llm"];
+const topicPage = (id) => `/${id}${state.lang === "en" ? "?lang=en" : ""}`;
+
 async function init() {
-  if (state.topic === "reads") {
-    location.replace(`/reads${state.lang === "en" ? "?lang=en" : ""}`);
+  if (PAGE_TOPICS.includes(state.topic)) {
+    location.replace(topicPage(state.topic));
     return;
   }
   applyLang();
@@ -604,8 +608,8 @@ function updateHistoryLoader() {
 }
 
 function navigate(changes) {
-  if (changes.topic === "reads") {
-    location.assign(`/reads${state.lang === "en" ? "?lang=en" : ""}`);
+  if (PAGE_TOPICS.includes(changes.topic)) {
+    location.assign(topicPage(changes.topic));
     return;
   }
   Object.assign(state, { at: "" }, changes);
@@ -648,10 +652,10 @@ function renderTabs() {
   const overseas = tabs.findIndex((tab) => tab.id === "overseas-ai");
   tabs.splice(overseas < 0 ? 2 : overseas + 1, 0, { id: EQUITY_ID, label: "𝑬" });
   el.tabs.replaceChildren(...tabs.map(({ id, label }) => {
-    if (id === "reads") {
+    if (PAGE_TOPICS.includes(id)) {
       const tab = document.createElement("a");
       tab.className = "tab";
-      tab.href = `/reads${state.lang === "en" ? "?lang=en" : ""}`;
+      tab.href = topicPage(id);
       tab.textContent = label;
       return tab;
     }

@@ -8,7 +8,7 @@ use std::{collections::HashMap, time::Duration};
 use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
-pub(super) const TRACK_URL: &str =
+pub(crate) const TRACK_URL: &str =
     "https://stats.xairouter.com/track/pk-c994c1ce749548c8b45c55d21fdfc4cf";
 
 #[derive(sqlx::FromRow)]

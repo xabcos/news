@@ -15,11 +15,14 @@ NEWS 按主题采集、去重并整理中英文新闻，提供新闻首页、Ato
 | 𝑬𝒗𝒆𝒏𝒕𝒔 | `events` | 全球经济、科技、社会、国际局势与公共风险 |
 | 𝑪𝒂𝒔𝒆𝒔 | `cases` | 真实 AI 应用、业务流程与行业案例 |
 | 𝑰𝒔𝒔𝒖𝒆𝒔 | `issues` | Codex、Grok、Claude、DeepSeek 的使用反馈、故障与解决方案 |
+| 𝑳𝑳𝑴 | `llm` | 全球主流大模型的价格、规格与更新，以各服务商官方文档为准 |
 | 𝑹𝒆𝒂𝒅𝒔 | `reads` | 值得读完的原创文章与公开长帖，原文、全文翻译与本站精读 |
 
 初始化配置采用 2026-09-24 的线上公共主题配置。栏目方向、关注来源和采集参数定义在 [初始化文件](migrations/0001_schema.sql)，可通过管理员工作台调整。采集要求具体事实、原文链接、明确时间和事件去重；Gossip 明确区分已确认消息、爆料、回应与推测。
 
 主题编辑中的“启用抓取”和“前台展示”独立保存，只有两者同时开启才进入前台导航、ALL、日期列表、订阅和阅读接口，管理员阅读端也不例外。个人主题同样遵守展示开关，原有账户访问范围保持不变。关闭展示不影响采集及工作台管理；恢复展示会读取仍保留的可见历史内容。
+
+排程的开始时间精确到分钟、结束时间为整点。间隔 1440 分钟表示每个运行日在开始时间运行一次：成功后固定到下一个开始时间，手动运行和启动时间的延迟都不会让它后移；失败仍按退避重试，受每日运行上限约束。
 
 ## 𝑬 股市观察
 
@@ -36,6 +39,18 @@ NEWS 按主题采集、去重并整理中英文新闻，提供新闻首页、Ato
 事件日期由原始记录计算，公开接口只返回研判及必要引用，不返回内部新闻摘要。当前没有接入日线行情，历史反馈复核公告和经营事实，事件图不表示股价、量价信号或全市场热度，也不提供模型编造的价格、技术指标和收益概率。
 
 两类研判按类型隔离任务、查询和缓存。股市笔记保留一年及重生成版本，前台提供最近 180 期，同一期的重生成版本合并为一个历史选项。默认展示最新一期；晚间对照当天早间、次日早间对照前晚，缺期时使用此前最近成功一期。失败继续提供上一份成功笔记，页面明确显示日期、早晚期次和新闻截止时间。工作台可单独重生成最近截止的一期。
+
+## 𝑳𝑳𝑴
+
+`/llm` 汇总全球主流大模型的价格、规格与更新，作为模型数据信息源使用，导航位于 Reads 之前。数据只取自服务商自己的官方文档：每家登记定价页、模型页与更新日志，不参考第三方汇总。首批登记 OpenAI、Anthropic、Google Gemini、xAI、DeepSeek、通义千问、智谱、MiniMax、文心与阶跃星辰；Mistral、Kimi 与豆包的定价页暂时无法直接读取，作为候选每周重试。
+
+默认每天 04:30（服务时区）运行，手动运行与失败重试共用每日 3 次上限，均可在主题编辑中调整；模型与推理强度沿用主题配置，默认 low。每次按服务商读取官方页面正文，表格按行保留；页面文本与上次核验一致时直接沿用，不调用模型。页面变化时由模型按严格 JSON Schema 整理目录，程序逐项核验：模型 ID 必须出现在官方页面；每组价格附官方原文连续摘录，摘录所在章节写明该模型，摘录中的该模型所在行、或其上方最近写明模型的一行正是该模型；按列列出多个模型的表格只认该模型那一列的数字，每行一个模型的表格只认该模型的行；数字逐一出现在上述范围内，计价单位（每百万或每千 tokens）与页面写明的一致；缓存价不高于输入价，Batch、Flex 不高于标准价，优先档不低于标准价，长上下文不低于短上下文，高峰不低于空闲。同一档位被拆成几行时，数字不冲突即合并。上下文、最大输出、发布日期和知识截止同样按上述规则核对原文摘录，官方没有写明的留空。未通过核验的价格保留上次结果，页面指纹不更新，下次运行重新读取；价格不能手工填写。
+
+国内服务商以国内站人民币价格为主、国际站美元价格为补充，两者都是官方报价；价格按官方计价单位折算为每百万 tokens，不做汇率换算。同时列出现价和将来生效价格时只收录现价；只收录文本输入的价格。首次收录某服务商只导入，不记为新发布；之后记录新增、调价、规格、状态与下线。两次读取同一页面时标注可能不同，因此调价只比较两次都列出的同一计价档位（含标准价、Batch、Fast 等）的数字，规格按显示值比较，状态只记转为正式和官方弃用，上一版页面已出现过的模型不记为新增。模型不再出现在任何官方页面时才标记下线；一次不再列出多数已收录模型时暂缓下线，页面连续一周仍如此才下线这些模型。页面只有错误或地区提示、没有读到模型时按失败处理，不影响已发布目录。
+
+服务商随行业自动增减，不需要人工登记。每周读取一次 𝑪 与 𝑶 近两周的新闻，由模型找出自研大模型、通过公开 API 按 token 计费且尚未收录的公司；近两周至少有两篇不同报道、其中至少一篇来自其官网域名，官网与域名又不属于已收录服务商或公共平台的，才成为候选，每周最多 3 家。候选与已下线的服务商约每周尝试一次：先读已登记页面，再由模型从官网的官方链接中挑选定价页与模型页，必要时再打开开发者平台等最多 3 个页面；读出的价格至少一个通过核验即自动上线，并记入最近变化。在线服务商的官方页面连续两周未能核验时，先从官网重新查找页面，仍无结果即自动下线，模型随之移出；多数服务商同时失败时视为本服务的问题，不下线。自动发现的候选八周内未能上线即被清除，之后可由新闻重新发现。
+
+页面先列最近变化，再按服务商分组列出模型的上下文、输入、输出与缓存命中价格，国内厂商显示人民币；展开可见完整价格档位、规格、能力、官方文档与定价页链接和最近变化。每个模型系列只列最新的在售版本：系列与版本按模型 ID 判断，正式版优先于预览版与日期快照；旧版、弃用和官方未列价格的模型都不展示。最近变化只列展示中的模型，以及整个系列下线或弃用、服务商上线与下线的记录。`/llm.json` 提供同一份目录，跨域可读；`/llm/feed.xml` 订阅变化。工作台选中 𝑳𝑳𝑴 时显示各服务商的在线、候选或下线状态与原因、官方页面的检查状态和每个模型是否展示，可暂停服务商或隐藏模型。运行记录中的“返回 / 新增 / 重复 / 丢弃”分别表示读取的服务商、记录的变化、未变化的服务商和未通过核验的项目。
 
 ## Reads
 
@@ -96,7 +111,7 @@ docker compose config >/dev/null
 docker compose up -d
 ```
 
-服务绑定宿主机 `127.0.0.1:8793`。将 [Nginx 配置](deploy/nginx/xabcnews.com.conf) 加入网关的 `http` 配置，为 `xabcnews.com` 提供入口。空库依次执行初始化及后续迁移，创建表结构、Free / Pro 套餐、10 个默认公开栏目和内部股市资料源；调度器按栏目配置采集，并生成最近一期已截止研判。
+服务绑定宿主机 `127.0.0.1:8793`。将 [Nginx 配置](deploy/nginx/xabcnews.com.conf) 加入网关的 `http` 配置，为 `xabcnews.com` 提供入口。空库依次执行初始化及后续迁移，创建表结构、Free / Pro 套餐、11 个默认公开栏目、内部股市资料源和 𝑳𝑳𝑴 服务商目录；调度器按栏目配置采集，并生成最近一期已截止研判。
 
 当前初始化基线用于全新数据库。运行记录、账号和内容从空白开始，配置中的管理员邮箱首次登录即创建管理员；后续结构变更使用新迁移。主题的 `daily_run_cap` 限制每日运行次数，Reads 的每日 32 篇是独立的发布上限。
 
@@ -132,6 +147,9 @@ GET /feed.xml?topic=overseas-ai
 GET /insight
 GET /equity-insight?day=YYYY-MM-DD
 GET /equity-insight?at=2026-09-29T12:45:00Z
+GET /llm?lang=en
+GET /llm.json
+GET /llm/feed.xml
 GET /reads?page=1&lang=en
 GET /reads?view=hot&lang=en
 GET /reads/{uuid}
@@ -140,14 +158,14 @@ GET /sitemap.xml
 
 省略 `topic` 读取全部公共栏目，省略 `day` 读取最近有内容的日期。`limit` 为 1–128，`next` 为后续分页游标。公共响应支持 ETag 和短期缓存，私有响应不缓存。
 
-账户与个人主题使用 `/api/auth/*`、`/api/me/*`；公共主题管理使用 `/api/admin/topics`；日报状态和生成使用 `GET /api/admin/insight`、`POST /api/admin/insight`；股市笔记使用 `GET /api/admin/equity-insight`、`POST /api/admin/equity-insight`。股市公开接口返回 `note` 与 `editions`，不带参数时读取最新成功笔记，`day` 读取当日最新一期，`at` 按历史列表中的 `window_end` 读取指定一期；网页链接也支持 `/?topic=equity-insight&at=...`。套餐、订单和支付回调分别位于 `/api/plans`、`/api/orders`、`/api/webhooks/payment`。Free 用户阅读公共内容，Pro 用户可创建最多 4 个个人主题。
+账户与个人主题使用 `/api/auth/*`、`/api/me/*`；公共主题管理使用 `/api/admin/topics`；日报状态和生成使用 `GET /api/admin/insight`、`POST /api/admin/insight`；股市笔记使用 `GET /api/admin/equity-insight`、`POST /api/admin/equity-insight`；𝑳𝑳𝑴 状态使用 `GET /api/admin/llm`，暂停服务商和隐藏模型分别使用 `PATCH /api/admin/llm/vendors/{id}`、`PATCH /api/admin/llm/models/{vendor}/{model}`。股市公开接口返回 `note` 与 `editions`，不带参数时读取最新成功笔记，`day` 读取当日最新一期，`at` 按历史列表中的 `window_end` 读取指定一期；网页链接也支持 `/?topic=equity-insight&at=...`。套餐、订单和支付回调分别位于 `/api/plans`、`/api/orders`、`/api/webhooks/payment`。Free 用户阅读公共内容，Pro 用户可创建最多 4 个个人主题。
 
 ## 验证
 
 ```bash
 make release-check
 NEWS_DAILY_TEST_DATABASE_URL=postgres://.../news_daily_test_check cargo test --locked postgres_daily_pipeline -- --ignored
-NEWS_DAILY_TEST_DATABASE_URL=postgres://.../news_daily_test_check NEWS_PAYMENT_TEST_DATABASE_URL=postgres://.../news_payment_audit_check NEWS_READS_TEST_DATABASE_URL=postgres://.../news_reads_test_check NEWS_EQUITY_TEST_DATABASE_URL=postgres://.../news_equity_test_check make integration-test
+NEWS_DAILY_TEST_DATABASE_URL=postgres://.../news_daily_test_check NEWS_PAYMENT_TEST_DATABASE_URL=postgres://.../news_payment_audit_check NEWS_READS_TEST_DATABASE_URL=postgres://.../news_reads_test_check NEWS_EQUITY_TEST_DATABASE_URL=postgres://.../news_equity_test_check NEWS_LLM_TEST_DATABASE_URL=postgres://.../news_llm_test_check make integration-test
 ```
 
-`release-check` 执行格式检查、单元测试、Clippy、前端语法和 Compose 配置检查。`integration-test` 使用四个独立空库，名称分别以 `news_daily_test`、`news_payment_audit_`、`news_reads_test` 和 `news_equity_test` 开头，并需要本地测试配置。模拟接口覆盖日报与支付流程，Reads 的全文、发布与归档，以及主题开关四种组合、各角色阅读可见性、股市研判生成、引用隐私、采集复用、同日版本、缓存和历史读取。CI 自动执行。
+`release-check` 执行格式检查、单元测试、Clippy、前端语法和 Compose 配置检查。`integration-test` 使用五个独立空库，名称分别以 `news_daily_test`、`news_payment_audit_`、`news_reads_test`、`news_equity_test` 和 `news_llm_test` 开头，并需要本地测试配置。模拟接口覆盖日报与支付流程，Reads 的全文、发布与归档，以及主题开关四种组合、各角色阅读可见性、股市研判生成、引用隐私、采集复用、同日版本、缓存和历史读取；𝑳𝑳𝑴 覆盖首次导入、调价与下线记录、暂缓与确认下线、服务商下线与恢复收录、候选清理、隐藏模型和公开页面、JSON 与订阅。CI 自动执行。

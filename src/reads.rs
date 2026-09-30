@@ -11,7 +11,7 @@ mod tests;
 pub(crate) use discovery::discover;
 pub(crate) use full_text::refresh_images;
 pub(crate) use pages::router;
-pub(crate) use stats::refresh_loop;
+pub(crate) use stats::{TRACK_URL, refresh_loop};
 
 use crate::{
     error::{AppError, Result},
