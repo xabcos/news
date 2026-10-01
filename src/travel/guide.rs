@@ -191,7 +191,16 @@ pub(super) async fn write(
     }
     let mut outcomes = Vec::new();
     let mut written = Vec::new();
-    for (id, result, spent) in jobs.join_all().await {
+    // Each guide is stored as soon as it is written, so a run that stops early keeps the guides
+    // it finished and the pages show them while the others are still being written.
+    while let Some(joined) = jobs.join_next().await {
+        let (id, result, spent) = match joined {
+            Ok(done) => done,
+            Err(error) => {
+                tracing::warn!(%error, "travel guide stopped");
+                continue;
+            }
+        };
         *usage += spent;
         match result {
             Written::Later(reason) => outcomes.push(json!({ "place": id, "skipped": reason })),

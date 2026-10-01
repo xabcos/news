@@ -192,8 +192,13 @@ async fn destination(
             .join(choose(en, "、", ", "));
         let _ = write!(
             content,
-            "</dl><p class=destination-sources>{}{sources}</p></section>",
+            "</dl><p class=destination-sources>{}{sources} · <a href=\"{}\" rel=\"license noopener noreferrer\">CC BY-SA 4.0</a></p></section>",
             choose(en, "资料：", "Sources: "),
+            choose(
+                en,
+                "https://creativecommons.org/licenses/by-sa/4.0/deed.zh-hans",
+                "https://creativecommons.org/licenses/by-sa/4.0/",
+            ),
         );
     }
     if !moments.is_empty() {

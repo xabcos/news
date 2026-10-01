@@ -1064,6 +1064,7 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
         "id=moments",
         "35.01°N 135.77°E",
         "维基导游 · Kyoto",
+        "rel=\"license noopener noreferrer\">CC BY-SA 4.0</a>",
     ] {
         assert!(html.contains(text), "missing {text}");
     }
@@ -1073,7 +1074,7 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
         "data-next",
         "时节与节庆",
         "你知道吗",
-        "CC BY-SA",
+        "依据资料整理",
     ] {
         assert!(!html.contains(text), "unexpected {text}");
     }
