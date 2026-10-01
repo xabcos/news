@@ -1,6 +1,6 @@
-//! The shell shared by the server-rendered public pages (Reads and 𝑳𝑳𝑴): head tags,
+//! The shell shared by the server-rendered public pages: head tags,
 //! language alternates and the topic tabs that match the news page.
-use crate::{error::Result, state::AppState};
+use crate::{error::Result, reading::Reader, state::AppState};
 use std::fmt::Write;
 
 /// Topics with their own server-rendered page instead of the news feed.
@@ -61,6 +61,7 @@ pub(crate) fn escape(value: &str) -> String {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn layout(
     state: &AppState,
+    reader: Reader,
     en: bool,
     path: &str,
     title: &str,
@@ -69,23 +70,40 @@ pub(crate) async fn layout(
     structured: Option<serde_json::Value>,
     chrome: &Chrome<'_>,
 ) -> Result<String> {
-    let topics: Vec<(String, String, String)> = sqlx::query_as("SELECT id, name, name_en FROM topics WHERE enabled AND visible AND owner_user_id IS NULL ORDER BY sort_weight, created_at")
-        .fetch_all(&state.pool).await?;
+    let topics: Vec<(String, String, String)> = sqlx::query_as("SELECT id, name, name_en FROM topics WHERE enabled AND (visible OR $1) AND owner_user_id IS NULL ORDER BY sort_weight, created_at")
+        .bind(reader.is_admin()).fetch_all(&state.pool).await?;
     let mut tabs = format!(
         "<a class=tab href=\"{}\">𝐀𝐋𝐋</a><a class=tab href=\"{}\">𝐀𝐈</a>",
-        localized("/", en),
-        escape(&localized("/?topic=insight", en))
+        reader.localized("/", en),
+        escape(&reader.localized("/?topic=insight", en))
     );
     let equity_tab = format!(
         "<a class=tab href=\"{}\">𝑬</a>",
-        escape(&localized("/?topic=equity-insight", en))
+        escape(&reader.localized("/?topic=equity-insight", en))
     );
     if !topics.iter().any(|(id, _, _)| id == "overseas-ai") {
         tabs.push_str(&equity_tab);
     }
+    let mut culture_shown = false;
     for (id, name, name_en) in topics {
+        if crate::culture::IDS.contains(&id.as_str()) {
+            if !culture_shown {
+                let _ = write!(
+                    tabs,
+                    "<a class=tab href=\"{}\"{}>𝑪𝒖𝒍𝒕𝒖𝒓𝒆</a>",
+                    escape(&reader.localized("/culture", en)),
+                    if crate::culture::IDS.contains(&chrome.current) {
+                        " aria-current=\"true\""
+                    } else {
+                        ""
+                    }
+                );
+                culture_shown = true;
+            }
+            continue;
+        }
         let href = if PAGE_TOPICS.contains(&id.as_str()) {
-            localized(&format!("/{id}"), en)
+            reader.localized(&format!("/{id}"), en)
         } else {
             let mut query = url::form_urlencoded::Serializer::new(String::new());
             query.append_pair("topic", &id);
@@ -131,7 +149,7 @@ pub(crate) async fn layout(
 <body class="public {section}"><header class="topbar"><a class="brand" href="{home}" aria-label="News"><img class="brand-logo" src="/icon.svg" alt=""><span>𝑵𝒆𝒘𝒔</span></a><nav class="tabs" aria-label="{topics_label}">{tabs}</nav><div class="tools"><a class="space-link button button-quiet button-small" href="/me/">{workspace}</a><a class="space-link button button-quiet button-small" href="{other_lang}" hreflang="{other_code}">{language_label}</a></div></header>
 <main class="shell">{content}</main>
 <button id="backToTop" class="button back-to-top" type="button" aria-label="{back_to_top}" title="{back_to_top}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 12 6-6 6 6M12 6v12"/></svg></button>
-<script src="/public.js?v=2" defer></script><script src="{script}" defer></script><script src="/stats.js?v=2" data-track-url="{track_url}" defer></script></body></html>"##,
+<script src="/public.js?v=4" defer></script><script src="{script}" defer></script><script src="/stats.js?v=2" data-track-url="{track_url}" defer></script></body></html>"##,
         lang = choose(en, "zh-CN", "en"),
         title = escape(title),
         description = escape(description),
@@ -151,7 +169,7 @@ pub(crate) async fn layout(
         home = localized("/", en),
         topics_label = choose(en, "主题", "Topics"),
         workspace = choose(en, "工作台", "Workspace"),
-        other_lang = escape(&localized(path, !en)),
+        other_lang = escape(&reader.localized(path, !en)),
         other_code = choose(en, "en", "zh-CN"),
         language_label = choose(en, "EN", "中文"),
         back_to_top = choose(en, "回到顶部", "Back to top"),

@@ -9,6 +9,7 @@ use super::{
 use crate::{
     digest::{Rendered, conditional},
     error::{AppError, Result},
+    reading::{self, Reader},
     site::{Chrome, absolute, choose, escape, localized},
     state::AppState,
 };
@@ -29,7 +30,7 @@ const CHROME: Chrome<'static> = Chrome {
     current: TOPIC_ID,
     section: "travel",
     stylesheet: "/travel.css?v=2",
-    script: "/travel.js?v=2",
+    script: "/travel.js?v=3",
     feed: ("𝑻𝒓𝒂𝒗𝒆𝒍", "/feed.xml?topic=travel"),
 };
 /// Destinations on the map: those with moments from this many recent days.
@@ -39,13 +40,15 @@ const PAGE_MOMENTS: usize = 24;
 const VISIBLE: &str = "EXISTS (SELECT 1 FROM topics WHERE id = 'travel' AND enabled AND visible AND owner_user_id IS NULL)";
 
 pub(crate) fn router() -> Router<AppState> {
-    Router::new()
-        .route("/travel", get(index))
-        .route("/travel/map.json", get(map))
-        .route("/travel/sitemap.xml", get(sitemap))
-        .route("/travel/{slug}", get(destination))
-        .route("/travel/{slug}/moments", get(more))
-        .layer(tower_http::compression::CompressionLayer::new())
+    reading::pages(
+        Router::new()
+            .route("/travel", get(index))
+            .route("/travel/map.json", get(map))
+            .route("/travel/{slug}", get(destination))
+            .route("/travel/{slug}/moments", get(more)),
+    )
+    .route("/travel/sitemap.xml", get(sitemap))
+    .layer(tower_http::compression::CompressionLayer::new())
 }
 
 #[derive(Default, Deserialize)]
@@ -71,25 +74,25 @@ struct Place {
 }
 
 /// The feed lives on the news page.
-async fn index(Query(params): Query<Params>) -> Response {
+async fn index(_reader: Reader, Query(params): Query<Params>) -> Response {
     let en = params.lang.as_deref() == Some("en");
     Redirect::temporary(&localized("/?topic=travel", en)).into_response()
 }
 
 async fn destination(
     State(state): State<AppState>,
+    reader: Reader,
     Path(slug): Path<String>,
     Query(params): Query<Params>,
     headers: HeaderMap,
 ) -> Result<Response> {
+    reader.check(&state, TOPIC_ID).await?;
     let en = params.lang.as_deref() == Some("en");
     let missing = || AppError::NotFound("目的地不存在".into());
     let place = sqlx::QueryBuilder::new(
         "SELECT slug, name, name_en, country, country_en, latitude, longitude, guide
-         FROM travel_places WHERE ",
+         FROM travel_places WHERE slug = ",
     )
-    .push(VISIBLE)
-    .push(" AND slug = ")
     .push_bind(&slug)
     .build_query_as::<Place>()
     .fetch_optional(&state.pool)
@@ -210,7 +213,7 @@ async fn destination(
             content,
             "<section class=destination-moments><h2>{} <span>{total}</span></h2><div class=\"postcards\" data-moments data-source=\"{}\"{}></div><script type=\"application/json\" id=moments>{data}</script></section>",
             choose(en, "旅人瞬间", "Moments"),
-            escape(&format!("{path}/moments")),
+            escape(&reader.path(&format!("{path}/moments"))),
             next.map_or_else(String::new, |next| format!(" data-next=\"{next}\"")),
         );
     }
@@ -248,6 +251,7 @@ async fn destination(
     }
     let html = crate::site::layout(
         &state,
+        reader,
         en,
         &path,
         &title,
@@ -314,10 +318,7 @@ fn guide_sections(guide: &Guide, en: bool) -> String {
         choose(en, "历史", "History"),
         paragraphs(&guide.history, &guide.history_en),
     );
-    row(
-        choose(en, "人物与故事", "People & stories"),
-        list(&guide.people),
-    );
+    row(choose(en, "人物", "People"), list(&guide.people));
     row(choose(en, "必看", "Must-see"), list(&guide.highlights));
     row(choose(en, "风味", "Flavors"), list(&guide.flavors));
     row(
@@ -382,6 +383,7 @@ async fn moments(
 /// The next page of a destination's moments for the page's endless scrolling.
 async fn more(
     State(state): State<AppState>,
+    reader: Reader,
     Path(slug): Path<String>,
     Query(page): Query<Page>,
     headers: HeaderMap,
@@ -394,14 +396,7 @@ async fn more(
         .and_then(DateTime::from_timestamp_micros)
         .ok_or_else(invalid)?;
     let id = Uuid::parse_str(id).map_err(|_| invalid())?;
-    let visible: bool = sqlx::QueryBuilder::new("SELECT ")
-        .push(VISIBLE)
-        .build_query_scalar()
-        .fetch_one(&state.pool)
-        .await?;
-    if !visible {
-        return Err(AppError::NotFound("目的地不存在".into()));
-    }
+    reader.check(&state, TOPIC_ID).await?;
     let (moments, next) = moments(&state, &slug, Some((time, id))).await?;
     Ok(conditional(
         &headers,
@@ -422,7 +417,12 @@ fn coordinates(latitude: f64, longitude: f64) -> String {
 }
 
 /// Destinations with recent moments, the most recently visited first.
-async fn map(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
+async fn map(
+    State(state): State<AppState>,
+    reader: Reader,
+    headers: HeaderMap,
+) -> Result<Response> {
+    reader.check(&state, TOPIC_ID).await?;
     let since = state.digest.today() - chrono::Duration::days(MAP_DAYS - 1);
     let places = sqlx::QueryBuilder::new(
         "SELECT COALESCE(jsonb_agg(jsonb_build_object('slug', p.slug, 'name', p.name,
@@ -431,10 +431,8 @@ async fn map(State(state): State<AppState>, headers: HeaderMap) -> Result<Respon
                  'moments', recent.moments) ORDER BY recent.latest DESC, p.slug), '[]')
          FROM (SELECT m.place_id, COUNT(*) AS moments, MAX(i.first_seen_at) AS latest
                FROM travel_moments m JOIN items i ON i.id = m.item_id
-               WHERE NOT i.hidden AND ",
+               WHERE NOT i.hidden AND i.topic_id = ",
     )
-    .push(VISIBLE)
-    .push(" AND i.topic_id = ")
     .push_bind(TOPIC_ID)
     .push(" AND i.day >= ")
     .push_bind(since)

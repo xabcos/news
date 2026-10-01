@@ -508,6 +508,15 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             .status(),
         404
     );
+    let previews = crate::reading::tests::pages(
+        &state,
+        &base,
+        "reads",
+        &["/reads".into(), format!("/reads/{id}")],
+    )
+    .await;
+    assert!(previews[0].contains("/api/admin/preview/reads/"));
+    assert!(previews[1].contains("/api/admin/preview/reads"));
     sqlx::query("UPDATE topics SET visible=true WHERE id='reads'")
         .execute(&state.pool)
         .await

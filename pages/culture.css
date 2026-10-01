@@ -1,0 +1,73 @@
+/* Culture keeps the site's quiet canvas, with a format suited to each medium. */
+.public.culture .shell { max-width: 86rem; padding: 0 clamp(1.25rem, 3vw, 3rem) 3rem; }
+.culture-tabs { display: flex; justify-content: center; gap: clamp(.8rem, 4vw, 3rem); padding: 1.25rem 0 .9rem; border-bottom: 1px solid var(--line); }
+.culture-tabs a { padding: .3rem .15rem; color: var(--muted); font-size: .95rem; text-decoration: none; border-bottom: 2px solid transparent; }
+.culture-tabs a[aria-current] { color: var(--primary-strong); border-color: var(--primary); }
+.culture-tabs + .culture-grid { margin-top: 1.5rem; }
+.culture-eyebrow { margin: 0 0 .45rem; color: var(--primary-strong); font-size: .8rem; letter-spacing: .06em; }
+.culture-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.5rem; align-items: start; }
+.culture-music > .shell > .culture-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.culture-book > .shell > .culture-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.culture-card { min-width: 0; }
+.image-news-group.culture-book-group { grid-template-columns: 1fr; }
+.culture-card .image-news-media { aspect-ratio: 16 / 10; }
+.culture-card.culture-movie .image-news-media img { object-fit: contain; }
+.culture-card.culture-music .image-news-media { aspect-ratio: 1; }
+.culture-card.culture-music .image-news-media img { object-fit: contain; }
+.culture-card .item-meta { gap: .4rem; }
+.culture-card h2.item-title { font-size: 1.05rem; line-height: 1.5; font-weight: 650; }
+.culture-card-body { padding: .05rem .15rem .2rem; }
+.culture-card .culture-work-link { display: block; margin: .85rem .85rem .1rem; color: var(--primary-strong); font-size: .8rem; text-decoration: none; }
+.culture-work-link:hover { text-decoration: underline; text-underline-offset: .2em; }
+.culture-card.culture-book { display: grid; grid-template-columns: 7.25rem minmax(0, 1fr); gap: 1.2rem; padding: 1.35rem; }
+.culture-card.culture-book .image-news-media { aspect-ratio: auto; overflow: visible; background: transparent; }
+.culture-card.culture-book .image-news-media img { height: auto; max-height: 12rem; object-fit: contain; border-radius: 3px; filter: drop-shadow(3px 6px 5px rgba(0,0,0,.12)); }
+.culture-card.culture-book .culture-card-body { padding: 0; }
+.culture-card.culture-book :is(.item-meta,.item-title,.item-summary,.item-tags,.culture-work-link) { margin-right: 0; margin-left: 0; }
+.culture-card.culture-book .item-meta { margin-top: 0; }
+.culture-card.culture-book:not(:has(.image-news-media)) { grid-template-columns: 1fr; }
+.culture-more { display: flex; width: fit-content; margin: 2rem auto 0; text-decoration: none; }
+.culture-more[aria-busy=true] { opacity: .55; pointer-events: none; }
+.culture-work { max-width: 66rem; margin: 2.5rem auto 0; }
+.culture-work-heading { display: grid; grid-template-columns: 13rem minmax(0, 1fr); gap: clamp(1.5rem, 4vw, 3rem); align-items: start; margin-bottom: 2rem; }
+.culture-work-heading:not(:has(.culture-cover)) { grid-template-columns: 1fr; }
+.culture-cover { width: 100%; max-height: 23rem; object-fit: contain; border-radius: 5px; box-shadow: var(--shadow-small); }
+.culture-work-heading h1 { margin: 0; font-size: clamp(1.65rem, 4vw, 2.6rem); line-height: 1.25; text-wrap: balance; }
+.culture-original { margin: .5rem 0 1.3rem; color: var(--muted); font-size: .9rem; }
+.culture-intro { font-size: 1.02rem; line-height: 1.9; }
+.culture-intro p:last-child { margin-bottom: 0; }
+.culture-facts { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 1.1rem 2rem; margin: 0 0 1.5rem; padding: 1.5rem 0; border-block: 1px solid var(--line); }
+.culture-facts dt { color: var(--muted); font-size: .75rem; margin-bottom: .3rem; }
+.culture-facts dd { margin: 0; font-size: .92rem; line-height: 1.65; overflow-wrap: anywhere; }
+.culture-citation { font-size: .7rem; color: var(--muted); text-decoration: none; }
+.culture-citation:hover { color: var(--primary-strong); }
+.culture-links { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0 0 2rem; }
+.culture-links a { text-decoration: none; font-size: .8rem; }
+.culture-reading { max-width: 46rem; margin: 2.5rem auto; }
+.culture-reading section { margin-bottom: 2rem; }
+.culture-reading h2 { margin: 0 0 .75rem; font-size: 1.05rem; color: var(--primary-strong); }
+.culture-reading section p { font-size: 1rem; line-height: 1.95; margin: 0 0 .8rem; }
+.culture-sources { margin-top: 2.5rem; padding-top: 1.2rem; border-top: 1px solid var(--line); font-size: .75rem; line-height: 1.8; color: var(--muted); overflow-wrap: anywhere; }
+.culture-sources p { margin-bottom: .4rem; }
+.culture-sources ol { padding-left: 1.4rem; }
+.culture-sources li { scroll-margin-top: 4rem; }
+.culture-sources a { color: inherit; }
+.culture-related { margin-top: 3rem; }
+.culture-related > h2 { margin-bottom: 1.25rem; font-size: 1.1rem; }
+.culture-related:has(.culture-book) .culture-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+.culture-back { margin: 2rem 0 0; text-align: center; font-size: .85rem; color: var(--muted); }
+.culture-back a { text-decoration: none; }
+@media (max-width: 1000px) {
+  .culture-grid, .culture-music > .shell > .culture-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .culture-book > .shell > .culture-grid, .culture-related:has(.culture-book) .culture-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .culture-grid, .culture-music > .shell > .culture-grid { grid-template-columns: 1fr; gap: 1.1rem; }
+  .culture-tabs { gap: 1.35rem; padding-top: .85rem; }
+  .culture-tabs a { font-size: .88rem; }
+  .culture-card.culture-book { grid-template-columns: 5.2rem minmax(0,1fr); gap: 1rem; padding: 1rem; }
+  .culture-work { margin-top: 1.6rem; }
+  .culture-work-heading { grid-template-columns: 1fr; gap: 1.3rem; }
+  .culture-cover { width: 9rem; max-height: 14rem; }
+  .culture-facts { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 1rem; }
+}

@@ -1095,6 +1095,21 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
     .json()
     .await
     .unwrap();
+    let previews = crate::reading::tests::pages(
+        &state,
+        &base,
+        "travel",
+        &[
+            "/travel/kyoto".into(),
+            "/travel/map.json".into(),
+            format!(
+                "/travel/kyoto/moments?before={}_{newest}",
+                time.timestamp_micros()
+            ),
+        ],
+    )
+    .await;
+    assert!(previews[0].contains("data-source=\"/api/admin/preview/travel/kyoto/moments\""));
     assert_eq!(page["moments"].as_array().unwrap().len(), 4);
     assert!(page["next"].is_null());
     assert!(page["moments"][0]["travel"]["photos"].is_array());

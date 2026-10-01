@@ -682,7 +682,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         .json()
         .await
         .unwrap();
-    assert_eq!(first["topics"].as_array().unwrap().len(), 13);
+    assert_eq!(first["topics"].as_array().unwrap().len(), 17);
     state
         .http
         .get(format!("{first_request_url}/digest?topic=x"))
@@ -708,7 +708,11 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             "p",
             "w",
             "travel",
+            "movie",
+            "music",
+            "game",
             "china-ai",
+            "book",
             "overseas-ai",
             "gossip",
             "github",
@@ -720,7 +724,14 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             "equity"
         ]
     );
-    assert_eq!(catalog[5].1, "𝑶");
+    assert_eq!(
+        catalog
+            .iter()
+            .find(|(id, _)| id == "overseas-ai")
+            .unwrap()
+            .1,
+        "𝑶"
+    );
     sqlx::migrate::Migrator::new(state.config.migrations_dir.clone())
         .await
         .unwrap()
@@ -732,7 +743,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             .fetch_all(&state.pool)
             .await
             .unwrap();
-    assert_eq!(migrations, [1, 2, 3, 4, 5, 6]);
+    assert_eq!(migrations, [1, 2, 3, 4, 5, 6, 7]);
     sqlx::query("INSERT INTO topics (id,name,brief,enabled) VALUES ('inactive','Inactive','Inactive',false)")
         .execute(&state.pool).await.unwrap();
     sqlx::query("TRUNCATE items, runs, ai_insights CASCADE")

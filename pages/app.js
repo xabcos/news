@@ -113,8 +113,9 @@ let travelMap = null;
 document.addEventListener("DOMContentLoaded", init);
 
 // Topics with their own server-rendered page instead of a news feed.
-const PAGE_TOPICS = ["reads", "llm"];
-const topicPage = (id) => `/${id}${state.lang === "en" ? "?lang=en" : ""}`;
+const CULTURE_TOPICS = ["movie", "music", "game", "book"];
+const PAGE_TOPICS = ["reads", "llm", "culture", ...CULTURE_TOPICS];
+const topicPage = (id) => PublicPage.readPath(`/${CULTURE_TOPICS.includes(id) ? `culture/${id}` : id}${state.lang === "en" ? "?lang=en" : ""}`);
 
 async function init() {
   if (PAGE_TOPICS.includes(state.topic)) {
@@ -155,7 +156,7 @@ async function init() {
 }
 
 async function fetchJson(path, { signal, withEtag = false } = {}) {
-  const privatePath = path === "/api/me" || path.startsWith("/api/me/");
+  const privatePath = path.startsWith("/api/");
   const controller = new AbortController();
   let timedOut = false;
   const timer = window.setTimeout(() => {
@@ -202,11 +203,7 @@ function startLoad() {
 
 // The role cookie is the only hint about the session that the public page reads. Anonymous
 // readers therefore never touch a private endpoint, and every request they make is cacheable.
-function viewerRole() {
-  const prefix = `${ROLE_COOKIE}=`;
-  const entry = document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith(prefix));
-  return entry ? decodeURIComponent(entry.slice(prefix.length)) : "";
-}
+const viewerRole = PublicPage.role;
 
 // The server clears the cookie on logout; this covers a session that expired on its own.
 function clearViewerRole() {
@@ -217,7 +214,7 @@ function clearViewerRole() {
 async function loadCatalog() {
   if (state.personal) return;
   try {
-    state.topics = (await fetchJson("/topics")).topics;
+    state.topics = (await fetchJson(PublicPage.readPath("/topics"))).topics;
     renderTabs();
   } catch {
     // The digest still loads; the tabs just stay at ALL and AI.
@@ -250,18 +247,18 @@ function catalogPath() {
   const params = new URLSearchParams();
   if (state.topic) params.set("topic", state.topic);
   params.set("limit", String(DAYS_LIMIT));
-  return `/days?${params}`;
+  return PublicPage.readPath(`/days?${params}`);
 }
 
 function dayPath(day) {
   const params = new URLSearchParams({ day, limit: String(PAGE_LIMIT) });
   if (state.topic) params.set("topic", state.topic);
-  return `${state.personal ? "/api/me/feed" : "/digest"}?${params}`;
+  return `${state.personal ? "/api/me/feed" : PublicPage.readPath("/digest")}?${params}`;
 }
 
 function pagePath(day, topic, after) {
   const params = new URLSearchParams({ topic, day, limit: String(PAGE_LIMIT), after });
-  return `${state.personal ? "/api/me/feed" : "/digest"}?${params}`;
+  return `${state.personal ? "/api/me/feed" : PublicPage.readPath("/digest")}?${params}`;
 }
 
 // A background refresh trusts the server's feed revision. An unchanged group keeps its
@@ -335,7 +332,7 @@ async function load(silent = false) {
       if (epoch === state.epoch) state.topics = payload.topics;
     } else {
       const [data, archive] = await Promise.all([
-        fetchJson(`/digest${search({ limit: PAGE_LIMIT })}`, { signal }),
+        fetchJson(PublicPage.readPath(`/digest${search({ limit: PAGE_LIMIT })}`), { signal }),
         fetchJson(catalogPath(), { signal }),
       ]);
       digest = data;
@@ -373,7 +370,7 @@ async function load(silent = false) {
     if (error.name === "AbortError") return;
     // If a session expires while the page is open, switch back to the public feed
     // instead of leaving a private page permanently stuck on an auth error.
-    if (state.personal && [401, 403].includes(error.status) && epoch === state.epoch) {
+    if ((state.personal || viewerRole() === "admin") && [401, 403].includes(error.status) && epoch === state.epoch) {
       clearViewerRole();
       state.personal = false;
       state.topic = "";
@@ -585,6 +582,7 @@ async function loadMoreItems(sentinel) {
   } catch (error) {
     if (error.name === "AbortError") {
       target.loading = false;
+      if (sentinel.isConnected) reobserve(sentinel);
       return;
     }
     window.setTimeout(() => {
@@ -654,10 +652,17 @@ function renderTabs() {
   document.title = state.topic === INSIGHT_ID
     ? `𝑵𝒆𝒘𝒔 · ${state.lang === "en" ? "XAI Daily" : "XAI 日报"}`
     : state.topic === EQUITY_ID ? `𝑵𝒆𝒘𝒔 · ${state.lang === "en" ? "Equity notes" : "股市观察"}` : "𝑵𝒆𝒘𝒔";
+  let cultureShown = false;
+  const catalogue = state.topics.flatMap((topic) => {
+    if (!CULTURE_TOPICS.includes(topic.id)) return [{ id: topic.id, label: name(topic) }];
+    if (cultureShown) return [];
+    cultureShown = true;
+    return [{ id: "culture", label: "𝑪𝒖𝒍𝒕𝒖𝒓𝒆" }];
+  });
   const tabs = [
     { id: "", label: t().all },
     { id: INSIGHT_ID, label: t().insight },
-    ...state.topics.map((topic) => ({ id: topic.id, label: name(topic) })),
+    ...catalogue,
   ];
   const overseas = tabs.findIndex((tab) => tab.id === "overseas-ai");
   tabs.splice(overseas < 0 ? 2 : overseas + 1, 0, { id: EQUITY_ID, label: "𝑬" });
@@ -713,7 +718,8 @@ function render(preserveScroll = false, scrollTop = window.scrollY, { latestOnly
   if (!state.timeline.length) return;
   el.shell.classList.remove("is-loading");
   if (latestOnly && el.digest.firstElementChild) {
-    groupObserver?.disconnect();
+    // History keeps its observers while only the newest day's cards are replaced.
+    el.digest.firstElementChild.querySelectorAll(".group-more").forEach((sentinel) => groupObserver?.unobserve(sentinel));
     el.digest.firstElementChild.replaceWith(renderDayBlock(state.timeline[0], false));
     updateHistoryLoader();
     window.setTimeout(maybeLoadOlder, 0);
@@ -1046,8 +1052,9 @@ function renderGroups(digest) {
   return visible.map((group) => {
     const section = document.createElement("section");
     section.className = "group";
-    section.classList.toggle("image-news-group", group.id === "p");
+    section.classList.toggle("image-news-group", group.id === "p" || CULTURE_TOPICS.includes(group.id));
     section.classList.toggle("photo-group", group.id === PHOTO_TOPIC);
+    section.classList.toggle("culture-book-group", group.id === "book");
     section.classList.toggle("postcard-group", group.id === TRAVEL_TOPIC);
     if (!single) {
       const heading = document.createElement("div");
@@ -1075,6 +1082,24 @@ function renderGroups(digest) {
 function renderGroupItem(group, item) {
   if (group.id === PHOTO_TOPIC) return photoCard(item);
   if (group.id === TRAVEL_TOPIC) return TravelUI.postcard(item, { when: relativeTime(item.first_seen_at) });
+  if (CULTURE_TOPICS.includes(group.id)) {
+    const article = imageNewsCard(item);
+    article.classList.add("culture-card", `culture-${group.id}`);
+    const body = document.createElement("div");
+    body.className = "culture-card-body";
+    for (const child of [...article.children]) {
+      if (!child.classList.contains("image-news-media")) body.append(child);
+    }
+    if (item.culture) {
+      const link = document.createElement("a");
+      link.className = "culture-work-link";
+      link.href = PublicPage.readPath(`${item.culture.path}${state.lang === "en" ? "?lang=en" : ""}`);
+      link.textContent = `${state.lang === "en" ? "Explore " : "了解 "}${pick(item.culture, "name")} →`;
+      body.append(link);
+    }
+    article.append(body);
+    return article;
+  }
   return group.id === "p" ? imageNewsCard(item) : card(item, group.id === "reads");
 }
 
@@ -1272,7 +1297,7 @@ function card(item, reading = false) {
   const title = document.createElement("h3");
   title.className = "item-title";
   const link = document.createElement("a");
-  link.href = reading ? `/reads/${item.id}${state.lang === "en" ? "?lang=en" : ""}` : item.url;
+  link.href = reading ? PublicPage.readPath(`/reads/${item.id}${state.lang === "en" ? "?lang=en" : ""}`) : item.url;
   if (!reading) {
     link.target = "_blank";
     link.rel = "noopener noreferrer";

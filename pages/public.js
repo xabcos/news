@@ -1,8 +1,15 @@
 (() => {
   "use strict";
 
-  // Shared by the news feed and the server-rendered Reads pages.
+  const preview = "/api/admin/preview";
+  const role = () => document.cookie.split(";").map((part) => part.trim())
+    .find((part) => part.startsWith("news_role="))?.slice("news_role=".length) || "";
+  const readPath = (path) => role() === "admin" && !path.startsWith(preview) ? `${preview}${path}` : path;
+
+  // Shared by the news feed and server-rendered public pages.
   window.PublicPage = {
+    role,
+    readPath,
     // An external link opened in a new tab, or null for anything but plain http(s).
     link(url, label, title = "") {
       try {
@@ -21,6 +28,11 @@
     },
 
     init({ canSwipe = () => true } = {}) {
+      // Cached public HTML may arrive before the server sees the administrator's session.
+      if (role() === "admin" && /^\/(reads|culture|travel|llm)(\/|$)/.test(location.pathname)) {
+        location.replace(readPath(location.pathname + location.search + location.hash));
+        return;
+      }
       const topbar = document.querySelector(".topbar");
       const backToTop = document.querySelector("#backToTop");
       let last = window.scrollY;
@@ -76,7 +88,8 @@
         const dx = event.clientX - x;
         const dy = event.clientY - y;
         if (Math.abs(dx) < 48 || Math.abs(dx) <= Math.abs(dy) * 1.2 || !window.getSelection().isCollapsed) return;
-        const tabs = [...topbar.querySelectorAll(".tabs .tab")];
+        const nav = document.querySelector(".culture-tabs") || topbar.querySelector(".tabs");
+        const tabs = [...nav.querySelectorAll("a, button.tab")];
         const current = tabs.findIndex((tab) => tab.getAttribute("aria-current") === "true");
         if (current < 0 || tabs.length < 2) return;
         const next = (current + (dx < 0 ? 1 : -1) + tabs.length) % tabs.length;

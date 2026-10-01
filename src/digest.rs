@@ -1,6 +1,7 @@
 use crate::{
     auth::{self, User},
     error::{ApiQuery, AppError, Result},
+    reading::{self, Reader},
     state::AppState,
 };
 use axum::{
@@ -54,6 +55,14 @@ pub struct TopicMeta {
     pub name: String,
     pub name_en: String,
     pub description: String,
+    #[serde(skip_serializing)]
+    pub visible: bool,
+}
+
+#[derive(Default)]
+struct Catalogue {
+    public: Arc<Vec<TopicMeta>>,
+    all: Arc<Vec<TopicMeta>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -76,6 +85,9 @@ pub struct PublicItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[sqlx(default)]
     pub travel: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[sqlx(default)]
+    pub culture: Option<serde_json::Value>,
 }
 
 /// One topic on one day: the visible items in display order. This is the unit that moves
@@ -145,8 +157,8 @@ fn page(
     (&items[start..end], next)
 }
 
-/// `/days` cache key: the optional topic filter and the requested limit.
-type DaysKey = (Option<String>, i64);
+/// Archive counts depend on the reader; the topic-day content snapshots do not.
+type DaysKey = (Reader, Option<String>, i64);
 
 /// A response body with its validator, ready to serve.
 pub struct Rendered {
@@ -170,7 +182,7 @@ pub struct DigestCache(Arc<Inner>);
 
 struct Inner {
     tz: Tz,
-    topics: RwLock<Arc<Vec<TopicMeta>>>,
+    topics: RwLock<Catalogue>,
     days: RwLock<HashMap<(String, NaiveDate), Arc<Snapshot>>>,
     /// PostgreSQL's answer for topics with nothing in the last two days, until the next write.
     latest: RwLock<HashMap<String, Option<NaiveDate>>>,
@@ -264,13 +276,22 @@ impl DigestCache {
     }
 
     pub fn topics(&self) -> Arc<Vec<TopicMeta>> {
-        Arc::clone(&read(&self.0.topics))
+        self.topics_for(Reader::Public)
+    }
+
+    pub(crate) fn topics_for(&self, reader: Reader) -> Arc<Vec<TopicMeta>> {
+        let catalogue = read(&self.0.topics);
+        Arc::clone(if reader.is_admin() {
+            &catalogue.all
+        } else {
+            &catalogue.public
+        })
     }
 
     pub async fn reload_topics(&self, state: &AppState) -> Result<()> {
         let _cache_guard = self.0.cache_write.lock().await;
         let topics = sqlx::query_as::<_, TopicMeta>(
-            "SELECT id, name, name_en, description FROM topics WHERE enabled AND visible AND owner_user_id IS NULL ORDER BY sort_weight, created_at",
+            "SELECT id, name, name_en, description, visible FROM topics WHERE enabled AND owner_user_id IS NULL ORDER BY sort_weight, created_at",
         )
         .fetch_all(&state.pool)
         .await?;
@@ -278,7 +299,16 @@ impl DigestCache {
         // matters when an administrator disables and later re-enables a topic:
         // the next request must re-read its current items.
         self.0.generation.fetch_add(1, Ordering::AcqRel);
-        *write(&self.0.topics) = Arc::new(topics);
+        *write(&self.0.topics) = Catalogue {
+            public: Arc::new(
+                topics
+                    .iter()
+                    .filter(|topic| topic.visible)
+                    .cloned()
+                    .collect(),
+            ),
+            all: Arc::new(topics),
+        };
         write(&self.0.days).clear();
         write(&self.0.latest).clear();
         self.forget_rendered();
@@ -300,6 +330,7 @@ impl DigestCache {
         Ok(())
     }
 
+    /// Shared topic content. Reading routes select an authorized topic before calling this.
     pub async fn snapshot(
         &self,
         state: &AppState,
@@ -351,13 +382,13 @@ impl DigestCache {
     pub async fn refresh(&self, state: &AppState, topic: &str, day: NaiveDate) -> Result<()> {
         let topic_guard = self.topic_write(topic);
         let _cache_guard = topic_guard.lock().await;
-        let visible = sqlx::query_scalar::<_, bool>(
-            "SELECT enabled AND visible FROM topics WHERE id = $1 AND owner_user_id IS NULL",
+        let enabled = sqlx::query_scalar::<_, bool>(
+            "SELECT enabled FROM topics WHERE id = $1 AND owner_user_id IS NULL",
         )
         .bind(topic)
         .fetch_optional(&state.pool)
         .await?;
-        if !visible.unwrap_or(false) {
+        if !enabled.unwrap_or(false) {
             // Disabled/deleted topics must not leave an empty snapshot behind
             // that would hide fresh items when the topic is enabled again.
             self.forget_topic_locked(state, topic).await;
@@ -441,7 +472,7 @@ impl DigestCache {
         }
         let generation = self.0.generation.load(Ordering::Acquire);
         let day = sqlx::query_scalar::<_, Option<NaiveDate>>(
-            "SELECT MAX(items.day) FROM items JOIN topics ON topics.id = items.topic_id WHERE items.topic_id = $1 AND topics.enabled AND topics.visible AND topics.owner_user_id IS NULL AND NOT items.hidden",
+            "SELECT MAX(items.day) FROM items JOIN topics ON topics.id = items.topic_id WHERE items.topic_id = $1 AND topics.enabled AND topics.owner_user_id IS NULL AND NOT items.hidden",
         )
         .bind(topic)
         .fetch_one(&state.pool)
@@ -475,21 +506,33 @@ impl DigestCache {
         topic: Option<&str>,
         limit: i64,
     ) -> Result<Arc<Rendered>> {
-        let key = (topic.map(str::to_owned), limit);
+        self.days_for(state, topic, limit, Reader::Public).await
+    }
+
+    async fn days_for(
+        &self,
+        state: &AppState,
+        topic: Option<&str>,
+        limit: i64,
+        reader: Reader,
+    ) -> Result<Arc<Rendered>> {
+        let key = (reader, topic.map(str::to_owned), limit);
         if let Some(hit) = read(&self.0.archive).get(&key).cloned() {
             return Ok(hit);
         }
         // Only catalogue topics are cached; an arbitrary id must not be able to fill the map.
-        let cacheable = topic.is_none_or(|id| self.topics().iter().any(|topic| topic.id == id));
+        let cacheable =
+            topic.is_none_or(|id| self.topics_for(reader).iter().any(|topic| topic.id == id));
         let generation = self.0.generation.load(Ordering::Acquire);
         let days = sqlx::query_as::<_, DayCount>(
             "SELECT items.day, COUNT(*) AS count FROM items \
              JOIN topics ON topics.id = items.topic_id \
-             WHERE ($1::text IS NULL OR items.topic_id = $1) AND topics.enabled AND topics.visible AND topics.owner_user_id IS NULL AND NOT items.hidden \
+             WHERE ($1::text IS NULL OR items.topic_id = $1) AND topics.enabled AND (topics.visible OR $3) AND topics.owner_user_id IS NULL AND NOT items.hidden \
              GROUP BY items.day ORDER BY items.day DESC LIMIT $2",
         )
         .bind(topic)
         .bind(limit)
+        .bind(reader.is_admin())
         .fetch_all(&state.pool)
         .await?;
         let rendered = Arc::new(Rendered::new(
@@ -517,8 +560,12 @@ impl DigestCache {
         Ok(payload.days)
     }
 
-    fn selected(&self, topic: Option<&str>) -> Result<(Arc<Vec<TopicMeta>>, Vec<usize>)> {
-        let topics = self.topics();
+    fn selected(
+        &self,
+        topic: Option<&str>,
+        reader: Reader,
+    ) -> Result<(Arc<Vec<TopicMeta>>, Vec<usize>)> {
+        let topics = self.topics_for(reader);
         let selected = match topic {
             Some(id) => vec![
                 topics
@@ -543,13 +590,26 @@ impl DigestCache {
         limit: usize,
         after: Option<Cursor>,
     ) -> Result<Arc<Rendered>> {
-        let hot_path = topic.is_none() && day.is_none() && after.is_none();
+        self.render_for(state, topic, day, limit, after, Reader::Public)
+            .await
+    }
+
+    async fn render_for(
+        &self,
+        state: &AppState,
+        topic: Option<&str>,
+        day: Option<NaiveDate>,
+        limit: usize,
+        after: Option<Cursor>,
+        reader: Reader,
+    ) -> Result<Arc<Rendered>> {
+        let hot_path = !reader.is_admin() && topic.is_none() && day.is_none() && after.is_none();
         if hot_path && let Some(hit) = read(&self.0.hot).get(&limit).cloned() {
             return Ok(hit);
         }
         let generation = self.0.generation.load(Ordering::Acquire);
         let generated_at = *read(&self.0.generated_at);
-        let (topics, selected) = self.selected(topic)?;
+        let (topics, selected) = self.selected(topic, reader)?;
         let mut latest = Vec::with_capacity(selected.len());
         for &index in &selected {
             latest.push(self.latest_day(state, &topics[index].id).await?);
@@ -633,16 +693,26 @@ async fn load(state: &AppState, topic: &str, day: NaiveDate) -> Result<Snapshot>
     let mut query = sqlx::QueryBuilder::new(
         "SELECT items.id, items.title, items.summary, items.title_en, items.summary_en, items.url, items.source, items.published_at, items.first_seen_at, items.tags, items.tags_en, items.importance, items.pinned, items.image, ",
     );
+    let culture = crate::culture::IDS.contains(&topic);
     query
         .push(crate::travel::MOMENT_JSON)
-        .push(" AS travel FROM items JOIN topics ON topics.id = items.topic_id ")
-        .push(crate::travel::MOMENT_JOIN)
-        .push(" WHERE items.topic_id = ")
+        .push(" AS travel, ")
+        .push(if culture {
+            crate::culture::ITEM_JSON
+        } else {
+            "NULL::jsonb"
+        })
+        .push(" AS culture FROM items JOIN topics ON topics.id = items.topic_id ")
+        .push(crate::travel::MOMENT_JOIN);
+    if culture {
+        query.push(" ").push(crate::culture::ITEM_JOIN);
+    }
+    query.push(" WHERE items.topic_id = ")
         .push_bind(topic)
         .push(" AND items.day = ")
         .push_bind(day)
         .push(
-            " AND topics.enabled AND topics.visible AND topics.owner_user_id IS NULL AND NOT items.hidden \
+            " AND topics.enabled AND topics.owner_user_id IS NULL AND NOT items.hidden \
              ORDER BY items.pinned DESC, items.published_at DESC NULLS LAST, items.first_seen_at DESC, items.id DESC",
         );
     let mut items = query
@@ -759,19 +829,22 @@ async fn redis_delete_before(
 pub(crate) fn router() -> Router<AppState> {
     // Keep the authenticated feed outside the public-CORS layer.  Its response contains
     // account-owned topics and must never be readable by an arbitrary cross-origin page.
-    let public = Router::new()
+    let shared = Router::new()
         .route("/digest", get(digest))
+        .route("/topics", get(topics))
+        .route("/days", get(days));
+    let public = reading::public(shared.clone())
         .route("/insight", get(crate::insight::latest))
         .route("/equity-insight", get(crate::equity::latest))
-        .route("/topics", get(topics))
-        .route("/days", get(days))
         .route("/feed.xml", get(feed))
         .layer(CompressionLayer::new())
         .layer(middleware::from_fn(public_cors));
     let personal = Router::new()
         .route("/api/me/feed", get(me_feed))
         .layer(CompressionLayer::new());
-    public.merge(personal)
+    public
+        .merge(reading::admin(shared).layer(CompressionLayer::new()))
+        .merge(personal)
 }
 
 /// Applied outside the handlers so failures are readable cross-origin too; without it a
@@ -885,6 +958,7 @@ struct PersonalTopicDigest {
 
 async fn digest(
     State(state): State<AppState>,
+    reader: Reader,
     ApiQuery(query): ApiQuery<DigestQuery>,
     headers: HeaderMap,
 ) -> Result<Response> {
@@ -892,16 +966,27 @@ async fn digest(
     let after = cursor_from(&query)?;
     let rendered = state
         .digest
-        .render(&state, query.topic.as_deref(), query.day, limit, after)
+        .render_for(
+            &state,
+            query.topic.as_deref(),
+            query.day,
+            limit,
+            after,
+            reader,
+        )
         .await?;
     Ok(conditional(&headers, &rendered, "application/json"))
 }
 
-async fn topics(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
+async fn topics(
+    State(state): State<AppState>,
+    reader: Reader,
+    headers: HeaderMap,
+) -> Result<Response> {
     let cache = &state.digest;
     let today = cache.today();
     let mut list = Vec::new();
-    for topic in cache.topics().iter() {
+    for topic in cache.topics_for(reader).iter() {
         let snapshot = cache.snapshot(&state, &topic.id, today).await?;
         list.push(json!({
             "id": topic.id,
@@ -919,13 +1004,14 @@ async fn topics(State(state): State<AppState>, headers: HeaderMap) -> Result<Res
 
 async fn days(
     State(state): State<AppState>,
+    reader: Reader,
     ApiQuery(query): ApiQuery<DaysQuery>,
     headers: HeaderMap,
 ) -> Result<Response> {
     let limit = query.limit.unwrap_or(DEFAULT_DAYS_LIMIT).clamp(1, MAX_DAYS);
     let rendered = state
         .digest
-        .days(&state, query.topic.as_deref(), limit)
+        .days_for(&state, query.topic.as_deref(), limit, reader)
         .await?;
     Ok(conditional(&headers, &rendered, "application/json"))
 }
@@ -1292,7 +1378,7 @@ async fn feed(
     headers: HeaderMap,
 ) -> Result<Response> {
     let cache = &state.digest;
-    let (topics, selected) = cache.selected(query.topic.as_deref())?;
+    let (topics, selected) = cache.selected(query.topic.as_deref(), Reader::Public)?;
     let mut entries = Vec::new();
     for &index in &selected {
         for day in [cache.today(), cache.yesterday()] {
@@ -1474,6 +1560,7 @@ mod tests {
             pinned,
             image: None,
             travel: None,
+            culture: None,
         }
     }
 

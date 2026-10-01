@@ -979,6 +979,7 @@ async fn postgres_llm_catalog_import_changes_and_pages() {
             .iter()
             .any(|vendor| vendor.id == "xiaomi-mimo")
     );
+    crate::reading::tests::pages(&state, &base, "llm", &["/llm".into(), "/llm.json".into()]).await;
     server.abort();
 }
 

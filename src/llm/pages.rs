@@ -4,6 +4,7 @@ use super::{Band, Currency, Links, Mode, Period, Price, Status, Tier, headline};
 use crate::{
     digest::{Rendered, conditional},
     error::{AppError, Result},
+    reading::{self, Reader},
     site::{Chrome, absolute, choose, escape, localized},
     state::AppState,
 };
@@ -33,13 +34,13 @@ const CHROME: Chrome<'static> = Chrome {
 };
 
 pub(crate) fn router() -> Router<AppState> {
-    let data = Router::new()
-        .route("/llm.json", get(data))
+    let data = Router::new().route("/llm.json", get(data));
+    let public = reading::public(data.clone())
         .route("/llm/feed.xml", get(feed))
         .layer(middleware::from_fn(crate::digest::public_cors));
-    Router::new()
-        .route("/llm", get(index))
-        .merge(data)
+    reading::pages(Router::new().route("/llm", get(index)))
+        .merge(public)
+        .merge(reading::admin(data))
         .layer(tower_http::compression::CompressionLayer::new())
 }
 
@@ -128,12 +129,13 @@ const RECENT_CHANGES: &str = "SELECT c.id, c.vendor_id, c.model_id, m.name, c.ki
      ORDER BY c.detected_at DESC, c.id DESC";
 
 /// The published catalogue, or `None` while the topic is switched off or hidden.
-async fn load(state: &AppState, changes: i64) -> Result<Option<Catalog>> {
+async fn load(state: &AppState, changes: i64, reader: Reader) -> Result<Option<Catalog>> {
     let topic: Option<(i32, i32, i32)> = sqlx::query_as(
         "SELECT interval_minutes, window_start, window_start_minute FROM topics
-         WHERE id = $1 AND enabled AND visible AND owner_user_id IS NULL",
+         WHERE id = $1 AND enabled AND (visible OR $2) AND owner_user_id IS NULL",
     )
     .bind(super::TOPIC_ID)
+    .bind(reader.is_admin())
     .fetch_optional(&state.pool)
     .await?;
     let Some((interval, hour, minute)) = topic else {
@@ -617,11 +619,14 @@ fn describe(change: &ChangeRow, region: &str, en: bool) -> (&'static str, String
 
 async fn index(
     State(state): State<AppState>,
+    reader: Reader,
     Query(params): Query<Params>,
     headers: HeaderMap,
 ) -> Result<Response> {
     let en = params.lang.as_deref() == Some("en");
-    let catalog = load(&state, CHANGES_SHOWN).await?.ok_or_else(not_found)?;
+    let catalog = load(&state, CHANGES_SHOWN, reader)
+        .await?
+        .ok_or_else(not_found)?;
     let timezone = state.config.timezone;
     let description = choose(
         en,
@@ -799,6 +804,7 @@ async fn index(
     });
     let html = crate::site::layout(
         &state,
+        reader,
         en,
         "/llm",
         &format!("𝑳𝑳𝑴 · {}", choose(en, "模型价格与更新", "Model prices")),
@@ -998,8 +1004,14 @@ fn change_json(change: &ChangeRow) -> Value {
     })
 }
 
-async fn data(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
-    let catalog = load(&state, FEED_SIZE).await?.ok_or_else(not_found)?;
+async fn data(
+    State(state): State<AppState>,
+    reader: Reader,
+    headers: HeaderMap,
+) -> Result<Response> {
+    let catalog = load(&state, FEED_SIZE, reader)
+        .await?
+        .ok_or_else(not_found)?;
     let vendors: Vec<Value> = catalog
         .vendors
         .iter()
@@ -1044,7 +1056,9 @@ async fn data(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
 }
 
 async fn feed(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
-    let catalog = load(&state, FEED_SIZE).await?.ok_or_else(not_found)?;
+    let catalog = load(&state, FEED_SIZE, Reader::Public)
+        .await?
+        .ok_or_else(not_found)?;
     let base = state.config.public_base_url.as_str();
     let updated = catalog
         .changes

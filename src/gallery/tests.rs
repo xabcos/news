@@ -559,6 +559,8 @@ async fn postgres_gallery_keeps_confirmed_photographs_until_their_copies_expire(
     crate::media::prune_lapsed(&state, TOPIC_ID).await.unwrap();
     assert_eq!(revision(pool).await, before + 1);
 
+    crate::reading::tests::feed(&state).await;
+
     ai_server.abort();
     origin_server.abort();
 }

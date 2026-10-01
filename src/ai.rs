@@ -63,6 +63,8 @@ pub(crate) fn parse_payload(reply: &Value) -> Result<Value> {
         .filter(|output| output["type"] == "message")
         .filter_map(|output| output["content"].as_array())
         .flatten()
+        // Search responses can include a draft before the final assistant message.
+        .rev()
         .find(|content| content["type"] == "output_text")
         .and_then(|content| content["text"].as_str())
         .ok_or_else(|| AppError::Internal("AI 响应没有文本输出".into()))?;
@@ -72,4 +74,27 @@ pub(crate) fn parse_payload(reply: &Value) -> Result<Value> {
         _ => text,
     };
     serde_json::from_str(json).map_err(|_| AppError::Internal("AI 响应不是有效的 JSON".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn reads_the_final_result_after_search_drafts() {
+        let message =
+            |text: &str| json!({"type":"message","content":[{"type":"output_text","text":text}]});
+        let mut reply = json!({"status":"completed","output":[
+            message(r#"{"image":null}"#),
+            {"type":"web_search_call"},
+            message(r#"{"image":"https://images.example/cover.jpg"}"#)
+        ]});
+        assert_eq!(
+            parse_payload(&reply).unwrap()["image"],
+            "https://images.example/cover.jpg"
+        );
+        reply["output"][2] = message("An incomplete final answer");
+        assert!(parse_payload(&reply).is_err());
+    }
 }

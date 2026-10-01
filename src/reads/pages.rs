@@ -1,6 +1,7 @@
 use crate::{
     digest::{Rendered, conditional},
     error::{AppError, Result},
+    reading::{self, Reader},
     site::{Chrome, absolute, choose, escape, localized},
     state::AppState,
 };
@@ -21,7 +22,7 @@ use uuid::Uuid;
 
 const PAGE_SIZE: i64 = 12;
 const SITEMAP_SIZE: i64 = 10000;
-const VISIBLE: &str = "FROM items i JOIN read_articles a ON a.item_id = i.id JOIN topics t ON t.id = i.topic_id WHERE i.topic_id = 'reads' AND t.enabled AND t.visible AND t.owner_user_id IS NULL AND NOT i.hidden";
+const CONTENT: &str = "FROM items i JOIN read_articles a ON a.item_id = i.id JOIN topics t ON t.id = i.topic_id WHERE i.topic_id = 'reads' AND t.enabled AND t.owner_user_id IS NULL AND NOT i.hidden";
 const CARD: &str = "i.id, i.title, i.title_en, i.summary, i.summary_en, i.source, i.url, i.first_seen_at, a.author, a.views";
 const CHROME: Chrome<'static> = Chrome {
     current: "reads",
@@ -31,36 +32,16 @@ const CHROME: Chrome<'static> = Chrome {
     feed: ("Reads", "/feed.xml?topic=reads"),
 };
 
-async fn layout(
-    state: &AppState,
-    en: bool,
-    path: &str,
-    title: &str,
-    description: &str,
-    content: &str,
-    structured: Option<serde_json::Value>,
-) -> Result<String> {
-    crate::site::layout(
-        state,
-        en,
-        path,
-        title,
-        description,
-        content,
-        structured,
-        &CHROME,
-    )
-    .await
-}
-
 pub(crate) fn router() -> Router<AppState> {
-    Router::new()
-        .route("/reads", get(index))
-        .route("/reads/{id}", get(detail))
-        .route("/sitemap.xml", get(sitemap))
-        .route("/reads/sitemap/{page}", get(sitemap_page))
-        .route("/robots.txt", get(robots))
-        .layer(tower_http::compression::CompressionLayer::new())
+    reading::pages(
+        Router::new()
+            .route("/reads", get(index))
+            .route("/reads/{id}", get(detail)),
+    )
+    .route("/sitemap.xml", get(sitemap))
+    .route("/reads/sitemap/{page}", get(sitemap_page))
+    .route("/robots.txt", get(robots))
+    .layer(tower_http::compression::CompressionLayer::new())
 }
 
 #[derive(Default, Deserialize)]
@@ -107,8 +88,8 @@ struct Detail {
     full_text: Option<sqlx::types::Json<super::full_text::Document>>,
 }
 
-fn listing(page: u32, en: bool) -> String {
-    localized(
+fn listing(page: u32, en: bool, reader: Reader) -> String {
+    reader.localized(
         &if page == 1 {
             "/reads".into()
         } else {
@@ -120,16 +101,13 @@ fn listing(page: u32, en: bool) -> String {
 
 async fn index(
     State(state): State<AppState>,
+    reader: Reader,
     Query(params): Query<Params>,
     headers: HeaderMap,
 ) -> Result<Response> {
     let en = params.english();
     let page = params.page()?;
-    let enabled: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM topics WHERE id='reads' AND enabled AND visible AND owner_user_id IS NULL)")
-        .fetch_one(&state.pool).await?;
-    if !enabled {
-        return Err(AppError::NotFound("主题不存在".into()));
-    }
+    reader.check(&state, "reads").await?;
     let hot = params.view.as_deref() == Some("hot");
     if hot && page != 1 {
         return Err(AppError::NotFound("页面不存在".into()));
@@ -137,7 +115,7 @@ async fn index(
     let mut rows;
     if hot {
         let mut query = sqlx::QueryBuilder::new("SELECT ");
-        query.push(CARD).push(" ").push(VISIBLE).push(
+        query.push(CARD).push(" ").push(CONTENT).push(
             " AND a.hot_rank IS NOT NULL AND i.first_seen_at >= NOW() - INTERVAL '30 days' ORDER BY a.hot_rank LIMIT 24"
         );
         rows = query
@@ -149,7 +127,7 @@ async fn index(
         query
             .push(CARD)
             .push(" ")
-            .push(VISIBLE)
+            .push(CONTENT)
             .push(" ORDER BY i.pinned DESC, i.first_seen_at DESC, i.id DESC LIMIT ")
             .push_bind(PAGE_SIZE + 1)
             .push(" OFFSET ")
@@ -176,10 +154,10 @@ async fn index(
         content,
         "<nav class=reads-views aria-label=\"{}\"><a href=\"{}\"{}>{}</a><a href=\"{}\"{}>{}</a></nav></header><div class=reads-list>",
         choose(en, "阅读排序", "Reading order"),
-        localized("/reads", en),
+        reader.localized("/reads", en),
         if !hot { " aria-current=\"page\"" } else { "" },
         choose(en, "最新", "Latest"),
-        escape(&localized("/reads?view=hot", en)),
+        escape(&reader.localized("/reads?view=hot", en)),
         if hot { " aria-current=\"page\"" } else { "" },
         choose(en, "热读", "Popular")
     );
@@ -189,6 +167,7 @@ async fn index(
             en,
             hot.then_some(index + 1),
             state.config.timezone,
+            reader,
         ));
     }
     if rows.is_empty() {
@@ -207,7 +186,7 @@ async fn index(
         let _ = write!(
             content,
             "<a rel=prev href=\"{}\">{}</a>",
-            escape(&listing(page - 1, en)),
+            escape(&listing(page - 1, en, reader)),
             choose(en, "上一页", "Newer")
         );
     }
@@ -215,7 +194,7 @@ async fn index(
         let _ = write!(
             content,
             "<a rel=next href=\"{}\">{}</a>",
-            escape(&listing(page + 1, en)),
+            escape(&listing(page + 1, en, reader)),
             choose(en, "继续阅读", "Older reads")
         );
     }
@@ -223,7 +202,7 @@ async fn index(
     let path = if hot {
         "/reads?view=hot".into()
     } else {
-        listing(page, false)
+        listing(page, false, Reader::Public)
     };
     let title = if hot {
         format!("{} · 𝑹𝒆𝒂𝒅𝒔", choose(en, "热读", "Popular"))
@@ -232,7 +211,18 @@ async fn index(
     } else {
         format!("𝑹𝒆𝒂𝒅𝒔 · {page} · 𝑵𝒆𝒘𝒔")
     };
-    let html = layout(&state, en, &path, &title, description, &content, None).await?;
+    let html = crate::site::layout(
+        &state,
+        reader,
+        en,
+        &path,
+        &title,
+        description,
+        &content,
+        None,
+        &CHROME,
+    )
+    .await?;
     Ok(conditional(
         &headers,
         &Rendered::new(html),
@@ -242,16 +232,18 @@ async fn index(
 
 async fn detail(
     State(state): State<AppState>,
+    reader: Reader,
     Path(id): Path<String>,
     Query(params): Query<Params>,
     headers: HeaderMap,
 ) -> Result<Response> {
+    reader.check(&state, "reads").await?;
     let id = Uuid::parse_str(&id).map_err(|_| AppError::NotFound("文章不存在".into()))?;
     let mut query = sqlx::QueryBuilder::new("SELECT ");
     query
         .push(CARD)
         .push(", a.body, a.body_en, a.source_title, a.source_language, a.full_text ")
-        .push(VISIBLE)
+        .push(CONTENT)
         .push(" AND i.id = ")
         .push_bind(id);
     let row = query
@@ -328,7 +320,7 @@ async fn detail(
     let _ = write!(
         content,
         "</footer><div class=read-actions><a href=\"{}\">← 𝑹𝒆𝒂𝒅𝒔</a></div></article>",
-        localized("/reads", en)
+        reader.localized("/reads", en)
     );
     // Rank only the latest 200 visible alternatives, then load the three cards.
     let mut query = sqlx::QueryBuilder::new(
@@ -353,7 +345,7 @@ async fn detail(
         .push(
             " FROM related r JOIN items i ON i.id = r.id
             JOIN read_articles a ON a.item_id = i.id JOIN topics t ON t.id = i.topic_id
-            WHERE t.enabled AND t.visible AND t.owner_user_id IS NULL
+            WHERE t.enabled AND t.owner_user_id IS NULL
             ORDER BY r.matches DESC, r.first_seen_at DESC, r.id DESC",
         );
     let related = query
@@ -367,7 +359,7 @@ async fn detail(
             choose(en, "继续阅读", "Keep reading")
         );
         for row in &related {
-            content.push_str(&card(row, en, None, state.config.timezone));
+            content.push_str(&card(row, en, None, state.config.timezone, reader));
         }
         content.push_str("</aside>");
     }
@@ -381,14 +373,16 @@ async fn detail(
         "author":{"@type":"Organization", "name":"News"},
         "isBasedOn": item.url,
     });
-    let html = layout(
+    let html = crate::site::layout(
         &state,
+        reader,
         en,
         &path,
         &format!("{title} · 𝑹𝒆𝒂𝒅𝒔"),
         summary,
         &content,
         Some(structured),
+        &CHROME,
     )
     .await?;
     Ok(conditional(
@@ -400,7 +394,13 @@ async fn detail(
 
 const EYE: &str = r#"<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>"#;
 
-fn card(item: &Card, en: bool, rank: Option<usize>, timezone: chrono_tz::Tz) -> String {
+fn card(
+    item: &Card,
+    en: bool,
+    rank: Option<usize>,
+    timezone: chrono_tz::Tz,
+    reader: Reader,
+) -> String {
     let rank = rank
         .map(|rank| format!("<span class=read-rank aria-hidden=true>{rank:02}</span>"))
         .unwrap_or_default();
@@ -421,7 +421,7 @@ fn card(item: &Card, en: bool, rank: Option<usize>, timezone: chrono_tz::Tz) -> 
         item.first_seen_at
             .with_timezone(&timezone)
             .format("%Y-%m-%d"),
-        localized(&format!("/reads/{}", item.id), en),
+        reader.localized(&format!("/reads/{}", item.id), en),
         escape(choose(en, &item.title, &item.title_en)),
         escape(choose(en, &item.summary, &item.summary_en))
     )
@@ -496,7 +496,8 @@ async fn robots(State(state): State<AppState>, headers: HeaderMap) -> Response {
 
 async fn sitemap(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
     let count: i64 = sqlx::QueryBuilder::new("SELECT COUNT(*) ")
-        .push(VISIBLE)
+        .push(CONTENT)
+        .push(" AND t.visible")
         .build_query_scalar()
         .fetch_one(&state.pool)
         .await?;
@@ -513,6 +514,13 @@ async fn sitemap(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
             xml,
             "<sitemap><loc>{}</loc></sitemap>",
             escape(&absolute(&state, "/travel/sitemap.xml"))
+        );
+    }
+    if crate::culture::listed(&state).await? {
+        let _ = write!(
+            xml,
+            "<sitemap><loc>{}</loc></sitemap>",
+            escape(&absolute(&state, "/culture/sitemap.xml"))
         );
     }
     xml.push_str("</sitemapindex>");
@@ -532,7 +540,8 @@ async fn sitemap_page(
         return Err(AppError::NotFound("页面不存在".into()));
     }
     let rows: Vec<(Uuid, DateTime<Utc>)> = sqlx::QueryBuilder::new("SELECT i.id, i.first_seen_at ")
-        .push(VISIBLE)
+        .push(CONTENT)
+        .push(" AND t.visible")
         .push(" ORDER BY i.first_seen_at, i.id LIMIT ")
         .push_bind(SITEMAP_SIZE)
         .push(" OFFSET ")

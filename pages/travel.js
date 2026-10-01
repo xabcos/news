@@ -26,7 +26,7 @@
   const english = () => document.documentElement.lang === "en";
   const text = () => TEXT[english() ? "en" : "zh"];
   const pick = (object, field) => (english() && object?.[`${field}_en`]) || object?.[field] || "";
-  const destination = (slug) => `/travel/${encodeURIComponent(slug)}${english() ? "?lang=en" : ""}`;
+  const destination = (slug) => PublicPage.readPath(`/travel/${encodeURIComponent(slug)}${english() ? "?lang=en" : ""}`);
   const photosOf = (item) => (item.travel?.photos?.length ? item.travel.photos : [item.image]).filter((photo) => photo?.url);
   const placeName = (place) => {
     const name = pick(place, "name");
@@ -256,7 +256,7 @@
   async function map(container) {
     let places = [];
     try {
-      const response = await fetch("/travel/map.json", { headers: { Accept: "application/json" } });
+      const response = await fetch(PublicPage.readPath("/travel/map.json"), { headers: { Accept: "application/json" } });
       if (response.ok) places = (await response.json()).places || [];
     } catch {
       // The tab works without its map.
