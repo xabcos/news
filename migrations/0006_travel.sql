@@ -36,14 +36,17 @@ CREATE TABLE travel_places (
 );
 CREATE INDEX travel_places_pending_idx ON travel_places (guide_attempts) WHERE guide IS NULL;
 
--- `spot_id` is the place the traveler named, which may lie inside the destination.
+-- `spot_id` is the place the traveler named, which may lie inside the destination. The cover is
+-- the item's image, which the media refresh renews; `extra_photos` keeps the post's other
+-- photographs, in order.
 CREATE TABLE travel_moments (
     item_id uuid PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
     place_id text NOT NULL REFERENCES travel_places(id),
     spot_id text NOT NULL CHECK (spot_id ~ '^Q[1-9][0-9]{0,11}$'),
     spot text NOT NULL,
     spot_en text NOT NULL,
-    photos jsonb NOT NULL CHECK (jsonb_typeof(photos) = 'array'),
+    extra_photos jsonb NOT NULL
+        CHECK (jsonb_typeof(extra_photos) = 'array' AND jsonb_array_length(extra_photos) <= 3),
     text text NOT NULL,
     lang text NOT NULL
 );
