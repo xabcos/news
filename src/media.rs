@@ -630,6 +630,33 @@ pub async fn startup_sync(state: &AppState) -> Result<()> {
     Ok(())
 }
 
+/// The photograph topics, 𝑾 and 𝑻𝒓𝒂𝒗𝒆𝒍, show what the file server still keeps: an item
+/// leaves once its photograph's stored copy has expired and will not be renewed again. Copies
+/// of the recent days are renewed by `startup_sync`, even after an outage let them lapse, so
+/// those stay.
+pub(crate) async fn prune_lapsed(state: &AppState, topic: &str) -> Result<()> {
+    let renewed_from = state.digest.today() - chrono::Duration::days(RENEW_DAYS);
+    let days = sqlx::query_scalar::<_, chrono::NaiveDate>(
+        "WITH gone AS (
+             DELETE FROM items
+             WHERE topic_id = $1 AND day < $2 AND (image->>'expires_at')::timestamptz <= NOW()
+             RETURNING day
+         ), revised AS (
+             UPDATE topics SET feed_revision = feed_revision + 1
+             WHERE id = $1 AND EXISTS (SELECT 1 FROM gone)
+         )
+         SELECT DISTINCT day FROM gone",
+    )
+    .bind(topic)
+    .bind(renewed_from)
+    .fetch_all(&state.pool)
+    .await?;
+    for day in days {
+        state.digest.refresh(state, topic, day).await?;
+    }
+    Ok(())
+}
+
 pub(crate) fn stored_image(value: &Value) -> Option<NewsImage> {
     serde_json::from_value(value.clone()).ok()
 }

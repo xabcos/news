@@ -21,6 +21,8 @@ const INSIGHT_ID = "insight";
 const EQUITY_ID = "equity-insight";
 // The photograph gallery: rows of photographs at their own ratio, opened in a lightbox.
 const PHOTO_TOPIC = "w";
+// Travelers' postcards in packed columns, with a map of recent destinations (travel.js).
+const TRAVEL_TOPIC = "travel";
 const storage = (() => {
   try {
     const store = window.localStorage;
@@ -106,6 +108,7 @@ const t = () => TEXT[state.lang];
 const groupTargets = new WeakMap();
 let groupObserver = null;
 let activeLoadController = null;
+let travelMap = null;
 
 document.addEventListener("DOMContentLoaded", init);
 
@@ -646,6 +649,8 @@ function renderTabs() {
   // narrow reading measure. This class also updates when navigating between tabs.
   document.body.classList.toggle("p-topic", state.topic === "p");
   document.body.classList.toggle("w-topic", state.topic === PHOTO_TOPIC);
+  document.body.classList.toggle("travel-topic", state.topic === TRAVEL_TOPIC);
+  renderTravelMap();
   document.title = state.topic === INSIGHT_ID
     ? `𝑵𝒆𝒘𝒔 · ${state.lang === "en" ? "XAI Daily" : "XAI 日报"}`
     : state.topic === EQUITY_ID ? `𝑵𝒆𝒘𝒔 · ${state.lang === "en" ? "Equity notes" : "股市观察"}` : "𝑵𝒆𝒘𝒔";
@@ -671,6 +676,24 @@ function renderTabs() {
   // Deep links, browser back/forward, and the async catalogue load can all select
   // a tab that is initially outside the strip's horizontal viewport.
   window.requestAnimationFrame(() => scrollActiveTab());
+}
+
+// The map sits above the travel tab's postcards and follows the page language.
+function renderTravelMap() {
+  if (state.topic !== TRAVEL_TOPIC) {
+    travelMap?.remove();
+    travelMap = null;
+    return;
+  }
+  if (travelMap?.dataset.lang === state.lang) return;
+  if (!travelMap) {
+    travelMap = document.createElement("div");
+    travelMap.className = "travel-map-slot";
+    travelMap.hidden = true;
+    el.digest.before(travelMap);
+  }
+  travelMap.dataset.lang = state.lang;
+  TravelUI.map(travelMap);
 }
 
 function scrollActiveTab() {
@@ -1025,6 +1048,7 @@ function renderGroups(digest) {
     section.className = "group";
     section.classList.toggle("image-news-group", group.id === "p");
     section.classList.toggle("photo-group", group.id === PHOTO_TOPIC);
+    section.classList.toggle("postcard-group", group.id === TRAVEL_TOPIC);
     if (!single) {
       const heading = document.createElement("div");
       heading.className = "group-title";
@@ -1036,14 +1060,21 @@ function renderGroups(digest) {
       heading.append(title, count);
       section.append(heading);
     }
-    section.append(...(group.items || []).map((item) => renderGroupItem(group, item)));
-    if (group.next) section.append(groupSentinel(digest, group));
+    // Postcards pack in a grid of their own, below the group's heading.
+    const cards = group.id === TRAVEL_TOPIC ? document.createElement("div") : section;
+    if (cards !== section) {
+      cards.className = "postcards";
+      section.append(cards);
+    }
+    cards.append(...(group.items || []).map((item) => renderGroupItem(group, item)));
+    if (group.next) cards.append(groupSentinel(digest, group));
     return section;
   });
 }
 
 function renderGroupItem(group, item) {
   if (group.id === PHOTO_TOPIC) return photoCard(item);
+  if (group.id === TRAVEL_TOPIC) return TravelUI.postcard(item, { when: relativeTime(item.first_seen_at) });
   return group.id === "p" ? imageNewsCard(item) : card(item, group.id === "reads");
 }
 

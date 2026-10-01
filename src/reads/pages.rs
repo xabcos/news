@@ -508,6 +508,13 @@ async fn sitemap(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
             escape(&absolute(&state, &format!("/reads/sitemap/{page}")))
         );
     }
+    if crate::travel::listed(&state).await? {
+        let _ = write!(
+            xml,
+            "<sitemap><loc>{}</loc></sitemap>",
+            escape(&absolute(&state, "/travel/sitemap.xml"))
+        );
+    }
     xml.push_str("</sitemapindex>");
     Ok(conditional(
         &headers,

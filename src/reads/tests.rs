@@ -238,6 +238,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             old,
             vec![full_item, brief_item],
             articles,
+            HashMap::new(),
             vec![]
         )
         .await
@@ -269,6 +270,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             today,
             vec![repeat],
             HashMap::new(),
+            HashMap::new(),
             vec![]
         )
         .await
@@ -283,6 +285,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             run_id,
             today,
             vec![item(999)],
+            HashMap::new(),
             HashMap::new(),
             vec![]
         )
@@ -300,6 +303,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             today,
             vec![item(998)],
             HashMap::from([(item(998).fingerprint, broken)]),
+            HashMap::new(),
             vec![]
         )
         .await
@@ -314,7 +318,16 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             .enumerate()
             .map(|(i, item)| (item.fingerprint.clone(), article(start + i)))
             .collect();
-        crate::runner::persist_items(&state, &topic, run_id, today, items, articles, vec![])
+        crate::runner::persist_items(
+            &state,
+            &topic,
+            run_id,
+            today,
+            items,
+            articles,
+            HashMap::new(),
+            vec![],
+        )
     };
     let (first, second) = tokio::join!(batch(10), batch(50));
     let first = first.unwrap();
@@ -355,6 +368,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         run_id,
         old,
         vec![item(1000)],
+        HashMap::new(),
         HashMap::new(),
         vec![],
     )
@@ -531,9 +545,18 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         .enumerate()
         .map(|(i, item)| (item.fingerprint.clone(), article(130 + i)))
         .collect();
-    crate::runner::persist_items(&state, &topic, run_id, old, items, articles, vec![])
-        .await
-        .unwrap();
+    crate::runner::persist_items(
+        &state,
+        &topic,
+        run_id,
+        old,
+        items,
+        articles,
+        HashMap::new(),
+        vec![],
+    )
+    .await
+    .unwrap();
     let first_page = client
         .get(format!("{base}/reads"))
         .send()

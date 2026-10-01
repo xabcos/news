@@ -162,12 +162,12 @@ p { margin-top: 0; }
 .public .shell { max-width: 46rem; margin: 0 auto; padding: .75rem 1.25rem 3rem; }
 
 @media (min-width: 769px) {
-  .public:is(.p-topic, .w-topic) .shell {
+  .public:is(.p-topic, .w-topic, .travel-topic) .shell {
     max-width: 90rem;
     padding-right: clamp(1.25rem, 3vw, 3rem);
     padding-left: clamp(1.25rem, 3vw, 3rem);
   }
-  .public:is(.p-topic, .w-topic) .back-to-top {
+  .public:is(.p-topic, .w-topic, .travel-topic) .back-to-top {
     right: max(calc(1rem + env(safe-area-inset-right, 0px)), calc((100% - 90rem) / 2 - 3.75rem));
   }
 }
@@ -536,6 +536,285 @@ p { margin-top: 0; }
   .public.w-topic .photo-group { --row: 11rem; }
   .photo-group,
   .public.w-topic .digest { gap: .35rem; }
+}
+
+/* ---------- travel (𝑻𝒓𝒂𝒗𝒆𝒍) ---------- */
+
+/* Rows are 4px tall and each postcard spans the rows its height needs (travel.js), so
+   photographs at their own ratio pack into columns while the cards keep reading order. In
+   ALL the cards have a grid below their group's heading; the travel tab joins them all. */
+.postcards,
+.public.travel-topic .digest {
+  --postcard-gap: .9rem;
+  display: grid;
+  grid-template-columns: repeat(var(--columns, 2), minmax(0, 1fr));
+  grid-auto-rows: 4px;
+  align-items: start;
+  column-gap: var(--postcard-gap);
+}
+.public.travel-topic .day-block,
+.public.travel-topic .postcard-group,
+.public.travel-topic .postcard-group > .postcards { display: contents; }
+.public.travel-topic .day-divider,
+.public.travel-topic .group-title { display: none; }
+.postcard-group > .group-title { margin-bottom: .75rem; }
+.postcards > .group-more,
+.public.travel-topic .group-more,
+.public.travel-topic .empty { grid-column: 1 / -1; }
+.postcard {
+  min-width: 0;
+  margin: 0 0 var(--postcard-gap);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-small);
+}
+.postcard-media {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  aspect-ratio: var(--ratio, 1.333);
+  background: var(--surface-soft);
+}
+.postcard-media img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform .35s ease;
+}
+.postcard-media:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.postcard-count {
+  position: absolute;
+  top: .5rem;
+  right: .5rem;
+  display: inline-flex;
+  align-items: center;
+  gap: .3rem;
+  padding: .1rem .5rem;
+  border-radius: 999px;
+  color: #fff;
+  background: rgba(0, 0, 0, .42);
+  font-size: .68rem;
+  font-weight: 700;
+  pointer-events: none;
+}
+/* Two stacked frames: the post has more photographs than the one shown. */
+.postcard-count::before {
+  content: "";
+  width: .55rem;
+  height: .55rem;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+  box-shadow: 2px -2px 0 -1px currentColor;
+}
+.postcard-body { display: grid; gap: .3rem; padding: .75rem .9rem .85rem; }
+.postcard-place {
+  justify-self: start;
+  color: var(--primary-strong);
+  font-size: .74rem;
+  font-weight: 650;
+  letter-spacing: .02em;
+  text-decoration: none;
+}
+.postcard-title { margin: 0; font-size: 1rem; line-height: 1.38; text-wrap: pretty; }
+.postcard-words {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--text) 82%, var(--muted));
+  font-size: .88rem;
+  line-height: 1.62;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  quotes: "「" "」";
+}
+:lang(en) .postcard-words { quotes: "\201C" "\201D"; }
+.postcard-words::before { content: open-quote; }
+.postcard-words::after { content: close-quote; }
+.postcard-meta { margin: 0; color: var(--muted); font-size: .74rem; }
+.postcard-meta a { color: inherit; text-decoration: none; }
+.postcard-more { justify-self: start; margin-top: .15rem; color: var(--muted); font-size: .76rem; text-decoration: none; }
+.postcard-place:hover,
+.postcard-meta a:hover,
+.postcard-more:hover { color: var(--primary-strong); text-decoration: underline; text-underline-offset: .15em; }
+@media (hover: hover) {
+  .postcard { transition: transform .2s ease, box-shadow .2s ease; }
+  .postcard:hover { transform: translateY(-2px); box-shadow: var(--shadow-small), 0 0 0 1px var(--line-strong); }
+  .postcard-media:hover img { transform: scale(1.03); }
+}
+/* In ALL the postcards share the reading column with the news, so they stay small. */
+@media (min-width: 769px) {
+  .public:not(.travel-topic) .postcard-group > .postcards { --columns: 3; --postcard-gap: .75rem; }
+  .public:not(.travel-topic) .postcard-group .postcard-title { font-size: .92rem; }
+  .public:not(.travel-topic) .postcard-group .postcard-words { font-size: .84rem; -webkit-line-clamp: 2; }
+}
+@media (min-width: 1100px) {
+  .public.travel-topic .digest { --columns: 3; --postcard-gap: clamp(.9rem, 1.4vw, 1.3rem); }
+}
+@media (min-width: 1500px) {
+  .public.travel-topic .digest { --columns: 4; }
+}
+@media (max-width: 560px) {
+  .postcards,
+  .public.travel-topic .digest { --columns: 1; }
+}
+
+/* The land is a dotted mask, so it takes the theme's colour. */
+.travel-map-slot[hidden] { display: none; }
+.travel-map { max-width: 50rem; margin: .25rem auto 1.1rem; }
+.travel-map-canvas { position: relative; aspect-ratio: 360 / 142; }
+.travel-map-land {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--muted) 42%, transparent);
+  -webkit-mask: url("/world.svg") center / 100% 100% no-repeat;
+  mask: url("/world.svg") center / 100% 100% no-repeat;
+}
+.travel-map figcaption { margin-top: .35rem; color: var(--muted); font-size: .72rem; text-align: center; }
+.travel-pin {
+  position: absolute;
+  width: .7rem;
+  height: .7rem;
+  margin: -.35rem 0 0 -.35rem;
+  border: 2px solid var(--surface-solid);
+  border-radius: 999px;
+  background: var(--primary);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .25);
+  transition: transform .18s ease;
+}
+.travel-pin.is-recent::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: inherit;
+  background: var(--primary);
+  opacity: .28;
+  animation: travel-pulse 2.4s ease-out infinite;
+}
+@keyframes travel-pulse {
+  from { transform: scale(.4); opacity: .45; }
+  to { transform: scale(1.6); opacity: 0; }
+}
+.travel-pin-label {
+  position: absolute;
+  bottom: calc(100% + .35rem);
+  left: 50%;
+  z-index: 1;
+  padding: .12rem .45rem;
+  border-radius: .35rem;
+  color: var(--surface-solid);
+  background: var(--text);
+  font-size: .7rem;
+  font-weight: 600;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 2px);
+  transition: opacity .15s ease, transform .15s ease;
+}
+.travel-pin:hover,
+.travel-pin:focus-visible { z-index: 2; transform: scale(1.25); }
+.travel-pin:hover .travel-pin-label,
+.travel-pin:focus-visible .travel-pin-label { opacity: 1; transform: translate(-50%, 0); }
+@media (max-width: 560px) {
+  .travel-pin { width: .55rem; height: .55rem; margin: -.275rem 0 0 -.275rem; border-width: 1.5px; }
+}
+
+/* The viewer: the photograph beside its story; stacked on narrow screens. */
+.viewer {
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: #fff;
+  background: rgba(8, 9, 12, .97);
+  /* Horizontal swipes turn the page, so the browser must not take them over. */
+  touch-action: pan-y pinch-zoom;
+}
+.viewer[open] { display: grid; grid-template-columns: minmax(0, 1fr) min(24rem, 34vw); }
+.viewer::backdrop { background: transparent; }
+:root:has(.viewer[open]) { background: rgb(8, 9, 12); }
+.viewer:focus { outline: none; }
+.viewer-stage {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 0;
+  padding: 3.25rem clamp(.75rem, 4vw, 4rem) 1rem;
+}
+.viewer-image { width: 100%; height: 100%; min-height: 0; object-fit: contain; }
+.viewer-dots { display: flex; justify-content: center; gap: .45rem; min-height: 1.6rem; padding-top: .7rem; }
+.viewer-dot {
+  width: .5rem;
+  height: .5rem;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .32);
+  cursor: pointer;
+}
+.viewer-dot[aria-current="true"] { background: #fff; }
+.viewer-panel {
+  display: flex;
+  flex-direction: column;
+  gap: .55rem;
+  min-height: 0;
+  padding: 3.5rem 1.5rem 1.5rem;
+  overflow-y: auto;
+  border-left: 1px solid rgba(255, 255, 255, .08);
+  background: rgba(255, 255, 255, .03);
+  font-size: .9rem;
+  line-height: 1.65;
+}
+.viewer-panel a { color: rgba(255, 255, 255, .82); text-decoration: none; }
+.viewer-panel a:hover { color: #fff; text-decoration: underline; text-underline-offset: .15em; }
+.viewer-panel .viewer-place { align-self: flex-start; color: #f5a48f; font-size: .78rem; font-weight: 650; letter-spacing: .02em; }
+.viewer-spot { margin: -.35rem 0 0; color: rgba(255, 255, 255, .6); font-size: .78rem; }
+.viewer-title { margin: 0; font-size: 1.2rem; line-height: 1.4; }
+.viewer-words { margin: 0; color: rgba(255, 255, 255, .88); }
+.viewer-original { color: rgba(255, 255, 255, .62); font-size: .82rem; }
+.viewer-original summary { cursor: pointer; }
+.viewer-original p { margin: .35rem 0 0; white-space: pre-line; }
+.viewer-author { align-self: flex-start; font-size: .82rem; }
+.viewer-about { margin-top: .5rem; padding-top: .9rem; border-top: 1px solid rgba(255, 255, 255, .12); }
+.viewer-about h3 { margin: 0 0 .3rem; color: rgba(255, 255, 255, .6); font-size: .76rem; font-weight: 650; letter-spacing: .04em; }
+.viewer-about p { margin: 0 0 .45rem; }
+.viewer-fact strong { margin-right: .45em; color: #f5a48f; font-weight: 650; }
+.viewer-guide { font-size: .84rem; }
+.viewer-button {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  color: #fff;
+  background: rgba(255, 255, 255, .08);
+  font-size: 1.6rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color .18s ease, opacity .18s ease;
+}
+.viewer-button:hover:not(:disabled) { background: rgba(255, 255, 255, .18); }
+.viewer-button:disabled { opacity: 0; pointer-events: none; }
+.viewer-close { top: .6rem; right: .6rem; }
+.viewer-previous, .viewer-next { top: 50%; transform: translateY(-50%); }
+.viewer-previous { left: .6rem; }
+.viewer-next { right: calc(min(24rem, 34vw) + .6rem); }
+@media (max-width: 768px) {
+  .viewer[open] { grid-template-columns: 1fr; grid-template-rows: minmax(0, 62%) minmax(0, 1fr); }
+  .viewer-stage { padding: 3rem .5rem .25rem; }
+  .viewer-panel { padding: 1rem 1.25rem 1.5rem; border-top: 1px solid rgba(255, 255, 255, .08); border-left: 0; }
+  .viewer-next { right: .6rem; }
+}
+@media (hover: none) {
+  .viewer-previous, .viewer-next { display: none; }
 }
 
 .lightbox {

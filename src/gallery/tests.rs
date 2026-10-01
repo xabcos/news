@@ -1,5 +1,5 @@
 use super::*;
-use chrono::Duration;
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use std::{collections::HashMap, sync::Arc};
 
 fn window() -> NewsWindow {
@@ -44,50 +44,6 @@ fn post(value: Value) -> Post {
 fn photo(key: &str, width: u32, height: u32) -> Value {
     json!({ "type": "photo", "media_url_https": format!("https://pbs.twimg.com/media/{key}.jpg"),
         "original_info": { "width": width, "height": height } })
-}
-
-#[test]
-fn embed_token_matches_the_embed_widget() {
-    // `((Number(id) / 1e15) * Math.PI).toString(36)` in Node.js.
-    for (id, written, token) in [
-        ("2103404903255204189", "53k.1hn5z8st", "53k1hn5z8st"),
-        ("2105040167379640804", "53p.6fmlyjq2", "53p6fmlyjq2"),
-        ("2104967031397437525", "53o.y5urkgy9", "53oy5urkgy9"),
-        ("20", "0.000000006dq1a2xwd93", "6dq1a2xwd93"),
-        ("1234567890123456789", "2zq.ic77uqyk", "2zqic77uqyk"),
-        ("9223372036854775807", "mcw.2svce2ao", "mcw2svce2ao"),
-        ("1600000000000000000", "3vm.jqiybmlu", "3vmjqiybmlu"),
-        ("2105278415775695352", "53p.xdnnybyi", "53pxdnnybyi"),
-        ("1111111111111111111", "2oy.npf5u2p5", "2oynpf5u2p5"),
-        ("999999999999999", "3.53i5ab8p54", "353i5ab8p54"),
-    ] {
-        let value = id.parse::<f64>().unwrap() / 1e15 * std::f64::consts::PI;
-        assert_eq!(base36(value), written, "{id}");
-        assert_eq!(embed_token(id), token, "{id}");
-    }
-    assert_eq!(base36(35.0), "z");
-    assert_eq!(base36(36.5), "10.i");
-}
-
-#[test]
-fn reads_media_keys_and_accounts() {
-    assert_eq!(
-        media_key("https://pbs.twimg.com/media/HTZHv1gaAAAWIqE.jpg").as_deref(),
-        Some("HTZHv1gaAAAWIqE")
-    );
-    assert_eq!(
-        media_key("https://pbs.twimg.com/media/HTZHv1gaAAAWIqE?format=jpg&name=large").as_deref(),
-        Some("HTZHv1gaAAAWIqE")
-    );
-    assert!(media_key("https://pbs.twimg.com/profile_images/1/a.jpg").is_none());
-    assert!(media_key("https://example.com/media/HTZHv1gaAAAWIqE.jpg").is_none());
-    assert!(media_key("https://pbs.twimg.com/media/.jpg").is_none());
-    assert_eq!(
-        author("https://x.com/Alice_1/status/2105000000000000001").as_deref(),
-        Some("alice_1")
-    );
-    assert!(author("https://x.com/i/status/2105000000000000001").is_none());
-    assert!(author("https://example.com/about").is_none());
 }
 
 #[test]
@@ -244,7 +200,7 @@ async fn x_and_file_server(
             let (status, kind, reply) = if let Some(query) = target.strip_prefix("/tweet-result?") {
                 let query =
                     url::form_urlencoded::parse(query.as_bytes()).collect::<HashMap<_, _>>();
-                assert_eq!(query["token"], embed_token(&query["id"]));
+                assert_eq!(query["token"], x::embed_token(&query["id"]));
                 match posts.get(query["id"].as_ref()) {
                     Some(post) => ("200 OK", "application/json", post.to_string().into_bytes()),
                     None => ("404 Not Found", "application/json", b"{}".to_vec()),
@@ -581,7 +537,7 @@ async fn postgres_gallery_keeps_confirmed_photographs_until_their_copies_expire(
     let (_, lapsed, _) = stored(pool, &alice_url).await.unwrap();
     expire(pool, &alice_url, today).await;
     let before = revision(pool).await;
-    prune(&state).await.unwrap();
+    crate::media::prune_lapsed(&state, TOPIC_ID).await.unwrap();
     assert!(stored(pool, &alice_url).await.is_some());
     assert_eq!(revision(pool).await, before);
     crate::media::startup_sync(&state).await.unwrap();
@@ -594,13 +550,13 @@ async fn postgres_gallery_keeps_confirmed_photographs_until_their_copies_expire(
     let old = today - Duration::days(crate::media::RENEW_DAYS + 1);
     expire(pool, &erin_url, old).await;
     let before = revision(pool).await;
-    prune(&state).await.unwrap();
+    crate::media::prune_lapsed(&state, TOPIC_ID).await.unwrap();
     assert!(stored(pool, &erin_url).await.is_none());
     assert!(stored(pool, &alice_url).await.is_some());
     assert_eq!(revision(pool).await, before + 1);
     let archived = state.digest.snapshot(&state, TOPIC_ID, old).await.unwrap();
     assert!(archived.items.is_empty());
-    prune(&state).await.unwrap();
+    crate::media::prune_lapsed(&state, TOPIC_ID).await.unwrap();
     assert_eq!(revision(pool).await, before + 1);
 
     ai_server.abort();

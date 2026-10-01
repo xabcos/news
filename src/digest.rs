@@ -72,6 +72,10 @@ pub struct PublicItem {
     pub importance: i16,
     pub pinned: bool,
     pub image: Option<serde_json::Value>,
+    /// A travel moment's photographs and destination.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[sqlx(default)]
+    pub travel: Option<serde_json::Value>,
 }
 
 /// One topic on one day: the visible items in display order. This is the unit that moves
@@ -626,16 +630,25 @@ async fn load(state: &AppState, topic: &str, day: NaiveDate) -> Result<Snapshot>
         .bind(topic)
         .fetch_one(&state.pool)
         .await?;
-    let mut items = sqlx::query_as::<_, PublicItem>(
-        "SELECT items.id, items.title, items.summary, items.title_en, items.summary_en, items.url, items.source, items.published_at, items.first_seen_at, items.tags, items.tags_en, items.importance, items.pinned, items.image \
-         FROM items JOIN topics ON topics.id = items.topic_id \
-         WHERE items.topic_id = $1 AND items.day = $2 AND topics.enabled AND topics.visible AND topics.owner_user_id IS NULL AND NOT items.hidden \
-         ORDER BY items.pinned DESC, items.published_at DESC NULLS LAST, items.first_seen_at DESC, items.id DESC",
-    )
-    .bind(topic)
-    .bind(day)
-    .fetch_all(&state.pool)
-    .await?;
+    let mut query = sqlx::QueryBuilder::new(
+        "SELECT items.id, items.title, items.summary, items.title_en, items.summary_en, items.url, items.source, items.published_at, items.first_seen_at, items.tags, items.tags_en, items.importance, items.pinned, items.image, ",
+    );
+    query
+        .push(crate::travel::MOMENT_JSON)
+        .push(" AS travel FROM items JOIN topics ON topics.id = items.topic_id ")
+        .push(crate::travel::MOMENT_JOIN)
+        .push(" WHERE items.topic_id = ")
+        .push_bind(topic)
+        .push(" AND items.day = ")
+        .push_bind(day)
+        .push(
+            " AND topics.enabled AND topics.visible AND topics.owner_user_id IS NULL AND NOT items.hidden \
+             ORDER BY items.pinned DESC, items.published_at DESC NULLS LAST, items.first_seen_at DESC, items.id DESC",
+        );
+    let mut items = query
+        .build_query_as::<PublicItem>()
+        .fetch_all(&state.pool)
+        .await?;
     for item in &mut items {
         item.image = public_image(item.image.take());
     }
@@ -1460,6 +1473,7 @@ mod tests {
             importance: i16::from(n),
             pinned,
             image: None,
+            travel: None,
         }
     }
 

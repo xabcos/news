@@ -5,6 +5,7 @@ use crate::{
     gallery, insight, media, reads,
     state::AppState,
     topics::{self, Topic},
+    travel,
 };
 use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Utc};
 use serde_json::Value;
@@ -285,14 +286,14 @@ async fn tick(state: &AppState) -> Result<()> {
 /// Each completed topic is checkpointed by cutoff, so a retry only collects missing topics.
 /// The coordinator holds no semaphore permit; even a single-slot deployment can progress.
 /// Without a topic it collects what the briefing reads, the visible public news topics, so
-/// an internal source such as `equity` or the 𝑾 gallery cannot hold the briefing back.
+/// an internal source such as `equity` or the photograph topics cannot hold the briefing back.
 pub(crate) async fn collect_briefing(
     state: &AppState,
     window: NewsWindow,
     topic: Option<&str>,
 ) -> Result<()> {
     let topics = sqlx::query_as::<_, Topic>(
-        "SELECT * FROM topics WHERE enabled AND owner_user_id IS NULL AND id NOT IN ('reads', 'llm', 'w')
+        "SELECT * FROM topics WHERE enabled AND owner_user_id IS NULL AND id NOT IN ('reads', 'llm', 'w', 'travel')
          AND (($2::text IS NULL AND visible) OR id = $2)
          AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.topic_id = topics.id
                          AND triggered_by = 'briefing' AND status = 'ok' AND window_end = $1)
@@ -633,6 +634,7 @@ async fn execute(
     let yesterday = today.pred_opt().expect("date in range");
     let is_reads = topic.id == "reads" && topic.owner_user_id.is_none();
     let is_gallery = gallery::is_gallery(topic);
+    let is_travel = travel::is_travel(topic);
     let window = if is_reads {
         NewsWindow {
             start: window.end - ChronoDuration::days(30),
@@ -680,15 +682,15 @@ async fn execute(
     let (mut dup, mut dropped) = (0, 0);
     let mut items = Vec::new();
     let mut duplicate_fingerprints = Vec::new();
-    for candidate in fetched.candidates {
+    for candidate in std::mem::take(&mut fetched.candidates) {
         let Some(mut item) = fetch::validate(candidate, window.start)
             .filter(|item| item.published_at.is_none_or(|at| window.contains(at)))
         else {
             dropped += 1;
             continue;
         };
-        // Reads and 𝑾 know an X post by its id, whichever address the model used.
-        if is_reads || is_gallery {
+        // Reads, 𝑾 and 𝑻𝒓𝒂𝒗𝒆𝒍 know an X post by its id, whichever address the model used.
+        if is_reads || is_gallery || is_travel {
             item.fingerprint =
                 reads::fingerprint(&url::Url::parse(&item.url).expect("validated URL"));
         }
@@ -699,8 +701,11 @@ async fn execute(
             dropped += 1;
             continue;
         }
+        // Travelers at one place write alike; their posts are told apart by id alone.
         let title = fetch::normalize_title(&item.title);
-        if !fingerprints.insert(item.fingerprint.clone()) || fetch::similar_title(&titles, &title) {
+        if !fingerprints.insert(item.fingerprint.clone())
+            || (!is_travel && fetch::similar_title(&titles, &title))
+        {
             dup += 1;
             duplicate_fingerprints.push(item.fingerprint);
             continue;
@@ -714,6 +719,20 @@ async fn execute(
         items = gallery::select(state, items, &known, window, &mut fetched.payload).await;
         dropped += (proposed - items.len()) as i32;
     }
+    let mut moments = HashMap::new();
+    if is_travel {
+        let proposed = items.len();
+        // Leave time to store the photographs and publish the moments.
+        let deadline = tokio::time::Instant::now()
+            + state
+                .config
+                .fetch_timeout
+                .saturating_sub(started.elapsed() + Duration::from_secs(120));
+        (items, moments) =
+            travel::select(state, topic, items, window, today, &mut fetched, deadline).await?;
+        dropped += (proposed - items.len()) as i32;
+    }
+    let destinations = travel::destinations(&moments);
 
     let mut articles = HashMap::new();
     if is_reads {
@@ -773,7 +792,7 @@ async fn execute(
         item.image = image;
     }
     items.retain(|item| {
-        let keep = (topic.id != "p" && !is_gallery) || item.image.is_some();
+        let keep = (topic.id != "p" && !is_gallery && !is_travel) || item.image.is_some();
         if !keep {
             dropped += 1;
         }
@@ -793,9 +812,25 @@ async fn execute(
         today,
         items,
         articles,
+        moments,
         duplicate_fingerprints,
     )
     .await?;
+    if is_travel {
+        // The moments go out before their destinations' guides, which take minutes to write.
+        if new > 0
+            && let Err(error) = state.digest.refresh(state, &topic.id, today).await
+        {
+            tracing::warn!(%error, "travel feed refresh before guides failed");
+        }
+        let deadline = tokio::time::Instant::now()
+            + state
+                .config
+                .fetch_timeout
+                .saturating_sub(started.elapsed() + Duration::from_secs(30));
+        fetched.payload["guides"] =
+            travel::guides(state, topic, &destinations, &mut fetched.usage, deadline).await;
+    }
     Ok(Completed {
         response_id: fetched.response_id,
         usage: fetched.usage,
@@ -808,8 +843,10 @@ async fn execute(
     })
 }
 
-/// All network work finishes before this transaction. Reads metadata and its body
-/// publish together; the topic lock enforces the daily cap across concurrent workers.
+/// All network work finishes before this transaction. Reads metadata and its body, and a
+/// travel moment and its photographs, publish together; the topic lock enforces the Reads
+/// daily cap across concurrent workers.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn persist_items(
     state: &AppState,
     topic: &Topic,
@@ -817,6 +854,7 @@ pub(crate) async fn persist_items(
     today: NaiveDate,
     items: Vec<fetch::NewItem>,
     mut articles: HashMap<Vec<u8>, reads::Article>,
+    mut moments: HashMap<Vec<u8>, travel::Moment>,
     mut duplicate_fingerprints: Vec<Vec<u8>>,
 ) -> Result<(i32, i32, i32)> {
     let is_reads = topic.id == "reads" && topic.owner_user_id.is_none();
@@ -871,6 +909,9 @@ pub(crate) async fn persist_items(
                     .ok_or_else(|| AppError::Internal("Reads 缺少正文，取消发布".into()))?;
                 reads::insert(&mut tx, id, &item.fingerprint, article).await?;
                 available -= 1;
+            }
+            if let Some(moment) = moments.remove(&item.fingerprint) {
+                travel::insert(&mut tx, id, moment).await?;
             }
             new += 1;
         } else {
@@ -1079,10 +1120,12 @@ async fn prune(state: &AppState, today: NaiveDate) -> Result<()> {
             first_error = Some(error);
         }
     }
-    if let Err(error) = gallery::prune(state).await {
-        tracing::warn!(%error, "gallery pruning failed");
-        if first_error.is_none() {
-            first_error = Some(error);
+    for topic in [gallery::TOPIC_ID, travel::TOPIC_ID] {
+        if let Err(error) = media::prune_lapsed(state, topic).await {
+            tracing::warn!(%error, topic, "photograph pruning failed");
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
         }
     }
     if state.config.retention_days > 0 {

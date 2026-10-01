@@ -12,8 +12,8 @@ WITH deduplicated AS (
                     THEN NULLIF(r.payload->'cover', 'null'::jsonb) END) AS cover
     FROM items i JOIN topics t ON t.id = i.topic_id
     LEFT JOIN runs r ON r.id = i.first_run_id
-    -- 𝑾 is a gallery of photographs, not news.
-    WHERE t.enabled AND t.visible AND t.owner_user_id IS NULL AND t.id <> 'w' AND NOT i.hidden
+    -- 𝑾 and 𝑻𝒓𝒂𝒗𝒆𝒍 are photographs, not news.
+    WHERE t.enabled AND t.visible AND t.owner_user_id IS NULL AND t.id NOT IN ('w', 'travel') AND NOT i.hidden
       AND COALESCE(i.published_at, i.first_seen_at) >= $1
       AND COALESCE(i.published_at, i.first_seen_at) < $3
     ORDER BY i.fingerprint, t.id = 'p', i.published_at IS NULL,
