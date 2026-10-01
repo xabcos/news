@@ -18,9 +18,10 @@ use tokio::{
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
-/// Guides written per run, and at the same time.
-const PER_RUN: i64 = 8;
-const AT_ONCE: usize = 4;
+/// Guides written per run, and at the same time. A run of 24 at medium effort takes about ten
+/// minutes, so a backlog of destinations clears within a few runs.
+const PER_RUN: i64 = 24;
+const AT_ONCE: usize = 8;
 const MAX_ATTEMPTS: i16 = 3;
 /// At low effort a guide took under a minute but embellished its stories ("lived here" became
 /// "born here"); medium effort keeps to the sources and takes about three minutes, which is why
@@ -147,6 +148,14 @@ enum Problem {
     Numbers(Vec<String>),
 }
 
+/// What became of one destination's guide in a run.
+enum Written {
+    Guide(Box<Guide>),
+    Failed(String),
+    /// Not tried this time, and not counted as an attempt.
+    Later(&'static str),
+}
+
 /// Writes guides for destinations that have none, this run's destinations first. Snapshots
 /// already showing a destination are refreshed once its guide is written.
 pub(super) async fn write(
@@ -173,10 +182,10 @@ pub(super) async fn write(
         jobs.spawn(async move {
             let _slot = slots.acquire_owned().await.expect("guide slots stay open");
             if Instant::now() + START_TIME > deadline {
-                return (place.id, None, Usage::default());
+                return (place.id, Written::Later("本轮时间不足"), Usage::default());
             }
             let (written, spent) = compose(&state, &topic, &place, deadline).await;
-            (place.id, Some(written), spent)
+            (place.id, written, spent)
         });
     }
     let mut outcomes = Vec::new();
@@ -184,9 +193,8 @@ pub(super) async fn write(
     for (id, result, spent) in jobs.join_all().await {
         *usage += spent;
         match result {
-            // Out of time: the attempt is not counted.
-            None => outcomes.push(json!({ "place": id, "skipped": "本轮时间不足" })),
-            Some(Ok(guide)) => {
+            Written::Later(reason) => outcomes.push(json!({ "place": id, "skipped": reason })),
+            Written::Guide(guide) => {
                 sqlx::query(
                     "UPDATE travel_places SET guide = $2, guide_at = NOW(),
                          guide_attempts = guide_attempts + 1 WHERE id = $1",
@@ -198,7 +206,7 @@ pub(super) async fn write(
                 outcomes.push(json!({ "place": id, "written": true }));
                 written.push(id);
             }
-            Some(Err(error)) => {
+            Written::Failed(error) => {
                 sqlx::query(
                     "UPDATE travel_places SET guide_attempts = guide_attempts + 1 WHERE id = $1",
                 )
@@ -228,22 +236,28 @@ pub(super) async fn write(
     Ok(outcomes)
 }
 
-/// One guide, with a second request when the first cites numbers the sources lack.
+/// One guide, with a second request when the first cites numbers the sources lack. Sources
+/// that could not be read leave the guide for a later run.
 async fn compose(
     state: &AppState,
     topic: &Topic,
     place: &Pending,
     deadline: Instant,
-) -> (std::result::Result<Guide, String>, Usage) {
+) -> (Written, Usage) {
     let mut usage = Usage::default();
-    let materials = sources(state, place).await;
+    let (materials, unreadable) = sources(state, place).await;
     if materials
         .iter()
         .map(|material| material.text.chars().count())
         .sum::<usize>()
         < MIN_MATERIAL
     {
-        return (Err("资料不足".into()), usage);
+        let written = if unreadable {
+            Written::Later("资料暂时读不到")
+        } else {
+            Written::Failed("资料不足".into())
+        };
+        return (written, usage);
     }
     let corpus = materials
         .iter()
@@ -260,15 +274,15 @@ async fn compose(
         .await
         {
             Ok(Ok(reply)) => reply,
-            Ok(Err(error)) => return (Err(error.to_string()), usage),
-            Err(_) => return (Err("导读生成超时".into()), usage),
+            Ok(Err(error)) => return (Written::Failed(error.to_string()), usage),
+            Err(_) => return (Written::Failed("导读生成超时".into()), usage),
         };
         usage += Usage::from_reply(&reply);
         let guide = crate::ai::parse_payload(&reply)
             .and_then(|payload| serde_json::from_value::<Guide>(payload).map_err(Into::into));
         let guide = match guide {
             Ok(guide) => tidy(guide, &corpus),
-            Err(error) => return (Err(error.to_string()), usage),
+            Err(error) => return (Written::Failed(error.to_string()), usage),
         };
         match verify(&guide, &corpus) {
             Ok(()) => {
@@ -276,9 +290,9 @@ async fn compose(
                     .into_iter()
                     .map(|material| material.reference)
                     .collect();
-                return (Ok(Guide { sources, ..guide }), usage);
+                return (Written::Guide(Box::new(Guide { sources, ..guide })), usage);
             }
-            Err(Problem::Text(problem)) => return (Err(problem.into()), usage),
+            Err(Problem::Text(problem)) => return (Written::Failed(problem.into()), usage),
             Err(Problem::Numbers(numbers)) => {
                 feedback = format!(
                     "上一稿中这些数字在资料里找不到：{}。删去它们，或改用资料里的写法。\n",
@@ -289,7 +303,7 @@ async fn compose(
         }
     }
     (
-        Err(format!("导读中的数字与资料不符：{}", missing.join("、"))),
+        Written::Failed(format!("导读中的数字与资料不符：{}", missing.join("、"))),
         usage,
     )
 }
@@ -366,66 +380,61 @@ fn request(topic: &Topic, place: &Pending, materials: &[Material], feedback: &st
     })
 }
 
-/// The pages a guide is written from, read together; a page that cannot be read leaves the
-/// others.
-async fn sources(state: &AppState, place: &Pending) -> Vec<Material> {
-    let (voyage, chinese, english) = tokio::join!(
-        source(
-            state,
+/// The pages a guide is written from, read one after another as the old guides were; a page
+/// that cannot be read leaves the others, and says so.
+async fn sources(state: &AppState, place: &Pending) -> (Vec<Material>, bool) {
+    let pages = [
+        (
             "wikivoyage",
             "en.wikivoyage.org",
             Some(&place.voyage),
-            VOYAGE_SECTIONS
+            VOYAGE_SECTIONS,
         ),
-        source(
-            state,
+        (
             "wikipedia-zh",
             "zh.wikipedia.org",
             place.wiki_zh.as_ref(),
-            ZH_SECTIONS
+            ZH_SECTIONS,
         ),
-        source(
-            state,
+        (
             "wikipedia-en",
             "en.wikipedia.org",
             place.wiki_en.as_ref(),
-            EN_SECTIONS
+            EN_SECTIONS,
         ),
-    );
-    [voyage, chinese, english].into_iter().flatten().collect()
-}
-
-async fn source(
-    state: &AppState,
-    site: &str,
-    host: &str,
-    title: Option<&String>,
-    keep: &[&str],
-) -> Option<Material> {
-    let title = title?;
-    let text = match extract(state, host, title).await {
-        Ok(text) => sections(&text, keep),
-        Err(error) => {
-            tracing::debug!(%error, host, title, "travel guide source unavailable");
-            return None;
+    ];
+    let mut materials = Vec::new();
+    let mut unreadable = false;
+    for (site, host, title, keep) in pages {
+        let Some(title) = title else {
+            continue;
+        };
+        let text = match extract(state, host, title).await {
+            Ok(text) => sections(&text, keep),
+            Err(error) => {
+                tracing::warn!(%error, host, title, "travel guide source unavailable");
+                unreadable = true;
+                continue;
+            }
+        };
+        if text.is_empty() {
+            continue;
         }
-    };
-    if text.is_empty() {
-        return None;
+        let mut url = Url::parse(&format!("https://{host}/wiki/")).expect("wiki URL");
+        url.path_segments_mut()
+            .expect("wiki URL has a path")
+            .pop_if_empty()
+            .push(&title.replace(' ', "_"));
+        materials.push(Material {
+            reference: Reference {
+                site: site.into(),
+                title: title.clone(),
+                url: url.into(),
+            },
+            text,
+        });
     }
-    let mut url = Url::parse(&format!("https://{host}/wiki/")).expect("wiki URL");
-    url.path_segments_mut()
-        .expect("wiki URL has a path")
-        .pop_if_empty()
-        .push(&title.replace(' ', "_"));
-    Some(Material {
-        reference: Reference {
-            site: site.into(),
-            title: title.clone(),
-            url: url.into(),
-        },
-        text,
-    })
+    (materials, unreadable)
 }
 
 /// The plain text of a page with `== Section ==` headings. Chinese Wikipedia is converted to

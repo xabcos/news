@@ -433,6 +433,11 @@ async fn world(
                             .unwrap_or_else(|| json!({ "id": id, "missing": "" }))))
                         .collect::<serde_json::Map<_, _>>() })),
                 },
+                _ if query["titles"] == "Unreachable" => (
+                    "503 Service Unavailable",
+                    "application/json",
+                    b"{}".to_vec(),
+                ),
                 _ => {
                     // Every wiki page tells the same short story.
                     assert_eq!(query["prop"], "extracts");
@@ -1100,14 +1105,35 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
     assert!(sitemap.contains("/travel/kyoto</loc>") && sitemap.contains("/travel/kyoto?lang=en"));
     assert!(!sitemap.contains("manhattan"));
 
-    // A guide that keeps failing is tried again in later runs, up to three times.
+    // A guide that keeps failing is tried again in later runs, up to three times; one whose
+    // pages cannot be read waits for a later run without using up its attempts.
+    sqlx::query(
+        "INSERT INTO travel_places (id, slug, name, name_en, country_id, country, country_en,
+             latitude, longitude, voyage) VALUES ('Q404', 'unreachable', '远方', 'Faraway', 'Q404',
+             '远方', 'Faraway', 0, 0, 'Unreachable')",
+    )
+    .execute(&state.pool)
+    .await
+    .unwrap();
     let mut usage = crate::fetch::Usage::default();
     let deadline = Instant::now() + std::time::Duration::from_secs(600);
     for _ in 0..3 {
-        guide::write(&state, &topic, &[], &mut usage, deadline)
+        let outcomes = guide::write(&state, &topic, &[], &mut usage, deadline)
             .await
             .unwrap();
+        assert!(
+            outcomes
+                .iter()
+                .any(|outcome| outcome["place"] == "Q404" && outcome["skipped"] == "资料暂时读不到"),
+            "{outcomes:?}"
+        );
     }
+    let attempts: i16 =
+        sqlx::query_scalar("SELECT guide_attempts FROM travel_places WHERE id = 'Q404'")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(attempts, 0);
     let attempts: i16 =
         sqlx::query_scalar("SELECT guide_attempts FROM travel_places WHERE id = 'Q11299'")
             .fetch_one(&state.pool)
