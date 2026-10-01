@@ -9,12 +9,12 @@
   const SOUTH = -58;
   const TEXT = {
     zh: {
-      more: (name) => `了解${name} →`, about: (name) => `关于${name}`, guide: "阅读导读 →", fact: "你知道吗",
+      more: (name) => `了解${name} →`, about: (name) => `关于${name}`, guide: "阅读导读 →",
       original: "原文", photos: (n) => `${n} 张照片`, photo: (i, n) => `第 ${i} / ${n} 张`,
       close: "关闭", previous: "上一张", next: "下一张", map: (n) => `最近 7 天 · ${n} 个目的地`,
     },
     en: {
-      more: (name) => `About ${name} →`, about: (name) => `About ${name}`, guide: "Read the guide →", fact: "Did you know?",
+      more: (name) => `About ${name} →`, about: (name) => `About ${name}`, guide: "Read the guide →",
       original: "Original", photos: (n) => `${n} photos`, photo: (i, n) => `Photo ${i} of ${n}`,
       close: "Close", previous: "Previous", next: "Next", map: (n) => `Last 7 days · ${n} ${n === 1 ? "destination" : "destinations"}`,
     },
@@ -241,11 +241,7 @@
       if (tagline) {
         about.append(element("h3", "", text().about(pick(place, "name"))), element("p", "", tagline));
         const fact = pick(place, "fact");
-        if (fact) {
-          const line = element("p", "viewer-fact");
-          line.append(element("strong", "", text().fact), fact);
-          about.append(line);
-        }
+        if (fact) about.append(element("p", "viewer-fact", fact));
         about.append(link(destination(place.slug), "viewer-guide", text().guide));
       } else {
         about.append(link(destination(place.slug), "viewer-guide", text().more(pick(place, "name"))));

@@ -28,8 +28,8 @@ use uuid::Uuid;
 const CHROME: Chrome<'static> = Chrome {
     current: TOPIC_ID,
     section: "travel",
-    stylesheet: "/travel.css?v=1",
-    script: "/travel.js?v=1",
+    stylesheet: "/travel.css?v=2",
+    script: "/travel.js?v=2",
     feed: ("𝑻𝒓𝒂𝒗𝒆𝒍", "/feed.xml?topic=travel"),
 };
 /// Destinations on the map: those with moments from this many recent days.
@@ -192,13 +192,8 @@ async fn destination(
             .join(choose(en, "、", ", "));
         let _ = write!(
             content,
-            "</dl><p class=destination-sources>{}{sources}{}</p></section>",
+            "</dl><p class=destination-sources>{}{sources}</p></section>",
             choose(en, "资料：", "Sources: "),
-            choose(
-                en,
-                " · 导读由 AI 依据资料整理，资料以 CC BY-SA 4.0 授权",
-                " · Guide written by AI from these sources, licensed CC BY-SA 4.0",
-            ),
         );
     }
     if !moments.is_empty() {
@@ -272,12 +267,7 @@ fn guide_sections(guide: &Guide, en: bool) -> String {
     );
     let fact = choose(en, &guide.fact, &guide.fact_en);
     if !fact.is_empty() {
-        let _ = write!(
-            html,
-            "<p class=destination-fact><strong>{}</strong>{}</p>",
-            choose(en, "你知道吗", "Did you know?"),
-            escape(fact)
-        );
+        let _ = write!(html, "<p class=destination-fact>{}</p>", escape(fact));
     }
     html.push_str("<dl class=destination-sections>");
     let mut row = |label: &str, value: String| {
@@ -286,6 +276,15 @@ fn guide_sections(guide: &Guide, en: bool) -> String {
         }
     };
     let text = |zh: &str, english: &str| escape(choose(en, zh, english));
+    // A long history comes in paragraphs, one per line.
+    let paragraphs = |zh: &str, english: &str| {
+        choose(en, zh, english)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(|line| format!("<p>{}</p>", escape(line)))
+            .collect::<String>()
+    };
     let list = |entries: &[Entry]| {
         if entries.is_empty() {
             return String::new();
@@ -308,7 +307,7 @@ fn guide_sections(guide: &Guide, en: bool) -> String {
     );
     row(
         choose(en, "历史", "History"),
-        text(&guide.history, &guide.history_en),
+        paragraphs(&guide.history, &guide.history_en),
     );
     row(
         choose(en, "人物与故事", "People & stories"),

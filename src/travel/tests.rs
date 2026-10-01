@@ -282,6 +282,37 @@ fn guides_read_history_and_culture_sections() {
 }
 
 #[test]
+fn people_stories_have_no_length_limit_but_their_numbers_are_checked() {
+    let story = |text: &str, text_en: &str| guide::Guide {
+        tagline: "千年古都".into(),
+        tagline_en: "An old capital".into(),
+        history: "794 年建都。".into(),
+        history_en: "Founded in 794.".into(),
+        people: vec![guide::Entry {
+            name: "紫式部".into(),
+            name_en: "Murasaki Shikibu".into(),
+            text: text.into(),
+            text_en: text_en.into(),
+        }],
+        ..Default::default()
+    };
+    let corpus = "Founded in 794. Murasaki Shikibu served at the court around 1008.";
+    let long = story(
+        &"紫式部在宫中侍奉，约 1008 年写成《源氏物语》。".repeat(12),
+        &"Murasaki Shikibu served at the court and finished her tale around 1008. ".repeat(12),
+    );
+    assert!(guide::verify(&long, corpus).is_ok());
+    let invented = story(
+        "紫式部 1001 年入宫。",
+        "Murasaki Shikibu joined the court in 1001.",
+    );
+    assert!(matches!(
+        guide::verify(&invented, corpus),
+        Err(guide::Problem::Numbers(numbers)) if numbers == ["1001"]
+    ));
+}
+
+#[test]
 fn guide_numbers_must_come_from_the_sources() {
     let corpus = "Founded in 794 as Heian-kyō. Population 1,467,856 in 2020; 3.5 km of canals. 東京は１８６８年から首都。";
     assert_eq!(
@@ -753,7 +784,7 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
                     } else if input.contains("目的地：北海道") && !input.contains("2099") {
                         guide("2099 年开拓。")
                     } else {
-                        guide("794 年建都，1868 年以前一直是都城。")
+                        guide("794 年建都。\n1868 年以前一直是都城。")
                     }
                 } else {
                     assert_eq!(request["tools"], json!([{ "type": "x_search", "enable_image_understanding": true }]));
@@ -1020,10 +1051,9 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
     let html = page.text().await.unwrap();
     for text in [
         "千年古都，庭园与老街",
-        "你知道吗",
-        "这里的工匠代代相传。",
+        "<p class=destination-fact>这里的工匠代代相传。</p>",
         "地名由来",
-        "历史",
+        "<dd><p>794 年建都。</p><p>1868 年以前一直是都城。</p></dd>",
         "<b>小野小町</b>",
         "<b>金阁</b>",
         "<b>抹茶</b>",
@@ -1037,7 +1067,14 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
     ] {
         assert!(html.contains(text), "missing {text}");
     }
-    for text in ["无名氏", "想象之塔", "data-next", "时节与节庆"] {
+    for text in [
+        "无名氏",
+        "想象之塔",
+        "data-next",
+        "时节与节庆",
+        "你知道吗",
+        "CC BY-SA",
+    ] {
         assert!(!html.contains(text), "unexpected {text}");
     }
     // Older moments load a page at a time after the newest one.

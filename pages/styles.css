@@ -783,7 +783,7 @@ p { margin-top: 0; }
 .viewer-about { margin-top: .5rem; padding-top: .9rem; border-top: 1px solid rgba(255, 255, 255, .12); }
 .viewer-about h3 { margin: 0 0 .3rem; color: rgba(255, 255, 255, .6); font-size: .76rem; font-weight: 650; letter-spacing: .04em; }
 .viewer-about p { margin: 0 0 .45rem; }
-.viewer-fact strong { margin-right: .45em; color: #f5a48f; font-weight: 650; }
+.viewer-about .viewer-fact { padding-left: .65rem; border-left: 2px solid #f5a48f; }
 .viewer-guide { font-size: .84rem; }
 .viewer-button {
   position: absolute;
