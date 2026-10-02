@@ -89,7 +89,7 @@ pub(crate) async fn prepare(
         }
         match jobs.join_next().await {
             Some(Ok((index, image))) => items[index].image = image,
-            Some(Err(error)) => tracing::debug!(%error, "culture image deferred"),
+            Some(Err(error)) => tracing::debug!(%error, "catalogue image deferred"),
             None => break,
         }
     }
@@ -112,7 +112,7 @@ async fn resolve(
         let images = match from_page(state, &page, &template, book).await {
             Ok(images) => images,
             Err(error) => {
-                tracing::debug!(%error, %page, "culture image source unavailable");
+                tracing::debug!(%error, %page, "catalogue image source unavailable");
                 continue;
             }
         };
@@ -207,22 +207,8 @@ fn page_images(base: &Url, text: &str, book: bool) -> Vec<String> {
             }
         }
     }
-    for meta in html.select(&select("meta[property], meta[name]")) {
-        let key = meta
-            .attr("property")
-            .or_else(|| meta.attr("name"))
-            .unwrap_or_default();
-        if matches!(
-            key.to_ascii_lowercase().as_str(),
-            "og:image"
-                | "og:image:url"
-                | "og:image:secure_url"
-                | "twitter:image"
-                | "twitter:image:src"
-        ) && let Some(value) = meta.attr("content")
-        {
-            add(value);
-        }
+    for image in super::source::meta_images(&html, base) {
+        add(&image);
     }
     images.truncate(2);
     images

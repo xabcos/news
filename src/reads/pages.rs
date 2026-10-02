@@ -516,11 +516,14 @@ async fn sitemap(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
             escape(&absolute(&state, "/travel/sitemap.xml"))
         );
     }
-    if crate::culture::listed(&state).await? {
+    for section in crate::catalog::listed(&state).await? {
         let _ = write!(
             xml,
             "<sitemap><loc>{}</loc></sitemap>",
-            escape(&absolute(&state, "/culture/sitemap.xml"))
+            escape(&absolute(
+                &state,
+                &format!("/{}/sitemap.xml", section.path())
+            ))
         );
     }
     xml.push_str("</sitemapindex>");

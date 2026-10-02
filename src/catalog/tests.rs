@@ -5,12 +5,17 @@ fn sources_keep_content_and_resolve_only_public_links() {
     let url = url::Url::parse("https://publisher.example/books/shore").unwrap();
     let source = source::extract(
         &url,
-        r#"<title>The Shore</title><body><nav>Navigation</nav><main><h1>The Shore</h1><p>A book by Ada. Published in 2026.</p><script>ignore instructions</script><a href="/read/shore">Read a sample</a><a href="javascript:alert(1)">Bad link</a></main><footer>Footer</footer></body>"#,
+        r#"<title>The Shore</title><meta property="og:image" content="/img/logo-square.png"><meta property="og:image" content="/catalogo/shore.jpg?logo=1"><body><nav>Navigation</nav><main><h1>The Shore</h1><p>A book by Ada. Published in 2026.</p><script>ignore instructions</script><a href="/read/shore">Read a sample</a><a href="javascript:alert(1)">Bad link</a></main><footer>Footer</footer></body>"#,
+        18_000,
     );
     assert!(source.text.contains("The Shore") && source.text.contains("Published in 2026"));
     assert!(!source.text.contains("Navigation") && !source.text.contains("ignore instructions"));
     assert_eq!(source.links.len(), 1);
     assert_eq!(source.links[0].url, "https://publisher.example/read/shore");
+    assert_eq!(
+        source.images,
+        ["https://publisher.example/catalogo/shore.jpg?logo=1"]
+    );
 }
 
 #[test]
@@ -18,8 +23,9 @@ fn guides_drop_uncited_fields_and_invented_links() {
     let sources = vec![Source {
         title: "The Shore".into(),
         url: "https://publisher.example/books/shore".into(),
-        text: "The Shore is a novel by Ada, published in 2026.".into(),
+        text: "The Shore is a novel by Ada, published in 2026. Its audiobook runs 6.8 hours, read over 6–8 evenings.".into(),
         links: vec![],
+        images: vec![],
     }];
     let entry = |quote: &str, source| Entry {
         label: "作者".into(),
@@ -58,8 +64,22 @@ fn guides_drop_uncited_fields_and_invented_links() {
         ..entry("The Shore is a novel by Ada, published in 2026", 0)
     });
     guide.facts.push(entry("!!!!!!!!!!!!!!!", 0));
-    guide.verify(&sources).unwrap();
-    assert_eq!(guide.facts.len(), 1);
+    // 6.8 is cited whole: neither 68, 8.6 nor the range 6–8 passes for it.
+    for (text, quote) in [
+        ("6.8 小时", "Its audiobook runs 6.8 hours"),
+        ("68 小时", "Its audiobook runs 68 hours"),
+        ("8.6 小时", "Its audiobook runs 6.8 hours"),
+        ("6.8 晚", "hours, read over 6.8 evenings"),
+    ] {
+        guide.facts.push(Entry {
+            text: text.into(),
+            text_en: text.into(),
+            ..entry(quote, 0)
+        });
+    }
+    guide.verify(&sources, 12).unwrap();
+    assert_eq!(guide.facts.len(), 2);
+    assert_eq!(guide.facts[1].text, "6.8 小时");
     assert_eq!(guide.links.len(), 1);
     assert_eq!(guide.sources.len(), 1);
 }
@@ -74,16 +94,16 @@ fn proposals_require_a_work_page_and_matching_medium() {
         source_urls: vec!["https://publisher.example/books/shore?utm_source=x".into()],
     };
     assert_eq!(
-        proposal.clone().clean("book").unwrap().source_urls[0],
+        proposal.clone().clean("book", "").unwrap().source_urls[0],
         "https://publisher.example/books/shore"
     );
-    assert!(proposal.clone().clean("movie").is_none());
+    assert!(proposal.clone().clean("movie", "").is_none());
     assert!(
         Proposal {
             source_urls: vec!["https://publisher.example/".into()],
             ..proposal.clone()
         }
-        .clean("book")
+        .clean("book", "")
         .is_none()
     );
     assert!(
@@ -91,9 +111,106 @@ fn proposals_require_a_work_page_and_matching_medium() {
             source_urls: vec!["https://127.0.0.1/private".into()],
             ..proposal
         }
-        .clean("book")
+        .clean("book", "")
         .is_none()
     );
+}
+
+#[test]
+fn products_keep_official_sources_and_are_known_by_brand_and_model() {
+    let brief = "官方来源：amazon.com aboutamazon.com；官方账号：@AmazonKindle。";
+    let proposal = Proposal {
+        name: "Kindle Colorsoft".into(),
+        name_en: "Amazon Kindle Colorsoft".into(),
+        creator: "Amazon".into(),
+        kind: "reader".into(),
+        source_urls: vec![
+            "https://www.amazon.com/dp/B0DK".into(),
+            "https://shop.example/kindle-colorsoft".into(),
+            "https://x.com/AmazonKindle/status/2105624259129127408".into(),
+        ],
+    };
+    let product = proposal.clone().clean("eink", brief).unwrap();
+    assert_eq!(
+        product.source_urls,
+        [
+            "https://amazon.com/dp/B0DK",
+            "https://x.com/AmazonKindle/status/2105624259129127408"
+        ]
+    );
+    assert_eq!(product.key(Section::Gadgets), "amazon:kindlecolorsoft");
+    let renamed = Proposal {
+        name_en: "Kindle Colorsoft".into(),
+        ..proposal.clone()
+    };
+    assert_eq!(
+        renamed.clean("eink", brief).unwrap().key(Section::Gadgets),
+        "amazon:kindlecolorsoft"
+    );
+    let plus = Proposal {
+        name_en: "Kindle Colorsoft+".into(),
+        ..proposal.clone()
+    };
+    assert_eq!(plus.key(Section::Gadgets), "amazon:kindlecolorsoftplus");
+    // A product without an official page still collects its reviews, but no guide is written.
+    let unofficial = Proposal {
+        source_urls: vec![
+            "https://notamazon.com/kindle".into(),
+            "https://amazon.com/".into(),
+            "https://community.amazon.com/kindle/thread".into(),
+            "https://amazon.com/gp/customer-reviews/R1".into(),
+            "https://x.com/reseller/status/2105624259129127408".into(),
+        ],
+        ..proposal.clone()
+    };
+    assert!(
+        unofficial
+            .clean("eink", brief)
+            .unwrap()
+            .source_urls
+            .is_empty()
+    );
+    assert!(proposal.clone().clean("digital", brief).is_none());
+    assert!(
+        Proposal {
+            creator: String::new(),
+            ..proposal
+        }
+        .clean("eink", brief)
+        .is_none()
+    );
+}
+
+#[test]
+fn sources_name_works_whole_and_products_word_by_word() {
+    let entry = |name_en: &str, creator: &str| Pending {
+        id: Uuid::nil(),
+        name: name_en.into(),
+        name_en: name_en.into(),
+        creator: creator.into(),
+        kind: String::new(),
+        source_urls: sqlx::types::Json(Vec::new()),
+        source_hash: None,
+    };
+    let page = "Meet the all-new Kindle. Available in 2026 in Black and Raspberry.";
+    assert!(named(
+        Section::Gadgets,
+        &entry("Kindle (2026)", "Amazon"),
+        page
+    ));
+    assert!(named(
+        Section::Gadgets,
+        &entry("Amazon Kindle", "Amazon"),
+        page
+    ));
+    assert!(!named(
+        Section::Gadgets,
+        &entry("Kindle Scribe (2026)", "Amazon"),
+        page
+    ));
+    assert!(named(Section::Culture, &entry("Kindle", ""), page));
+    assert!(!named(Section::Culture, &entry("Kindle (2026)", ""), page));
+    assert!(!named(Section::Culture, &entry("Kindle", "Ada"), page));
 }
 
 /// A local HTTPS origin exercises source reading and media mirroring without external calls.
@@ -185,6 +302,8 @@ async fn origin() -> (String, reqwest::Client, tokio::task::JoinHandle<()>) {
                     ("application/json", json!({"created_at":"2026-10-01T06:00:00Z","user":{"name":"Publisher on X","screen_name":"publisher"},"text":"The Shore cover is here.","mediaDetails":[{"type":"photo","media_url_https":"https://pbs.twimg.com/media/CultureCover.jpg","original_info":{"width":480,"height":640}}]}).to_string().into_bytes())
                 } else if path == "/upload" {
                     ("application/json",json!({"direct_link":format!("{url}/files/cover.jpg"),"expires_at":chrono::Utc::now()+chrono::Duration::days(3)}).to_string().into_bytes())
+                } else if path == "/products/colorsoft" {
+                    ("text/html; charset=utf-8", format!("<title>Kindle Colorsoft — Amazon</title><meta property=\"og:image\" content=\"{url}/cover.jpg\"><main><h1>Kindle Colorsoft</h1><p>Kindle Colorsoft is the first color Kindle. It has a 7-inch Colorsoft display with 300 ppi in black and white, a front light that adjusts its warmth, and a battery that lasts up to eight weeks. It is waterproof and ships with 16 GB of storage.</p></main>").into_bytes())
                 } else if path == "/unavailable" {
                     (
                         "text/html",
@@ -206,9 +325,28 @@ async fn origin() -> (String, reqwest::Client, tokio::task::JoinHandle<()>) {
     (base, client, server)
 }
 
+/// Waits for a collection run to finish.
+async fn finished(pool: &sqlx::PgPool, run: Uuid) {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            let status: String = sqlx::query_scalar("SELECT status FROM runs WHERE id=$1")
+                .bind(run)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+            if status != "running" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 #[ignore = "requires NEWS_CULTURE_TEST_DATABASE_URL and local test configuration"]
-async fn postgres_culture_publishes_news_then_sourced_guides_and_keeps_the_briefing_separate() {
+async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_briefing_separate() {
     use crate::{config::Config, fetch::NewsWindow, state::AppState};
     use axum::{Json, Router, routing::post};
     use std::sync::{Arc, Mutex};
@@ -229,7 +367,26 @@ async fn postgres_culture_publishes_news_then_sourced_guides_and_keeps_the_brief
         let (seen,base,pool)=(seen.clone(),source_base.clone(),guide_pool.clone());
         async move {
             seen.lock().unwrap().push(request.clone());
-            let payload=if request["text"]["format"]["name"]=="culture_guide" {
+            let input = request["input"].as_str().unwrap_or_default();
+            let payload=if request["text"]["format"]["name"]=="catalog_guide" && input.contains("Kindle Colorsoft") {
+                assert!(input.contains("7-inch Colorsoft display"));
+                json!({"intro":"亚马逊首款彩色 Kindle 阅读器。","intro_en":"Amazon's first color Kindle.",
+                    "facts":[{"label":"屏幕","label_en":"Display","text":"7 英寸，300 ppi","text_en":"7-inch, 300 ppi","source":0,"quote":"7-inch Colorsoft display with 300 ppi"},
+                        {"label":"存储","label_en":"Storage","text":"32 GB","text_en":"32 GB","source":0,"quote":"ships with 16 GB of storage"}],
+                    "sections":[],"links":[]})
+            } else if request["instructions"].as_str().unwrap_or_default().contains("𝑮𝒂𝒅𝒈𝒆𝒕𝒔") {
+                assert_eq!(request["text"]["format"]["schema"]["properties"]["items"]["items"]["properties"]["role"]["enum"], json!(["review","share","news"]));
+                let now = chrono::Utc::now() - chrono::Duration::hours(1);
+                let product = json!({"name":"Kindle Colorsoft","name_en":"Amazon Kindle Colorsoft","creator":"Amazon","kind":"reader",
+                    "source_urls":[format!("{base}/products/colorsoft"),"https://shop.example/colorsoft"]});
+                let picture = json!({"url":format!("{base}/cover.jpg"),"source_url":format!("{base}/review/colorsoft"),"caption":"Kindle Colorsoft","caption_en":"Kindle Colorsoft","credit":"Reviewer"});
+                let share_url = "https://x.com/reader/status/2105624259129127409";
+                json!({"items":[
+                    {"title":"Kindle Colorsoft 一个月实测","title_en":"A month with Kindle Colorsoft","summary":"连续阅读一个月后，彩色漫画清晰，续航约六周。","summary_en":"After a month, color comics look sharp and the battery lasts about six weeks.","url":format!("{base}/review/colorsoft"),"source":"Reviewer","published_at":now,"importance":4,"tags":["评测"],"tags_en":["Review"],"image":picture,"image_page_url":null,"role":"review","work":product},
+                    {"title":"彩色 Kindle 到手","title_en":"My color Kindle arrived","summary":"读者晒出开箱照片。","summary_en":"A reader shares unboxing photos.","url":share_url,"source":"reader","published_at":now,"importance":3,"tags":["开箱"],"tags_en":["Unboxing"],"image":null,"image_page_url":share_url,"role":"share","work":{"name":"Kindle Colorsoft","name_en":"Kindle Colorsoft","creator":"Amazon","kind":"reader","source_urls":[]}},
+                    {"title":"传闻：新款 Kindle Scribe 将有彩色版","title_en":"Rumor: a color Kindle Scribe is coming","summary":"爆料者称新款 Scribe 将配备彩色屏幕。","summary_en":"A leaker says the next Scribe gets a color screen.","url":format!("{base}/rumor/scribe"),"source":"Leaker","published_at":now,"importance":2,"tags":["传闻"],"tags_en":["Rumor"],"image":picture,"image_page_url":null,"role":"news","work":null}
+                ],"cover":null})
+            } else if request["text"]["format"]["name"]=="catalog_guide" {
                 let published:i64=sqlx::query_scalar("SELECT COUNT(*) FROM items WHERE topic_id='book'").fetch_one(&pool).await.unwrap();
                 assert_eq!(published,2,"stories with and without pictures are already published while the guide is written");
                 assert!(request.get("tools").is_none());
@@ -271,13 +428,18 @@ async fn postgres_culture_publishes_news_then_sourced_guides_and_keeps_the_brief
     let mut state = AppState::new(config).await.unwrap();
     state.http = client.clone();
     state.origin_http = client;
-    sqlx::query("TRUNCATE culture_items, culture_works, items, runs CASCADE")
+    sqlx::query("TRUNCATE catalog_items, catalog_entries, items, runs CASCADE")
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("UPDATE topics SET enabled=true,visible=true,last_run_at=NULL,last_status=NULL WHERE id=ANY($1)").bind(IDS.as_slice()).execute(&pool).await.unwrap();
+    let everything: Vec<&str> = Section::ALL
+        .iter()
+        .flat_map(|section| section.topics())
+        .copied()
+        .collect();
+    sqlx::query("UPDATE topics SET enabled=true,visible=true,last_run_at=NULL,last_status=NULL WHERE id=ANY($1)").bind(&everything).execute(&pool).await.unwrap();
     let topics: Vec<Topic> = sqlx::query_as("SELECT * FROM topics WHERE id=ANY($1)")
-        .bind(IDS.as_slice())
+        .bind(Section::Culture.topics())
         .fetch_all(&pool)
         .await
         .unwrap();
@@ -289,25 +451,11 @@ async fn postgres_culture_publishes_news_then_sourced_guides_and_keeps_the_brief
     );
     let topic = topics.iter().find(|t| t.id == "book").unwrap();
     let run = crate::runner::start(&state, topic, "manual").await.unwrap();
-    tokio::time::timeout(Duration::from_secs(90), async {
-        loop {
-            let status: String = sqlx::query_scalar("SELECT status FROM runs WHERE id=$1")
-                .bind(run)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-            if status != "running" {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .unwrap();
+    finished(&pool, run).await;
     let (new,dup,status):(i32,i32,String)=sqlx::query_as("SELECT new_count,dup_count,status FROM runs WHERE topic_id='book' ORDER BY started_at DESC LIMIT 1").fetch_one(&pool).await.unwrap();
     assert_eq!((new, dup, status.as_str()), (2, 1, "ok"));
     let (id, slug): (Uuid, String) = sqlx::query_as(
-        "SELECT id,slug FROM culture_works WHERE topic_id='book' AND guide IS NOT NULL",
+        "SELECT id,slug FROM catalog_entries WHERE topic_id='book' AND guide IS NOT NULL",
     )
     .fetch_one(&pool)
     .await
@@ -328,7 +476,7 @@ async fn postgres_culture_publishes_news_then_sourced_guides_and_keeps_the_brief
     };
     let page = get("/culture/book".into()).await.text().await.unwrap();
     assert!(
-        page.contains("culture-book") && page.contains(&slug) && page.contains("/files/cover.jpg")
+        page.contains("catalog-book") && page.contains(&slug) && page.contains("/files/cover.jpg")
     );
     assert_eq!(page.matches(">𝑪𝒖𝒍𝒕𝒖𝒓𝒆</a>").count(), 1);
     assert!(page.contains("data-last=\"/culture/book\""));
@@ -352,7 +500,7 @@ async fn postgres_culture_publishes_news_then_sourced_guides_and_keeps_the_brief
         .iter()
         .find(|s| s["url"].as_str().unwrap().ends_with("/news/shore"))
         .unwrap();
-    assert_eq!(story["culture"]["name"], "海岸");
+    assert_eq!(story["catalog"]["name"], "海岸");
     assert!(
         story["image"]["url"]
             .as_str()
@@ -406,7 +554,7 @@ async fn postgres_culture_publishes_news_then_sourced_guides_and_keeps_the_brief
     assert_eq!(get("/culture/unknown".into()).await.status(), 404);
     // A warm catalogue avoids another model call when the same source has not changed.
     let before = calls.lock().unwrap().len();
-    sqlx::query("UPDATE culture_works SET checked_at=NOW()-INTERVAL '8 days' WHERE id=$1")
+    sqlx::query("UPDATE catalog_entries SET checked_at=NOW()-INTERVAL '8 days' WHERE id=$1")
         .bind(id)
         .execute(&pool)
         .await
@@ -414,6 +562,7 @@ async fn postgres_culture_publishes_news_then_sourced_guides_and_keeps_the_brief
     let results = guides(
         &state,
         topic,
+        Section::Culture,
         &mut Usage::default(),
         Instant::now() + Duration::from_secs(120),
     )
@@ -422,11 +571,12 @@ async fn postgres_culture_publishes_news_then_sourced_guides_and_keeps_the_brief
     assert_eq!(results[0]["unchanged"], true);
     assert_eq!(calls.lock().unwrap().len(), before);
     // An unavailable source keeps the published guide and its retry budget, but rotates the queue.
-    sqlx::query("UPDATE culture_works SET source_urls=$2, checked_at=NOW()-INTERVAL '8 days', attempts=1 WHERE id=$1")
+    sqlx::query("UPDATE catalog_entries SET source_urls=$2, checked_at=NOW()-INTERVAL '8 days', attempts=1 WHERE id=$1")
         .bind(id).bind(json!([format!("{base}/unavailable")])).execute(&pool).await.unwrap();
     let results = guides(
         &state,
         topic,
+        Section::Culture,
         &mut Usage::default(),
         Instant::now() + Duration::from_secs(120),
     )
@@ -434,13 +584,13 @@ async fn postgres_culture_publishes_news_then_sourced_guides_and_keeps_the_brief
     .unwrap();
     assert_eq!(results[0]["deferred"], "资料暂不可读");
     let (checked, attempts, published): (bool, i16, bool) = sqlx::query_as(
-        "SELECT checked_at > NOW()-INTERVAL '1 minute', attempts, guide IS NOT NULL FROM culture_works WHERE id=$1",
+        "SELECT checked_at > NOW()-INTERVAL '1 minute', attempts, guide IS NOT NULL FROM catalog_entries WHERE id=$1",
     ).bind(id).fetch_one(&pool).await.unwrap();
     assert_eq!((checked, attempts, published), (true, 1, true));
     assert_eq!(calls.lock().unwrap().len(), before);
     // The briefing has no work to collect when only Culture is enabled.
     sqlx::query("UPDATE topics SET enabled=(id=ANY($1))")
-        .bind(IDS.as_slice())
+        .bind(Section::Culture.topics())
         .execute(&pool)
         .await
         .unwrap();
@@ -488,13 +638,158 @@ async fn postgres_culture_publishes_news_then_sourced_guides_and_keeps_the_brief
         .await
         .unwrap();
     assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM culture_works WHERE id=$1")
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM catalog_entries WHERE id=$1")
             .bind(id)
             .fetch_one(&pool)
             .await
             .unwrap(),
         1
     );
+    // 𝑮𝒂𝒅𝒈𝒆𝒕𝒔: a review and a reader's post join an official product, a rumor stays news.
+    sqlx::query("UPDATE topics SET enabled=true, visible=true, brief = brief || ' culture.example' WHERE id=ANY($1)")
+        .bind(Section::Gadgets.topics()).execute(&pool).await.unwrap();
+    let eink: Topic = sqlx::query_as("SELECT * FROM topics WHERE id='eink'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!((eink.interval_minutes, eink.max_items), (360, 12));
+    let run = crate::runner::start(&state, &eink, "manual").await.unwrap();
+    finished(&pool, run).await;
+    let (new, status): (i32, String) =
+        sqlx::query_as("SELECT new_count, status FROM runs WHERE id=$1")
+            .bind(run)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!((new, status.as_str()), (3, "ok"));
+    let (key, sources, pictured, guide, slug): (String, Value, bool, Value, String) = sqlx::query_as(
+        "SELECT key, source_urls, image->>'url' LIKE '%/files/cover.jpg', guide, slug FROM catalog_entries WHERE topic_id='eink'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(key, "amazon:kindlecolorsoft");
+    assert_eq!(sources, json!([format!("{base}/products/colorsoft")]));
+    assert!(
+        pictured,
+        "the official page's picture is the product's cover"
+    );
+    assert_eq!(
+        guide["facts"].as_array().unwrap().len(),
+        1,
+        "a specification its quote does not support is dropped"
+    );
+    let roles: Vec<(String, String)> = sqlx::query_as(
+        "SELECT i.title, c.role FROM catalog_items c JOIN items i ON i.id = c.item_id WHERE i.topic_id='eink' ORDER BY c.role",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        roles,
+        [
+            (
+                "Kindle Colorsoft 一个月实测".to_owned(),
+                "review".to_owned()
+            ),
+            ("彩色 Kindle 到手".to_owned(), "share".to_owned())
+        ]
+    );
+    let page = get("/gadgets/eink".into()).await.text().await.unwrap();
+    assert!(
+        page.contains("catalog-shelf")
+            && page.contains("7 英寸，300 ppi")
+            && page.contains("传闻：新款 Kindle Scribe")
+            && page.contains("catalog-role")
+    );
+    assert_eq!(page.matches(">𝑮𝒂𝒅𝒈𝒆𝒕𝒔</a>").count(), 1);
+    assert!(page.contains("data-last=\"/gadgets/digital\""));
+    let panels = get("/gadgets/eink?kind=panel".into())
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(!panels.contains(&slug) && panels.contains("新故事正在路上"));
+    let product = get(format!("/gadgets/eink/{slug}"))
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        product.contains("catalog-specs")
+            && product.contains("真实测评")
+            && product.contains("用户分享")
+            && product.contains("官方资料")
+    );
+    let digest: Value = get("/digest?topic=eink".into()).await.json().await.unwrap();
+    let stories = digest["topics"][0]["items"].as_array().unwrap();
+    let review = stories
+        .iter()
+        .find(|s| s["url"].as_str().unwrap().ends_with("/review/colorsoft"))
+        .unwrap();
+    assert_eq!(review["catalog"]["role"], "review");
+    assert_eq!(review["catalog"]["path"], format!("/gadgets/eink/{slug}"));
+    let rumor = stories
+        .iter()
+        .find(|s| s["url"].as_str().unwrap().ends_with("/rumor/scribe"))
+        .unwrap();
+    assert!(rumor.get("catalog").is_none());
+    // Reviews and shares stay with their product after the news retention passes.
+    crate::runner::cleanup_items(&state, state.digest.today() + chrono::Duration::days(1))
+        .await
+        .unwrap();
+    let kept: Vec<String> =
+        sqlx::query_scalar("SELECT title FROM items WHERE topic_id='eink' ORDER BY title")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(kept, ["Kindle Colorsoft 一个月实测", "彩色 Kindle 到手"]);
+    // Once due, what the catalogue keeps is renewed whatever its day: the product's pictures
+    // and an old review's photograph.
+    sqlx::query(
+        "UPDATE catalog_entries SET image = jsonb_set(image, '{expires_at}', to_jsonb(NOW() + INTERVAL '1 hour')),
+             images = jsonb_build_array(jsonb_set(images->0, '{expires_at}', to_jsonb(NOW() + INTERVAL '1 hour')))
+         WHERE topic_id = 'eink'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE items SET day = day - 30, image = jsonb_set(image, '{expires_at}', to_jsonb(NOW() + INTERVAL '1 hour'))
+         WHERE url LIKE '%/review/colorsoft'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    crate::media::startup_sync(&state).await.unwrap();
+    let renewed: Vec<bool> = sqlx::query_scalar(
+        "SELECT (picture->>'expires_at')::timestamptz > NOW() + INTERVAL '2 days' FROM (
+             SELECT image AS picture FROM catalog_entries WHERE topic_id = 'eink'
+             UNION ALL SELECT images->0 FROM catalog_entries WHERE topic_id = 'eink'
+             UNION ALL SELECT image FROM items WHERE url LIKE '%/review/colorsoft') pictures",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(renewed, [true, true, true]);
+    // The briefing collects nothing from 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 either.
+    let before = calls.lock().unwrap().len();
+    sqlx::query("UPDATE topics SET enabled=(id=ANY($1))")
+        .bind(Section::Gadgets.topics())
+        .execute(&pool)
+        .await
+        .unwrap();
+    crate::runner::collect_briefing(
+        &state,
+        NewsWindow {
+            start: chrono::Utc::now() - chrono::Duration::hours(24),
+            end: chrono::Utc::now(),
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(calls.lock().unwrap().len(), before);
     server.abort();
     ai_server.abort();
     origin_server.abort();

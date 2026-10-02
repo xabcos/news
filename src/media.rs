@@ -31,6 +31,9 @@ const ORIGIN_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 // placeholders. They are not useful as visual-news cards even when they return 200.
 pub(crate) const MIN_IMAGE_BYTES: usize = 4096;
 pub(crate) const MIN_IMAGE_DIMENSION: u32 = 320;
+// Large placeholders are nearly flat, so they compress to almost nothing; photographs and
+// product shots keep well over this many bytes per thousand pixels.
+const MIN_BYTES_PER_KILOPIXEL: u64 = 10;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, Deserialize)]
 pub(crate) struct UploadResponse {
@@ -302,7 +305,10 @@ pub(crate) async fn download_image(
 fn image_is_usable(bytes: &[u8]) -> bool {
     bytes.len() >= MIN_IMAGE_BYTES
         && !image_dimensions(bytes).is_some_and(|(width, height)| {
-            width < MIN_IMAGE_DIMENSION || height < MIN_IMAGE_DIMENSION
+            width < MIN_IMAGE_DIMENSION
+                || height < MIN_IMAGE_DIMENSION
+                || (bytes.len() as u64) * 1000
+                    < u64::from(width) * u64::from(height) * MIN_BYTES_PER_KILOPIXEL
         })
 }
 
@@ -505,13 +511,30 @@ fn extension_for(content_type: &str) -> &'static str {
 }
 
 /// Renews one week's media in one batch so stored copies of the same photograph
-/// reuse a transfer. Published daily images enter the batch before archive cards.
+/// reuse a transfer. Published daily images enter the batch before archive cards. What a
+/// catalogue keeps, its reviews, shares and entry pictures, joins once a copy is due, ahead
+/// of the recent days, until a week past expiry.
 pub async fn startup_sync(state: &AppState) -> Result<()> {
     let keep_from = state.digest.today() - chrono::Duration::days(RENEW_DAYS);
     let rows = sqlx::query_as::<_, StoredImageRow>(
-        "SELECT items.id, items.topic_id, items.day, items.image FROM items JOIN topics ON topics.id = items.topic_id WHERE items.image IS NOT NULL AND items.day >= $1 AND topics.owner_user_id IS NULL ORDER BY items.day DESC LIMIT 500",
+        "SELECT items.id, items.topic_id, items.day, items.image FROM items JOIN topics ON topics.id = items.topic_id
+         WHERE items.image IS NOT NULL AND topics.owner_user_id IS NULL
+           AND (items.day >= $1 OR (items.image->>'expires_at')::timestamptz BETWEEN NOW() - INTERVAL '7 days' AND NOW() + $2
+               AND EXISTS (SELECT 1 FROM catalog_items c WHERE c.item_id = items.id AND c.role <> 'news'))
+         ORDER BY items.day >= $1, items.day DESC LIMIT 500",
     )
     .bind(keep_from)
+    .bind(RENEW_BEFORE)
+    .fetch_all(&state.pool)
+    .await?;
+    // An entry's cover, then its official pictures.
+    let entries = sqlx::query_as::<_, (Uuid, Value)>(
+        "SELECT id, jsonb_build_array(image) || images FROM catalog_entries
+         WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(jsonb_build_array(image) || images) picture
+             WHERE (picture->>'expires_at')::timestamptz BETWEEN NOW() - INTERVAL '7 days' AND NOW() + $1)
+         LIMIT 100",
+    )
+    .bind(RENEW_BEFORE)
     .fetch_all(&state.pool)
     .await?;
     let covers = sqlx::query_as::<_, StoredPayloadRow>(
@@ -532,24 +555,28 @@ pub async fn startup_sync(state: &AppState) -> Result<()> {
                 .map_or_else(Vec::new, selected_image_positions)
         })
         .collect::<Vec<_>>();
-    let mut images = insights
-        .iter()
-        .zip(&positions)
-        .flat_map(|(row, positions)| {
-            positions.iter().map(|&position| {
-                stored_image(&row.payload.as_ref().unwrap()["sources"][position]["image"])
+    let mut images =
+        insights
+            .iter()
+            .zip(&positions)
+            .flat_map(|(row, positions)| {
+                positions.iter().map(|&position| {
+                    stored_image(&row.payload.as_ref().unwrap()["sources"][position]["image"])
+                })
             })
-        })
-        .chain(
-            rows.iter()
-                .map(|row| row.image.as_ref().and_then(stored_image)),
-        )
-        .chain(covers.iter().map(|row| {
-            row.payload
-                .as_ref()
-                .and_then(|payload| stored_image(&payload["cover"]))
-        }))
-        .collect::<Vec<_>>();
+            .chain(
+                rows.iter()
+                    .map(|row| row.image.as_ref().and_then(stored_image)),
+            )
+            .chain(covers.iter().map(|row| {
+                row.payload
+                    .as_ref()
+                    .and_then(|payload| stored_image(&payload["cover"]))
+            }))
+            .chain(entries.iter().flat_map(|(_, pictures)| {
+                pictures.as_array().into_iter().flatten().map(stored_image)
+            }))
+            .collect::<Vec<_>>();
     mirror_images(state, &mut images).await;
     let mut images = images.into_iter();
     let mut changed_topics = std::collections::HashSet::new();
@@ -605,6 +632,29 @@ pub async fn startup_sync(state: &AppState) -> Result<()> {
             .bind(payload)
             .execute(&mut *tx)
             .await?;
+    }
+    for (id, pictures) in entries {
+        let renewed = pictures
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|old| {
+                images
+                    .next()
+                    .flatten()
+                    .map_or_else(|| Ok(old.clone()), serde_json::to_value)
+            })
+            .collect::<serde_json::Result<Vec<_>>>()?;
+        // A guide written meanwhile keeps its newer pictures.
+        sqlx::query(
+            "UPDATE catalog_entries SET image = NULLIF($3->0, 'null'), images = $3 - 0
+                     WHERE id = $1 AND jsonb_build_array(image) || images = $2",
+        )
+        .bind(id)
+        .bind(pictures)
+        .bind(Value::from(renewed))
+        .execute(&mut *tx)
+        .await?;
     }
     if !changed_topics.is_empty() {
         let topics = changed_topics
@@ -769,6 +819,13 @@ mod tests {
         png[23] = 128;
         assert_eq!(image_dimensions(&png), Some((640, 640)));
         assert!(image_is_usable(&png));
+        // A large picture that compresses to almost nothing is a placeholder too.
+        png[18] = 4;
+        png[19] = 176;
+        png[22] = 2;
+        png[23] = 88;
+        assert_eq!(image_dimensions(&png), Some((1200, 600)));
+        assert!(!image_is_usable(&png));
     }
 
     #[test]

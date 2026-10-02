@@ -86,9 +86,10 @@ pub struct PublicItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[sqlx(default)]
     pub travel: Option<serde_json::Value>,
+    /// A catalogue item's role and, once written up, its entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[sqlx(default)]
-    pub culture: Option<serde_json::Value>,
+    pub catalog: Option<serde_json::Value>,
 }
 
 /// One topic on one day: the visible items in display order. This is the unit that moves
@@ -682,19 +683,15 @@ async fn load(state: &AppState, topic: &str, day: NaiveDate) -> Result<Snapshot>
     let mut query = sqlx::QueryBuilder::new(
         "SELECT items.id, items.title, items.summary, items.title_en, items.summary_en, items.url, items.source, items.published_at, items.first_seen_at, items.tags, items.tags_en, items.importance, items.pinned, items.image, ",
     );
-    let culture = crate::culture::IDS.contains(&topic);
+    let section = crate::catalog::Section::of(topic);
     query
         .push(crate::travel::MOMENT_JSON)
         .push(" AS travel, ")
-        .push(if culture {
-            crate::culture::ITEM_JSON
-        } else {
-            "NULL::jsonb"
-        })
-        .push(" AS culture FROM items JOIN topics ON topics.id = items.topic_id ")
+        .push(section.map_or_else(|| "NULL::jsonb".to_owned(), crate::catalog::item_json))
+        .push(" AS catalog FROM items JOIN topics ON topics.id = items.topic_id ")
         .push(crate::travel::MOMENT_JOIN);
-    if culture {
-        query.push(" ").push(crate::culture::ITEM_JOIN);
+    if section.is_some() {
+        query.push(" ").push(crate::catalog::ITEM_JOIN);
     }
     query.push(" WHERE items.topic_id = ")
         .push_bind(topic)
@@ -1535,7 +1532,7 @@ mod tests {
             pinned,
             image: None,
             travel: None,
-            culture: None,
+            catalog: None,
         }
     }
 

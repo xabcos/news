@@ -2,8 +2,8 @@
 
 mod ai;
 mod auth;
+mod catalog;
 pub mod config;
-mod culture;
 mod digest;
 mod email;
 mod equity;

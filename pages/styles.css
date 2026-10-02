@@ -271,7 +271,7 @@ p { margin-top: 0; }
 @media (max-width: 768px) {
   /* Horizontal swipes switch tabs (public.js), so the browser must not take them over. */
   .public .digest,
-  .public:is(.culture, .travel) .shell { touch-action: pan-y pinch-zoom; }
+  .public:is(.catalog, .travel) .shell { touch-action: pan-y pinch-zoom; }
   .public .shell.is-loading {
     touch-action: pan-y pinch-zoom;
     min-height: calc(100vh - 2.6rem);

@@ -293,7 +293,7 @@ pub(crate) async fn collect_briefing(
     topic: Option<&str>,
 ) -> Result<()> {
     let topics = sqlx::query_as::<_, Topic>(
-        "SELECT * FROM topics WHERE enabled AND owner_user_id IS NULL AND id NOT IN ('reads', 'llm', 'w', 'travel', 'movie', 'music', 'game', 'book')
+        "SELECT * FROM topics WHERE enabled AND owner_user_id IS NULL AND id NOT IN ('reads', 'llm', 'w', 'travel', 'movie', 'music', 'game', 'book', 'eink', 'ai-hardware', 'digital')
          AND (($2::text IS NULL AND visible) OR id = $2)
          AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.topic_id = topics.id
                          AND triggered_by = 'briefing' AND status = 'ok' AND window_end = $1)
@@ -635,7 +635,8 @@ async fn execute(
     let is_reads = topic.id == "reads" && topic.owner_user_id.is_none();
     let is_gallery = gallery::is_gallery(topic);
     let is_travel = travel::is_travel(topic);
-    let is_culture = crate::culture::is_culture(topic);
+    let catalog = crate::catalog::section(topic);
+    let is_catalog = catalog.is_some();
     let window = if is_reads {
         NewsWindow {
             start: window.end - ChronoDuration::days(30),
@@ -660,7 +661,7 @@ async fn execute(
         "SELECT title, url, fingerprint FROM items WHERE topic_id = $1 AND ($4 OR day >= $2) ORDER BY first_seen_at DESC LIMIT $3",
     )
     .bind(&topic.id)
-    .bind(if is_culture { today - ChronoDuration::days(i64::from(topic.lookback_hours + 23) / 24) } else { yesterday })
+    .bind(if is_catalog { today - ChronoDuration::days(i64::from(topic.lookback_hours + 23) / 24) } else { yesterday })
     .bind(KNOWN_LIMIT)
     .bind(is_reads)
     .fetch_all(&state.pool)
@@ -691,14 +692,14 @@ async fn execute(
             continue;
         };
         // Specialized feeds know an X post by its id, whichever address the model used.
-        if is_reads || is_gallery || is_travel || is_culture {
+        if is_reads || is_gallery || is_travel || is_catalog {
             item.fingerprint =
                 reads::fingerprint(&url::Url::parse(&item.url).expect("validated URL"));
         }
         if is_reads {
             item.image = None;
         }
-        if (topic.id == "p" && item.image.is_none()) || (is_culture && item.published_at.is_none())
+        if (topic.id == "p" && item.image.is_none()) || (is_catalog && item.published_at.is_none())
         {
             dropped += 1;
             continue;
@@ -793,13 +794,13 @@ async fn execute(
     for (item, image) in items.iter_mut().zip(images) {
         item.image = image;
     }
-    if is_culture {
+    if is_catalog {
         let remaining = state
             .config
             .fetch_timeout
             .saturating_sub(started.elapsed() + Duration::from_secs(30));
         let deadline = tokio::time::Instant::now() + remaining.min(Duration::from_secs(120));
-        crate::culture::prepare_images(state, topic, &mut items, &fetched.payload, deadline).await;
+        crate::catalog::prepare_images(state, topic, &mut items, &fetched.payload, deadline).await;
     }
     items.retain(|item| {
         let keep = (topic.id != "p" && !is_gallery && !is_travel) || item.image.is_some();
@@ -841,8 +842,8 @@ async fn execute(
         fetched.payload["guides"] =
             travel::guides(state, topic, &destinations, &mut fetched.usage, deadline).await;
     }
-    if is_culture {
-        // Publish headlines before the slower, source-based work guides.
+    if let Some(section) = catalog {
+        // Publish headlines before the slower, source-based guides.
         if new > 0 {
             state.digest.refresh(state, &topic.id, today).await?;
         }
@@ -852,14 +853,14 @@ async fn execute(
                 .fetch_timeout
                 .saturating_sub(started.elapsed() + Duration::from_secs(30));
         let enrichment = async {
-            crate::culture::attach(state, topic, run_id, &fetched.payload).await?;
-            crate::culture::guides(state, topic, &mut fetched.usage, deadline).await
+            crate::catalog::attach(state, topic, section, run_id, &fetched.payload).await?;
+            crate::catalog::guides(state, topic, section, &mut fetched.usage, deadline).await
         }
         .await;
         match enrichment {
             Ok(guides) => fetched.payload["guides"] = serde_json::json!(guides),
             Err(error) => {
-                tracing::warn!(%error, "culture guides deferred");
+                tracing::warn!(%error, "catalogue guides deferred");
                 fetched.payload["guide_error"] = serde_json::json!(error.to_string());
             }
         }
@@ -1233,6 +1234,7 @@ pub(crate) async fn cleanup_items(state: &AppState, keep_from: NaiveDate) -> Res
                 SELECT id
                 FROM items
                 WHERE day < $2 AND topic_id <> 'reads'
+                  AND NOT EXISTS (SELECT 1 FROM catalog_items c WHERE c.item_id = items.id AND c.role <> 'news')
                 ORDER BY day, id
                 LIMIT $1
                 FOR UPDATE SKIP LOCKED

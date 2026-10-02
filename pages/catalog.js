@@ -12,7 +12,7 @@
   document.querySelectorAll(".shell img").forEach((img) => {
     if (img.complete && !img.naturalWidth) (img.closest(".image-news-media") || img).remove();
   });
-  const more = document.querySelector(".culture-more");
+  const more = document.querySelector(".catalog-more");
   if (!more) return;
   let loading = false;
   async function load(event) {
@@ -28,7 +28,7 @@
       const response = await fetch(url, { signal: AbortSignal.timeout(20000) });
       if (!response.ok) throw new Error(String(response.status));
       const page = await response.json();
-      document.querySelector(".culture-grid").insertAdjacentHTML("beforeend", page.html);
+      document.querySelector(".catalog-grid").insertAdjacentHTML("beforeend", page.html);
       if (!page.next) { more.remove(); observer?.disconnect(); return; }
       more.dataset.before = page.next;
       const href = new URL(more.href);

@@ -13,7 +13,7 @@ WITH deduplicated AS (
     FROM items i JOIN topics t ON t.id = i.topic_id
     LEFT JOIN runs r ON r.id = i.first_run_id
     -- Photograph and Culture collections stay outside the AI briefing.
-    WHERE t.enabled AND t.visible AND t.owner_user_id IS NULL AND t.id NOT IN ('w', 'travel', 'movie', 'music', 'game', 'book') AND NOT i.hidden
+    WHERE t.enabled AND t.visible AND t.owner_user_id IS NULL AND t.id NOT IN ('w', 'travel', 'movie', 'music', 'game', 'book', 'eink', 'ai-hardware', 'digital') AND NOT i.hidden
       AND COALESCE(i.published_at, i.first_seen_at) >= $1
       AND COALESCE(i.published_at, i.first_seen_at) < $3
     ORDER BY i.fingerprint, t.id = 'p', i.published_at IS NULL,

@@ -243,7 +243,8 @@ pub(crate) fn request_body(
 ) -> Value {
     let mut web_search = json!({ "type": "web_search" });
     if topic.owner_user_id.is_none()
-        && (matches!(topic.id.as_str(), IMAGE_TOPIC_ID | "p") || crate::culture::is_culture(topic))
+        && (matches!(topic.id.as_str(), IMAGE_TOPIC_ID | "p")
+            || crate::catalog::section(topic).is_some())
     {
         web_search["enable_image_search"] = json!(true);
         web_search["enable_image_understanding"] = json!(true);
@@ -261,7 +262,7 @@ pub(crate) fn request_body(
     let tools = if crate::gallery::is_gallery(topic) || travel {
         // 𝑾 and 𝑻𝒓𝒂𝒗𝒆𝒍 read X only, and the model looks at the photographs while it chooses.
         json!([{ "type": "x_search", "enable_image_understanding": true }])
-    } else if crate::culture::is_culture(topic) {
+    } else if crate::catalog::section(topic).is_some() {
         json!([web_search, { "type": "x_search", "enable_image_understanding": true }])
     } else {
         json!([web_search, { "type": "x_search" }])
@@ -290,14 +291,18 @@ pub(crate) fn request_body(
         ),
         "text": { "format": {
             "type": "json_schema", "name": "news_digest", "strict": true,
-            "schema": if travel { crate::travel::schema() } else if crate::culture::is_culture(topic) { crate::culture::schema(schema()) } else { schema() },
+            "schema": match crate::catalog::section(topic) {
+                _ if travel => crate::travel::schema(),
+                Some(section) => crate::catalog::schema(schema(), topic, section),
+                None => schema(),
+            },
         } },
     })
 }
 
 fn instructions(topic: &Topic) -> String {
-    if crate::culture::is_culture(topic) {
-        return crate::culture::instructions(topic);
+    if let Some(section) = crate::catalog::section(topic) {
+        return crate::catalog::instructions(topic, section);
     }
     if crate::gallery::is_gallery(topic) {
         return crate::gallery::instructions(topic);

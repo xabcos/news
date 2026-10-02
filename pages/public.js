@@ -2,7 +2,7 @@
   "use strict";
 
   const preview = "/api/admin/preview";
-  const DWELL = 16000; // milliseconds each photograph stays while a viewer plays
+  const DWELL = 12000; // milliseconds each photograph stays while a viewer plays
   const role = () => document.cookie.split(";").map((part) => part.trim())
     .find((part) => part.startsWith("news_role="))?.slice("news_role=".length) || "";
   const readPath = (path) => role() === "admin" && !path.startsWith(preview) ? `${preview}${path}` : path;
@@ -90,7 +90,7 @@
 
     init({ canSwipe = () => true } = {}) {
       // Cached public HTML may arrive before the server sees the administrator's session.
-      if (role() === "admin" && /^\/(reads|culture|travel|llm)(\/|$)/.test(location.pathname)) {
+      if (role() === "admin" && /^\/(reads|culture|gadgets|travel|llm)(\/|$)/.test(location.pathname)) {
         location.replace(readPath(location.pathname + location.search + location.hash));
         return;
       }
@@ -149,11 +149,11 @@
         const dx = event.clientX - x;
         const dy = event.clientY - y;
         if (Math.abs(dx) < 48 || Math.abs(dx) <= Math.abs(dy) * 1.2 || !window.getSelection().isCollapsed) return;
-        // Culture's collections take the swipe first; past either end it moves on to the
-        // neighbouring topic, and coming back from the right enters the last collection.
+        // A catalogue section's collections take the swipe first; past either end it moves on to
+        // the neighbouring topic, and coming back from the right enters the last collection.
         const offset = dx < 0 ? 1 : -1;
         const current = (tabs) => tabs.findIndex((tab) => tab.getAttribute("aria-current") === "true");
-        const collections = [...document.querySelectorAll(".culture-tabs a")];
+        const collections = [...document.querySelectorAll(".catalog-tabs a")];
         let target = collections[current(collections) + offset];
         if (!target) {
           const tabs = [...topbar.querySelectorAll(".tab")];

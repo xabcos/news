@@ -59,7 +59,7 @@ const TEXT = {
     kind: "类型", horizon: "时间", beneficiaries: "受益者", entry: "切入方式", watch: "观察信号", risk: "主要风险",
     confidence: (n, grade) => `证据强度 ${n}/5${grade ? ` · 证据 ${grade}` : ""}`, sources: "来源",
     items: (n) => `${n} 条`, photos: (n) => `${n} 张`,
-    close: "关闭", previous: "上一张", next: "下一张", play: "播放", pause: "暂停",
+    close: "关闭", previous: "上一张", next: "下一张", play: "播放", pause: "暂停", review: "评测", shared: "分享",
   },
   en: {
     locale: "en", lang: "中文", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", today: "Today", top: "Top",
@@ -72,7 +72,7 @@ const TEXT = {
     kind: "Type", horizon: "Horizon", beneficiaries: "Who may benefit", entry: "Entry path", watch: "Signals to watch", risk: "Main risk",
     confidence: (n, grade) => `Evidence ${n}/5${grade ? ` · Grade ${grade}` : ""}`, sources: "Sources",
     items: (n) => `${n} ${n === 1 ? "item" : "items"}`, photos: (n) => `${n} ${n === 1 ? "photo" : "photos"}`,
-    close: "Close", previous: "Previous", next: "Next", play: "Play", pause: "Pause",
+    close: "Close", previous: "Previous", next: "Next", play: "Play", pause: "Pause", review: "Review", shared: "Shared",
   },
 };
 
@@ -112,10 +112,15 @@ let travelMap = null;
 
 document.addEventListener("DOMContentLoaded", init);
 
+// Catalogue sections share one tab over their topics, which have server-rendered pages.
+const CATALOG = {
+  culture: { label: "𝑪𝒖𝒍𝒕𝒖𝒓𝒆", topics: ["movie", "music", "game", "book"] },
+  gadgets: { label: "𝑮𝒂𝒅𝒈𝒆𝒕𝒔", topics: ["eink", "ai-hardware", "digital"] },
+};
+const sectionOf = (id) => Object.keys(CATALOG).find((section) => CATALOG[section].topics.includes(id));
 // Topics with their own server-rendered page instead of a news feed.
-const CULTURE_TOPICS = ["movie", "music", "game", "book"];
-const PAGE_TOPICS = ["reads", "llm", "culture", ...CULTURE_TOPICS];
-const topicPage = (id) => PublicPage.readPath(`/${CULTURE_TOPICS.includes(id) ? `culture/${id}` : id}${state.lang === "en" ? "?lang=en" : ""}`);
+const PAGE_TOPICS = ["reads", "llm", ...Object.keys(CATALOG), ...Object.values(CATALOG).flatMap((section) => section.topics)];
+const topicPage = (id) => PublicPage.readPath(`/${sectionOf(id) ? `${sectionOf(id)}/${id}` : id}${state.lang === "en" ? "?lang=en" : ""}`);
 
 async function init() {
   if (PAGE_TOPICS.includes(state.topic)) {
@@ -649,12 +654,13 @@ function renderTabs() {
   document.title = state.topic === INSIGHT_ID
     ? `𝑵𝒆𝒘𝒔 · ${state.lang === "en" ? "XAI Daily" : "XAI 日报"}`
     : state.topic === EQUITY_ID ? `𝑵𝒆𝒘𝒔 · ${state.lang === "en" ? "Equity notes" : "股市观察"}` : "𝑵𝒆𝒘𝒔";
-  let cultureShown = false;
+  const shown = new Set();
   const catalogue = state.topics.flatMap((topic) => {
-    if (!CULTURE_TOPICS.includes(topic.id)) return [{ id: topic.id, label: name(topic) }];
-    if (cultureShown) return [];
-    cultureShown = true;
-    return [{ id: "culture", label: "𝑪𝒖𝒍𝒕𝒖𝒓𝒆" }];
+    const section = sectionOf(topic.id);
+    if (!section) return [{ id: topic.id, label: name(topic) }];
+    if (shown.has(section)) return [];
+    shown.add(section);
+    return [{ id: section, label: CATALOG[section].label }];
   });
   const tabs = [
     { id: "", label: t().all },
@@ -669,8 +675,8 @@ function renderTabs() {
       tab.className = "tab";
       tab.href = topicPage(id);
       tab.textContent = label;
-      // Swiping back into Culture enters its last collection (public.js).
-      if (id === "culture") tab.dataset.last = topicPage(CULTURE_TOPICS.findLast((topic) => state.topics.some((entry) => entry.id === topic)));
+      // Swiping back into a catalogue section enters its last collection (public.js).
+      if (CATALOG[id]) tab.dataset.last = topicPage(CATALOG[id].topics.findLast((topic) => state.topics.some((entry) => entry.id === topic)));
       return tab;
     }
     const tab = button(label, () => navigate({ topic: id, day: "" }), "tab");
@@ -1041,9 +1047,9 @@ function renderGroups(digest) {
   return visible.map((group) => {
     const section = document.createElement("section");
     section.className = "group";
-    section.classList.toggle("image-news-group", group.id === "p" || CULTURE_TOPICS.includes(group.id));
+    section.classList.toggle("image-news-group", group.id === "p" || Boolean(sectionOf(group.id)));
     section.classList.toggle("photo-group", group.id === PHOTO_TOPIC);
-    section.classList.toggle("culture-book-group", group.id === "book");
+    section.classList.toggle("catalog-book-group", group.id === "book");
     section.classList.toggle("postcard-group", group.id === TRAVEL_TOPIC);
     if (!single) {
       const heading = document.createElement("div");
@@ -1071,19 +1077,21 @@ function renderGroups(digest) {
 function renderGroupItem(group, item) {
   if (group.id === PHOTO_TOPIC) return photoCard(item);
   if (group.id === TRAVEL_TOPIC) return TravelUI.postcard(item, { when: relativeTime(item.first_seen_at) });
-  if (CULTURE_TOPICS.includes(group.id)) {
+  if (sectionOf(group.id)) {
     const article = imageNewsCard(item);
-    article.classList.add("culture-card", `culture-${group.id}`);
+    article.classList.add("catalog-card", `catalog-${group.id}`);
+    const role = { review: t().review, share: t().shared }[item.catalog?.role];
+    if (role) article.querySelector(".item-meta").prepend(span(role, "badge catalog-role"));
     const body = document.createElement("div");
-    body.className = "culture-card-body";
+    body.className = "catalog-card-body";
     for (const child of [...article.children]) {
       if (!child.classList.contains("image-news-media")) body.append(child);
     }
-    if (item.culture) {
+    if (item.catalog?.path) {
       const link = document.createElement("a");
-      link.className = "culture-work-link";
-      link.href = PublicPage.readPath(`${item.culture.path}${state.lang === "en" ? "?lang=en" : ""}`);
-      link.textContent = `${state.lang === "en" ? "Explore " : "了解 "}${pick(item.culture, "name")} →`;
+      link.className = "catalog-work-link";
+      link.href = PublicPage.readPath(`${item.catalog.path}${state.lang === "en" ? "?lang=en" : ""}`);
+      link.textContent = `${state.lang === "en" ? "Explore " : "了解 "}${pick(item.catalog, "name")} →`;
       body.append(link);
     }
     article.append(body);
