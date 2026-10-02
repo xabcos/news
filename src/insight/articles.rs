@@ -287,10 +287,5 @@ fn markdown(text: &str) -> String {
 }
 
 fn html(text: &str) -> String {
-    compact(text)
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
+    crate::site::escape(&compact(text))
 }

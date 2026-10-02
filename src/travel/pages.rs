@@ -29,8 +29,8 @@ use uuid::Uuid;
 const CHROME: Chrome<'static> = Chrome {
     current: TOPIC_ID,
     section: "travel",
-    stylesheet: "/travel.css?v=2",
-    script: "/travel.js?v=3",
+    stylesheet: "/travel.css?v=3",
+    script: "/travel.js?v=4",
     feed: ("𝑻𝒓𝒂𝒗𝒆𝒍", "/feed.xml?topic=travel"),
 };
 /// Destinations on the map: those with moments from this many recent days.

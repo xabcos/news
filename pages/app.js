@@ -59,7 +59,7 @@ const TEXT = {
     kind: "类型", horizon: "时间", beneficiaries: "受益者", entry: "切入方式", watch: "观察信号", risk: "主要风险",
     confidence: (n, grade) => `证据强度 ${n}/5${grade ? ` · 证据 ${grade}` : ""}`, sources: "来源",
     items: (n) => `${n} 条`, photos: (n) => `${n} 张`,
-    close: "关闭", previous: "上一张", next: "下一张",
+    close: "关闭", previous: "上一张", next: "下一张", play: "播放", pause: "暂停",
   },
   en: {
     locale: "en", lang: "中文", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", today: "Today", top: "Top",
@@ -72,7 +72,7 @@ const TEXT = {
     kind: "Type", horizon: "Horizon", beneficiaries: "Who may benefit", entry: "Entry path", watch: "Signals to watch", risk: "Main risk",
     confidence: (n, grade) => `Evidence ${n}/5${grade ? ` · Grade ${grade}` : ""}`, sources: "Sources",
     items: (n) => `${n} ${n === 1 ? "item" : "items"}`, photos: (n) => `${n} ${n === 1 ? "photo" : "photos"}`,
-    close: "Close", previous: "Previous", next: "Next",
+    close: "Close", previous: "Previous", next: "Next", play: "Play", pause: "Pause",
   },
 };
 
@@ -141,8 +141,10 @@ async function init() {
     renderTabs();
     load();
   });
+  // A refresh can redraw today's cards, so it waits while a photograph viewer walks them.
   setInterval(() => {
-    if (document.visibilityState === "visible" && !state.day && !state.at) load(true);
+    if (document.visibilityState === "visible" && !state.day && !state.at
+      && !document.body.classList.contains("dialog-open")) load(true);
   }, REFRESH_MS);
   PublicPage.init({ canSwipe: (target) => Boolean(target.closest("#digest"))
     || (!el.digest.childElementCount && !target.closest("a")) });
@@ -279,15 +281,10 @@ function digestGroupsChanged(next, previous) {
   if (groups.length !== oldGroups.length) return true;
   return groups.some((group, index) => {
     const old = oldGroups[index];
-    if (!old
-      || group.id !== old.id
+    return group.id !== old.id
       || group.revision !== old.revision
       || group.total !== old.total
-      || group.next !== old.next) return true;
-    if (group.revision != null) return false;
-    const items = group.items || [];
-    const oldItems = old.items || [];
-    return items.length !== oldItems.length || items.some((item, itemIndex) => item.id !== oldItems[itemIndex]?.id);
+      || group.next !== old.next;
   });
 }
 
@@ -672,6 +669,8 @@ function renderTabs() {
       tab.className = "tab";
       tab.href = topicPage(id);
       tab.textContent = label;
+      // Swiping back into Culture enters its last collection (public.js).
+      if (id === "culture") tab.dataset.last = topicPage(CULTURE_TOPICS.findLast((topic) => state.topics.some((entry) => entry.id === topic)));
       return tab;
     }
     const tab = button(label, () => navigate({ topic: id, day: "" }), "tab");
@@ -781,16 +780,8 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
   section.append(...renderInsightStories(t().gossip, insight.gossip, sources, { gossip: true }));
   const trend = pick(insight, "changes");
   if (trend.trim()) {
-    const changes = insightParagraph(
-      t().changes,
-      trend,
-      "insight-change",
-      relativeTime(insight.generated_at),
-    );
-    const changeSources = sourceList(
-      t().sources,
-      insight.changes_source_indexes.map((index) => sources.get(index)).filter(Boolean),
-    );
+    const changes = insightChange(trend, relativeTime(insight.generated_at));
+    const changeSources = sourceList(insight.changes_source_indexes.map((index) => sources.get(index)).filter(Boolean));
     if (changeSources) changes.append(changeSources);
     section.append(changes);
   }
@@ -846,7 +837,6 @@ function insightSection(label, dateText = "") {
 function renderInsightStories(label, stories, sources, { gossip = false, dateText = "" } = {}) {
   if (!stories.length) return [];
   const section = insightSection(label, dateText);
-  section.classList.add("insight-hotspots");
   const statuses = state.lang === "en"
     ? { confirmed: "Confirmed", reported: "Reported", unconfirmed: "Unconfirmed", response: "Response", feedback: "User feedback", denied: "Denied" }
     : { confirmed: "已确认", reported: "爆料", unconfirmed: "未证实", response: "当事方回应", feedback: "用户反馈", denied: "已否认" };
@@ -863,7 +853,7 @@ function renderInsightStories(label, stories, sources, { gossip = false, dateTex
     summary.className = "item-summary";
     summary.textContent = pick(story, "summary");
     article.append(title, summary);
-    const links = sourceList(t().sources, (story.source_indexes || []).map((index) => sources.get(index)).filter(Boolean));
+    const links = sourceList((story.source_indexes || []).map((index) => sources.get(index)).filter(Boolean));
     if (links) article.append(links);
     return article;
   }));
@@ -902,15 +892,15 @@ function renderInsightGallery(images) {
   return gallery;
 }
 
-function insightParagraph(label, text, className = "insight-paragraph", metaText = "") {
+function insightChange(text, meta) {
   const block = document.createElement("div");
-  block.className = className;
+  block.className = "insight-change";
   const heading = document.createElement("div");
-  heading.className = `${className}-heading`;
+  heading.className = "insight-change-heading";
   const title = document.createElement("h3");
-  title.textContent = label;
+  title.textContent = t().changes;
   heading.append(title);
-  if (metaText) heading.append(span(metaText, `${className}-meta muted small`));
+  if (meta) heading.append(span(meta, "insight-change-meta muted small"));
   const body = document.createElement("p");
   body.append(insightText(text));
   block.append(heading, body);
@@ -941,7 +931,7 @@ function insightCard(item, sources, opportunity = false) {
   const links = (item.source_indexes || [])
     .map((index) => sources.get(index))
     .filter(Boolean);
-  const sourceLinks = sourceList(t().sources, links);
+  const sourceLinks = sourceList(links);
   if (sourceLinks) article.append(sourceLinks);
   return article;
 }
@@ -984,7 +974,7 @@ function insightText(text) {
   return fragment;
 }
 
-function sourceList(label, sources) {
+function sourceList(sources) {
   const seen = new Set();
   const repeats = new Map();
   const anchors = sources.map((source) => {
@@ -1001,7 +991,7 @@ function sourceList(label, sources) {
   if (!anchors.length) return null;
   const list = document.createElement("div");
   list.className = "insight-sources";
-  list.append(span(label, "muted small"), ...anchors);
+  list.append(span(t().sources, "muted small"), ...anchors);
   return list;
 }
 
@@ -1028,7 +1018,6 @@ function renderDayBlock(digest, showDayHeading = true) {
   const block = document.createElement("section");
   block.className = "day-block";
   block.classList.toggle("day-heading-hidden", !showDayHeading);
-  block.dataset.day = digest.day || "";
   if (showDayHeading && digest.day) {
     const divider = document.createElement("div");
     divider.className = "day-divider";
@@ -1123,8 +1112,8 @@ function photoCard(item) {
   image.loading = "lazy";
   image.decoding = "async";
   image.referrerPolicy = "no-referrer";
-  // A photograph the file server no longer keeps leaves with its card.
-  image.addEventListener("error", () => figure.remove(), { once: true });
+  // A photograph the file server no longer keeps hides its card; the lightbox steps over it.
+  image.addEventListener("error", () => { figure.hidden = true; }, { once: true });
   link.append(image);
   // A plain click opens the lightbox; modified clicks still open the post.
   link.addEventListener("click", (event) => {
@@ -1180,6 +1169,17 @@ function createLightbox() {
     if (event.key === "ArrowLeft") stepPhoto(-1);
     else if (event.key === "ArrowRight") stepPhoto(1);
   });
+  // Photographs loaded behind the open lightbox can bring its next arrow back.
+  new MutationObserver(() => { if (dialog.open) next.disabled = !neighborPhoto(1); })
+    .observe(el.digest, { childList: true, subtree: true });
+  const play = PublicPage.autoplay({
+    dialog,
+    image,
+    className: "lightbox-button",
+    next: () => stepPhoto(1),
+    ahead: () => photoItems.get(neighborPhoto(1))?.image?.url,
+    names: () => ({ play: t().play, pause: t().pause }),
+  });
   // A horizontal swipe turns the page on touch screens.
   let start = null;
   dialog.addEventListener("pointerdown", (event) => {
@@ -1194,35 +1194,45 @@ function createLightbox() {
     if (Math.abs(dx) >= 48 && Math.abs(dx) > Math.abs(dy) * 1.2) stepPhoto(dx < 0 ? 1 : -1);
   });
   document.body.append(dialog);
-  return { dialog, image, caption, close, previous, next, current: null };
+  return { dialog, image, caption, close, previous, next, play, current: null };
 }
 
-// The lightbox remembers the photograph by id: a background refresh draws new cards.
-function stepPhoto(offset) {
+// The photograph `offset` places from the open one. The lightbox remembers it by id: a
+// background refresh draws new cards.
+function neighborPhoto(offset) {
   const photos = [...el.digest.querySelectorAll(".photo")];
-  const index = photos.findIndex((figure) => photoItems.get(figure)?.id === lightbox.current);
-  const target = index < 0 ? null : photos[index + offset];
+  let index = photos.findIndex((figure) => photoItems.get(figure)?.id === lightbox.current);
+  if (index < 0) return null;
+  do index += offset; while (photos[index]?.hidden);
+  return photos[index] || null;
+}
+
+function stepPhoto(offset) {
+  const target = neighborPhoto(offset);
   if (target) showPhoto(target);
+  return target;
 }
 
 function showPhoto(figure) {
   const item = photoItems.get(figure);
   if (!item) return;
-  const { image, caption, close, previous, next } = lightbox;
+  const { image, caption, close, previous, next, play } = lightbox;
   lightbox.current = item.id;
   image.src = item.image?.url || "";
   image.alt = figure.querySelector("img")?.alt || "";
+  play.shown();
   caption.replaceChildren(span(pick(item, "title"), "lightbox-title"));
   const source = sourceLink(item.url, `${photoCredit(item)} ↗`);
   if (source) caption.append(source);
-  const photos = [...el.digest.querySelectorAll(".photo")];
-  const index = photos.indexOf(figure);
-  previous.disabled = index <= 0;
-  next.disabled = index < 0 || index >= photos.length - 1;
+  previous.disabled = !neighborPhoto(-1);
+  next.disabled = !neighborPhoto(1);
   for (const [control, label] of [[close, t().close], [previous, t().previous], [next, t().next]]) {
     control.setAttribute("aria-label", label);
     control.title = label;
   }
+  // The page follows behind: closing returns to this photograph, and its endless scrolling
+  // keeps loading the ones ahead.
+  figure.scrollIntoView({ block: "nearest", behavior: "instant" });
 }
 
 function imageNewsCard(item) {

@@ -35,6 +35,9 @@
       href.searchParams.set("before", page.next);
       more.href = href.href;
       more.textContent = labels.more;
+      // Re-observing reports the button again while it is still in view.
+      observer?.unobserve(more);
+      observer?.observe(more);
     } catch {
       more.textContent = labels.retry;
       observer?.unobserve(more);

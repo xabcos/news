@@ -1,4 +1,4 @@
-use crate::{error::Result, state::AppState};
+use crate::{error::Result, site::escape, state::AppState};
 use chrono::Utc;
 use serde_json::json;
 
@@ -52,8 +52,8 @@ fn login_ttl_label(seconds: u64) -> String {
 }
 
 fn login_email_html(to: &str, login_url: &str, ttl: &str) -> String {
-    let email = escape_html(to);
-    let url = escape_html(login_url);
+    let email = escape(to);
+    let url = escape(login_url);
     format!(
         r#"<!doctype html><html lang="zh-CN"><body style="margin:0;padding:24px;background:#f4f7f5;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.7;color:#13231f">
 <div style="max-width:560px;margin:0 auto;padding:28px;border:1px solid #d7e3df;border-radius:16px;background:#fff">
@@ -70,22 +70,13 @@ fn login_email_html(to: &str, login_url: &str, ttl: &str) -> String {
     )
 }
 
-fn escape_html(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{escape_html, login_email_html, login_ttl_label};
+    use super::{escape, login_email_html, login_ttl_label};
 
     #[test]
     fn escapes_markup() {
-        assert_eq!(escape_html("<a>&\""), "&lt;a&gt;&amp;&quot;");
+        assert_eq!(escape("<a>&\""), "&lt;a&gt;&amp;&quot;");
     }
 
     #[test]

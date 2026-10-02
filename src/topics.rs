@@ -338,20 +338,9 @@ pub(crate) const DAILY_INTERVAL_MINUTES: i32 = 1440;
 /// `window_end` is earlier than `window_start`, the window crosses midnight and
 /// weekdays are attached to the day on which the window starts. A daily topic that last
 /// succeeded waits for the next start time instead, so neither the time a run happened to
-/// start nor a manual run moves its clock time.
-pub fn next_run(
-    topic: &Topic,
-    tz: Tz,
-    now: DateTime<Utc>,
-    last: Option<DateTime<Utc>>,
-    today_runs: i64,
-) -> DateTime<Utc> {
-    next_run_with_min_interval(topic, tz, now, last, today_runs, 15)
-}
-
-/// Variant used by personal topics after the plan floor is applied.  Keeping
-/// the floor here prevents a failure backoff from scheduling a free topic at
-/// 15 minutes and then being rejected by the same admission policy.
+/// start nor a manual run moves its clock time. Neither the interval nor a failure backoff
+/// goes below `min_interval_minutes`, the plan's floor, so a backoff never schedules a free
+/// topic at 15 minutes only for the same admission policy to reject it.
 pub fn next_run_with_min_interval(
     topic: &Topic,
     tz: Tz,
@@ -1028,9 +1017,20 @@ fn map_db_error(error: sqlx::Error) -> AppError {
 
 #[cfg(test)]
 mod tests {
-    use super::{Topic, effective_run_delay_minutes, next_run};
+    use super::{Topic, effective_run_delay_minutes, next_run_with_min_interval};
     use chrono::{DateTime, TimeZone, Utc};
-    use chrono_tz::Asia::Shanghai;
+    use chrono_tz::{Asia::Shanghai, Tz};
+
+    /// The scheduler with the 15-minute floor.
+    fn next_run(
+        topic: &Topic,
+        tz: Tz,
+        now: DateTime<Utc>,
+        last: Option<DateTime<Utc>>,
+        today_runs: i64,
+    ) -> DateTime<Utc> {
+        next_run_with_min_interval(topic, tz, now, last, today_runs, 15)
+    }
 
     fn topic() -> Topic {
         Topic {

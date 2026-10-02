@@ -1023,6 +1023,10 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
     assert_eq!(travel["spot"], "野宫神社");
     assert_eq!(travel["place"]["slug"], "kyoto");
     assert_eq!(travel["place"]["country"], "日本");
+    assert_eq!(
+        (&travel["place"]["latitude"], &travel["place"]["longitude"]),
+        (&json!(35.01), &json!(135.77))
+    );
     assert_eq!(travel["place"]["tagline"], "千年古都，庭园与老街");
     assert_eq!(travel["place"]["fact"], "这里的工匠代代相传。");
     assert_eq!(

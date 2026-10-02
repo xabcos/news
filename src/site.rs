@@ -84,21 +84,25 @@ pub(crate) async fn layout(
     if !topics.iter().any(|(id, _, _)| id == "overseas-ai") {
         tabs.push_str(&equity_tab);
     }
-    let mut culture_shown = false;
+    // Culture's collections share one tab; swiping back into it enters the last (public.js).
+    let mut culture = crate::culture::IDS
+        .into_iter()
+        .rev()
+        .find(|collection| topics.iter().any(|(id, ..)| id == collection));
     for (id, name, name_en) in topics {
         if crate::culture::IDS.contains(&id.as_str()) {
-            if !culture_shown {
+            if let Some(last) = culture.take() {
                 let _ = write!(
                     tabs,
-                    "<a class=tab href=\"{}\"{}>𝑪𝒖𝒍𝒕𝒖𝒓𝒆</a>",
+                    "<a class=tab href=\"{}\" data-last=\"{}\"{}>𝑪𝒖𝒍𝒕𝒖𝒓𝒆</a>",
                     escape(&reader.localized("/culture", en)),
+                    escape(&reader.localized(&format!("/culture/{last}"), en)),
                     if crate::culture::IDS.contains(&chrome.current) {
                         " aria-current=\"true\""
                     } else {
                         ""
                     }
                 );
-                culture_shown = true;
             }
             continue;
         }
@@ -145,11 +149,11 @@ pub(crate) async fn layout(
 <title>{title}</title><meta name="description" content="{description}"><meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f6f4"><meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1115">
 <link rel="canonical" href="{canonical}"><link rel="alternate" hreflang="zh-CN" href="{zh}"><link rel="alternate" hreflang="en" href="{english}"><link rel="alternate" hreflang="x-default" href="{zh}">
 <meta property="og:type" content="{og_type}"><meta property="og:title" content="{title}"><meta property="og:description" content="{description}"><meta property="og:url" content="{canonical}"><meta property="og:site_name" content="News"><meta name="twitter:card" content="summary">
-<link rel="icon" type="image/svg+xml" href="/icon.svg"><link rel="alternate" type="application/atom+xml" title="{feed_title}" href="{feed_href}"><link rel="stylesheet" href="/styles.css?v=travel-v2"><link rel="stylesheet" href="{stylesheet}">{schema}</head>
+<link rel="icon" type="image/svg+xml" href="/icon.svg"><link rel="alternate" type="application/atom+xml" title="{feed_title}" href="{feed_href}"><link rel="stylesheet" href="/styles.css?v=wander"><link rel="stylesheet" href="{stylesheet}">{schema}</head>
 <body class="public {section}"><header class="topbar"><a class="brand" href="{home}" aria-label="News"><img class="brand-logo" src="/icon.svg" alt=""><span>𝑵𝒆𝒘𝒔</span></a><nav class="tabs" aria-label="{topics_label}">{tabs}</nav><div class="tools"><a class="space-link button button-quiet button-small" href="/me/">{workspace}</a><a class="space-link button button-quiet button-small" href="{other_lang}" hreflang="{other_code}">{language_label}</a></div></header>
 <main class="shell">{content}</main>
 <button id="backToTop" class="button back-to-top" type="button" aria-label="{back_to_top}" title="{back_to_top}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 12 6-6 6 6M12 6v12"/></svg></button>
-<script src="/public.js?v=4" defer></script><script src="{script}" defer></script><script src="/stats.js?v=2" data-track-url="{track_url}" defer></script></body></html>"##,
+<script src="/public.js?v=5" defer></script><script src="{script}" defer></script><script src="/stats.js?v=2" data-track-url="{track_url}" defer></script></body></html>"##,
         lang = choose(en, "zh-CN", "en"),
         title = escape(title),
         description = escape(description),

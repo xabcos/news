@@ -2,6 +2,7 @@
   "use strict";
 
   const preview = "/api/admin/preview";
+  const DWELL = 16000; // milliseconds each photograph stays while a viewer plays
   const role = () => document.cookie.split(";").map((part) => part.trim())
     .find((part) => part.startsWith("news_role="))?.slice("news_role=".length) || "";
   const readPath = (path) => role() === "admin" && !path.startsWith(preview) ? `${preview}${path}` : path;
@@ -25,6 +26,66 @@
       } catch {
         return null;
       }
+    },
+
+    // Lets a photograph viewer play by itself. A photograph's time runs once it is on screen
+    // in a visible page, drawn as a line along the top, and the screen stays awake meanwhile;
+    // the one `ahead()` names loads in the background. `next()` shows the following
+    // photograph and returns nothing at the end, which stops the play. The button, Space and
+    // a tap on the photograph switch it, and closing stops it. The viewer calls `shown()`
+    // whenever it changes the photograph.
+    autoplay({ dialog, image, className, next, ahead, names }) {
+      const progress = document.createElement("div");
+      progress.className = "play-progress";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `${className} play-button`;
+      dialog.prepend(progress, button);
+      let playing = false;
+      let walk = null;
+      let lock = null;
+      const advance = () => next() || toggle(false);
+      const shown = () => {
+        const name = names()[playing ? "pause" : "play"];
+        button.setAttribute("aria-label", name);
+        button.title = name;
+        walk?.cancel();
+        if (!playing || !image.complete || document.hidden) return;
+        if (!image.naturalWidth) return advance(); // a photograph that failed is passed by
+        walk = progress.animate({ transform: ["scaleX(0)", "scaleX(1)"] }, DWELL);
+        walk.onfinish = advance;
+      };
+      function toggle(on = !playing) {
+        playing = on;
+        dialog.classList.toggle("is-playing", on);
+        // Each start takes a fresh wake lock; one still on its way is let go when it arrives.
+        lock?.then((held) => held?.release());
+        lock = on ? navigator.wakeLock?.request("screen").catch(() => null) : null;
+        shown();
+      }
+      button.addEventListener("click", () => toggle());
+      image.addEventListener("click", () => toggle());
+      image.addEventListener("load", () => {
+        image.animate({ opacity: [0, 1] }, 400);
+        shown();
+        const url = ahead();
+        if (!url) return;
+        const following = new Image();
+        following.referrerPolicy = "no-referrer";
+        following.src = url;
+        following.decode().catch(() => {});
+      });
+      image.addEventListener("error", shown);
+      dialog.addEventListener("keydown", (event) => {
+        if (event.key !== " " || event.target !== dialog) return;
+        event.preventDefault();
+        toggle();
+      });
+      dialog.addEventListener("close", () => toggle(false));
+      // The browser takes the wake lock back while the page is hidden; coming back takes a
+      // new one and gives the photograph its time again.
+      document.addEventListener("visibilitychange", () => playing && toggle(true));
+      return { toggle, shown };
     },
 
     init({ canSwipe = () => true } = {}) {
@@ -88,14 +149,22 @@
         const dx = event.clientX - x;
         const dy = event.clientY - y;
         if (Math.abs(dx) < 48 || Math.abs(dx) <= Math.abs(dy) * 1.2 || !window.getSelection().isCollapsed) return;
-        const nav = document.querySelector(".culture-tabs") || topbar.querySelector(".tabs");
-        const tabs = [...nav.querySelectorAll("a, button.tab")];
-        const current = tabs.findIndex((tab) => tab.getAttribute("aria-current") === "true");
-        if (current < 0 || tabs.length < 2) return;
-        const next = (current + (dx < 0 ? 1 : -1) + tabs.length) % tabs.length;
+        // Culture's collections take the swipe first; past either end it moves on to the
+        // neighbouring topic, and coming back from the right enters the last collection.
+        const offset = dx < 0 ? 1 : -1;
+        const current = (tabs) => tabs.findIndex((tab) => tab.getAttribute("aria-current") === "true");
+        const collections = [...document.querySelectorAll(".culture-tabs a")];
+        let target = collections[current(collections) + offset];
+        if (!target) {
+          const tabs = [...topbar.querySelectorAll(".tab")];
+          const at = current(tabs);
+          if (at < 0 || tabs.length < 2) return;
+          target = tabs[(at + offset + tabs.length) % tabs.length];
+        }
         topbar.classList.remove("is-hidden");
         document.scrollingElement.scrollTop = 0;
-        tabs[next].click();
+        if (offset < 0 && target.dataset.last) location.assign(target.dataset.last);
+        else target.click();
         suppressClickUntil = performance.now() + 500;
       }, { passive: true });
       window.addEventListener("pointercancel", () => { gesture = null; }, { passive: true });

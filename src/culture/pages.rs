@@ -142,8 +142,8 @@ async fn layout(
         &Chrome {
             current: topic,
             section: &format!("culture culture-{topic}"),
-            stylesheet: "/culture.css?v=2",
-            script: "/culture.js?v=1",
+            stylesheet: "/culture.css?v=3",
+            script: "/culture.js?v=2",
             feed: ("Culture", &format!("/feed.xml?topic={topic}")),
         },
     )

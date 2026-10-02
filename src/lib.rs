@@ -1,25 +1,25 @@
 #![forbid(unsafe_code)]
 
 mod ai;
-pub mod auth;
+mod auth;
 pub mod config;
 mod culture;
-pub mod digest;
-pub mod email;
-pub mod equity;
+mod digest;
+mod email;
+mod equity;
 pub mod error;
-pub mod fetch;
+mod fetch;
 mod gallery;
-pub mod insight;
+mod insight;
 mod llm;
-pub mod media;
-pub mod payment;
+mod media;
+mod payment;
 mod reading;
-pub mod reads;
+mod reads;
 pub mod runner;
 mod site;
 pub mod state;
-pub mod topics;
+mod topics;
 mod travel;
 pub mod web;
 mod x;

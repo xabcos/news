@@ -74,6 +74,7 @@ pub(crate) const MOMENT_JSON: &str = "CASE WHEN m.item_id IS NULL THEN NULL ELSE
     'text', m.text, 'lang', m.lang, 'spot', m.spot, 'spot_en', m.spot_en,
     'place', jsonb_build_object('slug', p.slug, 'name', p.name, 'name_en', p.name_en,
         'country', p.country, 'country_en', p.country_en,
+        'latitude', round(p.latitude::numeric, 2), 'longitude', round(p.longitude::numeric, 2),
         'tagline', p.guide->>'tagline', 'tagline_en', p.guide->>'tagline_en',
         'fact', p.guide->>'fact', 'fact_en', p.guide->>'fact_en')) END";
 pub(crate) const MOMENT_JOIN: &str = "LEFT JOIN travel_moments m ON m.item_id = items.id \

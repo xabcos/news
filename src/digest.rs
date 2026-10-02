@@ -2,6 +2,7 @@ use crate::{
     auth::{self, User},
     error::{ApiQuery, AppError, Result},
     reading::{self, Reader},
+    site::escape,
     state::AppState,
 };
 use axum::{
@@ -46,6 +47,9 @@ const MAX_CURSOR_LEN: usize = 256;
 /// through Redis briefly.
 const HOT_TTL_SECS: u64 = 48 * 3600;
 const COLD_TTL_SECS: u64 = 6 * 3600;
+/// Redis keys of the topic-day snapshots. The version moves with the snapshot format, so a
+/// release never reads a snapshot that an older one wrote.
+const SNAPSHOT_KEYS: &str = "news:v2";
 const PUBLIC_CACHE_CONTROL: HeaderValue =
     HeaderValue::from_static("public, max-age=60, stale-while-revalidate=300");
 
@@ -582,19 +586,7 @@ impl DigestCache {
     /// the selection is used, so a page never mixes days. `after` and `limit` select one
     /// page of each topic's items; `total` always reports the whole day and `next` names
     /// the page that follows.
-    pub async fn render(
-        &self,
-        state: &AppState,
-        topic: Option<&str>,
-        day: Option<NaiveDate>,
-        limit: usize,
-        after: Option<Cursor>,
-    ) -> Result<Arc<Rendered>> {
-        self.render_for(state, topic, day, limit, after, Reader::Public)
-            .await
-    }
-
-    async fn render_for(
+    async fn render(
         &self,
         state: &AppState,
         topic: Option<&str>,
@@ -730,7 +722,7 @@ async fn load(state: &AppState, topic: &str, day: NaiveDate) -> Result<Snapshot>
 }
 
 fn redis_key(topic: &str, day: NaiveDate) -> String {
-    format!("news:v1:{topic}:{day}")
+    format!("{SNAPSHOT_KEYS}:{topic}:{day}")
 }
 
 async fn redis_get(state: &AppState, topic: &str, day: NaiveDate) -> Option<Snapshot> {
@@ -769,7 +761,7 @@ async fn redis_delete_topic(
     redis: &mut redis::aio::ConnectionManager,
     topic: &str,
 ) -> std::result::Result<(), redis::RedisError> {
-    let pattern = format!("news:v1:{topic}:*");
+    let pattern = format!("{SNAPSHOT_KEYS}:{topic}:*");
     let mut cursor = 0_u64;
     loop {
         let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
@@ -799,7 +791,7 @@ async fn redis_delete_before(
         let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
             .arg(cursor)
             .arg("MATCH")
-            .arg("news:v1:*")
+            .arg(format!("{SNAPSHOT_KEYS}:*"))
             .arg("COUNT")
             .arg(1_000_u16)
             .query_async(redis)
@@ -966,7 +958,7 @@ async fn digest(
     let after = cursor_from(&query)?;
     let rendered = state
         .digest
-        .render_for(
+        .render(
             &state,
             query.topic.as_deref(),
             query.day,
@@ -1484,20 +1476,6 @@ fn entity_tag(body: &str) -> String {
     }
     tag.push('"');
     tag
-}
-
-fn escape(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for c in value.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            _ => out.push(c),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

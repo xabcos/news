@@ -336,8 +336,7 @@ function renderBriefing(s) {
   $("#briefingMeta").textContent = `${day}${time ? ` · ${formatTime(time, s.timezone)}` : ""} · ${labels[briefing.status] || briefing.status}${fallbackLabel}`;
   $("#runBriefingButton").disabled = briefing.status === "running";
   message("briefingMessage", briefing.error || "");
-  const ready = hasDraft;
-  $("#briefingDrafts").classList.toggle("hidden", !ready);
+  $("#briefingDrafts").classList.toggle("hidden", !hasDraft);
   $("#wechatDraft").value = briefing.wechat_article || "";
   $("#xDraft").value = briefing.x_article || "";
   renderBriefingImages(briefing.images || []);
@@ -618,8 +617,7 @@ function saveTopic(event) {
   }
   const topic = s.editing;
   if (!topic && !s.admin && !canCreatePersonalTopic(s)) {
-    if (s.account?.promptUpgrade) void s.account.promptUpgrade();
-    else message("topicFormMessage", "创建抓取任务需要 Pro 套餐，请先购买");
+    void s.account.promptUpgrade();
     return;
   }
   void withBusy($("#saveTopicButton"), "保存中…", async () => {
@@ -629,8 +627,7 @@ function saveTopic(event) {
       saved = await s.request(`${s.base}/topics${topic ? `/${encodeURIComponent(topic.id)}` : ""}`, { method: topic ? "PATCH" : "POST", body });
     } catch (error) {
       if (!topic && !s.admin && error.status === 403) {
-        if (s.account?.promptUpgrade) void s.account.promptUpgrade();
-        else if (session === s) message("topicFormMessage", error.message);
+        void s.account.promptUpgrade();
         return;
       }
       if (session === s) message("topicFormMessage", error.message);

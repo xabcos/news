@@ -12,11 +12,13 @@
       more: (name) => `了解${name} →`, about: (name) => `关于${name}`, guide: "阅读导读 →",
       original: "原文", photos: (n) => `${n} 张照片`, photo: (i, n) => `第 ${i} / ${n} 张`,
       close: "关闭", previous: "上一张", next: "下一张", map: (n) => `最近 7 天 · ${n} 个目的地`,
+      wander: "漫游", pause: "暂停",
     },
     en: {
       more: (name) => `About ${name} →`, about: (name) => `About ${name}`, guide: "Read the guide →",
       original: "Original", photos: (n) => `${n} photos`, photo: (i, n) => `Photo ${i} of ${n}`,
       close: "Close", previous: "Previous", next: "Next", map: (n) => `Last 7 days · ${n} ${n === 1 ? "destination" : "destinations"}`,
+      wander: "Wander", pause: "Pause",
     },
   };
   const items = new WeakMap();
@@ -51,6 +53,21 @@
     return node;
   }
 
+  // The dotted land that pins are placed on.
+  function land() {
+    const canvas = element("div", "travel-map-canvas");
+    const dots = element("div", "travel-map-land");
+    dots.setAttribute("aria-hidden", "true");
+    canvas.append(dots);
+    return canvas;
+  }
+
+  function locate(node, { latitude, longitude }) {
+    node.style.left = `${((longitude + 180) / 360) * 100}%`;
+    node.style.top = `${((NORTH - Math.min(NORTH, Math.max(SOUTH, latitude))) / (NORTH - SOUTH)) * 100}%`;
+    return node;
+  }
+
   // Grid rows are ROW pixels tall and each card spans the rows its height needs, so cards of
   // any height pack into columns while the document keeps them in reading order. All heights
   // are read before any span is written: a write between reads would lay the page out again.
@@ -81,8 +98,8 @@
     image.loading = "lazy";
     image.decoding = "async";
     image.referrerPolicy = "no-referrer";
-    // A photograph the file server no longer keeps takes its card with it.
-    image.addEventListener("error", () => card.remove(), { once: true });
+    // A photograph the file server no longer keeps hides its card; the viewer steps over it.
+    image.addEventListener("error", () => { card.hidden = true; }, { once: true });
     media.append(image);
     if (photos.length > 1) {
       const count = element("span", "postcard-count", String(photos.length));
@@ -124,7 +141,15 @@
     image.referrerPolicy = "no-referrer";
     const dots = element("div", "viewer-dots");
     stage.append(image, dots);
+    // The map stays while the story beside it changes, so its pin glides from place to
+    // place; faint dots stay on the places already passed.
+    const map = land();
+    map.classList.add("viewer-map");
+    const pin = element("span", "travel-pin is-recent");
+    map.append(pin);
+    const story = element("div", "viewer-story");
     const panel = element("aside", "viewer-panel");
+    panel.append(map, story);
     const button = (label, className, action) => {
       const node = element("button", `viewer-button ${className}`, label);
       node.type = "button";
@@ -143,6 +168,21 @@
       if (event.key === "ArrowLeft") step(-1);
       else if (event.key === "ArrowRight") step(1);
     });
+    // Postcards loaded behind the open viewer can bring its next arrow back.
+    new MutationObserver(() => { if (dialog.open) next.disabled = !neighbor(1); })
+      .observe(document.querySelector("#digest, [data-moments]"), { childList: true, subtree: true });
+    // Wandering walks on through every photograph of every postcard.
+    const play = PublicPage.autoplay({
+      dialog,
+      image,
+      className: "viewer-button",
+      next: () => step(1),
+      ahead: () => {
+        const target = neighbor(1);
+        return target && photosOf(items.get(target[0]))[target[1]].url;
+      },
+      names: () => ({ play: text().wander, pause: text().pause }),
+    });
     // A horizontal swipe on the photograph turns the page on touch screens.
     let start = null;
     stage.addEventListener("pointerdown", (event) => {
@@ -157,7 +197,10 @@
       if (Math.abs(dx) >= 48 && Math.abs(dx) > Math.abs(dy) * 1.2) step(dx < 0 ? 1 : -1);
     });
     document.body.append(dialog);
-    return { dialog, image, dots, panel, close, previous, next, id: null, index: 0 };
+    return {
+      dialog, image, dots, panel, map, pin, story, play, close, previous, next,
+      id: null, index: 0, passed: new Set(),
+    };
   }
 
   function open(card, index) {
@@ -166,6 +209,8 @@
     if (!viewer.dialog.open) {
       viewer.dialog.showModal();
       viewer.dialog.focus();
+      // The page may have switched language since the viewer was last open.
+      viewer.id = null;
     }
     show(card, index);
   }
@@ -174,17 +219,31 @@
   // the moment by id because a background refresh draws new cards.
   const sequence = () => [...document.querySelectorAll(".postcard")].filter((card) => items.has(card));
 
-  function step(offset) {
+  // The card and photograph `offset` steps from the one shown, or null at either end.
+  function neighbor(offset) {
     const cards = sequence();
-    const at = cards.findIndex((card) => items.get(card).id === viewer.id);
-    if (at < 0) return;
+    let at = cards.findIndex((card) => items.get(card).id === viewer.id);
+    if (at < 0) return null;
     const index = viewer.index + offset;
-    if (index >= 0 && index < photosOf(items.get(cards[at])).length) {
-      show(cards[at], index);
-      return;
+    if (index >= 0 && index < photosOf(items.get(cards[at])).length) return [cards[at], index];
+    do at += offset; while (cards[at]?.hidden);
+    const card = cards[at];
+    return card ? [card, offset > 0 ? 0 : photosOf(items.get(card)).length - 1] : null;
+  }
+
+  function step(offset) {
+    const target = neighbor(offset);
+    if (target) show(...target);
+    return target;
+  }
+
+  function labels() {
+    for (const [control, label] of [
+      [viewer.close, text().close], [viewer.previous, text().previous], [viewer.next, text().next],
+    ]) {
+      control.setAttribute("aria-label", label);
+      control.title = label;
     }
-    const target = cards[at + offset];
-    if (target) show(target, offset > 0 ? 0 : photosOf(items.get(target)).length - 1);
   }
 
   function show(card, index) {
@@ -198,6 +257,7 @@
     viewer.index = index;
     viewer.image.src = photo.url;
     viewer.image.alt = pick(photo, "caption") || pick(item, "title");
+    viewer.play.shown();
     viewer.dots.replaceChildren(...(photos.length > 1 ? photos.map((_, position) => {
       const dot = element("button", "viewer-dot");
       dot.type = "button";
@@ -206,18 +266,24 @@
       dot.addEventListener("click", () => show(card, position));
       return dot;
     }) : []));
-    const cards = sequence();
-    const at = cards.indexOf(card);
-    viewer.previous.disabled = at <= 0 && index === 0;
-    viewer.next.disabled = at < 0 || (at === cards.length - 1 && index === photos.length - 1);
-    for (const [control, label] of [[viewer.close, text().close], [viewer.previous, text().previous], [viewer.next, text().next]]) {
-      control.setAttribute("aria-label", label);
-      control.title = label;
-    }
+    viewer.previous.disabled = !neighbor(-1);
+    viewer.next.disabled = !neighbor(1);
+    labels();
+    // The page follows behind: closing returns to this postcard, and its endless scrolling
+    // keeps loading the postcards ahead.
+    card.scrollIntoView({ block: "nearest", behavior: "instant" });
   }
 
   function panel(item) {
     const place = item.travel?.place;
+    viewer.map.hidden = place?.latitude == null;
+    if (!viewer.map.hidden) {
+      locate(viewer.pin, place);
+      if (!viewer.passed.has(place.slug)) {
+        viewer.passed.add(place.slug);
+        viewer.pin.before(locate(element("i", "viewer-trail"), place));
+      }
+    }
     const nodes = [];
     if (place?.slug) nodes.push(link(destination(place.slug), "viewer-place", placeName(place)));
     const spot = pick(item.travel, "spot");
@@ -228,6 +294,7 @@
     const original = item.travel?.text;
     if (original && original !== words) {
       const details = element("details", "viewer-original");
+      details.addEventListener("toggle", () => details.open && viewer.play.toggle(false));
       details.append(element("summary", "", text().original));
       const quote = element("p", "", original);
       if (item.travel.lang) quote.lang = item.travel.lang;
@@ -248,7 +315,7 @@
       }
       nodes.push(about);
     }
-    viewer.panel.replaceChildren(...nodes);
+    viewer.story.replaceChildren(...nodes);
     viewer.panel.scrollTop = 0;
   }
 
@@ -266,20 +333,26 @@
     if (!places.length) return;
     // Pins are placed on the canvas that holds the land, not on the figure with its caption.
     const figure = element("figure", "travel-map");
-    const canvas = element("div", "travel-map-canvas");
-    const land = element("div", "travel-map-land");
-    land.setAttribute("aria-hidden", "true");
-    canvas.append(land);
+    const canvas = land();
     figure.append(canvas);
     places.forEach((place, index) => {
       const pin = link(destination(place.slug), `travel-pin${index < 3 ? " is-recent" : ""}`);
       pin.setAttribute("aria-label", placeName(place));
-      pin.style.left = `${((place.longitude + 180) / 360) * 100}%`;
-      pin.style.top = `${((NORTH - Math.min(NORTH, Math.max(SOUTH, place.latitude))) / (NORTH - SOUTH)) * 100}%`;
       pin.append(element("span", "travel-pin-label", pick(place, "name")));
-      canvas.append(pin);
+      canvas.append(locate(pin, place));
     });
-    figure.append(element("figcaption", "", text().map(places.length)));
+    // Wandering starts from the newest postcard.
+    const start = element("button", "travel-wander", `\u25B6\uFE0E ${text().wander}`);
+    start.type = "button";
+    start.addEventListener("click", () => {
+      const [first] = sequence();
+      if (!first) return;
+      open(first, 0);
+      viewer.play.toggle(true);
+    });
+    const caption = element("figcaption", "", text().map(places.length));
+    caption.append(start);
+    figure.append(caption);
     container.append(figure);
   }
 

@@ -21,6 +21,8 @@
   --radius-xl: 24px;
   --radius-l: 16px;
   --radius-m: 10px;
+  /* Card width in the visual grids: a wider window gets more columns, not wider cards. */
+  --tile: 20rem;
   font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
 }
 
@@ -161,16 +163,9 @@ p { margin-top: 0; }
 
 .public .shell { max-width: 46rem; margin: 0 auto; padding: .75rem 1.25rem 3rem; }
 
-@media (min-width: 769px) {
-  .public:is(.p-topic, .w-topic, .travel-topic) .shell {
-    max-width: 90rem;
-    padding-right: clamp(1.25rem, 3vw, 3rem);
-    padding-left: clamp(1.25rem, 3vw, 3rem);
-  }
-  .public:is(.p-topic, .w-topic, .travel-topic) .back-to-top {
-    right: max(calc(1rem + env(safe-area-inset-right, 0px)), calc((100% - 90rem) / 2 - 3.75rem));
-  }
-}
+/* The visual tabs fill the window. */
+.public:is(.p-topic, .w-topic, .travel-topic) .shell { max-width: none; padding-inline: clamp(1.25rem, 3vw, 3rem); }
+.public:is(.p-topic, .w-topic, .travel-topic) .back-to-top { right: calc(1rem + env(safe-area-inset-right, 0px)); }
 
 .back-to-top {
   position: fixed;
@@ -274,7 +269,9 @@ p { margin-top: 0; }
 .insight-citation { color: var(--primary-strong); text-decoration: underline; text-underline-offset: .15em; overflow-wrap: anywhere; }
 
 @media (max-width: 768px) {
-  .public .digest { touch-action: pan-y pinch-zoom; }
+  /* Horizontal swipes switch tabs (public.js), so the browser must not take them over. */
+  .public .digest,
+  .public:is(.culture, .travel) .shell { touch-action: pan-y pinch-zoom; }
   .public .shell.is-loading {
     touch-action: pan-y pinch-zoom;
     min-height: calc(100vh - 2.6rem);
@@ -373,9 +370,9 @@ p { margin-top: 0; }
 }
 .public.p-topic .digest {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(var(--tile), 100%), 1fr));
   align-items: flex-start;
-  gap: .9rem;
+  gap: clamp(.9rem, 1.6vw, 1.5rem);
 }
 .public.p-topic .day-block,
 .public.p-topic .image-news-group { display: contents; }
@@ -436,20 +433,8 @@ p { margin-top: 0; }
 
 @media (max-width: 560px) {
   .image-news-group { grid-template-columns: 1fr; }
-  .public.p-topic .digest { grid-template-columns: 1fr; }
   .insight-gallery { grid-template-columns: 1fr; }
   .insight-hotspots-date { white-space: normal; text-align: right; }
-}
-
-@media (min-width: 1100px) {
-  .public.p-topic .digest {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: clamp(.9rem, 1.6vw, 1.5rem);
-  }
-}
-
-@media (min-width: 1500px) {
-  .public.p-topic .digest { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 
 /* ---------- photographs (𝑾) ---------- */
@@ -545,9 +530,9 @@ p { margin-top: 0; }
    ALL the cards have a grid below their group's heading; the travel tab joins them all. */
 .postcards,
 .public.travel-topic .digest {
-  --postcard-gap: .9rem;
+  --postcard-gap: clamp(.9rem, 1.4vw, 1.3rem);
   display: grid;
-  grid-template-columns: repeat(var(--columns, 2), minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(var(--tile), 100%), 1fr));
   grid-auto-rows: 4px;
   align-items: start;
   column-gap: var(--postcard-gap);
@@ -645,20 +630,10 @@ p { margin-top: 0; }
   .postcard-media:hover img { transform: scale(1.03); }
 }
 /* In ALL the postcards share the reading column with the news, so they stay small. */
+.public:not(.travel-topic) .postcard-group > .postcards { --tile: 13rem; --postcard-gap: .75rem; }
 @media (min-width: 769px) {
-  .public:not(.travel-topic) .postcard-group > .postcards { --columns: 3; --postcard-gap: .75rem; }
   .public:not(.travel-topic) .postcard-group .postcard-title { font-size: .92rem; }
   .public:not(.travel-topic) .postcard-group .postcard-words { font-size: .84rem; -webkit-line-clamp: 2; }
-}
-@media (min-width: 1100px) {
-  .public.travel-topic .digest { --columns: 3; --postcard-gap: clamp(.9rem, 1.4vw, 1.3rem); }
-}
-@media (min-width: 1500px) {
-  .public.travel-topic .digest { --columns: 4; }
-}
-@media (max-width: 560px) {
-  .postcards,
-  .public.travel-topic .digest { --columns: 1; }
 }
 
 /* The land is a dotted mask, so it takes the theme's colour. */
@@ -673,6 +648,8 @@ p { margin-top: 0; }
   mask: url("/world.svg") center / 100% 100% no-repeat;
 }
 .travel-map figcaption { margin-top: .35rem; color: var(--muted); font-size: .72rem; text-align: center; }
+.travel-wander { margin-left: .6rem; padding: 0; border: 0; color: var(--primary-strong); background: none; font-weight: 650; cursor: pointer; }
+.travel-wander:hover { text-decoration: underline; text-underline-offset: .15em; }
 .travel-pin {
   position: absolute;
   width: .7rem;
@@ -732,7 +709,7 @@ p { margin-top: 0; }
   padding: 0;
   border: 0;
   color: #fff;
-  background: rgba(8, 9, 12, .97);
+  background: rgb(8, 9, 12);
   /* Horizontal swipes turn the page, so the browser must not take them over. */
   touch-action: pan-y pinch-zoom;
 }
@@ -785,6 +762,11 @@ p { margin-top: 0; }
 .viewer-about p { margin: 0 0 .45rem; }
 .viewer-about .viewer-fact { padding-left: .65rem; border-left: 2px solid #f5a48f; }
 .viewer-guide { font-size: .84rem; }
+.viewer-story { display: contents; }
+.viewer-map { flex-shrink: 0; max-width: 20rem; margin-bottom: .35rem; }
+.viewer-map .travel-map-land { background: rgba(255, 255, 255, .32); }
+.viewer-map .travel-pin { transition: left .8s ease, top .8s ease; }
+.viewer-trail { position: absolute; width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 999px; background: #f5a48f; opacity: .6; }
 .viewer-button {
   position: absolute;
   display: grid;
@@ -811,6 +793,7 @@ p { margin-top: 0; }
   .viewer[open] { grid-template-columns: 1fr; grid-template-rows: minmax(0, 62%) minmax(0, 1fr); }
   .viewer-stage { padding: 3rem .5rem .25rem; }
   .viewer-panel { padding: 1rem 1.25rem 1.5rem; border-top: 1px solid rgba(255, 255, 255, .08); border-left: 0; }
+  .viewer-map { max-width: 13rem; }
   .viewer-next { right: .6rem; }
 }
 @media (hover: none) {
@@ -826,7 +809,7 @@ p { margin-top: 0; }
   padding: 0;
   border: 0;
   color: #fff;
-  background: rgba(8, 9, 12, .94);
+  background: rgb(8, 9, 12);
   /* Horizontal swipes turn the page, so the browser must not take them over. */
   touch-action: pan-y pinch-zoom;
 }
@@ -880,6 +863,23 @@ p { margin-top: 0; }
 .lightbox-next { right: .6rem; }
 @media (hover: none) {
   .lightbox-previous, .lightbox-next { display: none; }
+}
+
+/* Viewers that play (public.js): a triangle to play, two bars to pause, and a line along the
+   top that fills as each photograph's time passes. */
+.play-button { top: .6rem; left: .6rem; }
+.play-button::before { content: ""; width: .8rem; height: .9rem; background: currentColor; clip-path: polygon(10% 0, 100% 50%, 10% 100%); }
+.is-playing .play-button::before { background: linear-gradient(90deg, currentColor 35%, transparent 0 65%, currentColor 0); clip-path: none; }
+.play-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: #f5a48f;
+  transform: scaleX(0);
+  transform-origin: left;
+  pointer-events: none;
 }
 
 .insight-story-number { color: var(--primary-strong); font-variant-numeric: tabular-nums; }

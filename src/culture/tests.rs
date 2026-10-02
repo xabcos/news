@@ -331,6 +331,7 @@ async fn postgres_culture_publishes_news_then_sourced_guides_and_keeps_the_brief
         page.contains("culture-book") && page.contains(&slug) && page.contains("/files/cover.jpg")
     );
     assert_eq!(page.matches(">𝑪𝒖𝒍𝒕𝒖𝒓𝒆</a>").count(), 1);
+    assert!(page.contains("data-last=\"/culture/book\""));
     let detail = get(format!("/culture/book/{slug}"))
         .await
         .text()

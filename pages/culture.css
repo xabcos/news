@@ -1,16 +1,16 @@
-/* Culture keeps the site's quiet canvas, with a format suited to each medium. */
-.public.culture .shell { max-width: 86rem; padding: 0 clamp(1.25rem, 3vw, 3rem) 3rem; }
+/* Culture keeps the site's quiet canvas, with a format suited to each medium; lists fill the window. */
+.public.culture .shell { max-width: none; padding: 0 clamp(1.25rem, 3vw, 3rem) 3rem; }
+.public.culture .back-to-top { right: calc(1rem + env(safe-area-inset-right, 0px)); }
 .culture-tabs { display: flex; justify-content: center; gap: clamp(.8rem, 4vw, 3rem); padding: 1.25rem 0 .9rem; border-bottom: 1px solid var(--line); }
 .culture-tabs a { padding: .3rem .15rem; color: var(--muted); font-size: .95rem; text-decoration: none; border-bottom: 2px solid transparent; }
 .culture-tabs a[aria-current] { color: var(--primary-strong); border-color: var(--primary); }
 .culture-tabs + .culture-grid { margin-top: 1.5rem; }
 .culture-eyebrow { margin: 0 0 .45rem; color: var(--primary-strong); font-size: .8rem; letter-spacing: .06em; }
-.culture-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.5rem; align-items: start; }
-.culture-music > .shell > .culture-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.culture-book > .shell > .culture-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.culture-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(var(--tile), 100%), 1fr)); gap: 1.5rem; align-items: start; }
+.culture-music .culture-grid { --tile: 16rem; }
+.culture-book .culture-grid { --tile: 30rem; }
 .culture-card { min-width: 0; }
 .image-news-group.culture-book-group { grid-template-columns: 1fr; }
-.culture-card .image-news-media { aspect-ratio: 16 / 10; }
 .culture-card.culture-movie .image-news-media img { object-fit: contain; }
 .culture-card.culture-music .image-news-media { aspect-ratio: 1; }
 .culture-card.culture-music .image-news-media img { object-fit: contain; }
@@ -52,17 +52,12 @@
 .culture-sources ol { padding-left: 1.4rem; }
 .culture-sources li { scroll-margin-top: 4rem; }
 .culture-sources a { color: inherit; }
-.culture-related { margin-top: 3rem; }
+.culture-related { max-width: 66rem; margin: 3rem auto 0; }
 .culture-related > h2 { margin-bottom: 1.25rem; font-size: 1.1rem; }
-.culture-related:has(.culture-book) .culture-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
 .culture-back { margin: 2rem 0 0; text-align: center; font-size: .85rem; color: var(--muted); }
 .culture-back a { text-decoration: none; }
-@media (max-width: 1000px) {
-  .culture-grid, .culture-music > .shell > .culture-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
-  .culture-book > .shell > .culture-grid, .culture-related:has(.culture-book) .culture-grid { grid-template-columns: 1fr; }
-}
 @media (max-width: 560px) {
-  .culture-grid, .culture-music > .shell > .culture-grid { grid-template-columns: 1fr; gap: 1.1rem; }
+  .culture-grid { gap: 1.1rem; }
   .culture-tabs { gap: 1.35rem; padding-top: .85rem; }
   .culture-tabs a { font-size: .88rem; }
   .culture-card.culture-book { grid-template-columns: 5.2rem minmax(0,1fr); gap: 1rem; padding: 1rem; }

@@ -97,8 +97,6 @@ struct ChangeRow {
 }
 
 struct Catalog {
-    /// Daily start time as `HH:MM`, or the interval in minutes for other cadences.
-    schedule: String,
     /// Providers currently listed, in display order.
     vendors: Vec<VendorRow>,
     /// Every enabled provider, including those that left, for naming changes.
@@ -130,22 +128,17 @@ const RECENT_CHANGES: &str = "SELECT c.id, c.vendor_id, c.model_id, m.name, c.ki
 
 /// The published catalogue, or `None` while the topic is switched off or hidden.
 async fn load(state: &AppState, changes: i64, reader: Reader) -> Result<Option<Catalog>> {
-    let topic: Option<(i32, i32, i32)> = sqlx::query_as(
-        "SELECT interval_minutes, window_start, window_start_minute FROM topics
-         WHERE id = $1 AND enabled AND (visible OR $2) AND owner_user_id IS NULL",
+    let listed: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM topics
+         WHERE id = $1 AND enabled AND (visible OR $2) AND owner_user_id IS NULL)",
     )
     .bind(super::TOPIC_ID)
     .bind(reader.is_admin())
-    .fetch_optional(&state.pool)
+    .fetch_one(&state.pool)
     .await?;
-    let Some((interval, hour, minute)) = topic else {
+    if !listed {
         return Ok(None);
-    };
-    let schedule = if interval >= crate::topics::DAILY_INTERVAL_MINUTES {
-        format!("{hour:02}:{minute:02}")
-    } else {
-        interval.to_string()
-    };
+    }
     let known: Vec<(VendorRow, String)> = sqlx::query_as::<
         _,
         (
@@ -238,7 +231,6 @@ async fn load(state: &AppState, changes: i64, reader: Reader) -> Result<Option<C
         .map(|(vendor, _)| vendor.clone())
         .collect();
     Ok(Some(Catalog {
-        schedule,
         vendors,
         known: known.into_iter().map(|(vendor, _)| vendor).collect(),
         models,
@@ -643,17 +635,10 @@ async fn index(
     );
     let mut meta =
         vec![choose(en, "以各服务商官方文档为准", "From official provider docs").to_owned()];
-    if catalog.schedule.contains(':') {
-        meta.push(format!(
-            "{} {}",
-            choose(en, "每日核验", "Checked daily at"),
-            catalog.schedule
-        ));
-    }
     if let Some(at) = catalog.verified_at() {
         meta.push(format!(
             "{} <time datetime=\"{}\">{}</time>",
-            choose(en, "最近核验", "Last checked"),
+            choose(en, "核验于", "Checked"),
             at.to_rfc3339(),
             moment(at, timezone)
         ));
