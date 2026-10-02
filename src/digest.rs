@@ -47,9 +47,6 @@ const MAX_CURSOR_LEN: usize = 256;
 /// through Redis briefly.
 const HOT_TTL_SECS: u64 = 48 * 3600;
 const COLD_TTL_SECS: u64 = 6 * 3600;
-/// Redis keys of the topic-day snapshots. The version moves with the snapshot format, so a
-/// release never reads a snapshot that an older one wrote.
-const SNAPSHOT_KEYS: &str = "news:v2";
 const PUBLIC_CACHE_CONTROL: HeaderValue =
     HeaderValue::from_static("public, max-age=60, stale-while-revalidate=300");
 
@@ -722,7 +719,7 @@ async fn load(state: &AppState, topic: &str, day: NaiveDate) -> Result<Snapshot>
 }
 
 fn redis_key(topic: &str, day: NaiveDate) -> String {
-    format!("{SNAPSHOT_KEYS}:{topic}:{day}")
+    format!("news:{topic}:{day}")
 }
 
 async fn redis_get(state: &AppState, topic: &str, day: NaiveDate) -> Option<Snapshot> {
@@ -761,7 +758,7 @@ async fn redis_delete_topic(
     redis: &mut redis::aio::ConnectionManager,
     topic: &str,
 ) -> std::result::Result<(), redis::RedisError> {
-    let pattern = format!("{SNAPSHOT_KEYS}:{topic}:*");
+    let pattern = format!("news:{topic}:*");
     let mut cursor = 0_u64;
     loop {
         let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
@@ -791,7 +788,7 @@ async fn redis_delete_before(
         let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
             .arg(cursor)
             .arg("MATCH")
-            .arg(format!("{SNAPSHOT_KEYS}:*"))
+            .arg("news:*")
             .arg("COUNT")
             .arg(1_000_u16)
             .query_async(redis)
