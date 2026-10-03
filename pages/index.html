@@ -10,13 +10,13 @@
   <title>𝑵𝒆𝒘𝒔</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
   <link rel="alternate" type="application/atom+xml" title="𝑵𝒆𝒘𝒔" href="/feed.xml">
-  <link rel="stylesheet" href="/styles.css?v=gadgets">
+  <link rel="stylesheet" href="/styles.css?v=viewer">
   <link rel="stylesheet" href="/equity.css?v=4">
   <link rel="stylesheet" href="/catalog.css?v=1">
   <!-- The first screen's data leaves with the HTML instead of after app.js has run. The URLs
-       must match app.js exactly (PAGE_LIMIT, DAYS_LIMIT); `crossorigin` gives the preloads
+       must match app.js exactly (ALL_PAGE_LIMIT, DAYS_LIMIT); `crossorigin` gives the preloads
        the same credentials mode as fetch(), which is what makes the browser reuse them. -->
-  <link rel="preload" href="/digest?limit=12" as="fetch" crossorigin fetchpriority="high">
+  <link rel="preload" href="/digest?limit=6" as="fetch" crossorigin fetchpriority="high">
   <link rel="preload" href="/days?limit=366" as="fetch" crossorigin>
   <link rel="preload" href="/topics" as="fetch" crossorigin>
 </head>
@@ -35,7 +35,7 @@
 
   <main class="shell">
     <div class="broadcast-strip" data-broadcast-url="https://broadcast.xairouter.com/feed_news?mode=sequence" hidden>
-      <a class="broadcast-strip__value" aria-live="polite"></a>
+      <a class="broadcast-strip__value"></a>
     </div>
     <div id="status" class="status" role="status" aria-live="polite"></div>
     <div id="digest" class="digest"></div>
@@ -48,11 +48,11 @@
     </svg>
   </button>
 
-  <script src="/stats.js?v=2" data-track-url="https://stats.xairouter.com/track/pk-c994c1ce749548c8b45c55d21fdfc4cf" defer></script>
-  <script src="/public.js?v=6" defer></script>
+  <script src="/stats.js?v=3" data-track-url="https://stats.xairouter.com/track/pk-c994c1ce749548c8b45c55d21fdfc4cf" defer></script>
+  <script src="/public.js?v=8" defer></script>
   <script src="/equity.js?v=7" defer></script>
-  <script src="/travel.js?v=4" defer></script>
-  <script src="/app.js?v=19" defer></script>
+  <script src="/travel.js?v=6" defer></script>
+  <script src="/app.js?v=21" defer></script>
   <!-- async: a slow third-party banner must not hold back DOMContentLoaded, which starts app.js. -->
   <script src="https://broadcast.xairouter.com/embed.js" async></script>
 </body>

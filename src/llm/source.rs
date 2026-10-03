@@ -15,7 +15,7 @@ use url::Url;
 
 pub(crate) mod markdown;
 
-const MAX_BYTES: usize = 4 * 1024 * 1024;
+const MAX_BYTES: u64 = 4 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(30);
 const RETRY_DELAY: Duration = Duration::from_secs(3);
 /// Pricing tables of the largest providers stay well inside this.
@@ -289,13 +289,12 @@ impl Body {
         }
     }
 
-    fn allows(self, content_type: &str) -> bool {
-        let types: &[&str] = match self {
+    fn types(self) -> &'static [&'static str] {
+        match self {
             Self::Html => &["text/html", "application/xhtml+xml"],
             Self::Markdown => &["text/markdown", "text/plain"],
             Self::Json => &["application/json"],
-        };
-        types.iter().any(|kind| content_type.starts_with(kind))
+        }
     }
 }
 
@@ -328,10 +327,9 @@ async fn official_body(
     Ok((url, String::from_utf8_lossy(&bytes).into_owned()))
 }
 
-/// The hardened origin client resolves every hop to public addresses and keeps redirects
-/// on public HTTPS; this bounds time, type and size and sends no credentials.
+/// A bounded read on the hardened origin client; it sends no credentials.
 async fn download(state: &AppState, url: Url, english: bool, body: Body) -> Result<(Url, Vec<u8>)> {
-    let mut response = state
+    let request = state
         .origin_http
         .get(url)
         .timeout(TIMEOUT)
@@ -344,32 +342,10 @@ async fn download(state: &AppState, url: Url, english: bool, body: Body) -> Resu
             } else {
                 "zh-CN,zh;q=0.9"
             },
-        )
-        .send()
-        .await?
-        .error_for_status()?;
-    let url = response.url().clone();
-    let content_type = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("");
-    if !body.allows(content_type) {
-        return Err(AppError::BadRequest("官方页面的内容类型不符".into()));
-    }
-    if response
-        .content_length()
-        .is_some_and(|size| size > MAX_BYTES as u64)
-    {
-        return Err(AppError::BadRequest("官方页面过大".into()));
-    }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
-        if bytes.len() + chunk.len() > MAX_BYTES {
-            return Err(AppError::BadRequest("官方页面过大".into()));
-        }
-        bytes.extend_from_slice(&chunk);
-    }
+        );
+    let (url, _, bytes) = crate::media::read_bounded(request, body.types(), MAX_BYTES)
+        .await
+        .map_err(|refused| refused.error("官方页面"))?;
     Ok((url, bytes))
 }
 

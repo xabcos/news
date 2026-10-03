@@ -8,7 +8,7 @@ use super::{
     verify::mentions,
 };
 use crate::{error::Result, state::AppState};
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sqlx::{FromRow, PgConnection, types::Json};
 use std::collections::HashSet;
@@ -204,7 +204,6 @@ fn clip(error: &str) -> String {
 struct Stored {
     model_id: String,
     status: String,
-    released_on: Option<NaiveDate>,
     knowledge_cutoff: String,
     context_tokens: Option<i32>,
     max_output_tokens: Option<i32>,
@@ -290,7 +289,7 @@ async fn write(
     .fetch_one(&mut *connection)
     .await?;
     let stored: Vec<Stored> = sqlx::query_as(
-        "SELECT model_id, status, released_on, knowledge_cutoff, context_tokens, max_output_tokens,
+        "SELECT model_id, status, knowledge_cutoff, context_tokens, max_output_tokens,
                 input_modalities, output_modalities, features, prices, links, evidence, removed_at
          FROM llm_models WHERE vendor_id = $1 FOR UPDATE",
     )
@@ -390,19 +389,19 @@ async fn write(
         let empty = Vec::new();
         let kept = |pick: fn(&Stored) -> &Vec<String>| old.map_or(&empty, pick);
         sqlx::query(
-            "INSERT INTO llm_models (vendor_id, model_id, name, summary, summary_en, status, released_on,
+            "INSERT INTO llm_models (vendor_id, model_id, name, summary, summary_en, status,
                 knowledge_cutoff, context_tokens, max_output_tokens, input_modalities, output_modalities,
                 features, prices, links, evidence, position)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $18)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $17)
              ON CONFLICT (vendor_id, model_id) DO UPDATE SET
                 name = EXCLUDED.name, summary = EXCLUDED.summary, summary_en = EXCLUDED.summary_en,
-                status = EXCLUDED.status, released_on = EXCLUDED.released_on,
+                status = EXCLUDED.status,
                 knowledge_cutoff = EXCLUDED.knowledge_cutoff, context_tokens = EXCLUDED.context_tokens,
                 max_output_tokens = EXCLUDED.max_output_tokens, input_modalities = EXCLUDED.input_modalities,
                 output_modalities = EXCLUDED.output_modalities, features = EXCLUDED.features,
                 prices = EXCLUDED.prices, links = EXCLUDED.links, evidence = EXCLUDED.evidence,
                 position = EXCLUDED.position, verified_at = NOW(), removed_at = NULL,
-                changed_at = CASE WHEN $17 THEN NOW() ELSE llm_models.changed_at END",
+                changed_at = CASE WHEN $16 THEN NOW() ELSE llm_models.changed_at END",
         )
         .bind(&vendor.id)
         .bind(&model.model_id)
@@ -410,7 +409,6 @@ async fn write(
         .bind(&model.summary)
         .bind(&model.summary_en)
         .bind(status)
-        .bind(model.released_on.or(old.and_then(|old| old.released_on)))
         .bind(if model.knowledge_cutoff.is_empty() {
             old.map_or("", |old| old.knowledge_cutoff.as_str())
         } else {

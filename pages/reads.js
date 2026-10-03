@@ -1,12 +1,8 @@
 "use strict";
 
-PublicPage.init();
+PublicPage.page();
 
 const english = document.documentElement.lang === "en";
-try { localStorage.setItem("news.lang", english ? "en" : "zh"); } catch { /* Reading works without storage. */ }
-
-const activeTab = document.querySelector('.tabs [aria-current="true"]');
-activeTab?.scrollIntoView({ block: "nearest", inline: "center" });
 
 (() => {
   const list = document.querySelector(".reads-list");
@@ -36,7 +32,8 @@ activeTab?.scrollIntoView({ block: "nearest", inline: "center" });
   pagination.hidden = !pagination.querySelector('[rel="prev"]');
 
   let controller = null;
-  let observer = null;
+  // Checks whenever the loader comes within a screen of view, whatever the screen's height.
+  const observer = new IntersectionObserver(check, { rootMargin: "0px 0px 100% 0px" });
   let failed = false;
   let suspended = false;
 
@@ -97,7 +94,7 @@ activeTab?.scrollIntoView({ block: "nearest", inline: "center" });
         controller = null;
         list.removeAttribute("aria-busy");
         status();
-        if (!next) observer?.disconnect();
+        if (!next) observer.disconnect();
         // A short page or a tall viewport can still need another page without
         // a new intersection or scroll event.
         window.requestAnimationFrame(check);
@@ -105,16 +102,6 @@ activeTab?.scrollIntoView({ block: "nearest", inline: "center" });
     }
   }
 
-  function observe() {
-    if (typeof window.IntersectionObserver === "function") {
-      observer?.disconnect();
-      observer = new IntersectionObserver(check, { rootMargin: `0px 0px ${window.innerHeight}px 0px` });
-      if (next) observer.observe(loader);
-    }
-    check();
-  }
-  if (typeof window.IntersectionObserver !== "function") window.addEventListener("scroll", check, { passive: true });
-  window.addEventListener("resize", observe);
   document.addEventListener("visibilitychange", check);
   window.addEventListener("pageshow", () => {
     suspended = false;
@@ -132,5 +119,8 @@ activeTab?.scrollIntoView({ block: "nearest", inline: "center" });
     } catch { /* Native back/forward restoration still works if history storage is full. */ }
   });
   status();
-  window.requestAnimationFrame(observe);
+  window.requestAnimationFrame(() => {
+    if (next) observer.observe(loader);
+    check();
+  });
 })();

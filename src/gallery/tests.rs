@@ -505,12 +505,6 @@ async fn postgres_gallery_keeps_confirmed_photographs_until_their_copies_expire(
         .unwrap();
     assert_eq!(runs, 1);
 
-    async fn revision(pool: &sqlx::PgPool) -> i64 {
-        sqlx::query_scalar("SELECT feed_revision FROM topics WHERE id = 'w'")
-            .fetch_one(pool)
-            .await
-            .unwrap()
-    }
     async fn stored(pool: &sqlx::PgPool, url: &str) -> Option<(NaiveDate, String, DateTime<Utc>)> {
         sqlx::query_as(
             "SELECT day, image->>'url', (image->>'expires_at')::timestamptz FROM items WHERE url = $1",
@@ -533,31 +527,13 @@ async fn postgres_gallery_keeps_confirmed_photographs_until_their_copies_expire(
     }
     let pool = &state.pool;
 
-    // A recent copy that lapsed, as after an outage, waits for renewal instead of leaving.
+    // A recent copy that lapsed, as after an outage, is renewed.
     let (_, lapsed, _) = stored(pool, &alice_url).await.unwrap();
     expire(pool, &alice_url, today).await;
-    let before = revision(pool).await;
-    crate::media::prune_lapsed(&state, TOPIC_ID).await.unwrap();
-    assert!(stored(pool, &alice_url).await.is_some());
-    assert_eq!(revision(pool).await, before);
     crate::media::startup_sync(&state).await.unwrap();
     let (_, renewed, expires_at) = stored(pool, &alice_url).await.unwrap();
     assert!(renewed.starts_with("https://media.example.test/files/") && renewed != lapsed);
     assert!(expires_at > Utc::now());
-
-    // Past the renewal days, an expired copy takes its photograph out of the gallery.
-    let erin_url = format!("https://x.com/erin/status/{}", id(7));
-    let old = today - Duration::days(crate::media::RENEW_DAYS + 1);
-    expire(pool, &erin_url, old).await;
-    let before = revision(pool).await;
-    crate::media::prune_lapsed(&state, TOPIC_ID).await.unwrap();
-    assert!(stored(pool, &erin_url).await.is_none());
-    assert!(stored(pool, &alice_url).await.is_some());
-    assert_eq!(revision(pool).await, before + 1);
-    let archived = state.digest.snapshot(&state, TOPIC_ID, old).await.unwrap();
-    assert!(archived.items.is_empty());
-    crate::media::prune_lapsed(&state, TOPIC_ID).await.unwrap();
-    assert_eq!(revision(pool).await, before + 1);
 
     crate::reading::tests::feed(&state).await;
 

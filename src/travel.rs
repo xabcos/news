@@ -45,7 +45,6 @@ const MAX_PHOTOS: usize = 4;
 /// A destination adds at most this many moments a day, and a country this many in one run.
 const DESTINATION_DAILY_LIMIT: usize = 32;
 const COUNTRY_RUN_LIMIT: usize = 8;
-const MAX_SOURCE: usize = 80;
 /// Place lookups at a time; Wikidata asks clients for modest parallelism.
 const LOOKUPS: usize = 4;
 /// One place's lookups may take this long.
@@ -409,15 +408,7 @@ fn confirm(
     post: &Post,
     window: NewsWindow,
 ) -> std::result::Result<Vec<NewsImage>, &'static str> {
-    let account = post.account().ok_or("X 帖子作者无效")?;
-    if post.sensitive() {
-        return Err("X 标记为敏感内容");
-    }
-    if !window.contains(post.created_at) {
-        return Err("发布时间不在采集窗口内");
-    }
-    let url = format!("https://x.com/{account}/status/{id}");
-    let credit = format!("{} @{account}", post.user.name.trim());
+    let (url, credit) = post.admit(id, window)?;
     let title_en = if item.title_en.is_empty() {
         &item.title
     } else {
@@ -450,9 +441,7 @@ fn confirm(
             "照片尺寸过小"
         });
     }
-    item.url = url;
-    item.source = post.user.name.trim().chars().take(MAX_SOURCE).collect();
-    item.published_at = Some(post.created_at);
+    post.adopt(item, url);
     Ok(photos)
 }
 

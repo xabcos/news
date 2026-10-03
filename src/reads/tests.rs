@@ -499,6 +499,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         .execute(&state.pool)
         .await
         .unwrap();
+    state.digest.reload_topics(&state).await.unwrap();
     assert_eq!(
         client
             .get(format!("{base}/reads/{id}"))
@@ -521,6 +522,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         .execute(&state.pool)
         .await
         .unwrap();
+    state.digest.reload_topics(&state).await.unwrap();
     assert_eq!(
         client
             .get(format!("{base}/reads?page=99"))
@@ -714,6 +716,7 @@ async fn check_full_text_image_renewal(state: &AppState, id: Uuid) {
         .execute(&state.pool)
         .await
         .unwrap();
+    state.digest.reload_topics(state).await.unwrap();
     full_text::refresh_images(&media_state).await.unwrap();
     let still_due: bool =
         sqlx::query_scalar("SELECT images_renew_at < NOW() FROM read_articles WHERE item_id=$1")
@@ -726,6 +729,7 @@ async fn check_full_text_image_renewal(state: &AppState, id: Uuid) {
         .execute(&state.pool)
         .await
         .unwrap();
+    state.digest.reload_topics(state).await.unwrap();
     full_text::refresh_images(&media_state).await.unwrap();
     let (Json(updated), next): (Json<full_text::Document>, DateTime<Utc>) =
         sqlx::query_as("SELECT full_text,images_renew_at FROM read_articles WHERE item_id=$1")
@@ -957,6 +961,7 @@ async fn check_cached_reads_stats(state: &AppState, client: &reqwest::Client, ba
         .execute(&state.pool)
         .await
         .unwrap();
+    state.digest.reload_topics(state).await.unwrap();
     let before = calls.load(Ordering::SeqCst);
     stats::refresh(state, &endpoint).await.unwrap();
     assert_eq!(before, calls.load(Ordering::SeqCst));
@@ -964,5 +969,6 @@ async fn check_cached_reads_stats(state: &AppState, client: &reqwest::Client, ba
         .execute(&state.pool)
         .await
         .unwrap();
+    state.digest.reload_topics(state).await.unwrap();
     server.abort();
 }

@@ -43,10 +43,6 @@ const FEED_LIMIT: usize = 50;
 const HOT_VARIANTS: usize = 8;
 const DAYS_VARIANTS: usize = 16;
 const MAX_CURSOR_LEN: usize = 256;
-/// Today and yesterday live in memory and in Redis for two days; archive days only pass
-/// through Redis briefly.
-const HOT_TTL_SECS: u64 = 48 * 3600;
-const COLD_TTL_SECS: u64 = 6 * 3600;
 const PUBLIC_CACHE_CONTROL: HeaderValue =
     HeaderValue::from_static("public, max-age=60, stale-while-revalidate=300");
 
@@ -92,9 +88,9 @@ pub struct PublicItem {
     pub catalog: Option<serde_json::Value>,
 }
 
-/// One topic on one day: the visible items in display order. This is the unit that moves
-/// between PostgreSQL, Redis and memory.
-#[derive(Debug, Default, Serialize, Deserialize)]
+/// One topic on one day: the visible items in display order, as PostgreSQL returned them.
+/// Today and yesterday stay in memory.
+#[derive(Debug, Default)]
 pub struct Snapshot {
     pub updated_at: Option<DateTime<Utc>>,
     /// Changes whenever the topic's visible feed changes.
@@ -177,8 +173,8 @@ impl Rendered {
     }
 }
 
-/// Memory layer of the digest. Reads fall through memory → Redis → PostgreSQL and fill the
-/// layers above on the way back; writes go PostgreSQL → Redis → memory.
+/// Memory layer of the digest. Today and yesterday are kept in memory and other days are read
+/// from PostgreSQL when asked for; a write reloads its day from PostgreSQL.
 #[derive(Clone)]
 pub struct DigestCache(Arc<Inner>);
 
@@ -195,9 +191,6 @@ struct Inner {
     archive: RwLock<HashMap<DaysKey, Arc<Rendered>>>,
     /// Bumped by every write. A load that began before a write must not be stored after it.
     generation: AtomicU64,
-    /// Stable render time for one public data generation, including filtered
-    /// pages that are not kept in the bounded hot-response cache.
-    generated_at: RwLock<DateTime<Utc>>,
     /// Serializes cache misses and explicit refreshes. Without this small
     /// critical section, invalidation operations could race while replacing the
     /// topic catalogue or pruning archive data.
@@ -206,16 +199,6 @@ struct Inner {
     /// locks are per topic rather than per day so archive requests cannot grow
     /// the lock map without bound.
     topic_writes: StdMutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-    memory_hits: AtomicU64,
-    redis_hits: AtomicU64,
-    database_loads: AtomicU64,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct CacheStats {
-    pub(crate) memory_hits: u64,
-    pub(crate) redis_hits: u64,
-    pub(crate) database_loads: u64,
 }
 
 fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
@@ -236,12 +219,8 @@ impl DigestCache {
             hot: RwLock::default(),
             archive: RwLock::default(),
             generation: AtomicU64::new(0),
-            generated_at: RwLock::new(Utc::now()),
             cache_write: tokio::sync::Mutex::new(()),
             topic_writes: StdMutex::default(),
-            memory_hits: AtomicU64::new(0),
-            redis_hits: AtomicU64::new(0),
-            database_loads: AtomicU64::new(0),
         }))
     }
 
@@ -255,14 +234,6 @@ impl DigestCache {
             .entry(topic.to_owned())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
-    }
-
-    pub(crate) fn stats(&self) -> CacheStats {
-        CacheStats {
-            memory_hits: self.0.memory_hits.load(Ordering::Relaxed),
-            redis_hits: self.0.redis_hits.load(Ordering::Relaxed),
-            database_loads: self.0.database_loads.load(Ordering::Relaxed),
-        }
     }
 
     pub fn today(&self) -> NaiveDate {
@@ -279,6 +250,14 @@ impl DigestCache {
 
     pub fn topics(&self) -> Arc<Vec<TopicMeta>> {
         self.topics_for(Reader::Public)
+    }
+
+    /// Whether the site topic is switched on, whether or not readers see it.
+    pub(crate) fn enabled(&self, topic: &str) -> bool {
+        read(&self.0.topics)
+            .all
+            .iter()
+            .any(|known| known.id == topic)
     }
 
     pub(crate) fn topics_for(&self, reader: Reader) -> Arc<Vec<TopicMeta>> {
@@ -341,7 +320,6 @@ impl DigestCache {
     ) -> Result<Arc<Snapshot>> {
         let key = (topic.to_owned(), day);
         if let Some(hit) = read(&self.0.days).get(&key).cloned() {
-            self.0.memory_hits.fetch_add(1, Ordering::Relaxed);
             return Ok(hit);
         }
         let topic_guard = self.topic_write(topic);
@@ -349,27 +327,11 @@ impl DigestCache {
         // Another miss may have filled memory while this request waited for
         // the writer section.
         if let Some(hit) = read(&self.0.days).get(&key).cloned() {
-            self.0.memory_hits.fetch_add(1, Ordering::Relaxed);
             return Ok(hit);
         }
         let generation = self.0.generation.load(Ordering::Acquire);
-        let snapshot = match redis_get(state, topic, day).await {
-            Some(snapshot) => {
-                self.0.redis_hits.fetch_add(1, Ordering::Relaxed);
-                snapshot
-            }
-            None => {
-                self.0.database_loads.fetch_add(1, Ordering::Relaxed);
-                let snapshot = load(state, topic, day).await?;
-                // A write may have invalidated this read while it was in
-                // flight.  Do not repopulate Redis with the old snapshot.
-                if self.0.generation.load(Ordering::Acquire) == generation {
-                    redis_set(state, topic, day, &snapshot, self.ttl(day)).await;
-                }
-                snapshot
-            }
-        };
-        let snapshot = Arc::new(snapshot);
+        let snapshot = Arc::new(load(state, topic, day).await?);
+        // A write may have invalidated this read while it was in flight.
         if self.is_recent(day) {
             let mut days = write(&self.0.days);
             if self.0.generation.load(Ordering::Acquire) == generation {
@@ -379,8 +341,7 @@ impl DigestCache {
         Ok(snapshot)
     }
 
-    /// Rebuilds one topic-day from PostgreSQL after a write and pushes it through Redis
-    /// into memory.
+    /// Reloads one topic-day from PostgreSQL after a write.
     pub async fn refresh(&self, state: &AppState, topic: &str, day: NaiveDate) -> Result<()> {
         let topic_guard = self.topic_write(topic);
         let _cache_guard = topic_guard.lock().await;
@@ -393,64 +354,47 @@ impl DigestCache {
         if !enabled.unwrap_or(false) {
             // Disabled/deleted topics must not leave an empty snapshot behind
             // that would hide fresh items when the topic is enabled again.
-            self.forget_topic_locked(state, topic).await;
+            self.forget_topic_locked(topic);
             return Ok(());
         }
-        // Fence snapshots that started before this refresh.  The second bump
-        // below fences reads that begin while PostgreSQL is being loaded.
-        let generation = self.0.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        // Answers computed before this write are not kept: the first bump covers those already
+        // running, the second those that read the old snapshot while this one loaded.
+        self.0.generation.fetch_add(1, Ordering::AcqRel);
         let snapshot = Arc::new(load(state, topic, day).await?);
-        if self.0.generation.load(Ordering::Acquire) == generation {
-            redis_set(state, topic, day, &snapshot, self.ttl(day)).await;
-        }
-        let final_generation = self.0.generation.fetch_add(1, Ordering::AcqRel) + 1;
-        if self.is_recent(day) && self.0.generation.load(Ordering::Acquire) == final_generation {
+        if self.is_recent(day) {
             write(&self.0.days).insert((topic.to_owned(), day), snapshot);
         }
         write(&self.0.latest).remove(topic);
+        self.0.generation.fetch_add(1, Ordering::AcqRel);
         self.forget_rendered();
         Ok(())
     }
 
-    pub async fn forget_topic(&self, state: &AppState, topic: &str) {
+    /// Drops everything kept for the topic; its days load again from PostgreSQL when asked for.
+    pub async fn forget_topic(&self, topic: &str) {
         let topic_guard = self.topic_write(topic);
         let _topic_guard = topic_guard.lock().await;
         let _cache_guard = self.0.cache_write.lock().await;
-        self.forget_topic_locked(state, topic).await;
+        self.forget_topic_locked(topic);
     }
 
-    /// Drops cached archive snapshots that are no longer present in PostgreSQL after
-    /// retention pruning. The memory generation fence prevents an in-flight read from
-    /// repopulating a deleted day after this invalidation.
-    pub(crate) async fn prune_before(&self, state: &AppState, keep_from: NaiveDate) -> Result<()> {
+    /// Retention pruning deleted old items: forget the answers derived from them.
+    pub(crate) async fn forget_pruned(&self) {
         let _cache_guard = self.0.cache_write.lock().await;
         self.0.generation.fetch_add(1, Ordering::AcqRel);
-        write(&self.0.days).retain(|(_, day), _| *day >= keep_from);
         write(&self.0.latest).clear();
-        self.forget_rendered();
-        let result = if let Some(mut redis) = state.redis.clone() {
-            redis_delete_before(&mut redis, keep_from).await
-        } else {
-            Ok(())
-        };
         self.0.generation.fetch_add(1, Ordering::AcqRel);
-        result.map_err(Into::into)
+        self.forget_rendered();
     }
 
-    async fn forget_topic_locked(&self, state: &AppState, topic: &str) {
+    fn forget_topic_locked(&self, topic: &str) {
+        // As in `refresh`: the first bump stops loads in flight from storing what they read,
+        // the second stops renders that read the old snapshot.
         self.0.generation.fetch_add(1, Ordering::AcqRel);
         write(&self.0.days).retain(|(id, _), _| id != topic);
         write(&self.0.latest).remove(topic);
-        self.forget_rendered();
-        // A deleted topic may be recreated with the same id. Remove every
-        // archive key as well as today's hot keys, otherwise stale items can
-        // survive their normal Redis TTL.
-        if let Some(mut redis) = state.redis.clone()
-            && let Err(error) = redis_delete_topic(&mut redis, topic).await
-        {
-            tracing::warn!(%error, topic, "redis topic invalidation failed");
-        }
         self.0.generation.fetch_add(1, Ordering::AcqRel);
+        self.forget_rendered();
     }
 
     /// Runs once the local date changes: the day before yesterday leaves memory.
@@ -485,17 +429,8 @@ impl DigestCache {
         Ok(day)
     }
 
-    fn ttl(&self, day: NaiveDate) -> u64 {
-        if self.is_recent(day) {
-            HOT_TTL_SECS
-        } else {
-            COLD_TTL_SECS
-        }
-    }
-
     /// Drops every pre-rendered body. Runs under the same writes that invalidate snapshots.
     fn forget_rendered(&self) {
-        *write(&self.0.generated_at) = Utc::now();
         write(&self.0.hot).clear();
         write(&self.0.archive).clear();
     }
@@ -598,7 +533,6 @@ impl DigestCache {
             return Ok(hit);
         }
         let generation = self.0.generation.load(Ordering::Acquire);
-        let generated_at = *read(&self.0.generated_at);
         let (topics, selected) = self.selected(topic, reader)?;
         let mut latest = Vec::with_capacity(selected.len());
         for &index in &selected {
@@ -615,7 +549,6 @@ impl DigestCache {
         let body = DigestBody {
             day,
             timezone: self.0.tz.name(),
-            generated_at,
             topics: selected
                 .iter()
                 .zip(&latest)
@@ -654,7 +587,6 @@ impl DigestCache {
 struct DigestBody<'a> {
     day: Option<NaiveDate>,
     timezone: &'a str,
-    generated_at: DateTime<Utc>,
     topics: Vec<TopicDigest<'a>>,
 }
 
@@ -713,99 +645,6 @@ async fn load(state: &AppState, topic: &str, day: NaiveDate) -> Result<Snapshot>
         revision,
         items,
     })
-}
-
-fn redis_key(topic: &str, day: NaiveDate) -> String {
-    format!("news:{topic}:{day}")
-}
-
-async fn redis_get(state: &AppState, topic: &str, day: NaiveDate) -> Option<Snapshot> {
-    let mut redis = state.redis.clone()?;
-    match redis::cmd("GET")
-        .arg(redis_key(topic, day))
-        .query_async::<Option<String>>(&mut redis)
-        .await
-    {
-        Ok(value) => value.and_then(|json| serde_json::from_str(&json).ok()),
-        Err(error) => {
-            tracing::debug!(%error, "redis read failed; falling back to PostgreSQL");
-            None
-        }
-    }
-}
-
-async fn redis_set(state: &AppState, topic: &str, day: NaiveDate, snapshot: &Snapshot, ttl: u64) {
-    let Some(mut redis) = state.redis.clone() else {
-        return;
-    };
-    let json = serde_json::to_string(snapshot).expect("snapshot serialises");
-    if let Err(error) = redis::cmd("SET")
-        .arg(redis_key(topic, day))
-        .arg(json)
-        .arg("EX")
-        .arg(ttl)
-        .query_async::<()>(&mut redis)
-        .await
-    {
-        tracing::debug!(%error, "redis write failed; memory and PostgreSQL stay authoritative");
-    }
-}
-
-async fn redis_delete_topic(
-    redis: &mut redis::aio::ConnectionManager,
-    topic: &str,
-) -> std::result::Result<(), redis::RedisError> {
-    let pattern = format!("news:{topic}:*");
-    let mut cursor = 0_u64;
-    loop {
-        let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
-            .arg(cursor)
-            .arg("MATCH")
-            .arg(&pattern)
-            .arg("COUNT")
-            .arg(1_000_u16)
-            .query_async(redis)
-            .await?;
-        if !keys.is_empty() {
-            let _: i64 = redis::cmd("DEL").arg(keys).query_async(redis).await?;
-        }
-        if next_cursor == 0 {
-            return Ok(());
-        }
-        cursor = next_cursor;
-    }
-}
-
-async fn redis_delete_before(
-    redis: &mut redis::aio::ConnectionManager,
-    keep_from: NaiveDate,
-) -> std::result::Result<(), redis::RedisError> {
-    let mut cursor = 0_u64;
-    loop {
-        let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
-            .arg(cursor)
-            .arg("MATCH")
-            .arg("news:*")
-            .arg("COUNT")
-            .arg(1_000_u16)
-            .query_async(redis)
-            .await?;
-        let expired = keys
-            .into_iter()
-            .filter(|key| {
-                key.rsplit_once(':')
-                    .and_then(|(_, day)| day.parse::<NaiveDate>().ok())
-                    .is_some_and(|day| day < keep_from)
-            })
-            .collect::<Vec<_>>();
-        if !expired.is_empty() {
-            let _: i64 = redis::cmd("DEL").arg(expired).query_async(redis).await?;
-        }
-        if next_cursor == 0 {
-            return Ok(());
-        }
-        cursor = next_cursor;
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -924,7 +763,6 @@ struct PersonalFeedResponse {
 struct PersonalDigest {
     day: Option<NaiveDate>,
     timezone: String,
-    generated_at: DateTime<Utc>,
     topics: Vec<PersonalTopicDigest>,
 }
 
@@ -1142,7 +980,6 @@ async fn me_feed(
         digest: PersonalDigest {
             day: selected_day,
             timezone: state.config.timezone.name().to_owned(),
-            generated_at: Utc::now(),
             topics: digest_topics,
         },
     };
@@ -1365,13 +1202,16 @@ async fn feed(
 ) -> Result<Response> {
     let cache = &state.digest;
     let (topics, selected) = cache.selected(query.topic.as_deref(), Reader::Public)?;
-    let mut entries = Vec::new();
+    let mut snapshots = Vec::with_capacity(selected.len() * 2);
     for &index in &selected {
         for day in [cache.today(), cache.yesterday()] {
-            let snapshot = cache.snapshot(&state, &topics[index].id, day).await?;
-            entries.extend(snapshot.items.iter().cloned().map(|item| (item, index)));
+            snapshots.push((cache.snapshot(&state, &topics[index].id, day).await?, index));
         }
     }
+    let mut entries = snapshots
+        .iter()
+        .flat_map(|(snapshot, index)| snapshot.items.iter().map(move |item| (item, *index)))
+        .collect::<Vec<_>>();
     entries.sort_by_key(|(item, _)| std::cmp::Reverse(item.first_seen_at));
     entries.truncate(FEED_LIMIT);
 
@@ -1484,12 +1324,10 @@ mod tests {
     use uuid::Uuid;
 
     #[test]
-    fn rollover_expires_old_snapshots_and_changes_the_render_epoch() {
+    fn rollover_expires_old_snapshots_and_rendered_bodies() {
         let cache = DigestCache::new(chrono_tz::Asia::Shanghai);
         let yesterday = cache.yesterday();
         let old_day = yesterday.pred_opt().unwrap();
-        let old_render_time = Utc::now() - Duration::days(1);
-        *write(&cache.0.generated_at) = old_render_time;
         write(&cache.0.days).insert(
             ("topic".into(), old_day),
             std::sync::Arc::new(Snapshot::default()),
@@ -1506,7 +1344,6 @@ mod tests {
         assert!(!read(&cache.0.days).contains_key(&("topic".into(), old_day)));
         assert!(read(&cache.0.days).contains_key(&("topic".into(), yesterday)));
         assert!(read(&cache.0.hot).is_empty());
-        assert!(*read(&cache.0.generated_at) > old_render_time);
     }
 
     /// Items are told apart by `importance`; `published_at` grows with `n`, so higher `n`

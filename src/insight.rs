@@ -33,8 +33,22 @@ const IN_FLIGHT_KEY: &str = "__ai_insight__";
 const SOURCE_LIMIT: i64 = 240;
 const IMAGE_CANDIDATES: usize = 12;
 const FAILED_RETRY_MINUTES: i64 = 10;
+/// The scheduler gives up on an edition after this many failures; a manual run still works.
+const MAX_FAILED_ATTEMPTS: i64 = 3;
 const FINISH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 const STAT_TOPICS: [&str; 6] = ["x", "p", "china-ai", "overseas-ai", "gossip", "cases"];
+
+/// The photograph collections and the catalogues stay outside the AI briefing.
+pub(crate) fn outside_briefing() -> Vec<&'static str> {
+    [crate::gallery::TOPIC_ID, crate::travel::TOPIC_ID]
+        .into_iter()
+        .chain(
+            crate::catalog::Section::ALL
+                .iter()
+                .flat_map(|section| section.topics().iter().copied()),
+        )
+        .collect()
+}
 
 fn due_day(now: DateTime<Utc>, timezone: chrono_tz::Tz, cutoff: NaiveTime) -> NaiveDate {
     let local = now.with_timezone(&timezone);
@@ -204,8 +218,18 @@ pub(crate) struct InsightDocument {
     pub sampling: Sampling,
     #[serde(flatten)]
     pub analysis: InsightAnalysis,
-    pub sources: Vec<InsightSource>,
+    pub sources: Vec<PublicSource>,
     pub research_sources: Vec<InsightResearchSource>,
+}
+
+/// What the page shows of a cited source: its link, title and outlet.
+#[derive(Debug, Serialize)]
+pub(crate) struct PublicSource {
+    index: usize,
+    title: String,
+    title_en: String,
+    url: String,
+    source: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -344,7 +368,7 @@ impl InsightCache {
 pub(crate) async fn tick(state: &AppState) -> Result<()> {
     let now = Utc::now();
     tick_kind(state, Kind::Ai, now).await?;
-    if crate::equity::enabled(state).await? {
+    if crate::equity::enabled(state) {
         tick_kind(state, Kind::Equity, now).await?;
     }
     Ok(())
@@ -360,11 +384,14 @@ pub(crate) async fn tick_kind(state: &AppState, kind: Kind, now: DateTime<Utc>) 
         "SELECT EXISTS(SELECT 1 FROM ai_insights
          WHERE kind = $1 AND (status = 'running' OR (window_end = $2 AND (
              status = 'ok'
-             OR (status = 'failed' AND finished_at >= NOW() - ($3 * INTERVAL '1 minute'))))))",
+             OR (status = 'failed' AND finished_at >= NOW() - ($3 * INTERVAL '1 minute'))))))
+         OR (SELECT COUNT(*) FROM ai_insights
+             WHERE kind = $1 AND window_end = $2 AND status = 'failed') >= $4",
     )
     .bind(kind.id())
     .bind(cutoff)
     .bind(FAILED_RETRY_MINUTES)
+    .bind(MAX_FAILED_ATTEMPTS)
     .fetch_one(&state.pool)
     .await?;
     if !already_started {
@@ -382,7 +409,7 @@ pub(crate) async fn trigger(state: &AppState) -> Result<Uuid> {
 }
 
 pub(crate) async fn trigger_kind(state: &AppState, kind: Kind) -> Result<Uuid> {
-    if kind == Kind::Equity && !crate::equity::enabled(state).await? {
+    if kind == Kind::Equity && !crate::equity::enabled(state) {
         return Err(AppError::Conflict("请先启用 equity 主题抓取".into()));
     }
     let cutoff = kind.cutoff(
@@ -430,15 +457,8 @@ async fn start_generation(
             transaction.rollback().await?;
             return Err(AppError::Conflict("研判正在生成中".into()));
         }
-        // Keep retries for an edition compact. A previous successful brief remains
-        // available to readers until this attempt succeeds.
-        sqlx::query(
-            "DELETE FROM ai_insights WHERE window_end = $1 AND kind = $2 AND status = 'failed'",
-        )
-        .bind(window_end)
-        .bind(kind.id())
-        .execute(&mut *transaction)
-        .await?;
+        // Failed attempts stay so the scheduler can count them; a previous successful brief
+        // remains available to readers until this attempt succeeds.
         sqlx::query(
             "INSERT INTO ai_insights
              (id, status, started_at, window_start, briefing_day, model, window_end, kind)
@@ -591,9 +611,12 @@ async fn render_latest(state: &AppState) -> Result<Rendered> {
             let sources = cited_sources(&analysis, sources, &image_indexes)
                 .into_iter()
                 .filter(|source| visible.iter().any(|topic| topic.id == source.topic_id))
-                .map(|mut source| {
-                    source.image = source.image.map(public_image);
-                    source
+                .map(|source| PublicSource {
+                    index: source.index,
+                    title: source.title,
+                    title_en: source.title_en,
+                    url: source.url,
+                    source: source.source,
                 })
                 .collect();
             Some(InsightDocument {
@@ -709,6 +732,7 @@ async fn execute(
         .bind(window_start)
         .bind(window_end)
         .bind(SOURCE_LIMIT)
+        .bind(outside_briefing())
         .fetch_all(&state.pool)
         .await?;
     let stats = collect_stats(state, window).await?;
@@ -1161,13 +1185,6 @@ fn instructions() -> &'static str {
 6. wealth（商业与机遇）、employment（岗位与技能）、risks、actions 各0–2条。只有新证据和实际价值才写，和前文重复就留空；克制编辑口吻。wealth 的 kind 取 business/income/industry/asset_watch，horizon 取 0-3m/3-12m/12m+；受益环节、切入点、后续验证和风险用短句。禁止收益承诺或个性化投资建议。
 7. 配图：实际观察附带图片，从图片新闻专栏 p 优先挑选与本期AI热点有关、画面有故事且吸引人的照片：机器人动作、产品实物、演示现场、有趣细节优于Logo、纯文字截图和无关美女。cover_source_index 选1张，picture_source_indexes 选最多2张补充图；总计1–3张，不凑数。近7日用过的封面降权，同一画面不重复。过去7天资料图仅在确有解释价值时用，系统标注资料图；无可靠发布日期或不合适可不选，cover 返回 null。AI生成图只能在原图说明明确标明其性质时使用。只引用已看过的候选索引，不造图址、署名或画面描述。
 8. 每条新闻/信号引用有效 source_indexes，只能使用输入资料原有的 index，不得重新编号；资料为空时不编造条目，相关数组留空。检索结果没有资料 index，只能通过 research_source_urls 引用，不得将检索结果编号填入 source_indexes 或 changes_source_indexes。confidence 1–5 表示证据强度，evidence_grade A=官方或一手且有交叉验证，B=可靠单一来源，C=早期或社区线索。正文不写来源编号、HTML、Markdown和URL。确需核验缺失事实才检索，最多6次，优先原始公告；research_source_urls 只写本次实际检索引用的HTTPS地址，没有检索则为空。检索不得绕过新闻时间窗口。"#
-}
-
-fn public_image(mut image: NewsImage) -> NewsImage {
-    image.origin_url = None;
-    image.expires_at = None;
-    image.content_hash = None;
-    image
 }
 
 fn index_schema(indexes: &[usize]) -> Value {

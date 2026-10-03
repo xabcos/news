@@ -809,7 +809,7 @@ async fn update_topic(
     let topic = runner::reschedule_or_defer(&state, &topic).await?;
     if scope.is_public() {
         if current.enabled != topic.enabled || current.visible != topic.visible {
-            state.digest.forget_topic(&state, &id).await;
+            state.digest.forget_topic(&id).await;
         }
         state.digest.reload_topics(&state).await?;
     }
@@ -842,7 +842,7 @@ async fn delete_topic(
     }
     transaction.commit().await?;
     if scope.is_public() {
-        state.digest.forget_topic(&state, &id).await;
+        state.digest.forget_topic(&id).await;
         state.digest.reload_topics(&state).await?;
     } else {
         if let Err(error) = wake_personal_topics(&state, user.id, user.limits().max_topics).await {

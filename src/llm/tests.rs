@@ -66,7 +66,6 @@ fn draft(model_id: &str, prices: Vec<DraftPrice>) -> Draft {
         summary: "面向复杂推理与编程的旗舰模型。".into(),
         summary_en: "Flagship model for complex reasoning and coding.".into(),
         status: Status::Active,
-        released_on: None,
         knowledge_cutoff: String::new(),
         context_tokens: Some(1_000_000),
         max_output_tokens: Some(393_216),

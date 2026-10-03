@@ -203,9 +203,11 @@ p { margin-top: 0; }
   border-bottom: 1px solid var(--line);
   text-align: center;
 }
-.broadcast-strip[hidden] { display: none; }
+/* The embed shows the strip after its own request; keeping its line stops the feed below from moving. */
+.broadcast-strip[hidden] { display: block; visibility: hidden; }
 .broadcast-strip__value {
   display: block;
+  min-height: 1.35em;
   overflow: hidden;
   color: var(--muted);
   font-size: .78rem;
@@ -715,12 +717,14 @@ p { margin-top: 0; }
 }
 .viewer[open] { display: grid; grid-template-columns: minmax(0, 1fr) min(24rem, 34vw); }
 .viewer::backdrop { background: transparent; }
+/* The reserved scrollbar gutter lies outside the top layer; darken it with the viewer. */
 :root:has(.viewer[open]) { background: rgb(8, 9, 12); }
 .viewer:focus { outline: none; }
 .viewer-stage {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   min-height: 0;
+  margin: 0;
   padding: 3.25rem clamp(.75rem, 4vw, 4rem) 1rem;
 }
 .viewer-image { width: 100%; height: 100%; min-height: 0; object-fit: contain; }
@@ -799,33 +803,11 @@ p { margin-top: 0; }
 @media (hover: none) {
   .viewer-previous, .viewer-next { display: none; }
 }
-
-.lightbox {
-  width: 100%;
-  max-width: none;
-  height: 100%;
-  max-height: none;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  color: #fff;
-  background: rgb(8, 9, 12);
-  /* Horizontal swipes turn the page, so the browser must not take them over. */
-  touch-action: pan-y pinch-zoom;
-}
-.lightbox::backdrop { background: transparent; }
-/* The reserved scrollbar gutter lies outside the top layer; darken it with the lightbox. */
-:root:has(.lightbox[open]) { background: rgb(8, 9, 12); }
-.lightbox:focus { outline: none; }
-.lightbox-figure {
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
-  height: 100%;
-  margin: 0;
-  padding: 3.25rem clamp(.75rem, 5vw, 4.5rem) 1rem;
-}
-.lightbox-image { width: 100%; height: 100%; object-fit: contain; }
-.lightbox-caption {
+/* A photograph alone (𝑾): one column, its caption below it. */
+.viewer.is-solo[open] { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.is-solo .viewer-stage { padding: 3.25rem clamp(.75rem, 5vw, 4.5rem) 1rem; }
+.is-solo .viewer-next { right: .6rem; }
+.viewer-caption {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -836,34 +818,10 @@ p { margin-top: 0; }
   line-height: 1.45;
   text-align: center;
 }
-.lightbox-title { font-weight: 650; }
-.lightbox-caption a { color: rgba(255, 255, 255, .78); text-decoration: none; }
-.lightbox-caption a:hover { color: #fff; text-decoration: underline; text-underline-offset: .15em; }
-.lightbox-button {
-  position: absolute;
-  display: grid;
-  place-items: center;
-  width: 2.75rem;
-  height: 2.75rem;
-  padding: 0;
-  border: 0;
-  border-radius: 999px;
-  color: #fff;
-  background: rgba(255, 255, 255, .08);
-  font-size: 1.6rem;
-  line-height: 1;
-  cursor: pointer;
-  transition: background-color .18s ease, opacity .18s ease;
-}
-.lightbox-button:hover:not(:disabled) { background: rgba(255, 255, 255, .18); }
-.lightbox-button:disabled { opacity: 0; pointer-events: none; }
-.lightbox-close { top: .6rem; right: .6rem; }
-.lightbox-previous, .lightbox-next { top: 50%; transform: translateY(-50%); }
-.lightbox-previous { left: .6rem; }
-.lightbox-next { right: .6rem; }
-@media (hover: none) {
-  .lightbox-previous, .lightbox-next { display: none; }
-}
+.viewer-caption-title { font-weight: 650; }
+.viewer-caption a { color: rgba(255, 255, 255, .78); text-decoration: none; }
+.viewer-caption a:hover { color: #fff; text-decoration: underline; text-underline-offset: .15em; }
+
 
 /* Viewers that play (public.js): a triangle to play, two bars to pause, and a line along the
    top that fills as each photograph's time passes. */

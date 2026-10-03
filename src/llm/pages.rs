@@ -16,7 +16,7 @@ use axum::{
     response::Response,
     routing::get,
 };
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -29,7 +29,7 @@ const CHROME: Chrome<'static> = Chrome {
     current: "llm",
     section: "llm",
     stylesheet: "/llm.css?v=4",
-    script: "/llm.js?v=3",
+    script: "/llm.js?v=4",
     feed: ("𝑳𝑳𝑴", "/llm/feed.xml"),
 };
 
@@ -67,7 +67,6 @@ struct ModelRow {
     summary: String,
     summary_en: String,
     status: String,
-    released_on: Option<NaiveDate>,
     knowledge_cutoff: String,
     context_tokens: Option<i32>,
     max_output_tokens: Option<i32>,
@@ -128,15 +127,7 @@ const RECENT_CHANGES: &str = "SELECT c.id, c.vendor_id, c.model_id, m.name, c.ki
 
 /// The published catalogue, or `None` while the topic is switched off or hidden.
 async fn load(state: &AppState, changes: i64, reader: Reader) -> Result<Option<Catalog>> {
-    let listed: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM topics
-         WHERE id = $1 AND enabled AND (visible OR $2) AND owner_user_id IS NULL)",
-    )
-    .bind(super::TOPIC_ID)
-    .bind(reader.is_admin())
-    .fetch_one(&state.pool)
-    .await?;
-    if !listed {
+    if reader.check(state, super::TOPIC_ID).is_err() {
         return Ok(None);
     }
     let known: Vec<(VendorRow, String)> = sqlx::query_as::<
@@ -175,7 +166,7 @@ async fn load(state: &AppState, changes: i64, reader: Reader) -> Result<Option<C
     })
     .collect();
     let mut models: Vec<ModelRow> = sqlx::query_as(
-        "SELECT m.vendor_id, m.model_id, m.name, m.summary, m.summary_en, m.status, m.released_on,
+        "SELECT m.vendor_id, m.model_id, m.name, m.summary, m.summary_en, m.status,
                 m.knowledge_cutoff, m.context_tokens, m.max_output_tokens, m.input_modalities,
                 m.output_modalities, m.features, m.prices, m.links, m.evidence, m.first_seen_at,
                 m.verified_at, m.changed_at
@@ -797,8 +788,7 @@ async fn index(
         &content,
         Some(structured),
         &CHROME,
-    )
-    .await?;
+    );
     Ok(conditional(
         &headers,
         &Rendered::new(html),
@@ -921,13 +911,6 @@ fn model_row(model: &ModelRow, vendor: &VendorRow, timezone: Tz, en: bool) -> St
         model.knowledge_cutoff.clone(),
     );
     spec(
-        choose(en, "发布日期", "Released"),
-        model
-            .released_on
-            .map(|date| date.to_string())
-            .unwrap_or_default(),
-    );
-    spec(
         choose(en, "输入类型", "Input"),
         words(&model.input_modalities, en),
     );
@@ -1014,7 +997,7 @@ async fn data(
             json!({
                 "vendor": model.vendor_id, "model_id": model.model_id, "name": model.name,
                 "summary": model.summary, "summary_en": model.summary_en, "status": model.status,
-                "released_on": model.released_on, "knowledge_cutoff": model.knowledge_cutoff,
+                "knowledge_cutoff": model.knowledge_cutoff,
                 "context_tokens": model.context_tokens, "max_output_tokens": model.max_output_tokens,
                 "input_modalities": model.input_modalities, "output_modalities": model.output_modalities,
                 "features": model.features, "prices": model.prices.0, "links": model.links.0,

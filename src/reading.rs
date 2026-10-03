@@ -45,11 +45,13 @@ impl Reader {
         self == Self::Admin
     }
 
-    pub(crate) async fn check(self, state: &AppState, topic: &str) -> Result<()> {
-        let allowed: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM topics WHERE id=$1 AND enabled AND owner_user_id IS NULL AND (visible OR $2))",
-        ).bind(topic).bind(self.is_admin()).fetch_one(&state.pool).await?;
-        allowed
+    /// An enabled site topic, and a visible one unless the reader is an administrator.
+    pub(crate) fn check(self, state: &AppState, topic: &str) -> Result<()> {
+        state
+            .digest
+            .topics_for(self)
+            .iter()
+            .any(|known| known.id == topic)
             .then_some(())
             .ok_or_else(|| AppError::NotFound("主题不存在".into()))
     }

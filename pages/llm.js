@@ -1,10 +1,8 @@
 "use strict";
 
-PublicPage.init();
+PublicPage.page();
 
 const english = document.documentElement.lang === "en";
-try { localStorage.setItem("news.lang", english ? "en" : "zh"); } catch { /* Reading works without storage. */ }
-document.querySelector('.tabs [aria-current="true"]')?.scrollIntoView({ block: "nearest", inline: "center" });
 
 (() => {
   const toolbar = document.querySelector(".llm-toolbar");

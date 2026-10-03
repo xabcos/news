@@ -2,9 +2,7 @@
   "use strict";
   const en = document.documentElement.lang === "en";
   const labels = en ? { more: "More stories", loading: "Loading…", retry: "Try again" } : { more: "更多动态", loading: "正在加载…", retry: "重试" };
-  PublicPage.init();
-  try { localStorage.setItem("news.lang", en ? "en" : "zh"); } catch {}
-  document.querySelector('.tabs [aria-current="true"]')?.scrollIntoView({ block: "nearest", inline: "center" });
+  PublicPage.page();
   document.addEventListener("error", (event) => {
     if (event.target instanceof HTMLImageElement) (event.target.closest(".image-news-media") || event.target).remove();
   }, true);
@@ -29,26 +27,26 @@
       if (!response.ok) throw new Error(String(response.status));
       const page = await response.json();
       document.querySelector(".catalog-grid").insertAdjacentHTML("beforeend", page.html);
-      if (!page.next) { more.remove(); observer?.disconnect(); return; }
+      if (!page.next) { more.remove(); observer.disconnect(); return; }
       more.dataset.before = page.next;
       const href = new URL(more.href);
       href.searchParams.set("before", page.next);
       more.href = href.href;
       more.textContent = labels.more;
       // Re-observing reports the button again while it is still in view.
-      observer?.unobserve(more);
-      observer?.observe(more);
+      observer.unobserve(more);
+      observer.observe(more);
     } catch {
       more.textContent = labels.retry;
-      observer?.unobserve(more);
+      observer.unobserve(more);
     } finally {
       loading = false;
       more.removeAttribute("aria-busy");
     }
   }
   more.addEventListener("click", load);
-  const observer = typeof IntersectionObserver === "function" ? new IntersectionObserver((entries) => {
+  const observer = new IntersectionObserver((entries) => {
     if (entries.some((entry) => entry.isIntersecting)) load();
-  }, { rootMargin: "300px" }) : null;
-  observer?.observe(more);
+  }, { rootMargin: "300px" });
+  observer.observe(more);
 })();

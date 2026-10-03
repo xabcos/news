@@ -88,6 +88,92 @@
       return { toggle, shown };
     },
 
+    // A photograph viewer over the page: close, previous and next buttons, the arrow keys, a
+    // swipe on `frame`, a click beside the photograph to close it, and play. `step(offset)`
+    // shows the photograph that many places away and returns it, or nothing at either end;
+    // `neighbor(offset)` only finds it. Cards that load into `root` behind the open viewer
+    // bring its next arrow back.
+    viewer({ className = "", frame, image, root, step, neighbor, ahead, names }) {
+      const dialog = document.createElement("dialog");
+      dialog.className = `viewer ${className}`.trim();
+      dialog.tabIndex = -1;
+      image.classList.add("viewer-image");
+      image.decoding = "async";
+      image.referrerPolicy = "no-referrer";
+      const button = (label, kind, action) => {
+        const node = document.createElement("button");
+        node.type = "button";
+        node.className = `viewer-button viewer-${kind}`;
+        node.textContent = label;
+        node.addEventListener("click", action);
+        return node;
+      };
+      const close = button("×", "close", () => dialog.close());
+      const previous = button("‹", "previous", () => step(-1));
+      const next = button("›", "next", () => step(1));
+      dialog.append(frame, close, previous, next);
+      dialog.addEventListener("close", () => document.body.classList.remove("dialog-open"));
+      dialog.addEventListener("click", (event) => {
+        if (event.target === dialog || event.target === frame) dialog.close();
+      });
+      dialog.addEventListener("keydown", (event) => {
+        if (event.key === "ArrowLeft") step(-1);
+        else if (event.key === "ArrowRight") step(1);
+      });
+      new MutationObserver(() => { if (dialog.open) next.disabled = !neighbor(1); })
+        .observe(root, { childList: true, subtree: true });
+      const play = window.PublicPage.autoplay({
+        dialog, image, className: "viewer-button", next: () => step(1), ahead, names,
+      });
+      // A horizontal swipe on the photograph turns the page on touch screens.
+      let start = null;
+      frame.addEventListener("pointerdown", (event) => {
+        start = event.isPrimary ? { x: event.clientX, y: event.clientY } : null;
+      });
+      frame.addEventListener("pointercancel", () => { start = null; });
+      frame.addEventListener("pointerup", (event) => {
+        if (!start) return;
+        const dx = event.clientX - start.x;
+        const dy = event.clientY - start.y;
+        start = null;
+        if (Math.abs(dx) >= 48 && Math.abs(dx) > Math.abs(dy) * 1.2) step(dx < 0 ? 1 : -1);
+      });
+      document.body.append(dialog);
+      return {
+        play,
+        // Opens the viewer and tells whether it was closed until now.
+        open() {
+          document.body.classList.add("dialog-open");
+          if (dialog.open) return false;
+          dialog.showModal();
+          // Focus the viewer itself: the arrow keys work at once and no button shows a ring.
+          dialog.focus();
+          return true;
+        },
+        // After a photograph is put in place: its time, the arrows and their names. The page
+        // follows behind, so closing returns to `card` and endless scrolling keeps loading.
+        shown(card) {
+          play.shown();
+          previous.disabled = !neighbor(-1);
+          next.disabled = !neighbor(1);
+          const label = names();
+          for (const [control, name] of [[close, label.close], [previous, label.previous], [next, label.next]]) {
+            control.setAttribute("aria-label", name);
+            control.title = name;
+          }
+          card.scrollIntoView({ block: "nearest", behavior: "instant" });
+        },
+      };
+    },
+
+    // A server-rendered page: `init`, its language kept for the news page, and its tab in view.
+    page() {
+      window.PublicPage.init();
+      const lang = document.documentElement.lang === "en" ? "en" : "zh";
+      try { localStorage.setItem("news.lang", lang); } catch { /* Reading works without storage. */ }
+      document.querySelector('.tabs [aria-current="true"]')?.scrollIntoView({ block: "nearest", inline: "center" });
+    },
+
     init({ canSwipe = () => true } = {}) {
       // Cached public HTML may arrive before the server sees the administrator's session.
       if (role() === "admin" && /^\/(reads|culture|gadgets|travel|llm)(\/|$)/.test(location.pathname)) {
@@ -123,7 +209,6 @@
       });
       update();
 
-      if (typeof window.PointerEvent !== "function") return;
       const mobile = window.matchMedia("(max-width: 768px)");
       let gesture = null;
       let suppressClickUntil = 0;

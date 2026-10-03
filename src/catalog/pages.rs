@@ -6,7 +6,7 @@ use crate::{
     digest::{PublicItem, Rendered, conditional},
     error::{AppError, Result},
     reading::{self, Reader},
-    site::{Chrome, absolute, choose, escape, localized},
+    site::{After, Chrome, absolute, choose, escape, localized, next_page, parse_after, push_page},
     state::AppState,
 };
 use axum::{
@@ -61,34 +61,33 @@ pub(crate) fn router() -> Router<AppState> {
         .layer(tower_http::compression::CompressionLayer::new())
 }
 
-async fn catalogue(
-    state: &AppState,
-    section: Section,
-    reader: Reader,
-) -> Result<Vec<(String, String)>> {
-    Ok(sqlx::query_as("SELECT id, name FROM topics t WHERE id = ANY($1) AND t.enabled AND (t.visible OR $2) AND t.owner_user_id IS NULL ORDER BY array_position($1, id)")
-        .bind(section.topics()).bind(reader.is_admin()).fetch_all(&state.pool).await?)
+/// The section's topics the reader may see, as (id, name) in the section's order.
+fn catalogue(state: &AppState, section: Section, reader: Reader) -> Vec<(String, String)> {
+    let topics = state.digest.topics_for(reader);
+    section
+        .topics()
+        .iter()
+        .filter_map(|id| topics.iter().find(|topic| topic.id == *id))
+        .map(|topic| (topic.id.clone(), topic.name.clone()))
+        .collect()
 }
 /// The sections with a public topic, for the sitemap index.
-pub(crate) async fn listed(state: &AppState) -> Result<Vec<Section>> {
-    let mut sections = Vec::new();
-    for section in Section::ALL {
-        if !catalogue(state, section, Reader::Public).await?.is_empty() {
-            sections.push(section);
-        }
-    }
-    Ok(sections)
+pub(crate) fn listed(state: &AppState) -> Vec<Section> {
+    Section::ALL
+        .into_iter()
+        .filter(|section| !catalogue(state, *section, Reader::Public).is_empty())
+        .collect()
 }
 fn missing() -> AppError {
     AppError::NotFound("栏目或条目不存在".into())
 }
-async fn check(
+fn check(
     state: &AppState,
     section: Section,
     topic: &str,
     reader: Reader,
 ) -> Result<Vec<(String, String)>> {
-    let topics = catalogue(state, section, reader).await?;
+    let topics = catalogue(state, section, reader);
     if !topics.iter().any(|(id, _)| id == topic) {
         return Err(missing());
     }
@@ -100,7 +99,7 @@ async fn index(
     reader: Reader,
     Query(params): Query<Params>,
 ) -> Result<Response> {
-    let topics = catalogue(&state, section, reader).await?;
+    let topics = catalogue(&state, section, reader);
     let (topic, _) = topics.first().ok_or_else(missing)?;
     Ok(
         Redirect::temporary(
@@ -146,7 +145,7 @@ fn description(section: Section, topic: &str, en: bool) -> &'static str {
     }
 }
 #[allow(clippy::too_many_arguments)]
-async fn layout(
+fn layout(
     state: &AppState,
     reader: Reader,
     section: Section,
@@ -157,7 +156,7 @@ async fn layout(
     description: &str,
     content: &str,
     schema: Option<Value>,
-) -> Result<String> {
+) -> String {
     crate::site::layout(
         state,
         reader,
@@ -171,25 +170,10 @@ async fn layout(
             current: topic,
             section: &format!("catalog {} catalog-{topic}", section.path()),
             stylesheet: "/catalog.css?v=1",
-            script: "/catalog.js?v=1",
+            script: "/catalog.js?v=3",
             feed: (section.label(), &format!("/feed.xml?topic={topic}")),
         },
     )
-    .await
-}
-fn cursor(value: Option<&str>) -> Result<Option<(DateTime<Utc>, Uuid)>> {
-    value
-        .map(|value| {
-            let invalid = || AppError::BadRequest("分页参数无效".into());
-            let (time, id) = value.split_once('_').ok_or_else(invalid)?;
-            let time = time
-                .parse()
-                .ok()
-                .and_then(DateTime::from_timestamp_micros)
-                .ok_or_else(invalid)?;
-            Ok((time, Uuid::parse_str(id).map_err(|_| invalid())?))
-        })
-        .transpose()
 }
 /// One page of a topic's items, newest first: all of them, those of one kind of entry, or
 /// those of one entry in one role.
@@ -198,7 +182,7 @@ async fn items(
     section: Section,
     topic: &str,
     filter: Filter<'_>,
-    before: Option<(DateTime<Utc>, Uuid)>,
+    before: Option<After>,
 ) -> Result<(Vec<PublicItem>, Option<String>)> {
     let mut query = sqlx::QueryBuilder::new("SELECT items.id, items.title, items.title_en, items.summary, items.summary_en, items.url, items.source,
         items.published_at, items.first_seen_at, items.tags, items.tags_en, items.importance, items.pinned,
@@ -224,27 +208,12 @@ async fn items(
                 .push_bind(role);
         }
     }
-    if let Some((time, id)) = before {
-        query
-            .push(" AND (items.first_seen_at, items.id) < (")
-            .push_bind(time)
-            .push(",")
-            .push_bind(id)
-            .push(")");
-    }
+    push_page(&mut query, before, LIMIT);
     let mut rows = query
-        .push(" ORDER BY items.first_seen_at DESC, items.id DESC LIMIT ")
-        .push_bind(LIMIT as i64 + 1)
         .build_query_as::<PublicItem>()
         .fetch_all(&state.pool)
         .await?;
-    let next = if rows.len() > LIMIT {
-        rows.truncate(LIMIT);
-        rows.last()
-            .map(|item| format!("{}_{}", item.first_seen_at.timestamp_micros(), item.id))
-    } else {
-        None
-    };
+    let next = next_page(&mut rows, LIMIT, |item| (item.first_seen_at, item.id));
     Ok((rows, next))
 }
 #[derive(Clone, Copy)]
@@ -449,7 +418,7 @@ async fn collection(
     Query(params): Query<Params>,
     headers: HeaderMap,
 ) -> Result<Response> {
-    let topics = check(&state, section, &topic, reader).await?;
+    let topics = check(&state, section, &topic, reader)?;
     let en = params.en();
     let kind = kind(section, &topic, &params);
     let filter = kind.map_or(Filter::All, Filter::Kind);
@@ -458,7 +427,7 @@ async fn collection(
         section,
         &topic,
         filter,
-        cursor(params.before.as_deref())?,
+        params.before.as_deref().map(parse_after).transpose()?,
     )
     .await?;
     let name = topics
@@ -495,8 +464,7 @@ async fn collection(
         description(section, &topic, en),
         &content,
         None,
-    )
-    .await?;
+    );
     Ok(conditional(
         &headers,
         &Rendered::new(html),
@@ -511,14 +479,14 @@ async fn more(
     Query(params): Query<Params>,
     headers: HeaderMap,
 ) -> Result<Response> {
-    check(&state, section, &topic, reader).await?;
+    check(&state, section, &topic, reader)?;
     let filter = kind(section, &topic, &params).map_or(Filter::All, Filter::Kind);
     let (rows, next) = items(
         &state,
         section,
         &topic,
         filter,
-        cursor(params.before.as_deref())?,
+        params.before.as_deref().map(parse_after).transpose()?,
     )
     .await?;
     Ok(conditional(
@@ -556,7 +524,7 @@ async fn detail(
     Query(params): Query<Params>,
     headers: HeaderMap,
 ) -> Result<Response> {
-    let topics = check(&state, section, &topic, reader).await?;
+    let topics = check(&state, section, &topic, reader)?;
     let en = params.en();
     let work: Work = sqlx::query_as("SELECT id, name, name_en, creator, kind, image, images, guide, guide_at FROM catalog_entries WHERE topic_id = $1 AND slug = $2 AND guide IS NOT NULL")
         .bind(&topic).bind(&slug).fetch_optional(&state.pool).await?.ok_or_else(missing)?;
@@ -728,8 +696,7 @@ async fn detail(
         intro,
         &content,
         Some(schema),
-    )
-    .await?;
+    );
     Ok(conditional(
         &headers,
         &Rendered::new(html),

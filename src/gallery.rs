@@ -2,8 +2,7 @@
 //!
 //! The model proposes posts. Each proposal is read back from X's public embed data, so the
 //! post, its time, its author and the photograph are X's own, and a post X marks as
-//! sensitive stays out. Photographs are stored on the file server like 𝑷's; an item leaves
-//! once its stored copy has expired (`media::prune_lapsed`).
+//! sensitive stays out. Photographs are stored and renewed on the file server like 𝑷's.
 
 use crate::{
     fetch::{Known, NewItem, NewsImage, NewsWindow},
@@ -21,7 +20,6 @@ use url::Url;
 mod tests;
 
 pub(crate) const TOPIC_ID: &str = "w";
-const MAX_SOURCE: usize = 80;
 
 pub(crate) fn is_gallery(topic: &Topic) -> bool {
     topic.owner_user_id.is_none() && topic.id == TOPIC_ID
@@ -108,13 +106,7 @@ fn confirm(
     post: Post,
     window: NewsWindow,
 ) -> std::result::Result<(), &'static str> {
-    let account = post.account().ok_or("X 帖子作者无效")?;
-    if post.sensitive() {
-        return Err("X 标记为敏感内容");
-    }
-    if !window.contains(post.created_at) {
-        return Err("发布时间不在采集窗口内");
-    }
+    let (url, credit) = post.admit(id, window)?;
     let chosen = item
         .image
         .as_ref()
@@ -128,7 +120,6 @@ fn confirm(
     if size.width.max(size.height) < x::MIN_LONGER_SIDE {
         return Err("照片尺寸过小");
     }
-    let url = format!("https://x.com/{account}/status/{id}");
     let (caption, caption_en) = item
         .image
         .take()
@@ -150,7 +141,7 @@ fn confirm(
         source_url: url.clone(),
         caption: or(caption, &item.title),
         caption_en: or(caption_en, title_en),
-        credit: format!("{} @{account}", post.user.name.trim()),
+        credit,
         origin_url: None,
         expires_at: None,
         content_hash: None,
@@ -161,8 +152,6 @@ fn confirm(
     if item.image.is_none() {
         return Err("照片信息不完整");
     }
-    item.url = url;
-    item.source = post.user.name.trim().chars().take(MAX_SOURCE).collect();
-    item.published_at = Some(post.created_at);
+    post.adopt(item, url);
     Ok(())
 }

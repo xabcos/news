@@ -3,8 +3,10 @@
 const $ = (selector) => document.querySelector(selector);
 const REFRESH_MS = 5 * 60 * 1000;
 // Items per topic per request. The first screen asks for one page; scrolling to the end of
-// a group silently fetches that group's next page.
+// a group silently fetches that group's next page. ALL starts every topic with fewer items,
+// which halves its first response.
 const PAGE_LIMIT = 12;
+const ALL_PAGE_LIMIT = 6;
 // Delay before a failed page request is retried, still without any visible message.
 const PAGE_RETRY_MS = 8000;
 const FETCH_TIMEOUT_MS = 20_000;
@@ -106,7 +108,10 @@ const el = {
 const t = () => TEXT[state.lang];
 // Sentinels at the end of groups with more items on the server, and the group each belongs to.
 const groupTargets = new WeakMap();
-let groupObserver = null;
+const groupObserver = new IntersectionObserver(
+  (entries) => entries.forEach((entry) => entry.isIntersecting && loadMoreItems(entry.target)),
+  { rootMargin: PRELOAD_MARGIN },
+);
 let activeLoadController = null;
 let travelMap = null;
 
@@ -146,9 +151,11 @@ async function init() {
     renderTabs();
     load();
   });
-  // A refresh can redraw today's cards, so it waits while a photograph viewer walks them.
+  // A refresh redraws today's cards, so it waits while a photograph viewer walks them and
+  // while the reader is below the first screen, where the redraw would move the page.
   setInterval(() => {
     if (document.visibilityState === "visible" && !state.day && !state.at
+      && window.scrollY < window.innerHeight
       && !document.body.classList.contains("dialog-open")) load(true);
   }, REFRESH_MS);
   PublicPage.init({ canSwipe: (target) => Boolean(target.closest("#digest"))
@@ -250,6 +257,10 @@ function search(extra = {}) {
   return query ? `?${query}` : "";
 }
 
+function firstPageLimit() {
+  return state.topic ? PAGE_LIMIT : ALL_PAGE_LIMIT;
+}
+
 function catalogPath() {
   const params = new URLSearchParams();
   if (state.topic) params.set("topic", state.topic);
@@ -258,7 +269,7 @@ function catalogPath() {
 }
 
 function dayPath(day) {
-  const params = new URLSearchParams({ day, limit: String(PAGE_LIMIT) });
+  const params = new URLSearchParams({ day, limit: String(firstPageLimit()) });
   if (state.topic) params.set("topic", state.topic);
   return `${state.personal ? "/api/me/feed" : PublicPage.readPath("/digest")}?${params}`;
 }
@@ -305,7 +316,7 @@ function appendPage(group, page) {
 }
 
 function clearDigest() {
-  groupObserver?.disconnect();
+  groupObserver.disconnect();
   el.digest.replaceChildren();
   el.shell.classList.add("is-loading");
 }
@@ -328,13 +339,13 @@ async function load(silent = false) {
     let digest;
     let days;
     if (state.personal) {
-      const payload = await fetchJson(`/api/me/feed${search({ limit: PAGE_LIMIT })}`, { signal });
+      const payload = await fetchJson(`/api/me/feed${search({ limit: firstPageLimit() })}`, { signal });
       digest = payload.digest;
       days = payload.days;
       if (epoch === state.epoch) state.topics = payload.topics;
     } else {
       const [data, archive] = await Promise.all([
-        fetchJson(PublicPage.readPath(`/digest${search({ limit: PAGE_LIMIT })}`), { signal }),
+        fetchJson(PublicPage.readPath(`/digest${search({ limit: firstPageLimit() })}`), { signal }),
         fetchJson(catalogPath(), { signal }),
       ]);
       digest = data;
@@ -522,24 +533,10 @@ function maybeLoadOlder() {
 }
 
 function setupInfiniteScroll() {
-  if (typeof window.IntersectionObserver === "function") {
-    const observer = new window.IntersectionObserver(
-      (entries) => entries.some((entry) => entry.isIntersecting) && loadOlder(),
-      { rootMargin: PRELOAD_MARGIN },
-    );
-    observer.observe(el.loadMore);
-    groupObserver = new window.IntersectionObserver(
-      (entries) => entries.forEach((entry) => entry.isIntersecting && loadMoreItems(entry.target)),
-      { rootMargin: PRELOAD_MARGIN },
-    );
-    return;
-  }
-  window.addEventListener("scroll", () => {
-    if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - window.innerHeight) loadOlder();
-    el.digest.querySelectorAll(".group-more").forEach((sentinel) => {
-      if (sentinel.getBoundingClientRect().top < window.innerHeight * 1.7) loadMoreItems(sentinel);
-    });
-  }, { passive: true });
+  new IntersectionObserver(
+    (entries) => entries.some((entry) => entry.isIntersecting) && loadOlder(),
+    { rootMargin: PRELOAD_MARGIN },
+  ).observe(el.loadMore);
 }
 
 // An empty element after the last card of a group that has more items on the server.
@@ -549,15 +546,15 @@ function groupSentinel(digest, group) {
   sentinel.className = "group-more";
   sentinel.setAttribute("aria-hidden", "true");
   groupTargets.set(sentinel, { digest, group, loading: false });
-  groupObserver?.observe(sentinel);
+  groupObserver.observe(sentinel);
   return sentinel;
 }
 
 // Re-observing reports the current intersection again, so a sentinel that merely moved
 // down (or one whose request failed) is re-checked without waiting for a scroll event.
 function reobserve(sentinel) {
-  groupObserver?.unobserve(sentinel);
-  groupObserver?.observe(sentinel);
+  groupObserver.unobserve(sentinel);
+  groupObserver.observe(sentinel);
 }
 
 async function loadMoreItems(sentinel) {
@@ -577,7 +574,7 @@ async function loadMoreItems(sentinel) {
       target.loading = false;
       reobserve(sentinel);
     } else {
-      groupObserver?.unobserve(sentinel);
+      groupObserver.unobserve(sentinel);
       sentinel.remove();
     }
     window.setTimeout(maybeLoadOlder, 0);
@@ -724,7 +721,7 @@ function render(preserveScroll = false, scrollTop = window.scrollY, { latestOnly
   el.shell.classList.remove("is-loading");
   if (latestOnly && el.digest.firstElementChild) {
     // History keeps its observers while only the newest day's cards are replaced.
-    el.digest.firstElementChild.querySelectorAll(".group-more").forEach((sentinel) => groupObserver?.unobserve(sentinel));
+    el.digest.firstElementChild.querySelectorAll(".group-more").forEach((sentinel) => groupObserver.unobserve(sentinel));
     el.digest.firstElementChild.replaceWith(renderDayBlock(state.timeline[0], false));
     updateHistoryLoader();
     window.setTimeout(maybeLoadOlder, 0);
@@ -734,7 +731,7 @@ function render(preserveScroll = false, scrollTop = window.scrollY, { latestOnly
     return;
   }
   // Sentinels of the outgoing blocks must be dropped before the new blocks register theirs.
-  groupObserver?.disconnect();
+  groupObserver.disconnect();
   el.digest.replaceChildren(...state.timeline.map((digest, index) => {
     // Keep the latest block compact; dates remain visible on loaded history blocks.
     const showDayHeading = index > 0;
@@ -1143,66 +1140,28 @@ const photoCredit = (item) => item.image?.credit || item.source || hostOf(item.u
 
 function openLightbox(figure) {
   lightbox ||= createLightbox();
-  document.body.classList.add("dialog-open");
-  if (!lightbox.dialog.open) {
-    lightbox.dialog.showModal();
-    // Focus the lightbox itself: the arrow keys work at once and no button shows a ring.
-    lightbox.dialog.focus();
-  }
+  lightbox.ui.open();
   showPhoto(figure);
 }
 
 function createLightbox() {
-  const dialog = document.createElement("dialog");
-  dialog.className = "lightbox";
-  dialog.tabIndex = -1;
   const figure = document.createElement("figure");
-  figure.className = "lightbox-figure";
+  figure.className = "viewer-stage";
   const image = document.createElement("img");
-  image.className = "lightbox-image";
-  image.decoding = "async";
-  image.referrerPolicy = "no-referrer";
   const caption = document.createElement("figcaption");
-  caption.className = "lightbox-caption";
+  caption.className = "viewer-caption";
   figure.append(image, caption);
-  const close = button("×", () => dialog.close(), "lightbox-button lightbox-close");
-  const previous = button("‹", () => stepPhoto(-1), "lightbox-button lightbox-previous");
-  const next = button("›", () => stepPhoto(1), "lightbox-button lightbox-next");
-  dialog.append(figure, close, previous, next);
-  dialog.addEventListener("close", () => document.body.classList.remove("dialog-open"));
-  dialog.addEventListener("click", (event) => {
-    if (event.target === dialog || event.target === figure) dialog.close();
-  });
-  dialog.addEventListener("keydown", (event) => {
-    if (event.key === "ArrowLeft") stepPhoto(-1);
-    else if (event.key === "ArrowRight") stepPhoto(1);
-  });
-  // Photographs loaded behind the open lightbox can bring its next arrow back.
-  new MutationObserver(() => { if (dialog.open) next.disabled = !neighborPhoto(1); })
-    .observe(el.digest, { childList: true, subtree: true });
-  const play = PublicPage.autoplay({
-    dialog,
+  const ui = PublicPage.viewer({
+    className: "is-solo",
+    frame: figure,
     image,
-    className: "lightbox-button",
-    next: () => stepPhoto(1),
+    root: el.digest,
+    step: stepPhoto,
+    neighbor: neighborPhoto,
     ahead: () => photoItems.get(neighborPhoto(1))?.image?.url,
-    names: () => ({ play: t().play, pause: t().pause }),
+    names: () => ({ play: t().play, pause: t().pause, close: t().close, previous: t().previous, next: t().next }),
   });
-  // A horizontal swipe turns the page on touch screens.
-  let start = null;
-  dialog.addEventListener("pointerdown", (event) => {
-    start = event.isPrimary ? { x: event.clientX, y: event.clientY } : null;
-  });
-  dialog.addEventListener("pointercancel", () => { start = null; });
-  dialog.addEventListener("pointerup", (event) => {
-    if (!start) return;
-    const dx = event.clientX - start.x;
-    const dy = event.clientY - start.y;
-    start = null;
-    if (Math.abs(dx) >= 48 && Math.abs(dx) > Math.abs(dy) * 1.2) stepPhoto(dx < 0 ? 1 : -1);
-  });
-  document.body.append(dialog);
-  return { dialog, image, caption, close, previous, next, play, current: null };
+  return { ui, image, caption, current: null };
 }
 
 // The photograph `offset` places from the open one. The lightbox remembers it by id: a
@@ -1224,23 +1183,14 @@ function stepPhoto(offset) {
 function showPhoto(figure) {
   const item = photoItems.get(figure);
   if (!item) return;
-  const { image, caption, close, previous, next, play } = lightbox;
+  const { image, caption, ui } = lightbox;
   lightbox.current = item.id;
   image.src = item.image?.url || "";
   image.alt = figure.querySelector("img")?.alt || "";
-  play.shown();
-  caption.replaceChildren(span(pick(item, "title"), "lightbox-title"));
+  caption.replaceChildren(span(pick(item, "title"), "viewer-caption-title"));
   const source = sourceLink(item.url, `${photoCredit(item)} ↗`);
   if (source) caption.append(source);
-  previous.disabled = !neighborPhoto(-1);
-  next.disabled = !neighborPhoto(1);
-  for (const [control, label] of [[close, t().close], [previous, t().previous], [next, t().next]]) {
-    control.setAttribute("aria-label", label);
-    control.title = label;
-  }
-  // The page follows behind: closing returns to this photograph, and its endless scrolling
-  // keeps loading the ones ahead.
-  figure.scrollIntoView({ block: "nearest", behavior: "instant" });
+  ui.shown(figure);
 }
 
 function imageNewsCard(item) {
@@ -1263,9 +1213,10 @@ function imageNewsCard(item) {
   element.addEventListener("error", () => link.remove(), { once: true });
   link.append(element);
   article.prepend(link);
-  // The headline follows the photograph; its caption and credit close the card.
+  // The headline follows the photograph; a caption that says more than the headline closes
+  // the card with its credit.
   const caption = pick(item.image, "caption");
-  if (caption) {
+  if (caption && caption !== pick(item, "title")) {
     const credit = item.image.credit ? ` · ${item.image.credit}` : "";
     article.append(span(`${caption}${credit}`, "image-news-caption"));
   }

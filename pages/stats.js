@@ -31,45 +31,22 @@
     }
   };
 
-  const referrer = canonicalize(document.referrer);
-  let currentUrl = "";
-  let generation = 0;
-
-  const track = () => {
-    const url = canonicalize(window.location.href);
-    if (!url || url === currentUrl) return;
-
-    const referer = currentUrl || referrer;
-    currentUrl = url;
-    const request = ++generation;
-    const counter = document.querySelector("[data-page-views]");
-    if (counter) counter.hidden = true;
-    void fetch(trackUrl, {
-      method: "POST",
-      credentials: "omit",
-      keepalive: true,
-      referrerPolicy: "no-referrer",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, referer }),
-    }).then(async (response) => {
-      if (!counter || !response.ok) return;
-      const { views } = await response.json();
-      if (request !== generation || !counter.isConnected || !Number.isSafeInteger(views) || views < 1) return;
-      counter.querySelector("[data-page-views-value]").textContent = new Intl.NumberFormat(document.documentElement.lang).format(views);
-      counter.hidden = false;
-    }).catch(() => {});
-  };
-
-  ["pushState", "replaceState"].forEach((method) => {
-    const original = history[method];
-    if (typeof original !== "function") return;
-    history[method] = function (...args) {
-      const result = original.apply(this, args);
-      track();
-      return result;
-    };
-  });
-
-  window.addEventListener("popstate", track);
-  track();
+  // One page view per page load; the news page changes only its query, which is not counted.
+  const url = canonicalize(window.location.href);
+  if (!url) return;
+  const counter = document.querySelector("[data-page-views]");
+  void fetch(trackUrl, {
+    method: "POST",
+    credentials: "omit",
+    keepalive: true,
+    referrerPolicy: "no-referrer",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url, referer: canonicalize(document.referrer) }),
+  }).then(async (response) => {
+    if (!counter || !response.ok) return;
+    const { views } = await response.json();
+    if (!counter.isConnected || !Number.isSafeInteger(views) || views < 1) return;
+    counter.querySelector("[data-page-views-value]").textContent = new Intl.NumberFormat(document.documentElement.lang).format(views);
+    counter.hidden = false;
+  }).catch(() => {});
 })();

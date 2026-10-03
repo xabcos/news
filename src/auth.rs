@@ -1,6 +1,7 @@
 use crate::{
     email::send_login_email,
     error::{ApiJson, AppError, Result},
+    runner::{CLEANUP_BATCH_SIZE, delete_in_batches},
     state::AppState,
 };
 use axum::{
@@ -21,8 +22,6 @@ const RATE_WINDOW_MAX: i64 = 3;
 const GLOBAL_RATE_WINDOW_SECONDS: i64 = 60;
 const GLOBAL_RATE_WINDOW_MAX: i64 = 120;
 const LOGIN_GLOBAL_LOCK_ID: i64 = 0x584e_4557_534c_4f43; // "XNEWSLOC"
-const CLEANUP_BATCH_SIZE: i64 = 500;
-const CLEANUP_MAX_BATCHES: usize = 20;
 /// Set beside the session cookie, but readable by the public page's script. It only decides
 /// which feed the page asks for first; that request is authorized by the session as usual.
 pub(crate) const ROLE_COOKIE_NAME: &str = "news_role";
@@ -364,74 +363,52 @@ pub async fn cleanup(state: &AppState) -> Result<()> {
 }
 
 async fn cleanup_expired_sessions(state: &AppState) -> Result<()> {
-    cleanup_in_batches(
-        state,
-        "sessions",
-        r#"
-        WITH expired AS (
-            SELECT token_hash
-            FROM sessions
-            WHERE expires_at <= NOW()
-            ORDER BY expires_at
-            LIMIT $1
-            FOR UPDATE SKIP LOCKED
+    delete_in_batches("sessions", || {
+        sqlx::query(
+            r#"
+            WITH expired AS (
+                SELECT token_hash
+                FROM sessions
+                WHERE expires_at <= NOW()
+                ORDER BY expires_at
+                LIMIT $1
+                FOR UPDATE SKIP LOCKED
+            )
+            DELETE FROM sessions
+            USING expired
+            WHERE sessions.token_hash = expired.token_hash
+            "#,
         )
-        DELETE FROM sessions
-        USING expired
-        WHERE sessions.token_hash = expired.token_hash
-        "#,
-    )
-    .await
+        .bind(CLEANUP_BATCH_SIZE)
+        .execute(&state.pool)
+    })
+    .await?;
+    Ok(())
 }
 
 async fn cleanup_login_tokens(state: &AppState) -> Result<()> {
     // Spent tokens are retained briefly so they still count toward the send-rate windows.
-    cleanup_in_batches(
-        state,
-        "email_login_tokens",
-        r#"
-        WITH expired AS (
-            SELECT token_hash
-            FROM email_login_tokens
-            WHERE (used_at IS NOT NULL OR expires_at <= NOW())
-              AND created_at <= NOW() - INTERVAL '10 minutes'
-            ORDER BY created_at
-            LIMIT $1
-            FOR UPDATE SKIP LOCKED
+    delete_in_batches("email_login_tokens", || {
+        sqlx::query(
+            r#"
+            WITH expired AS (
+                SELECT token_hash
+                FROM email_login_tokens
+                WHERE (used_at IS NOT NULL OR expires_at <= NOW())
+                  AND created_at <= NOW() - INTERVAL '10 minutes'
+                ORDER BY created_at
+                LIMIT $1
+                FOR UPDATE SKIP LOCKED
+            )
+            DELETE FROM email_login_tokens
+            USING expired
+            WHERE email_login_tokens.token_hash = expired.token_hash
+            "#,
         )
-        DELETE FROM email_login_tokens
-        USING expired
-        WHERE email_login_tokens.token_hash = expired.token_hash
-        "#,
-    )
-    .await
-}
-
-/// Deletes in bounded batches so a large backlog never holds locks for a whole pass.
-async fn cleanup_in_batches(
-    state: &AppState,
-    table: &'static str,
-    statement: &'static str,
-) -> Result<()> {
-    let mut total = 0;
-    for batch_index in 0..CLEANUP_MAX_BATCHES {
-        let deleted = sqlx::query(statement)
-            .bind(CLEANUP_BATCH_SIZE)
-            .execute(&state.pool)
-            .await?
-            .rows_affected();
-        total += deleted;
-        if deleted < CLEANUP_BATCH_SIZE as u64 {
-            return Ok(());
-        }
-        if batch_index + 1 == CLEANUP_MAX_BATCHES {
-            tracing::warn!(
-                table,
-                total,
-                "cleanup reached its per-run limit; remaining rows are deferred"
-            );
-        }
-    }
+        .bind(CLEANUP_BATCH_SIZE)
+        .execute(&state.pool)
+    })
+    .await?;
     Ok(())
 }
 

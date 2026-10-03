@@ -28,7 +28,7 @@ const CHROME: Chrome<'static> = Chrome {
     current: "reads",
     section: "reads",
     stylesheet: "/reads.css?v=6",
-    script: "/reads.js?v=4",
+    script: "/reads.js?v=6",
     feed: ("Reads", "/feed.xml?topic=reads"),
 };
 
@@ -107,7 +107,7 @@ async fn index(
 ) -> Result<Response> {
     let en = params.english();
     let page = params.page()?;
-    reader.check(&state, "reads").await?;
+    reader.check(&state, "reads")?;
     let hot = params.view.as_deref() == Some("hot");
     if hot && page != 1 {
         return Err(AppError::NotFound("页面不存在".into()));
@@ -221,8 +221,7 @@ async fn index(
         &content,
         None,
         &CHROME,
-    )
-    .await?;
+    );
     Ok(conditional(
         &headers,
         &Rendered::new(html),
@@ -237,7 +236,7 @@ async fn detail(
     Query(params): Query<Params>,
     headers: HeaderMap,
 ) -> Result<Response> {
-    reader.check(&state, "reads").await?;
+    reader.check(&state, "reads")?;
     let id = Uuid::parse_str(&id).map_err(|_| AppError::NotFound("文章不存在".into()))?;
     let mut query = sqlx::QueryBuilder::new("SELECT ");
     query
@@ -383,8 +382,7 @@ async fn detail(
         &content,
         Some(structured),
         &CHROME,
-    )
-    .await?;
+    );
     Ok(conditional(
         &headers,
         &Rendered::new(html),
@@ -509,14 +507,14 @@ async fn sitemap(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
             escape(&absolute(&state, &format!("/reads/sitemap/{page}")))
         );
     }
-    if crate::travel::listed(&state).await? {
+    if crate::travel::listed(&state) {
         let _ = write!(
             xml,
             "<sitemap><loc>{}</loc></sitemap>",
             escape(&absolute(&state, "/travel/sitemap.xml"))
         );
     }
-    for section in crate::catalog::listed(&state).await? {
+    for section in crate::catalog::listed(&state) {
         let _ = write!(
             xml,
             "<sitemap><loc>{}</loc></sitemap>",
@@ -557,10 +555,7 @@ async fn sitemap_page(
     }
     let mut xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">".to_owned();
     if page == 1 {
-        let catalog: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM topics WHERE id = 'llm' AND enabled AND visible AND owner_user_id IS NULL)")
-            .fetch_one(&state.pool)
-            .await?;
-        let listed: &[&str] = if catalog {
+        let listed: &[&str] = if Reader::Public.check(&state, crate::llm::TOPIC_ID).is_ok() {
             &["/llm", "/llm?lang=en"]
         } else {
             &[]

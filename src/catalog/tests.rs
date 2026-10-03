@@ -438,6 +438,7 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
         .copied()
         .collect();
     sqlx::query("UPDATE topics SET enabled=true,visible=true,last_run_at=NULL,last_status=NULL WHERE id=ANY($1)").bind(&everything).execute(&pool).await.unwrap();
+    state.digest.reload_topics(&state).await.unwrap();
     let topics: Vec<Topic> = sqlx::query_as("SELECT * FROM topics WHERE id=ANY($1)")
         .bind(Section::Culture.topics())
         .fetch_all(&pool)
@@ -570,7 +571,7 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
     .unwrap();
     assert_eq!(results[0]["unchanged"], true);
     assert_eq!(calls.lock().unwrap().len(), before);
-    // An unavailable source keeps the published guide and its retry budget, but rotates the queue.
+    // An unavailable source keeps the published guide and counts as an attempt.
     sqlx::query("UPDATE catalog_entries SET source_urls=$2, checked_at=NOW()-INTERVAL '8 days', attempts=1 WHERE id=$1")
         .bind(id).bind(json!([format!("{base}/unavailable")])).execute(&pool).await.unwrap();
     let results = guides(
@@ -586,7 +587,7 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
     let (checked, attempts, published): (bool, i16, bool) = sqlx::query_as(
         "SELECT checked_at > NOW()-INTERVAL '1 minute', attempts, guide IS NOT NULL FROM catalog_entries WHERE id=$1",
     ).bind(id).fetch_one(&pool).await.unwrap();
-    assert_eq!((checked, attempts, published), (true, 1, true));
+    assert_eq!((checked, attempts, published), (true, 2, true));
     assert_eq!(calls.lock().unwrap().len(), before);
     // The briefing has no work to collect when only Culture is enabled.
     sqlx::query("UPDATE topics SET enabled=(id=ANY($1))")
@@ -594,6 +595,7 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
         .execute(&pool)
         .await
         .unwrap();
+    state.digest.reload_topics(&state).await.unwrap();
     crate::runner::collect_briefing(
         &state,
         NewsWindow {
@@ -609,6 +611,7 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
         .execute(&pool)
         .await
         .unwrap();
+    state.digest.reload_topics(&state).await.unwrap();
     assert_eq!(get("/culture/book".into()).await.status(), 404);
     assert_eq!(get(format!("/culture/book/{slug}")).await.status(), 404);
     assert!(
@@ -648,6 +651,7 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
     // 𝑮𝒂𝒅𝒈𝒆𝒕𝒔: a review and a reader's post join an official product, a rumor stays news.
     sqlx::query("UPDATE topics SET enabled=true, visible=true, brief = brief || ' culture.example' WHERE id=ANY($1)")
         .bind(Section::Gadgets.topics()).execute(&pool).await.unwrap();
+    state.digest.reload_topics(&state).await.unwrap();
     let eink: Topic = sqlx::query_as("SELECT * FROM topics WHERE id='eink'")
         .fetch_one(&pool)
         .await
@@ -779,6 +783,7 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
         .execute(&pool)
         .await
         .unwrap();
+    state.digest.reload_topics(&state).await.unwrap();
     crate::runner::collect_briefing(
         &state,
         NewsWindow {

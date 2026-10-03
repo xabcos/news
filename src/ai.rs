@@ -2,7 +2,7 @@ use crate::{
     error::{AppError, Result},
     state::AppState,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::time::Duration;
 
 const MAX_ERROR: usize = 300;
@@ -46,6 +46,17 @@ pub(crate) async fn request(state: &AppState, body: Value) -> Result<Value> {
     }
 }
 
+/// A strict JSON Schema object: every property is required and no other is allowed.
+pub(crate) fn object(properties: Value) -> Value {
+    let required: Vec<_> = properties
+        .as_object()
+        .expect("schema properties")
+        .keys()
+        .cloned()
+        .collect();
+    json!({"type": "object", "additionalProperties": false, "required": required, "properties": properties})
+}
+
 pub(crate) fn parse_payload(reply: &Value) -> Result<Value> {
     if let Some(error) = reply.get("error").filter(|error| !error.is_null()) {
         let message: String = error.to_string().chars().take(MAX_ERROR).collect();
@@ -79,7 +90,6 @@ pub(crate) fn parse_payload(reply: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn reads_the_final_result_after_search_drafts() {

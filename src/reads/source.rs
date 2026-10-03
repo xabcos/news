@@ -1,12 +1,16 @@
 use super::invalid_source;
-use crate::{error::Result, media::is_public_origin, state::AppState};
+use crate::{
+    error::Result,
+    media::{self, is_public_origin},
+    state::AppState,
+};
 use reqwest::header::USER_AGENT;
 use scraper::{ElementRef, Html, Node, Selector};
 use serde::Deserialize;
 use std::time::Duration;
 use url::Url;
 
-const MAX_BYTES: usize = 2 * 1024 * 1024;
+const MAX_BYTES: u64 = 2 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) struct Source {
@@ -47,69 +51,29 @@ pub(crate) async fn download(
     if !is_public_origin(&url) {
         return Err(invalid_source("原文必须是公开 HTTPS 地址"));
     }
-    let max_bytes = match content {
-        Content::Image(limit) => limit,
-        _ => MAX_BYTES,
+    let (types, max_bytes): (&[&'static str], u64) = match content {
+        Content::Image(limit) => (&media::IMAGE_TYPES, limit as u64),
+        Content::Json => (&["application/json"], MAX_BYTES),
+        Content::Html => (&["text/html", "application/xhtml+xml"], MAX_BYTES),
+        Content::Feed => (
+            &[
+                "application/rss+xml",
+                "application/atom+xml",
+                "application/xml",
+                "text/xml",
+                "application/feed+json",
+                "application/json",
+            ],
+            MAX_BYTES,
+        ),
     };
-    let mut response = state
-        .origin_http
-        .get(url)
-        .timeout(TIMEOUT)
-        .header(
-            USER_AGENT,
-            "XABCNews-Reads/1.0 (+https://xabcnews.com/reads)",
-        )
-        .send()
-        .await?
-        .error_for_status()?;
-    let url = response.url().clone();
-    let content_type = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("");
-    let accepted = match content {
-        Content::Image(_) => [
-            "image/png",
-            "image/jpeg",
-            "image/webp",
-            "image/gif",
-            "image/avif",
-            "image/bmp",
-        ]
-        .contains(&content_type.split(';').next().unwrap_or("").trim()),
-        Content::Json => content_type.starts_with("application/json"),
-        Content::Html => {
-            content_type.starts_with("text/html")
-                || content_type.starts_with("application/xhtml+xml")
-        }
-        Content::Feed => [
-            "application/rss+xml",
-            "application/atom+xml",
-            "application/xml",
-            "text/xml",
-            "application/feed+json",
-            "application/json",
-        ]
-        .iter()
-        .any(|kind| content_type.starts_with(kind)),
-    };
-    if !accepted {
-        return Err(invalid_source("原文不是可读取的网页"));
-    }
-    if response
-        .content_length()
-        .is_some_and(|size| size > max_bytes as u64)
-    {
-        return Err(invalid_source("原文网页过大"));
-    }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
-        if bytes.len() + chunk.len() > max_bytes {
-            return Err(invalid_source("原文网页过大"));
-        }
-        bytes.extend_from_slice(&chunk);
-    }
+    let request = state.origin_http.get(url).timeout(TIMEOUT).header(
+        USER_AGENT,
+        "XABCNews-Reads/1.0 (+https://xabcnews.com/reads)",
+    );
+    let (url, _, bytes) = media::read_bounded(request, types, max_bytes)
+        .await
+        .map_err(|refused| refused.error("原文"))?;
     Ok((url, bytes))
 }
 

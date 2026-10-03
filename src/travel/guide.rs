@@ -6,7 +6,6 @@
 
 use super::{TOPIC_ID, place::fold};
 use crate::{error::Result, fetch::Usage, reads, state::AppState, topics::Topic};
-use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
@@ -227,21 +226,13 @@ pub(super) async fn write(
             }
         }
     }
-    let days = sqlx::query_scalar::<_, NaiveDate>(
-        "SELECT DISTINCT i.day FROM travel_moments m JOIN items i ON i.id = m.item_id
-         WHERE m.place_id = ANY($1)",
-    )
-    .bind(&written)
-    .fetch_all(&state.pool)
-    .await?;
-    if !days.is_empty() {
+    if !written.is_empty() {
+        // Moments link to their destination's guide; their days load again when asked for.
         sqlx::query("UPDATE topics SET feed_revision = feed_revision + 1 WHERE id = $1")
             .bind(TOPIC_ID)
             .execute(&state.pool)
             .await?;
-        for day in days {
-            state.digest.refresh(state, TOPIC_ID, day).await?;
-        }
+        state.digest.forget_topic(TOPIC_ID).await;
     }
     Ok(outcomes)
 }

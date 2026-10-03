@@ -64,6 +64,7 @@ pub(crate) async fn pages(
         .execute(&state.pool)
         .await
         .unwrap();
+    state.digest.reload_topics(state).await.unwrap();
     let mut bodies = Vec::new();
     for path in paths {
         assert_eq!(
@@ -120,6 +121,7 @@ pub(crate) async fn pages(
         .execute(&state.pool)
         .await
         .unwrap();
+    state.digest.reload_topics(state).await.unwrap();
     for path in paths {
         assert_eq!(
             http.get(format!("{base}{PREFIX}{path}"))
@@ -138,6 +140,7 @@ pub(crate) async fn pages(
         .execute(&state.pool)
         .await
         .unwrap();
+    state.digest.reload_topics(state).await.unwrap();
     bodies
 }
 
@@ -157,6 +160,7 @@ pub(crate) async fn feed(state: &AppState) {
         .execute(&state.pool)
         .await
         .unwrap();
+    state.digest.reload_topics(state).await.unwrap();
     sqlx::query("DELETE FROM items WHERE topic_id='w'")
         .execute(&state.pool)
         .await
@@ -206,7 +210,6 @@ pub(crate) async fn feed(state: &AppState) {
         }
     }
     // A private response fills the very same snapshots that the public handler then reads.
-    let before = state.digest.stats().database_loads;
     let response = preview("/digest?topic=preview-shared").await.unwrap();
     assert_eq!(response.status(), 200);
     assert_eq!(response.headers()["cache-control"], "private, no-store");
@@ -216,8 +219,13 @@ pub(crate) async fn feed(state: &AppState) {
             .contains_key("access-control-allow-origin")
     );
     let warmed = response.json::<Value>().await.unwrap();
-    let loads = state.digest.stats().database_loads;
-    assert!(loads > before);
+    // A change made behind the cache's back shows that the public read reuses the snapshot.
+    sqlx::query(
+        "UPDATE items SET title='Changed behind the cache' WHERE topic_id='preview-shared'",
+    )
+    .execute(&state.pool)
+    .await
+    .unwrap();
     let response = http
         .get(format!("{base}/digest?topic=preview-shared"))
         .send()
@@ -230,7 +238,6 @@ pub(crate) async fn feed(state: &AppState) {
             .starts_with("public,")
     );
     assert_eq!(response.json::<Value>().await.unwrap(), warmed);
-    assert_eq!(state.digest.stats().database_loads, loads);
 
     let days = preview("/days?topic=w")
         .await

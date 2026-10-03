@@ -746,7 +746,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             .fetch_all(&state.pool)
             .await
             .unwrap();
-    assert_eq!(migrations, [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(migrations, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
     sqlx::query("INSERT INTO topics (id,name,brief,enabled) VALUES ('inactive','Inactive','Inactive',false)")
         .execute(&state.pool).await.unwrap();
     sqlx::query("TRUNCATE items, runs, ai_insights CASCADE")
@@ -755,6 +755,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         .unwrap();
     sqlx::query("UPDATE topics SET enabled = id IN ('x','p','china-ai','overseas-ai','gossip','github','events','cases','issues'), brief=id, last_run_at=NULL, last_status=NULL, daily_run_cap=24")
         .execute(&state.pool).await.unwrap();
+    state.digest.reload_topics(&state).await.unwrap();
     let private_topic = format!("audit-{}", &Uuid::new_v4().simple().to_string()[..12]);
     let owner: i64 = sqlx::query_scalar("INSERT INTO users (email) VALUES ($1) RETURNING id")
         .bind(format!("{private_topic}@example.com"))
@@ -996,6 +997,20 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         .execute(&state.pool)
         .await
         .unwrap();
+    // Three failures of one edition end the automatic retries.
+    let earlier = [Uuid::new_v4(), Uuid::new_v4()];
+    for id in earlier {
+        sqlx::query("INSERT INTO ai_insights (id,kind,status,briefing_day,window_start,window_end,started_at,finished_at,model,error) SELECT $1,kind,status,briefing_day,window_start,window_end,started_at,finished_at,model,'earlier failure' FROM ai_insights WHERE id=$2")
+            .bind(id).bind(failed_id).execute(&state.pool).await.unwrap();
+    }
+    tick(&state).await.unwrap();
+    assert!(!is_running(&state));
+    assert_eq!(call_count() - before, 0);
+    sqlx::query("DELETE FROM ai_insights WHERE id=ANY($1)")
+        .bind(&earlier[..])
+        .execute(&state.pool)
+        .await
+        .unwrap();
     fail_analysis.store(false, Ordering::Relaxed);
     tick(&state).await.unwrap();
     wait_for_generation(&state).await;
@@ -1137,6 +1152,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         .bind(window.start)
         .bind(end)
         .bind(4_i64)
+        .bind(super::outside_briefing())
         .fetch_all(&state.pool)
         .await
         .unwrap();

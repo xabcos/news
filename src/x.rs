@@ -1,7 +1,12 @@
 //! Public X data shared by the photograph topics: post records from X's embed endpoint, which
 //! needs no account, and the addresses of posts and their photographs.
 
-use crate::{error::Result, reads, state::AppState};
+use crate::{
+    error::Result,
+    fetch::{MAX_SOURCE, NewItem, NewsWindow},
+    reads,
+    state::AppState,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, de::IgnoredAny};
 use url::Url;
@@ -70,6 +75,33 @@ impl Post {
                 .media
                 .iter()
                 .any(|media| media.sensitive_media_warning.is_some())
+    }
+
+    /// What every X feed checks before taking a post: a real author, no sensitive mark, and
+    /// a time inside the window. Returns the post's address and credit line.
+    pub(crate) fn admit(
+        &self,
+        id: &str,
+        window: NewsWindow,
+    ) -> std::result::Result<(String, String), &'static str> {
+        let account = self.account().ok_or("X 帖子作者无效")?;
+        if self.sensitive() {
+            return Err("X 标记为敏感内容");
+        }
+        if !window.contains(self.created_at) {
+            return Err("发布时间不在采集窗口内");
+        }
+        Ok((
+            format!("https://x.com/{account}/status/{id}"),
+            format!("{} @{account}", self.user.name.trim()),
+        ))
+    }
+
+    /// Rewrites the item with X's record of the post: its address, author and time.
+    pub(crate) fn adopt(&self, item: &mut NewItem, url: String) {
+        item.url = url;
+        item.source = self.user.name.trim().chars().take(MAX_SOURCE).collect();
+        item.published_at = Some(self.created_at);
     }
 
     /// The photographs in the post's order with their media keys.

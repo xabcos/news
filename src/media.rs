@@ -5,7 +5,11 @@
 //! browser therefore receives only the capability URL returned by tmpfile; the original
 //! image URL is retained in the stored metadata so a later startup can renew it.
 
-use crate::{error::Result, fetch::NewsImage, state::AppState};
+use crate::{
+    error::{AppError, Result},
+    fetch::NewsImage,
+    state::AppState,
+};
 use chrono::{DateTime, TimeDelta, Utc};
 use reqwest::{
     dns::{Addrs, Name, Resolve, Resolving},
@@ -245,141 +249,129 @@ pub(crate) async fn upload_image(
     })
 }
 
-/// Bounded HTTPS download shared by browser mirroring and model input preparation.
+/// Image types the mirror keeps, in the order it asks for them.
+pub(crate) const IMAGE_TYPES: [&str; 6] = [
+    "image/avif",
+    "image/webp",
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/bmp",
+];
+
+/// Why a bounded download was refused.
+pub(crate) enum Refused {
+    Request(reqwest::Error),
+    Type,
+    Size,
+}
+
+impl Refused {
+    /// The error for a download of `what`, such as "原文".
+    pub(crate) fn error(self, what: &str) -> AppError {
+        match self {
+            Self::Request(error) => error.into(),
+            Self::Type => AppError::BadRequest(format!("{what}的内容类型不符").into()),
+            Self::Size => AppError::BadRequest(format!("{what}过大").into()),
+        }
+    }
+}
+
+/// Sends a request built on `origin_http` and reads a successful response whose media type is
+/// one of `types`, compared without case (`image/jpg` counts as `image/jpeg`), up to
+/// `max_bytes`. Returns the final address, the matched type and the body.
+pub(crate) async fn read_bounded(
+    request: reqwest::RequestBuilder,
+    types: &[&'static str],
+    max_bytes: u64,
+) -> std::result::Result<(Url, &'static str, Vec<u8>), Refused> {
+    let mut response = request
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(Refused::Request)?;
+    let media_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(|value| value.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    let media_type = if media_type == "image/jpg" {
+        "image/jpeg"
+    } else {
+        media_type.as_str()
+    };
+    let matched = types
+        .iter()
+        .copied()
+        .find(|kind| *kind == media_type)
+        .ok_or(Refused::Type)?;
+    if response
+        .content_length()
+        .is_some_and(|size| size > max_bytes)
+    {
+        return Err(Refused::Size);
+    }
+    let url = response.url().clone();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(Refused::Request)? {
+        if (bytes.len() + chunk.len()) as u64 > max_bytes {
+            return Err(Refused::Size);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok((url, matched, bytes))
+}
+
+/// An image for browser mirroring or model input, or `None` with the reason logged.
 pub(crate) async fn download_image(
     state: &AppState,
     url: &str,
     accept: &str,
 ) -> Option<(Vec<u8>, &'static str)> {
-    let mut response = match state
+    let request = state
         .origin_http
         .get(url)
         .header(header::USER_AGENT, "xabcnews.com image mirror")
-        .header(header::ACCEPT, accept)
-        .send()
-        .await
-    {
-        Ok(response) if response.status().is_success() => response,
-        Ok(response) => {
-            tracing::debug!(status = %response.status(), url = %url, "news image download failed");
-            return None;
+        .header(header::ACCEPT, accept);
+    match read_bounded(request, &IMAGE_TYPES, state.config.image_max_bytes).await {
+        Ok((_, content_type, bytes)) => Some((bytes, content_type)),
+        Err(refused) => {
+            let reason = match refused {
+                Refused::Request(error) => error.to_string(),
+                Refused::Type => "unsupported content type".into(),
+                Refused::Size => "exceeds the configured size limit".into(),
+            };
+            tracing::debug!(url = %url, %reason, "news image download failed");
+            None
         }
-        Err(error) => {
-            tracing::debug!(%error, url = %url, "news image download failed");
-            return None;
-        }
-    };
-    let content_type = response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(normalize_content_type);
-    let Some(content_type) = content_type else {
-        tracing::debug!(url = %url, "news image has an unsupported content type");
-        return None;
-    };
-    if response
-        .content_length()
-        .is_some_and(|size| size > state.config.image_max_bytes)
-    {
-        tracing::debug!(url = %url, "news image exceeds configured size limit");
-        return None;
     }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = match response.chunk().await {
-        Ok(chunk) => chunk,
-        Err(error) => {
-            tracing::debug!(%error, url = %url, "reading news image failed");
-            return None;
-        }
-    } {
-        if bytes.len().saturating_add(chunk.len()) as u64 > state.config.image_max_bytes {
-            tracing::debug!(url = %url, "news image exceeds configured size limit");
-            return None;
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    Some((bytes, content_type))
 }
 
 fn image_is_usable(bytes: &[u8]) -> bool {
-    bytes.len() >= MIN_IMAGE_BYTES
-        && !image_dimensions(bytes).is_some_and(|(width, height)| {
+    usable(bytes.len(), image_dimensions(bytes))
+}
+
+/// Large enough, and not so compressible that it is a flat placeholder.
+fn usable(size: usize, dimensions: Option<(u32, u32)>) -> bool {
+    size >= MIN_IMAGE_BYTES
+        && !dimensions.is_some_and(|(width, height)| {
             width < MIN_IMAGE_DIMENSION
                 || height < MIN_IMAGE_DIMENSION
-                || (bytes.len() as u64) * 1000
+                || (size as u64) * 1000
                     < u64::from(width) * u64::from(height) * MIN_BYTES_PER_KILOPIXEL
         })
 }
 
-/// Reads dimensions from the formats accepted above without decoding or trusting image
-/// metadata. Unknown formats are allowed through; the byte-size guard still rejects the
-/// tiny placeholder class this protects against.
+/// Dimensions from the image header, without decoding the pixels. Formats the `image` crate
+/// is built without (AVIF, BMP) give `None`; the byte-size guard still applies to them.
 pub(crate) fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() >= 24 {
-        return Some((
-            u32::from_be_bytes(bytes[16..20].try_into().ok()?),
-            u32::from_be_bytes(bytes[20..24].try_into().ok()?),
-        ));
-    }
-    if (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")) && bytes.len() >= 10 {
-        return Some((
-            u16::from_le_bytes(bytes[6..8].try_into().ok()?) as u32,
-            u16::from_le_bytes(bytes[8..10].try_into().ok()?) as u32,
-        ));
-    }
-    if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
-        let chunk = bytes.get(12..16)?;
-        if chunk == b"VP8X" && bytes.len() >= 30 {
-            let width = 1 + u32::from_le_bytes([bytes[24], bytes[25], bytes[26], 0]);
-            let height = 1 + u32::from_le_bytes([bytes[27], bytes[28], bytes[29], 0]);
-            return Some((width, height));
-        }
-        if chunk == b"VP8 " {
-            let start = bytes
-                .windows(3)
-                .position(|window| window == b"\x9d\x01\x2a")?;
-            let start = start + 3;
-            if bytes.len() >= start + 4 {
-                let width = u16::from_le_bytes(bytes[start..start + 2].try_into().ok()?) & 0x3fff;
-                let height =
-                    u16::from_le_bytes(bytes[start + 2..start + 4].try_into().ok()?) & 0x3fff;
-                return Some((u32::from(width), u32::from(height)));
-            }
-        }
-    }
-    if bytes.starts_with(b"\xff\xd8") {
-        let mut index = 2;
-        while index + 9 < bytes.len() {
-            if bytes[index] != 0xff {
-                index += 1;
-                continue;
-            }
-            while index < bytes.len() && bytes[index] == 0xff {
-                index += 1;
-            }
-            let marker = *bytes.get(index)?;
-            index += 1;
-            if marker == 0xd8 || marker == 0xd9 || (0xd0..=0xd7).contains(&marker) {
-                continue;
-            }
-            let length = u16::from_be_bytes(bytes.get(index..index + 2)?.try_into().ok()?) as usize;
-            if length < 2 || index + length > bytes.len() {
-                return None;
-            }
-            if (0xc0..=0xc3).contains(&marker)
-                || (0xc5..=0xc7).contains(&marker)
-                || (0xc9..=0xcb).contains(&marker)
-                || (0xcd..=0xcf).contains(&marker)
-            {
-                let height = u16::from_be_bytes(bytes.get(index + 3..index + 5)?.try_into().ok()?);
-                let width = u16::from_be_bytes(bytes.get(index + 5..index + 7)?.try_into().ok()?);
-                return Some((u32::from(width), u32::from(height)));
-            }
-            index += length;
-        }
-    }
-    None
+    image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
 }
 
 pub(crate) fn is_public_https_url(url: &Url) -> bool {
@@ -484,19 +476,6 @@ fn same_http_to_https_authority(left: &Url, right: &Url) -> bool {
     left.host_str() == right.host_str()
         && left.port_or_known_default() == Some(80)
         && right.port_or_known_default() == Some(443)
-}
-
-fn normalize_content_type(value: &str) -> Option<&'static str> {
-    let value = value.split(';').next()?.trim().to_ascii_lowercase();
-    match value.as_str() {
-        "image/avif" => Some("image/avif"),
-        "image/webp" => Some("image/webp"),
-        "image/jpeg" | "image/jpg" => Some("image/jpeg"),
-        "image/png" => Some("image/png"),
-        "image/gif" => Some("image/gif"),
-        "image/bmp" => Some("image/bmp"),
-        _ => None,
-    }
 }
 
 fn extension_for(content_type: &str) -> &'static str {
@@ -680,33 +659,6 @@ pub async fn startup_sync(state: &AppState) -> Result<()> {
     Ok(())
 }
 
-/// The photograph topics, 𝑾 and 𝑻𝒓𝒂𝒗𝒆𝒍, show what the file server still keeps: an item
-/// leaves once its photograph's stored copy has expired and will not be renewed again. Copies
-/// of the recent days are renewed by `startup_sync`, even after an outage let them lapse, so
-/// those stay.
-pub(crate) async fn prune_lapsed(state: &AppState, topic: &str) -> Result<()> {
-    let renewed_from = state.digest.today() - chrono::Duration::days(RENEW_DAYS);
-    let days = sqlx::query_scalar::<_, chrono::NaiveDate>(
-        "WITH gone AS (
-             DELETE FROM items
-             WHERE topic_id = $1 AND day < $2 AND (image->>'expires_at')::timestamptz <= NOW()
-             RETURNING day
-         ), revised AS (
-             UPDATE topics SET feed_revision = feed_revision + 1
-             WHERE id = $1 AND EXISTS (SELECT 1 FROM gone)
-         )
-         SELECT DISTINCT day FROM gone",
-    )
-    .bind(topic)
-    .bind(renewed_from)
-    .fetch_all(&state.pool)
-    .await?;
-    for day in days {
-        state.digest.refresh(state, topic, day).await?;
-    }
-    Ok(())
-}
-
 pub(crate) fn stored_image(value: &Value) -> Option<NewsImage> {
     serde_json::from_value(value.clone()).ok()
 }
@@ -805,27 +757,46 @@ mod tests {
         assert!(error.is_dns(), "{error:?}");
     }
 
+    /// A picture of the given size: noise, which compresses like a photograph, or one flat
+    /// colour, which compresses like a placeholder.
+    fn picture(format: image::ImageFormat, width: u32, height: u32, noise: bool) -> Vec<u8> {
+        let pixels = image::RgbImage::from_fn(width, height, |x, y| {
+            let n = if noise {
+                x.wrapping_mul(1_664_525)
+                    .wrapping_add(y.wrapping_mul(1_013_904_223))
+            } else {
+                0x0080_8080
+            };
+            image::Rgb([n as u8, (n >> 8) as u8, (n >> 16) as u8])
+        });
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(pixels)
+            .write_to(&mut bytes, format)
+            .unwrap();
+        bytes.into_inner()
+    }
+
     #[test]
     fn rejects_tiny_placeholder_dimensions() {
-        let mut png = vec![0; 4096];
-        png[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
-        png[19] = 220;
-        png[23] = 220;
-        assert_eq!(image_dimensions(&png), Some((220, 220)));
-        assert!(!image_is_usable(&png));
-        png[18] = 2;
-        png[19] = 128;
-        png[22] = 2;
-        png[23] = 128;
-        assert_eq!(image_dimensions(&png), Some((640, 640)));
-        assert!(image_is_usable(&png));
+        let small = picture(image::ImageFormat::Png, 220, 220, true);
+        assert_eq!(image_dimensions(&small), Some((220, 220)));
+        assert!(!image_is_usable(&small));
+        for format in [
+            image::ImageFormat::Png,
+            image::ImageFormat::Jpeg,
+            image::ImageFormat::WebP,
+            image::ImageFormat::Gif,
+        ] {
+            let photo = picture(format, 640, 480, true);
+            assert_eq!(image_dimensions(&photo), Some((640, 480)), "{format:?}");
+            assert!(image_is_usable(&photo), "{format:?}");
+        }
         // A large picture that compresses to almost nothing is a placeholder too.
-        png[18] = 4;
-        png[19] = 176;
-        png[22] = 2;
-        png[23] = 88;
-        assert_eq!(image_dimensions(&png), Some((1200, 600)));
-        assert!(!image_is_usable(&png));
+        let flat = picture(image::ImageFormat::WebP, 1200, 600, false);
+        assert_eq!(image_dimensions(&flat), Some((1200, 600)));
+        assert!(!image_is_usable(&flat));
+        assert!(!usable(5_000, Some((1200, 600))));
+        assert!(usable(5_000, None));
     }
 
     #[test]

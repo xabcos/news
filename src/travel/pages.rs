@@ -10,7 +10,7 @@ use crate::{
     digest::{Rendered, conditional},
     error::{AppError, Result},
     reading::{self, Reader},
-    site::{Chrome, absolute, choose, escape, localized},
+    site::{After, Chrome, absolute, choose, escape, localized, next_page, parse_after, push_page},
     state::AppState,
 };
 use axum::{
@@ -30,14 +30,13 @@ const CHROME: Chrome<'static> = Chrome {
     current: TOPIC_ID,
     section: "travel",
     stylesheet: "/travel.css?v=3",
-    script: "/travel.js?v=4",
+    script: "/travel.js?v=6",
     feed: ("𝑻𝒓𝒂𝒗𝒆𝒍", "/feed.xml?topic=travel"),
 };
 /// Destinations on the map: those with moments from this many recent days.
 const MAP_DAYS: i64 = 7;
 /// Moments per page of a destination, newest first.
 const PAGE_MOMENTS: usize = 24;
-const VISIBLE: &str = "EXISTS (SELECT 1 FROM topics WHERE id = 'travel' AND enabled AND visible AND owner_user_id IS NULL)";
 
 pub(crate) fn router() -> Router<AppState> {
     reading::pages(
@@ -86,7 +85,7 @@ async fn destination(
     Query(params): Query<Params>,
     headers: HeaderMap,
 ) -> Result<Response> {
-    reader.check(&state, TOPIC_ID).await?;
+    reader.check(&state, TOPIC_ID)?;
     let en = params.lang.as_deref() == Some("en");
     let missing = || AppError::NotFound("目的地不存在".into());
     let place = sqlx::QueryBuilder::new(
@@ -259,8 +258,7 @@ async fn destination(
         &content,
         Some(structured),
         &CHROME,
-    )
-    .await?;
+    );
     Ok(conditional(
         &headers,
         &Rendered::new(html),
@@ -340,7 +338,7 @@ fn guide_sections(guide: &Guide, en: bool) -> String {
 async fn moments(
     state: &AppState,
     slug: &str,
-    before: Option<(DateTime<Utc>, Uuid)>,
+    before: Option<After>,
 ) -> Result<(Vec<Value>, Option<String>)> {
     let mut query = sqlx::QueryBuilder::new(
         "SELECT items.first_seen_at, items.id, jsonb_build_object('id', items.id,
@@ -358,25 +356,12 @@ async fn moments(
         .push_bind(TOPIC_ID)
         .push(" AND NOT items.hidden AND p.slug = ")
         .push_bind(slug);
-    if let Some((time, id)) = before {
-        query
-            .push(" AND (items.first_seen_at, items.id) < (")
-            .push_bind(time)
-            .push(", ")
-            .push_bind(id)
-            .push(")");
-    }
+    push_page(&mut query, before, PAGE_MOMENTS);
     let mut rows = query
-        .push(" ORDER BY items.first_seen_at DESC, items.id DESC LIMIT ")
-        .push_bind(PAGE_MOMENTS as i64 + 1)
         .build_query_as::<(DateTime<Utc>, Uuid, Value)>()
         .fetch_all(&state.pool)
         .await?;
-    let next = (rows.len() > PAGE_MOMENTS).then(|| {
-        rows.truncate(PAGE_MOMENTS);
-        let (time, id, _) = &rows[PAGE_MOMENTS - 1];
-        format!("{}_{id}", time.timestamp_micros())
-    });
+    let next = next_page(&mut rows, PAGE_MOMENTS, |(time, id, _)| (*time, *id));
     Ok((rows.into_iter().map(|(.., moment)| moment).collect(), next))
 }
 
@@ -388,16 +373,9 @@ async fn more(
     Query(page): Query<Page>,
     headers: HeaderMap,
 ) -> Result<Response> {
-    let invalid = || AppError::BadRequest("分页参数无效".into());
-    let (time, id) = page.before.split_once('_').ok_or_else(invalid)?;
-    let time = time
-        .parse()
-        .ok()
-        .and_then(DateTime::from_timestamp_micros)
-        .ok_or_else(invalid)?;
-    let id = Uuid::parse_str(id).map_err(|_| invalid())?;
-    reader.check(&state, TOPIC_ID).await?;
-    let (moments, next) = moments(&state, &slug, Some((time, id))).await?;
+    let after = parse_after(&page.before)?;
+    reader.check(&state, TOPIC_ID)?;
+    let (moments, next) = moments(&state, &slug, Some(after)).await?;
     Ok(conditional(
         &headers,
         &Rendered::new(json!({ "moments": moments, "next": next }).to_string()),
@@ -422,7 +400,7 @@ async fn map(
     reader: Reader,
     headers: HeaderMap,
 ) -> Result<Response> {
-    reader.check(&state, TOPIC_ID).await?;
+    reader.check(&state, TOPIC_ID)?;
     let since = state.digest.today() - chrono::Duration::days(MAP_DAYS - 1);
     let places = sqlx::QueryBuilder::new(
         "SELECT COALESCE(jsonb_agg(jsonb_build_object('slug', p.slug, 'name', p.name,
@@ -449,14 +427,15 @@ async fn map(
 
 /// Destination pages with a guide, in both languages.
 async fn sitemap(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
-    let rows = sqlx::QueryBuilder::new(
-        "SELECT slug, guide_at FROM travel_places WHERE guide_at IS NOT NULL AND ",
-    )
-    .push(VISIBLE)
-    .push(" ORDER BY slug LIMIT 25000")
-    .build_query_as::<(String, DateTime<Utc>)>()
-    .fetch_all(&state.pool)
-    .await?;
+    let rows = if listed(&state) {
+        sqlx::query_as::<_, (String, DateTime<Utc>)>(
+            "SELECT slug, guide_at FROM travel_places WHERE guide_at IS NOT NULL ORDER BY slug LIMIT 25000",
+        )
+        .fetch_all(&state.pool)
+        .await?
+    } else {
+        Vec::new()
+    };
     let mut xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">".to_owned();
     for (slug, time) in rows {
         for en in [false, true] {
@@ -480,10 +459,6 @@ async fn sitemap(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
 }
 
 /// Whether the sitemap index lists the destinations.
-pub(crate) async fn listed(state: &AppState) -> Result<bool> {
-    Ok(sqlx::QueryBuilder::new("SELECT ")
-        .push(VISIBLE)
-        .build_query_scalar()
-        .fetch_one(&state.pool)
-        .await?)
+pub(crate) fn listed(state: &AppState) -> bool {
+    Reader::Public.check(state, TOPIC_ID).is_ok()
 }

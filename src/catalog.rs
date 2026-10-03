@@ -584,8 +584,8 @@ pub(crate) async fn guides(
                 outcomes.push(json!({"entry":id,"unchanged":true}));
             }
             Ok(Ok(Composed::Unavailable)) => {
-                // Unreadable drafts rotate behind new entries instead of occupying every slot.
-                sqlx::query("UPDATE catalog_entries SET checked_at = NOW() WHERE id = $1")
+                // Unreadable sources count as an attempt; new sources from `attach` reset it.
+                sqlx::query("UPDATE catalog_entries SET checked_at = NOW(), attempts = attempts + 1 WHERE id = $1")
                     .bind(id)
                     .execute(&state.pool)
                     .await?;
@@ -606,15 +606,12 @@ pub(crate) async fn guides(
         }
     }
     if !changed.is_empty() {
+        // Cards name their entry; their days load again when asked for.
         sqlx::query("UPDATE topics SET feed_revision = feed_revision + 1 WHERE id = $1")
             .bind(&topic.id)
             .execute(&state.pool)
             .await?;
-        let days: Vec<chrono::NaiveDate> = sqlx::query_scalar("SELECT DISTINCT i.day FROM catalog_items c JOIN items i ON i.id = c.item_id WHERE c.entry_id = ANY($1)")
-            .bind(changed).fetch_all(&state.pool).await?;
-        for day in days {
-            state.digest.refresh(state, &topic.id, day).await?;
-        }
+        state.digest.forget_topic(&topic.id).await;
     }
     Ok(outcomes)
 }

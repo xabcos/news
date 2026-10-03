@@ -125,20 +125,14 @@
     if (place?.slug) body.append(link(destination(place.slug), "postcard-more", text().more(pick(place, "name"))));
     card.append(media, body);
     items.set(card, item);
-    if (typeof ResizeObserver === "function") {
-      spans ||= new ResizeObserver(span);
-      spans.observe(card);
-    }
+    spans ||= new ResizeObserver(span);
+    spans.observe(card);
     return card;
   }
 
   function createViewer() {
-    const dialog = element("dialog", "viewer");
-    dialog.tabIndex = -1;
     const stage = element("div", "viewer-stage");
-    const image = element("img", "viewer-image");
-    image.decoding = "async";
-    image.referrerPolicy = "no-referrer";
+    const image = element("img");
     const dots = element("div", "viewer-dots");
     stage.append(image, dots);
     // The map stays while the story beside it changes, so its pin glides from place to
@@ -150,68 +144,30 @@
     const story = element("div", "viewer-story");
     const panel = element("aside", "viewer-panel");
     panel.append(map, story);
-    const button = (label, className, action) => {
-      const node = element("button", `viewer-button ${className}`, label);
-      node.type = "button";
-      node.addEventListener("click", action);
-      return node;
-    };
-    const close = button("×", "viewer-close", () => dialog.close());
-    const previous = button("‹", "viewer-previous", () => step(-1));
-    const next = button("›", "viewer-next", () => step(1));
-    dialog.append(stage, panel, close, previous, next);
-    dialog.addEventListener("close", () => document.body.classList.remove("dialog-open"));
-    dialog.addEventListener("click", (event) => {
-      if (event.target === dialog || event.target === stage) dialog.close();
-    });
-    dialog.addEventListener("keydown", (event) => {
-      if (event.key === "ArrowLeft") step(-1);
-      else if (event.key === "ArrowRight") step(1);
-    });
-    // Postcards loaded behind the open viewer can bring its next arrow back.
-    new MutationObserver(() => { if (dialog.open) next.disabled = !neighbor(1); })
-      .observe(document.querySelector("#digest, [data-moments]"), { childList: true, subtree: true });
     // Wandering walks on through every photograph of every postcard.
-    const play = PublicPage.autoplay({
-      dialog,
+    const ui = PublicPage.viewer({
+      frame: stage,
       image,
-      className: "viewer-button",
-      next: () => step(1),
+      root: document.querySelector("#digest, [data-moments]"),
+      step,
+      neighbor,
       ahead: () => {
         const target = neighbor(1);
         return target && photosOf(items.get(target[0]))[target[1]].url;
       },
-      names: () => ({ play: text().wander, pause: text().pause }),
+      names: () => ({
+        play: text().wander, pause: text().pause,
+        close: text().close, previous: text().previous, next: text().next,
+      }),
     });
-    // A horizontal swipe on the photograph turns the page on touch screens.
-    let start = null;
-    stage.addEventListener("pointerdown", (event) => {
-      start = event.isPrimary ? { x: event.clientX, y: event.clientY } : null;
-    });
-    stage.addEventListener("pointercancel", () => { start = null; });
-    stage.addEventListener("pointerup", (event) => {
-      if (!start) return;
-      const dx = event.clientX - start.x;
-      const dy = event.clientY - start.y;
-      start = null;
-      if (Math.abs(dx) >= 48 && Math.abs(dx) > Math.abs(dy) * 1.2) step(dx < 0 ? 1 : -1);
-    });
-    document.body.append(dialog);
-    return {
-      dialog, image, dots, panel, map, pin, story, play, close, previous, next,
-      id: null, index: 0, passed: new Set(),
-    };
+    stage.after(panel);
+    return { ui, image, dots, panel, map, pin, story, id: null, index: 0, passed: new Set() };
   }
 
   function open(card, index) {
     viewer ||= createViewer();
-    document.body.classList.add("dialog-open");
-    if (!viewer.dialog.open) {
-      viewer.dialog.showModal();
-      viewer.dialog.focus();
-      // The page may have switched language since the viewer was last open.
-      viewer.id = null;
-    }
+    // The page may have switched language since the viewer was last open.
+    if (viewer.ui.open()) viewer.id = null;
     show(card, index);
   }
 
@@ -237,15 +193,6 @@
     return target;
   }
 
-  function labels() {
-    for (const [control, label] of [
-      [viewer.close, text().close], [viewer.previous, text().previous], [viewer.next, text().next],
-    ]) {
-      control.setAttribute("aria-label", label);
-      control.title = label;
-    }
-  }
-
   function show(card, index) {
     const item = items.get(card);
     if (!item) return;
@@ -257,7 +204,6 @@
     viewer.index = index;
     viewer.image.src = photo.url;
     viewer.image.alt = pick(photo, "caption") || pick(item, "title");
-    viewer.play.shown();
     viewer.dots.replaceChildren(...(photos.length > 1 ? photos.map((_, position) => {
       const dot = element("button", "viewer-dot");
       dot.type = "button";
@@ -266,12 +212,7 @@
       dot.addEventListener("click", () => show(card, position));
       return dot;
     }) : []));
-    viewer.previous.disabled = !neighbor(-1);
-    viewer.next.disabled = !neighbor(1);
-    labels();
-    // The page follows behind: closing returns to this postcard, and its endless scrolling
-    // keeps loading the postcards ahead.
-    card.scrollIntoView({ block: "nearest", behavior: "instant" });
+    viewer.ui.shown(card);
   }
 
   function panel(item) {
@@ -294,7 +235,7 @@
     const original = item.travel?.text;
     if (original && original !== words) {
       const details = element("details", "viewer-original");
-      details.addEventListener("toggle", () => details.open && viewer.play.toggle(false));
+      details.addEventListener("toggle", () => details.open && viewer.ui.play.toggle(false));
       details.append(element("summary", "", text().original));
       const quote = element("p", "", original);
       if (item.travel.lang) quote.lang = item.travel.lang;
@@ -348,7 +289,7 @@
       const [first] = sequence();
       if (!first) return;
       open(first, 0);
-      viewer.play.toggle(true);
+      viewer.ui.play.toggle(true);
     });
     const caption = element("figcaption", "", text().map(places.length));
     caption.append(start);
@@ -362,7 +303,7 @@
   // scrolling to the end fetches the older ones a page at a time.
   function scroll(grid, format) {
     let next = grid.dataset.next;
-    if (!next || typeof IntersectionObserver !== "function") return;
+    if (!next) return;
     const sentinel = element("div", "group-more");
     sentinel.setAttribute("aria-hidden", "true");
     grid.after(sentinel);
@@ -395,9 +336,7 @@
   document.addEventListener("DOMContentLoaded", () => {
     const data = document.getElementById("moments");
     if (!document.querySelector(".destination")) return;
-    PublicPage.init();
-    try { localStorage.setItem("news.lang", english() ? "en" : "zh"); } catch { /* Reading works without storage. */ }
-    document.querySelector('.tabs [aria-current="true"]')?.scrollIntoView({ block: "nearest", inline: "center" });
+    PublicPage.page();
     const photo = document.querySelector(".destination-photo");
     const drop = () => {
       photo.closest(".destination-hero").classList.remove("has-photo");

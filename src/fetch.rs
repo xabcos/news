@@ -13,7 +13,7 @@ use url::Url;
 
 const MAX_TITLE: usize = 200;
 const MAX_SUMMARY: usize = 600;
-const MAX_SOURCE: usize = 80;
+pub(crate) const MAX_SOURCE: usize = 80;
 const MAX_TAGS: usize = 6;
 const MAX_TAG: usize = 30;
 const IMAGE_TOPIC_ID: &str = "x";

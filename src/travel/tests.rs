@@ -1212,26 +1212,6 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
         .unwrap();
     assert_eq!(runs, 1);
 
-    // Past the renewal days, a moment whose cover copy expired leaves with its photographs,
-    // and its destination keeps the guide.
-    let old = today - Duration::days(crate::media::RENEW_DAYS + 1);
-    sqlx::query(
-        "UPDATE items SET day = $1, image = jsonb_set(image, '{expires_at}', $2) WHERE url LIKE '%/alice/%'",
-    )
-    .bind(old)
-    .bind(json!(Utc::now() - Duration::minutes(1)))
-    .execute(&state.pool)
-    .await
-    .unwrap();
-    crate::media::prune_lapsed(&state, TOPIC_ID).await.unwrap();
-    let left: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM travel_moments WHERE spot_id = 'Q501266'")
-            .fetch_one(&state.pool)
-            .await
-            .unwrap();
-    assert_eq!(left, 0);
-    assert!(get("/travel/kyoto").await.unwrap().status() == 200);
-
     server.abort();
     ai_server.abort();
     origin_server.abort();

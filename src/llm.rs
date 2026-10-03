@@ -4,7 +4,6 @@
 //! pages have not changed is not read again.
 use crate::{error::Result, fetch::Usage, state::AppState, topics::Topic};
 use axum::Router;
-use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
@@ -452,7 +451,6 @@ pub(crate) struct Model {
     pub(crate) summary: String,
     pub(crate) summary_en: String,
     pub(crate) status: Status,
-    pub(crate) released_on: Option<NaiveDate>,
     pub(crate) knowledge_cutoff: String,
     pub(crate) context_tokens: Option<i32>,
     pub(crate) max_output_tokens: Option<i32>,
@@ -599,8 +597,7 @@ async fn refresh(
     }
     let known = store::listed_ids(state, &vendor.id).await?;
     let links = source::merged_links(&pages);
-    let (drafts, reply_usage) = extract::read(state, topic, vendor, &pages, &links, &known).await?;
-    *usage += reply_usage;
+    let drafts = extract::read(state, topic, vendor, &pages, &links, &known, usage).await?;
     // Official pages always list models; none means the read went wrong, not a withdrawal.
     if drafts.is_empty() {
         return Err(crate::error::AppError::Internal(

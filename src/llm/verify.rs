@@ -8,7 +8,6 @@ use super::{
     extract::{Draft, DraftPrice, Fact},
     source::{Kind, Link, Page, collapse},
 };
-use chrono::{Datelike, NaiveDate};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -487,45 +486,6 @@ pub(super) fn token_counts(text: &str) -> Vec<i64> {
     counts
 }
 
-fn date_forms(date: NaiveDate) -> Vec<String> {
-    const MONTHS: [&str; 12] = [
-        "january",
-        "february",
-        "march",
-        "april",
-        "may",
-        "june",
-        "july",
-        "august",
-        "september",
-        "october",
-        "november",
-        "december",
-    ];
-    let (year, month, day) = (date.year(), date.month(), date.day());
-    let long = MONTHS[month as usize - 1];
-    let short = &long[..3];
-    vec![
-        date.format("%Y-%m-%d").to_string(),
-        date.format("%Y/%m/%d").to_string(),
-        date.format("%Y.%m.%d").to_string(),
-        format!("{year}年{month}月{day}日"),
-        format!("{long} {day}, {year}"),
-        format!("{short} {day}, {year}"),
-        format!("sept {day}, {year}"),
-        format!("{day} {long} {year}"),
-        format!("{day} {short} {year}"),
-    ]
-}
-
-fn mentions_date(text: &str, date: NaiveDate) -> bool {
-    let lower = collapse(text).to_lowercase();
-    let compact: String = lower.chars().filter(|c| !c.is_whitespace()).collect();
-    date_forms(date)
-        .iter()
-        .any(|form| lower.contains(form.as_str()) || compact.contains(form.as_str()))
-}
-
 fn clip(value: &str, max: usize) -> String {
     collapse(value).chars().take(max).collect()
 }
@@ -905,11 +865,6 @@ fn model(
             .filter(|value| *value > 0 && token_counts(&fact_text).contains(value))
             .and_then(|value| i32::try_from(value).ok())
     };
-    let released_on = draft
-        .released_on
-        .as_deref()
-        .and_then(|value| NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d").ok())
-        .filter(|date| mentions_date(&fact_text, *date));
     let cutoff = clip(&draft.knowledge_cutoff, 40);
     let knowledge_cutoff = if !cutoff.is_empty()
         && collapse(&fact_text)
@@ -950,7 +905,6 @@ fn model(
         summary: clip(&draft.summary, 160),
         summary_en: clip(&draft.summary_en, 240),
         status: draft.status,
-        released_on,
         knowledge_cutoff,
         context_tokens: count(draft.context_tokens),
         max_output_tokens: count(draft.max_output_tokens),

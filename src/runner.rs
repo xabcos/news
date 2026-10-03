@@ -24,7 +24,7 @@ const HOUSEKEEPING_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const KNOWN_LIMIT: i64 = 80;
 const RUN_RETENTION_DAYS: i64 = 3;
 const INSIGHT_RETENTION_DAYS: i64 = 32;
-const CLEANUP_BATCH_SIZE: i64 = 500;
+pub(crate) const CLEANUP_BATCH_SIZE: i64 = 500;
 const CLEANUP_MAX_BATCHES: usize = 20;
 const BACKGROUND_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -292,8 +292,11 @@ pub(crate) async fn collect_briefing(
     window: NewsWindow,
     topic: Option<&str>,
 ) -> Result<()> {
+    // Reads collects on its own schedule and 𝑳𝑳𝑴 writes no news.
+    let mut outside = crate::insight::outside_briefing();
+    outside.extend(["reads", crate::llm::TOPIC_ID]);
     let topics = sqlx::query_as::<_, Topic>(
-        "SELECT * FROM topics WHERE enabled AND owner_user_id IS NULL AND id NOT IN ('reads', 'llm', 'w', 'travel', 'movie', 'music', 'game', 'book', 'eink', 'ai-hardware', 'digital')
+        "SELECT * FROM topics WHERE enabled AND owner_user_id IS NULL AND id <> ALL($3)
          AND (($2::text IS NULL AND visible) OR id = $2)
          AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.topic_id = topics.id
                          AND triggered_by = 'briefing' AND status = 'ok' AND window_end = $1)
@@ -301,6 +304,7 @@ pub(crate) async fn collect_briefing(
     )
     .bind(window.end)
     .bind(topic)
+    .bind(outside)
     .fetch_all(&state.pool)
     .await?;
     let mut jobs = JoinSet::new();
@@ -1153,14 +1157,6 @@ async fn prune(state: &AppState, today: NaiveDate) -> Result<()> {
             first_error = Some(error);
         }
     }
-    for topic in [gallery::TOPIC_ID, travel::TOPIC_ID] {
-        if let Err(error) = media::prune_lapsed(state, topic).await {
-            tracing::warn!(%error, topic, "photograph pruning failed");
-            if first_error.is_none() {
-                first_error = Some(error);
-            }
-        }
-    }
     if state.config.retention_days > 0 {
         let keep_from = today - ChronoDuration::days(i64::from(state.config.retention_days));
         if let Err(error) = cleanup_items(state, keep_from).await {
@@ -1169,66 +1165,64 @@ async fn prune(state: &AppState, today: NaiveDate) -> Result<()> {
                 first_error = Some(error);
             }
         }
-        if let Err(error) = state.digest.prune_before(state, keep_from).await {
-            tracing::warn!(%error, "news cache pruning failed");
-            if first_error.is_none() {
-                first_error = Some(error);
-            }
-        }
+        state.digest.forget_pruned().await;
     }
     first_error.map_or(Ok(()), Err)
 }
 
 async fn cleanup_runs(state: &AppState) -> Result<u64> {
-    cleanup_in_batches(
-        state,
-        "runs",
-        r#"
-        WITH expired AS (
-            SELECT id
-            FROM runs
-            WHERE status <> 'running'
-              AND started_at < NOW() - ($2 * INTERVAL '1 day')
-            ORDER BY started_at
-            LIMIT $1
-            FOR UPDATE SKIP LOCKED
+    delete_in_batches("runs", || {
+        sqlx::query(
+            r#"
+            WITH expired AS (
+                SELECT id
+                FROM runs
+                WHERE status <> 'running'
+                  AND started_at < NOW() - ($2 * INTERVAL '1 day')
+                ORDER BY started_at
+                LIMIT $1
+                FOR UPDATE SKIP LOCKED
+            )
+            DELETE FROM runs
+            USING expired
+            WHERE runs.id = expired.id
+            "#,
         )
-        DELETE FROM runs
-        USING expired
-        WHERE runs.id = expired.id
-        "#,
-        RUN_RETENTION_DAYS,
-    )
+        .bind(CLEANUP_BATCH_SIZE)
+        .bind(RUN_RETENTION_DAYS)
+        .execute(&state.pool)
+    })
     .await
 }
 
 async fn cleanup_insights(state: &AppState) -> Result<u64> {
-    cleanup_in_batches(
-        state,
-        "ai_insights",
-        r#"
-        WITH expired AS (
-            SELECT id
-            FROM ai_insights
-            WHERE status <> 'running'
-              AND started_at < NOW() - (CASE WHEN kind = 'equity' THEN 365 ELSE $2 END * INTERVAL '1 day')
-            ORDER BY started_at
-            LIMIT $1
-            FOR UPDATE SKIP LOCKED
+    delete_in_batches("ai_insights", || {
+        sqlx::query(
+            r#"
+            WITH expired AS (
+                SELECT id
+                FROM ai_insights
+                WHERE status <> 'running'
+                  AND started_at < NOW() - (CASE WHEN kind = 'equity' THEN 365 ELSE $2 END * INTERVAL '1 day')
+                ORDER BY started_at
+                LIMIT $1
+                FOR UPDATE SKIP LOCKED
+            )
+            DELETE FROM ai_insights
+            USING expired
+            WHERE ai_insights.id = expired.id
+            "#,
         )
-        DELETE FROM ai_insights
-        USING expired
-        WHERE ai_insights.id = expired.id
-        "#,
-        INSIGHT_RETENTION_DAYS,
-    )
+        .bind(CLEANUP_BATCH_SIZE)
+        .bind(INSIGHT_RETENTION_DAYS)
+        .execute(&state.pool)
+    })
     .await
 }
 
 pub(crate) async fn cleanup_items(state: &AppState, keep_from: NaiveDate) -> Result<()> {
-    let mut total = 0_u64;
-    for batch_index in 0..CLEANUP_MAX_BATCHES {
-        let deleted = sqlx::query(
+    delete_in_batches("items", || {
+        sqlx::query(
             r#"
             WITH expired AS (
                 SELECT id
@@ -1247,39 +1241,22 @@ pub(crate) async fn cleanup_items(state: &AppState, keep_from: NaiveDate) -> Res
         .bind(CLEANUP_BATCH_SIZE)
         .bind(keep_from)
         .execute(&state.pool)
-        .await?
-        .rows_affected();
-        total += deleted;
-        if deleted < CLEANUP_BATCH_SIZE as u64 {
-            return Ok(());
-        }
-        if batch_index + 1 == CLEANUP_MAX_BATCHES {
-            tracing::warn!(
-                table = "items",
-                total,
-                "cleanup reached its per-run limit; remaining rows are deferred"
-            );
-        }
-    }
+    })
+    .await?;
     Ok(())
 }
 
-/// Deletes in bounded batches so a large backlog never holds locks for a whole pass.
-/// Returns how many rows went.
-async fn cleanup_in_batches(
-    state: &AppState,
-    table: &'static str,
-    statement: &'static str,
-    cutoff_days: i64,
-) -> Result<u64> {
+/// Deletes in bounded batches so a large backlog never holds locks for a whole pass. `batch`
+/// deletes at most `CLEANUP_BATCH_SIZE` rows and runs again while it fills. Returns how many
+/// rows went.
+pub(crate) async fn delete_in_batches<F, Fut>(table: &'static str, mut batch: F) -> Result<u64>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = sqlx::Result<sqlx::postgres::PgQueryResult>>,
+{
     let mut total = 0_u64;
     for batch_index in 0..CLEANUP_MAX_BATCHES {
-        let deleted = sqlx::query(statement)
-            .bind(CLEANUP_BATCH_SIZE)
-            .bind(cutoff_days)
-            .execute(&state.pool)
-            .await?
-            .rows_affected();
+        let deleted = batch().await?.rows_affected();
         total += deleted;
         if deleted < CLEANUP_BATCH_SIZE as u64 {
             return Ok(total);

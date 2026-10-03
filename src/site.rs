@@ -1,7 +1,14 @@
 //! The shell shared by the server-rendered public pages: head tags,
 //! language alternates and the topic tabs that match the news page.
-use crate::{error::Result, reading::Reader, state::AppState};
+use crate::{
+    error::{AppError, Result},
+    reading::Reader,
+    state::AppState,
+};
+use chrono::{DateTime, Utc};
+use sqlx::{Postgres, QueryBuilder};
 use std::fmt::Write;
+use uuid::Uuid;
 
 /// Topics with their own server-rendered page instead of the news feed.
 const PAGE_TOPICS: [&str; 2] = ["reads", "llm"];
@@ -16,6 +23,49 @@ pub(crate) struct Chrome<'a> {
     pub(crate) script: &'a str,
     /// Title and path of the section's Atom feed.
     pub(crate) feed: (&'a str, &'a str),
+}
+
+/// Where the next page of a list starts: the last item's `(first_seen_at, id)`. Lists run
+/// newest first, and a cursor travels as `{micros}_{id}`.
+pub(crate) type After = (DateTime<Utc>, Uuid);
+
+pub(crate) fn parse_after(value: &str) -> Result<After> {
+    let invalid = || AppError::BadRequest("分页参数无效".into());
+    let (time, id) = value.split_once('_').ok_or_else(invalid)?;
+    let time = time
+        .parse()
+        .ok()
+        .and_then(DateTime::from_timestamp_micros)
+        .ok_or_else(invalid)?;
+    Ok((time, Uuid::parse_str(id).map_err(|_| invalid())?))
+}
+
+/// Ends an `items` query with the page condition, the order and one row beyond `limit`.
+pub(crate) fn push_page(query: &mut QueryBuilder<Postgres>, after: Option<After>, limit: usize) {
+    if let Some((time, id)) = after {
+        query
+            .push(" AND (items.first_seen_at, items.id) < (")
+            .push_bind(time)
+            .push(", ")
+            .push_bind(id)
+            .push(")");
+    }
+    query
+        .push(" ORDER BY items.first_seen_at DESC, items.id DESC LIMIT ")
+        .push_bind(i64::try_from(limit).unwrap_or(i64::MAX) + 1);
+}
+
+/// Drops the extra row `push_page` asked for and returns the next page's cursor, if any.
+pub(crate) fn next_page<T>(
+    rows: &mut Vec<T>,
+    limit: usize,
+    key: impl Fn(&T) -> After,
+) -> Option<String> {
+    (rows.len() > limit).then(|| {
+        rows.truncate(limit);
+        let (time, id) = key(&rows[limit - 1]);
+        format!("{}_{id}", time.timestamp_micros())
+    })
 }
 
 pub(crate) fn choose<'a>(en: bool, zh: &'a str, english: &'a str) -> &'a str {
@@ -59,7 +109,7 @@ pub(crate) fn escape(value: &str) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn layout(
+pub(crate) fn layout(
     state: &AppState,
     reader: Reader,
     en: bool,
@@ -69,9 +119,8 @@ pub(crate) async fn layout(
     content: &str,
     structured: Option<serde_json::Value>,
     chrome: &Chrome<'_>,
-) -> Result<String> {
-    let topics: Vec<(String, String, String)> = sqlx::query_as("SELECT id, name, name_en FROM topics WHERE enabled AND (visible OR $1) AND owner_user_id IS NULL ORDER BY sort_weight, created_at")
-        .bind(reader.is_admin()).fetch_all(&state.pool).await?;
+) -> String {
+    let topics = state.digest.topics_for(reader);
     let mut tabs = format!(
         "<a class=tab href=\"{}\">𝐀𝐋𝐋</a><a class=tab href=\"{}\">𝐀𝐈</a>",
         reader.localized("/", en),
@@ -81,7 +130,7 @@ pub(crate) async fn layout(
         "<a class=tab href=\"{}\">𝑬</a>",
         escape(&reader.localized("/?topic=equity-insight", en))
     );
-    if !topics.iter().any(|(id, _, _)| id == "overseas-ai") {
+    if !topics.iter().any(|topic| topic.id == "overseas-ai") {
         tabs.push_str(&equity_tab);
     }
     // A catalogue section's topics share one tab; swiping back into it enters the last
@@ -91,11 +140,12 @@ pub(crate) async fn layout(
             .topics()
             .iter()
             .rev()
-            .find(|topic| topics.iter().any(|(id, ..)| id == *topic));
+            .find(|topic| topics.iter().any(|known| known.id == **topic));
         (section, last)
     });
-    for (id, name, name_en) in topics {
-        if let Some(section) = crate::catalog::Section::of(&id) {
+    for topic in topics.iter() {
+        let id = &topic.id;
+        if let Some(section) = crate::catalog::Section::of(id) {
             if let Some(last) = sections
                 .iter_mut()
                 .find(|(known, _)| *known == section)
@@ -121,7 +171,7 @@ pub(crate) async fn layout(
             reader.localized(&format!("/{id}"), en)
         } else {
             let mut query = url::form_urlencoded::Serializer::new(String::new());
-            query.append_pair("topic", &id);
+            query.append_pair("topic", id);
             if en {
                 query.append_pair("lang", "en");
             }
@@ -136,7 +186,7 @@ pub(crate) async fn layout(
             } else {
                 ""
             },
-            escape(choose(en, &name, &name_en))
+            escape(choose(en, &topic.name, &topic.name_en))
         );
         if id == "overseas-ai" {
             tabs.push_str(&equity_tab);
@@ -154,17 +204,17 @@ pub(crate) async fn layout(
             )
         })
         .unwrap_or_default();
-    Ok(format!(
+    format!(
         r##"<!doctype html>
 <html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title><meta name="description" content="{description}"><meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f6f4"><meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1115">
 <link rel="canonical" href="{canonical}"><link rel="alternate" hreflang="zh-CN" href="{zh}"><link rel="alternate" hreflang="en" href="{english}"><link rel="alternate" hreflang="x-default" href="{zh}">
 <meta property="og:type" content="{og_type}"><meta property="og:title" content="{title}"><meta property="og:description" content="{description}"><meta property="og:url" content="{canonical}"><meta property="og:site_name" content="News"><meta name="twitter:card" content="summary">
-<link rel="icon" type="image/svg+xml" href="/icon.svg"><link rel="alternate" type="application/atom+xml" title="{feed_title}" href="{feed_href}"><link rel="stylesheet" href="/styles.css?v=gadgets"><link rel="stylesheet" href="{stylesheet}">{schema}</head>
+<link rel="icon" type="image/svg+xml" href="/icon.svg"><link rel="alternate" type="application/atom+xml" title="{feed_title}" href="{feed_href}"><link rel="stylesheet" href="/styles.css?v=viewer"><link rel="stylesheet" href="{stylesheet}">{schema}</head>
 <body class="public {section}"><header class="topbar"><a class="brand" href="{home}" aria-label="News"><img class="brand-logo" src="/icon.svg" alt=""><span>𝑵𝒆𝒘𝒔</span></a><nav class="tabs" aria-label="{topics_label}">{tabs}</nav><div class="tools"><a class="space-link button button-quiet button-small" href="/me/">{workspace}</a><a class="space-link button button-quiet button-small" href="{other_lang}" hreflang="{other_code}">{language_label}</a></div></header>
 <main class="shell">{content}</main>
 <button id="backToTop" class="button back-to-top" type="button" aria-label="{back_to_top}" title="{back_to_top}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 12 6-6 6 6M12 6v12"/></svg></button>
-<script src="/public.js?v=6" defer></script><script src="{script}" defer></script><script src="/stats.js?v=2" data-track-url="{track_url}" defer></script></body></html>"##,
+<script src="/public.js?v=8" defer></script><script src="{script}" defer></script><script src="/stats.js?v=3" data-track-url="{track_url}" defer></script></body></html>"##,
         lang = choose(en, "zh-CN", "en"),
         title = escape(title),
         description = escape(description),
@@ -189,5 +239,5 @@ pub(crate) async fn layout(
         language_label = choose(en, "EN", "中文"),
         back_to_top = choose(en, "回到顶部", "Back to top"),
         track_url = crate::reads::TRACK_URL,
-    ))
+    )
 }

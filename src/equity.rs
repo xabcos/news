@@ -82,9 +82,8 @@ pub(crate) struct Query {
     at: Option<DateTime<Utc>>,
 }
 
-pub(crate) async fn enabled(state: &AppState) -> Result<bool> {
-    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM topics WHERE id='equity' AND owner_user_id IS NULL AND enabled)")
-        .fetch_one(&state.pool).await?)
+pub(crate) fn enabled(state: &AppState) -> bool {
+    state.digest.enabled("equity")
 }
 
 pub(crate) async fn latest(
@@ -163,7 +162,7 @@ pub(crate) async fn admin_latest(
         status
     });
     Ok(Json(
-        json!({"briefing": status, "enabled": enabled(&state).await?}),
+        json!({"briefing": status, "enabled": enabled(&state)}),
     ))
 }
 
@@ -414,36 +413,26 @@ fn validate_events(events: &[Event], sources: &[Source], symbol: &str) -> Result
     Ok(())
 }
 
-fn object(properties: Value) -> Value {
-    let required: Vec<_> = properties
-        .as_object()
-        .expect("schema properties")
-        .keys()
-        .cloned()
-        .collect();
-    json!({"type":"object","additionalProperties":false,"required":required,"properties":properties})
-}
-
 fn schema(count: usize, previous_count: usize) -> Value {
     let text = json!({"type":"string"});
-    let event = object(
+    let event = crate::ai::object(
         json!({"fact":text,"fact_en":text,"quote":text,"source_indexes":{
             "type":"array","minItems":1,"maxItems":3,"items":{"type":"integer","enum":(0..count).collect::<Vec<_>>()}
         }}),
     );
-    let stock = object(json!({
+    let stock = crate::ai::object(json!({
         "name":text,"name_en":text,"symbol":text,"market":{"type":"string","enum":["cn","us","hk"]},
         "signal":{"type":"string","enum":["catalyst","watch","risk"]},
         "reason":text,"reason_en":text,"watch":text,"watch_en":text,"risk":text,"risk_en":text,
         "events":{"type":"array","minItems":1,"maxItems":5,"items":event},
     }));
-    let review = object(json!({
+    let review = crate::ai::object(json!({
         "previous_index":{"type":"integer","minimum":0,"maximum":previous_count.saturating_sub(1)},
         "status":{"type":"string","enum":["supported","partial","contradicted","pending","insufficient"]},
         "assessment":text,"assessment_en":text,
         "events":{"type":"array","maxItems":3,"items":event},
     }));
-    object(
+    crate::ai::object(
         json!({"headline":{"type":"string","maxLength":32},"headline_en":text,"summary":text,"summary_en":text,
         "stocks":{"type":"array","maxItems":6,"items":stock},
         "reviews":{"type":"array","minItems":previous_count,"maxItems":previous_count,"items":review}}),
