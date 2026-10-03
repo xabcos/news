@@ -20,6 +20,8 @@ use url::Url;
 mod tests;
 
 pub(crate) const TOPIC_ID: &str = "w";
+/// 𝑾 takes in hundreds of posts a day, so the model is shown this many of the latest.
+pub(crate) const KNOWN_LIMIT: i64 = 512;
 
 pub(crate) fn is_gallery(topic: &Topic) -> bool {
     topic.owner_user_id.is_none() && topic.id == TOPIC_ID
@@ -28,9 +30,9 @@ pub(crate) fn is_gallery(topic: &Topic) -> bool {
 pub(crate) fn instructions(topic: &Topic) -> String {
     format!(
         "你为「{name}」栏目挑选 X 上正在传播的美丽女性照片。\n规则：\n\
-         1. 只用 x_search 检索，最多 {searches} 次；只收录发布时间在本次采集窗口内、带照片的公开帖子，优先传播较广的帖子。可用中文、英文、日文和韩文检索。\n\
-         2. 标准是让人感觉美：以欣赏艺术的眼光挑选人物、造型、光线与构图俱佳、清晰完整的照片。真人摄影与 AI 生成图都可以；泳装、比基尼、时装、礼服、写真与 Cosplay 都可以。\n\
-         3. 排除露点、全裸、性行为或明显色情的画面，以及 X 标记为敏感内容的帖子；排除看起来可能未成年的人物、偷拍或私密照片、用真实可辨认人物合成的 AI 图；排除拼图、截图、表情包、广告、以文字为主的图片和视频。\n\
+         1. 只用 x_search 检索，最多 {searches} 次；只收录发布时间在本次采集窗口内、带照片的公开帖子。可用中文、英文、日文和韩文检索。\n\
+         2. 标准是美丽优雅：以欣赏艺术的眼光挑选人物、造型、光线与构图俱佳、清晰完整的照片，优先选择人气高（点赞、转发与浏览多）的。真人摄影与 AI 生成图都可以。\n\
+         3. 排除 X 标记为敏感内容的帖子；不收看起来可能未成年的人物、偷拍或泄露的私密照片、用真实可辨认人物合成的 AI 图；也不要拼图、截图、表情包、广告、以文字为主的图片和视频。\n\
          4. url 写帖子地址（https://x.com/账号/status/编号）；image.url 写这条帖子里最好看的一张照片（https://pbs.twimg.com/media/…），image.source_url 与 url 相同。\n\
          5. title 与 title_en 为画面起一个像作品名的短标题（中文 4 到 14 字），不用感叹号和营销语；summary 与 summary_en 用一句话交代画面与出处，摄影师、模特、地点或 AI 工具只写帖子明确提到的；image.caption 与 caption_en 客观描述画面；image.credit 与 source 写发帖账号的名称。\n\
          6. AI 生成的图片在 tags 与 tags_en 的第一个标签写 AI；其余标签写题材或风格（如 人像、旗袍、海边），共 1 到 4 个，中英文一一对应。\n\

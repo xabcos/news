@@ -127,10 +127,22 @@ const KINDS: [(&str, &[Kind]); 3] = [
                 specs: "传感器、镜头、照片与视频规格、防抖、屏幕与取景、续航、尺寸与重量、价格与上市时间",
             },
             Kind {
+                id: "drone",
+                zh: "无人机",
+                en: "Drones",
+                specs: "重量与尺寸、续航、相机传感器与镜头、视频规格、图传距离、避障与感知、抗风等级、最大速度、价格与上市时间",
+            },
+            Kind {
                 id: "gaming",
                 zh: "游戏",
                 en: "Gaming",
                 specs: "处理器与图形、屏幕、存储、操控、续航、尺寸与重量、价格与上市时间",
+            },
+            Kind {
+                id: "printer",
+                zh: "3D 打印",
+                en: "3D printers",
+                specs: "打印技术、成型尺寸、打印速度、喷头与热床温度、支持材料、多色系统、调平与校准、摄像头与检测、连接方式、价格与上市时间",
             },
             Kind {
                 id: "home",
@@ -272,8 +284,8 @@ pub(super) fn description(topic: &str, en: bool) -> &'static str {
         ),
         _ => choose(
             en,
-            "手机、电脑、音频与影像：真实测评与用户分享。",
-            "Phones, computers, audio and cameras: real reviews and users' posts.",
+            "手机、电脑、音频、影像、无人机与 3D 打印：真实测评与用户分享。",
+            "Phones, computers, audio, cameras, drones and 3D printers: real reviews and users' posts.",
         ),
     }
 }

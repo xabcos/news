@@ -666,7 +666,11 @@ async fn execute(
     )
     .bind(&topic.id)
     .bind(if is_catalog { today - ChronoDuration::days(i64::from(topic.lookback_hours + 23) / 24) } else { yesterday })
-    .bind(KNOWN_LIMIT)
+    .bind(if is_gallery {
+        gallery::KNOWN_LIMIT
+    } else {
+        KNOWN_LIMIT
+    })
     .bind(is_reads)
     .fetch_all(&state.pool)
     .await?;

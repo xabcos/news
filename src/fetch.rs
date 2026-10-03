@@ -249,17 +249,25 @@ pub(crate) fn request_body(
         web_search["enable_image_search"] = json!(true);
         web_search["enable_image_understanding"] = json!(true);
     }
+    // 𝑾's titles only name the picture; its post addresses are enough to tell what it has.
+    let gallery = crate::gallery::is_gallery(topic);
     let collected = if known.is_empty() {
         "（无）".to_owned()
     } else {
         known
             .iter()
-            .map(|item| format!("- {} | {}", item.title, item.url))
+            .map(|item| {
+                if gallery {
+                    format!("- {}", item.url)
+                } else {
+                    format!("- {} | {}", item.title, item.url)
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n")
     };
     let travel = crate::travel::is_travel(topic);
-    let tools = if crate::gallery::is_gallery(topic) || travel {
+    let tools = if gallery || travel {
         // 𝑾 and 𝑻𝒓𝒂𝒗𝒆𝒍 read X only, and the model looks at the photographs while it chooses.
         json!([{ "type": "x_search", "enable_image_understanding": true }])
     } else if crate::catalog::section(topic).is_some() {
