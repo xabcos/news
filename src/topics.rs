@@ -703,10 +703,14 @@ async fn create_topic(
     .await
     .map_err(map_db_error)?;
     transaction.commit().await?;
+    // Both follow the committed row even when one of them fails.
+    let reloaded = if scope.is_public() {
+        state.digest.reload_topics(&state).await
+    } else {
+        Ok(())
+    };
     let topic = runner::reschedule_or_defer(&state, &topic).await?;
-    if scope.is_public() {
-        state.digest.reload_topics(&state).await?;
-    }
+    reloaded?;
     Ok((StatusCode::CREATED, Json(topic)))
 }
 
@@ -806,13 +810,17 @@ async fn update_topic(
     .await
     .map_err(map_db_error)?
     .ok_or_else(|| AppError::NotFound("主题不存在".into()))?;
-    let topic = runner::reschedule_or_defer(&state, &topic).await?;
-    if scope.is_public() {
+    // Both follow the committed row even when one of them fails.
+    let reloaded = if scope.is_public() {
         if current.enabled != topic.enabled || current.visible != topic.visible {
             state.digest.forget_topic(&id).await;
         }
-        state.digest.reload_topics(&state).await?;
-    }
+        state.digest.reload_topics(&state).await
+    } else {
+        Ok(())
+    };
+    let topic = runner::reschedule_or_defer(&state, &topic).await?;
+    reloaded?;
     Ok(Json(topic))
 }
 

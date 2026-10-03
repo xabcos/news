@@ -189,7 +189,7 @@ pub(super) async fn write(
         });
     }
     let mut outcomes = Vec::new();
-    let mut written = Vec::new();
+    let mut any_written = false;
     // Each guide is stored as soon as it is written, so a run that stops early keeps the guides
     // it finished and the pages show them while the others are still being written.
     while let Some(joined) = jobs.join_next().await {
@@ -213,7 +213,7 @@ pub(super) async fn write(
                 .execute(&state.pool)
                 .await?;
                 outcomes.push(json!({ "place": id, "written": true }));
-                written.push(id);
+                any_written = true;
             }
             Written::Failed(error) => {
                 sqlx::query(
@@ -226,7 +226,7 @@ pub(super) async fn write(
             }
         }
     }
-    if !written.is_empty() {
+    if any_written {
         // Moments link to their destination's guide; their days load again when asked for.
         sqlx::query("UPDATE topics SET feed_revision = feed_revision + 1 WHERE id = $1")
             .bind(TOPIC_ID)

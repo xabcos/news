@@ -367,11 +367,14 @@ fn usable(size: usize, dimensions: Option<(u32, u32)>) -> bool {
 /// Dimensions from the image header, without decoding the pixels. Formats the `image` crate
 /// is built without (AVIF, BMP) give `None`; the byte-size guard still applies to them.
 pub(crate) fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
-    image::ImageReader::new(std::io::Cursor::new(bytes))
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
-        .ok()?
-        .into_dimensions()
-        .ok()
+        .ok()?;
+    // Reading the header can inflate metadata such as a PNG's colour profile; keep that small.
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(4 * 1024 * 1024);
+    reader.limits(limits);
+    reader.into_dimensions().ok()
 }
 
 pub(crate) fn is_public_https_url(url: &Url) -> bool {

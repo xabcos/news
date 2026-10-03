@@ -292,10 +292,10 @@ impl DigestCache {
         };
         write(&self.0.days).clear();
         write(&self.0.latest).clear();
-        self.forget_rendered();
-        // A reader may have started in the small window between the first
-        // fence and the catalogue swap; fence that reader as well.
+        // A reader may have started between the first fence and the swap; fence it as well,
+        // before the rendered bodies go, so none of its bodies is kept.
         self.0.generation.fetch_add(1, Ordering::AcqRel);
+        self.forget_rendered();
         // The briefing keeps only sources from this catalogue; render it again after the swap.
         state.insight.invalidate();
         Ok(())
@@ -403,6 +403,7 @@ impl DigestCache {
         let keep_from = self.yesterday();
         write(&self.0.days).retain(|(_, day), _| *day >= keep_from);
         write(&self.0.latest).clear();
+        self.0.generation.fetch_add(1, Ordering::AcqRel);
         self.forget_rendered();
     }
 
@@ -423,13 +424,16 @@ impl DigestCache {
         .bind(topic)
         .fetch_one(&state.pool)
         .await?;
+        // Checked under the lock: a write bumps the generation before it clears this map.
+        let mut latest = write(&self.0.latest);
         if self.0.generation.load(Ordering::Acquire) == generation {
-            write(&self.0.latest).insert(topic.to_owned(), day);
+            latest.insert(topic.to_owned(), day);
         }
         Ok(day)
     }
 
-    /// Drops every pre-rendered body. Runs under the same writes that invalidate snapshots.
+    /// Drops every pre-rendered body. Callers bump the generation first, and renders check it
+    /// under these locks, so a body rendered before a write is never kept after it.
     fn forget_rendered(&self) {
         write(&self.0.hot).clear();
         write(&self.0.archive).clear();
@@ -475,9 +479,11 @@ impl DigestCache {
         let rendered = Arc::new(Rendered::new(
             json!({ "topic": topic, "days": days }).to_string(),
         ));
-        if cacheable && self.0.generation.load(Ordering::Acquire) == generation {
+        if cacheable {
             let mut archive = write(&self.0.archive);
-            if archive.len() < DAYS_VARIANTS || archive.contains_key(&key) {
+            if self.0.generation.load(Ordering::Acquire) == generation
+                && (archive.len() < DAYS_VARIANTS || archive.contains_key(&key))
+            {
                 archive.insert(key, Arc::clone(&rendered));
             }
         }
@@ -573,9 +579,11 @@ impl DigestCache {
                 .collect(),
         };
         let rendered = Arc::new(Rendered::new(serde_json::to_string(&body)?));
-        if hot_path && self.0.generation.load(Ordering::Acquire) == generation {
+        if hot_path {
             let mut hot = write(&self.0.hot);
-            if hot.len() < HOT_VARIANTS || hot.contains_key(&limit) {
+            if self.0.generation.load(Ordering::Acquire) == generation
+                && (hot.len() < HOT_VARIANTS || hot.contains_key(&limit))
+            {
                 hot.insert(limit, Arc::clone(&rendered));
             }
         }

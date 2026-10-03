@@ -32,8 +32,7 @@ const english = document.documentElement.lang === "en";
   pagination.hidden = !pagination.querySelector('[rel="prev"]');
 
   let controller = null;
-  // Checks whenever the loader comes within a screen of view, whatever the screen's height.
-  const observer = new IntersectionObserver(check, { rootMargin: "0px 0px 100% 0px" });
+  let observer = null;
   let failed = false;
   let suspended = false;
 
@@ -94,7 +93,7 @@ const english = document.documentElement.lang === "en";
         controller = null;
         list.removeAttribute("aria-busy");
         status();
-        if (!next) observer.disconnect();
+        if (!next) observer?.disconnect();
         // A short page or a tall viewport can still need another page without
         // a new intersection or scroll event.
         window.requestAnimationFrame(check);
@@ -102,6 +101,15 @@ const english = document.documentElement.lang === "en";
     }
   }
 
+  // The margin is one window height, the distance `check` allows, so a new height needs a new
+  // observer. (A percentage would count the window's width.)
+  function observe() {
+    observer?.disconnect();
+    observer = new IntersectionObserver(check, { rootMargin: `0px 0px ${window.innerHeight}px 0px` });
+    if (next) observer.observe(loader);
+    check();
+  }
+  window.addEventListener("resize", observe);
   document.addEventListener("visibilitychange", check);
   window.addEventListener("pageshow", () => {
     suspended = false;
@@ -119,8 +127,5 @@ const english = document.documentElement.lang === "en";
     } catch { /* Native back/forward restoration still works if history storage is full. */ }
   });
   status();
-  window.requestAnimationFrame(() => {
-    if (next) observer.observe(loader);
-    check();
-  });
+  window.requestAnimationFrame(observe);
 })();

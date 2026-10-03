@@ -542,7 +542,7 @@ pub(crate) async fn guides(
     let mut pending = pending.into_iter();
     let mut jobs = JoinSet::new();
     let mut outcomes = Vec::new();
-    let mut changed = Vec::new();
+    let mut any_written = false;
     loop {
         while jobs.len() < 2 && Instant::now() + Duration::from_secs(60) < deadline {
             let Some(entry) = pending.next() else {
@@ -571,7 +571,7 @@ pub(crate) async fn guides(
                         images = CASE WHEN jsonb_array_length($4) > 0 THEN $4 ELSE images END,
                         image = COALESCE($4->0, image) WHERE id = $1")
                     .bind(id).bind(json!(guide)).bind(hash).bind(json!(images)).execute(&state.pool).await?;
-                changed.push(id);
+                any_written = true;
                 outcomes.push(json!({"entry":id,"written":true}));
             }
             Ok(Ok(Composed::Unchanged)) => {
@@ -605,7 +605,7 @@ pub(crate) async fn guides(
             }
         }
     }
-    if !changed.is_empty() {
+    if any_written {
         // Cards name their entry; their days load again when asked for.
         sqlx::query("UPDATE topics SET feed_revision = feed_revision + 1 WHERE id = $1")
             .bind(&topic.id)
