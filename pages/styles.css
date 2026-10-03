@@ -693,12 +693,22 @@ p { margin-top: 0; }
   transform: translate(-50%, 2px);
   transition: opacity .15s ease, transform .15s ease;
 }
+/* Destinations without moments this week stay as faint footprints. */
+.travel-pin.is-past {
+  width: .42rem;
+  height: .42rem;
+  margin: -.21rem 0 0 -.21rem;
+  border-width: 1px;
+  box-shadow: none;
+  opacity: .5;
+}
 .travel-pin:hover,
-.travel-pin:focus-visible { z-index: 2; transform: scale(1.25); }
+.travel-pin:focus-visible { z-index: 2; transform: scale(1.25); opacity: 1; }
 .travel-pin:hover .travel-pin-label,
 .travel-pin:focus-visible .travel-pin-label { opacity: 1; transform: translate(-50%, 0); }
 @media (max-width: 560px) {
   .travel-pin { width: .55rem; height: .55rem; margin: -.275rem 0 0 -.275rem; border-width: 1.5px; }
+  .travel-pin.is-past { width: .34rem; height: .34rem; margin: -.17rem 0 0 -.17rem; border-width: 1px; }
 }
 
 /* The viewer: the photograph beside its story; stacked on narrow screens. */

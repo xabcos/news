@@ -11,13 +11,13 @@
     zh: {
       more: (name) => `了解${name} →`, about: (name) => `关于${name}`, guide: "阅读导读 →",
       original: "原文", photos: (n) => `${n} 张照片`, photo: (i, n) => `第 ${i} / ${n} 张`,
-      close: "关闭", previous: "上一张", next: "下一张", map: (n) => `最近 7 天 · ${n} 个目的地`,
+      close: "关闭", previous: "上一张", next: "下一张", map: (n, recent) => `${n} 个目的地${recent < n ? ` · 最近 7 天 ${recent} 个` : ""}`,
       wander: "漫游", pause: "暂停",
     },
     en: {
       more: (name) => `About ${name} →`, about: (name) => `About ${name}`, guide: "Read the guide →",
       original: "Original", photos: (n) => `${n} photos`, photo: (i, n) => `Photo ${i} of ${n}`,
-      close: "Close", previous: "Previous", next: "Next", map: (n) => `Last 7 days · ${n} ${n === 1 ? "destination" : "destinations"}`,
+      close: "Close", previous: "Previous", next: "Next", map: (n, recent) => `${n} ${n === 1 ? "destination" : "destinations"}${recent < n ? ` · ${recent} in the last 7 days` : ""}`,
       wander: "Wander", pause: "Pause",
     },
   };
@@ -260,7 +260,7 @@
     viewer.panel.scrollTop = 0;
   }
 
-  // Destinations with recent moments on a dotted world map; a pin opens its page.
+  // Every destination on a dotted world map, the recent ones larger; a pin opens its page.
   async function map(container) {
     let places = [];
     try {
@@ -277,7 +277,7 @@
     const canvas = land();
     figure.append(canvas);
     places.forEach((place, index) => {
-      const pin = link(destination(place.slug), `travel-pin${index < 3 ? " is-recent" : ""}`);
+      const pin = link(destination(place.slug), `travel-pin${place.recent === false ? " is-past" : index < 3 ? " is-recent" : ""}`);
       pin.setAttribute("aria-label", placeName(place));
       pin.append(element("span", "travel-pin-label", pick(place, "name")));
       canvas.append(locate(pin, place));
@@ -291,7 +291,7 @@
       open(first, 0);
       viewer.ui.play.toggle(true);
     });
-    const caption = element("figcaption", "", text().map(places.length));
+    const caption = element("figcaption", "", text().map(places.length, places.filter((place) => place.recent !== false).length));
     caption.append(start);
     figure.append(caption);
     container.append(figure);
@@ -344,6 +344,12 @@
     };
     if (photo?.complete && !photo.naturalWidth) drop();
     else photo?.addEventListener("error", drop, { once: true });
+    // A nearby destination whose photograph the file server no longer keeps steps aside.
+    for (const image of document.querySelectorAll(".nearby-card img")) {
+      const hide = () => { image.closest(".nearby-card").hidden = true; };
+      if (image.complete && !image.naturalWidth) hide();
+      else image.addEventListener("error", hide, { once: true });
+    }
     const grid = document.querySelector("[data-moments]");
     if (!data || !grid) return;
     const format = new Intl.DateTimeFormat(english() ? "en" : "zh-CN", { month: "short", day: "numeric" });

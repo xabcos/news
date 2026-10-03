@@ -1069,9 +1069,15 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
         "35.01°N 135.77°E",
         "维基导游 · Kyoto",
         "rel=\"license noopener noreferrer\">CC BY-SA 4.0</a>",
+        "<section class=destination-nearby><h2>附近</h2><div class=nearby>",
+        "<a class=nearby-card href=\"/travel/hokkaido\"><img src=\"https://media.example.test/",
+        "<span class=nearby-name>北海道</span><span class=nearby-meta>日本 · ",
     ] {
         assert!(html.contains(text), "missing {text}");
     }
+    // The nearest destination comes first; Japan has no other destination to list.
+    let at = |slug: &str| html.find(&format!("href=\"/travel/{slug}\"")).unwrap();
+    assert!(at("hokkaido") < at("bangkok") && at("bangkok") < at("manhattan"));
     for text in [
         "无名氏",
         "想象之塔",
@@ -1079,6 +1085,8 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
         "时节与节庆",
         "你知道吗",
         "依据资料整理",
+        "destination-more",
+        "href=\"/travel/kyoto\"",
     ] {
         assert!(!html.contains(text), "unexpected {text}");
     }
@@ -1131,6 +1139,10 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
         .await
         .unwrap();
     assert!(english.contains("An old capital of gardens and lanes") && english.contains("Japan"));
+    assert!(
+        english.contains("<h2>Nearby</h2>")
+            && english.contains("href=\"/travel/hokkaido?lang=en\"")
+    );
     let manhattan = get("/travel/manhattan")
         .await
         .unwrap()
@@ -1151,6 +1163,34 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
         .collect::<Vec<_>>();
     slugs.sort();
     assert_eq!(slugs, ["bangkok", "hokkaido", "kyoto", "manhattan"]);
+    assert!(
+        map["places"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|place| place["recent"] == true)
+    );
+    // Later runs deepen two destinations that have a guide: one much visited, one with few moments.
+    let deepened = |focus: &str| {
+        focus
+            .split("\n本轮深挖：")
+            .nth(1)
+            .map_or(0, |places| places.split('；').count())
+    };
+    let first = focus(&state, window()).await.unwrap();
+    assert_eq!(deepened(&first), 2, "{first}");
+    let focus = first;
+    assert!(
+        focus.starts_with("\n本轮也留意：") && focus.contains("\n本轮深挖："),
+        "{focus}"
+    );
+    assert!(
+        ["京都", "北海道", "曼谷"]
+            .iter()
+            .any(|name| focus.contains(name)),
+        "{focus}"
+    );
+    assert!(!focus.contains("曼哈顿"), "{focus}");
     let index = get("/sitemap.xml").await.unwrap().text().await.unwrap();
     assert!(index.contains("/travel/sitemap.xml"));
     let sitemap = get("/travel/sitemap.xml")
@@ -1197,6 +1237,63 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
             .await
             .unwrap();
     assert_eq!(attempts, 3);
+
+    // The map and the onward links name only destinations with a page: a place with only a guide
+    // joins both, one whose moments are all hidden leaves them, and old moments fade its pin.
+    sqlx::query(
+        "INSERT INTO travel_places (id, slug, name, name_en, country_id, country, country_en,
+             latitude, longitude, voyage, guide, guide_at)
+         SELECT 'Q169134', 'nara', '奈良市', 'Nara', country_id, country, country_en, 34.68, 135.8,
+             'Nara', guide, guide_at FROM travel_places WHERE slug = 'kyoto'",
+    )
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE items SET hidden = true WHERE id IN (SELECT m.item_id FROM travel_moments m
+         JOIN travel_places p ON p.id = m.place_id WHERE p.slug = 'manhattan')",
+    )
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE items SET day = day - 10 WHERE id IN (SELECT m.item_id FROM travel_moments m
+         JOIN travel_places p ON p.id = m.place_id WHERE p.slug = 'bangkok')",
+    )
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    let map: Value = get("/travel/map.json").await.unwrap().json().await.unwrap();
+    let pins = map["places"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|place| {
+            (
+                place["slug"].as_str().unwrap(),
+                place["recent"].as_bool().unwrap(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    assert_eq!(
+        pins,
+        HashMap::from([
+            ("kyoto", true),
+            ("hokkaido", true),
+            ("bangkok", false),
+            ("nara", false)
+        ])
+    );
+    let html = get("/travel/kyoto").await.unwrap().text().await.unwrap();
+    assert!(html.contains("href=\"/travel/bangkok\"") && !html.contains("manhattan"));
+    assert!(html.contains(
+        "<p class=destination-more><span>日本的更多目的地</span><a href=\"/travel/nara\">奈良市</a></p>"
+    ));
+    assert_eq!(get("/travel/manhattan").await.unwrap().status(), 404);
+    // The destination with the fewest moments is always one of the two; Nara has none.
+    let focus = super::focus(&state, window()).await.unwrap();
+    assert_eq!(deepened(&focus), 2, "{focus}");
+    assert!(focus.contains("奈良市（Nara，日本）"), "{focus}");
 
     // The briefing neither collects nor reads travel moments.
     sqlx::query("UPDATE topics SET enabled = (id = 'travel')")

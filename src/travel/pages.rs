@@ -1,6 +1,7 @@
 //! A page per destination at `/travel/{slug}` with its guide and moments, which load page by
-//! page from `/travel/{slug}/moments`, the map's data and the sitemap. The feed itself is the
-//! 𝑻𝒓𝒂𝒗𝒆𝒍 tab of the news page.
+//! page from `/travel/{slug}/moments`, then the destinations nearby and in the same country to
+//! go on to; the map's data and the sitemap. The feed itself is the 𝑻𝒓𝒂𝒗𝒆𝒍 tab of the news
+//! page.
 
 use super::{
     MOMENT_JOIN, MOMENT_JSON, TOPIC_ID,
@@ -29,14 +30,17 @@ use uuid::Uuid;
 const CHROME: Chrome<'static> = Chrome {
     current: TOPIC_ID,
     section: "travel",
-    stylesheet: "/travel.css?v=3",
-    script: "/travel.js?v=6",
+    stylesheet: "/travel.css?v=4",
+    script: "/travel.js?v=7",
     feed: ("𝑻𝒓𝒂𝒗𝒆𝒍", "/feed.xml?topic=travel"),
 };
-/// Destinations on the map: those with moments from this many recent days.
+/// Map pins of destinations with moments from this many recent days stand out.
 const MAP_DAYS: i64 = 7;
 /// Moments per page of a destination, newest first.
 const PAGE_MOMENTS: usize = 24;
+/// Destinations to go on to: the nearest with a photograph, then names in the same country.
+const NEARBY: i64 = 6;
+const SAME_COUNTRY: i64 = 40;
 
 pub(crate) fn router() -> Router<AppState> {
     reading::pages(
@@ -63,6 +67,7 @@ struct Page {
 #[derive(sqlx::FromRow)]
 struct Place {
     slug: String,
+    country_id: String,
     name: String,
     name_en: String,
     country: String,
@@ -89,7 +94,7 @@ async fn destination(
     let en = params.lang.as_deref() == Some("en");
     let missing = || AppError::NotFound("目的地不存在".into());
     let place = sqlx::QueryBuilder::new(
-        "SELECT slug, name, name_en, country, country_en, latitude, longitude, guide
+        "SELECT slug, country_id, name, name_en, country, country_en, latitude, longitude, guide
          FROM travel_places WHERE slug = ",
     )
     .push_bind(&slug)
@@ -216,6 +221,7 @@ async fn destination(
             next.map_or_else(String::new, |next| format!(" data-next=\"{next}\"")),
         );
     }
+    content.push_str(&onward(&state, reader, &place, en).await?);
     let _ = write!(
         content,
         "<nav class=destination-back><a href=\"{}\">← 𝑻𝒓𝒂𝒗𝒆𝒍</a></nav></article>",
@@ -264,6 +270,112 @@ async fn destination(
         &Rendered::new(html),
         "text/html; charset=utf-8",
     ))
+}
+
+/// Where to go next: the nearest destinations with a photograph, by great-circle distance, then
+/// the other destinations of the same country, the most visited first. Only destinations with
+/// a page are named: a guide or a moment.
+async fn onward(state: &AppState, reader: Reader, place: &Place, en: bool) -> Result<String> {
+    let nearby = sqlx::query_as::<_, (String, String, String, String, String, f64, Value)>(
+        "SELECT n.slug, n.name, n.name_en, n.country, n.country_en, n.km, c.image
+         FROM (SELECT p.id, p.slug, p.name, p.name_en, p.country, p.country_en,
+                      12742 * asin(sqrt(LEAST(1, power(sin(radians(p.latitude - $1) / 2), 2)
+                          + cos(radians($1)) * cos(radians(p.latitude))
+                          * power(sin(radians(p.longitude - $2) / 2), 2)))) AS km
+               FROM travel_places p
+               WHERE p.slug <> $3 AND EXISTS (SELECT 1 FROM travel_moments m
+                   JOIN items i ON i.id = m.item_id WHERE m.place_id = p.id AND NOT i.hidden
+                   AND jsonb_typeof(i.image) = 'object')
+               ORDER BY km LIMIT $4) n
+         CROSS JOIN LATERAL (SELECT i.image - 'origin_url' - 'content_hash' - 'expires_at' AS image
+               FROM travel_moments m JOIN items i ON i.id = m.item_id
+               WHERE m.place_id = n.id AND NOT i.hidden AND jsonb_typeof(i.image) = 'object'
+               ORDER BY i.importance DESC, i.first_seen_at DESC LIMIT 1) c
+         ORDER BY n.km",
+    )
+    .bind(place.latitude)
+    .bind(place.longitude)
+    .bind(&place.slug)
+    .bind(NEARBY)
+    .fetch_all(&state.pool)
+    .await?;
+    let shown = nearby
+        .iter()
+        .map(|(slug, ..)| slug.as_str())
+        .chain([place.slug.as_str()])
+        .collect::<Vec<_>>();
+    let country = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT p.slug, p.name, p.name_en FROM travel_places p
+         CROSS JOIN LATERAL (SELECT COUNT(*) AS moments FROM travel_moments m
+             JOIN items i ON i.id = m.item_id WHERE m.place_id = p.id AND NOT i.hidden) v
+         WHERE p.country_id = $1 AND p.slug <> ALL($2) AND (p.guide IS NOT NULL OR v.moments > 0)
+         ORDER BY v.moments DESC, p.slug LIMIT $3",
+    )
+    .bind(&place.country_id)
+    .bind(&shown)
+    .bind(SAME_COUNTRY)
+    .fetch_all(&state.pool)
+    .await?;
+    if nearby.is_empty() && country.is_empty() {
+        return Ok(String::new());
+    }
+    let mut html = format!(
+        "<section class=destination-nearby><h2>{}</h2>",
+        choose(en, "附近", "Nearby")
+    );
+    if !nearby.is_empty() {
+        html.push_str("<div class=nearby>");
+        for (slug, name, name_en, country, country_en, km, image) in &nearby {
+            let name = choose(en, name, name_en);
+            let country = choose(en, country, country_en);
+            let _ = write!(
+                html,
+                "<a class=nearby-card href=\"{}\"><img src=\"{}\" alt=\"{}\"{} loading=lazy decoding=async referrerpolicy=no-referrer><span class=nearby-name>{}</span><span class=nearby-meta>{}{} km</span></a>",
+                escape(&reader.localized(&format!("/travel/{slug}"), en)),
+                escape(image["url"].as_str().unwrap_or_default()),
+                escape(
+                    image[choose(en, "caption", "caption_en")]
+                        .as_str()
+                        .unwrap_or(name)
+                ),
+                match (image["width"].as_u64(), image["height"].as_u64()) {
+                    (Some(width), Some(height)) => format!(" width={width} height={height}"),
+                    _ => String::new(),
+                },
+                escape(name),
+                if country == name {
+                    String::new()
+                } else {
+                    format!("{} · ", escape(country))
+                },
+                km.max(1.0).round(),
+            );
+        }
+        html.push_str("</div>");
+    }
+    if !country.is_empty() {
+        let label = choose(en, &place.country, &place.country_en);
+        let _ = write!(
+            html,
+            "<p class=destination-more><span>{}</span>",
+            escape(&if en {
+                format!("More in {label}")
+            } else {
+                format!("{label}的更多目的地")
+            })
+        );
+        for (slug, name, name_en) in &country {
+            let _ = write!(
+                html,
+                "<a href=\"{}\">{}</a>",
+                escape(&reader.localized(&format!("/travel/{slug}"), en)),
+                escape(choose(en, name, name_en))
+            );
+        }
+        html.push_str("</p>");
+    }
+    html.push_str("</section>");
+    Ok(html)
 }
 
 /// The guide below the tagline: a fact to share, then each section the sources supported.
@@ -394,7 +506,8 @@ fn coordinates(latitude: f64, longitude: f64) -> String {
     )
 }
 
-/// Destinations with recent moments, the most recently visited first.
+/// Every destination with a page, the most recently visited first; those with moments from the
+/// last `MAP_DAYS` days are marked recent.
 async fn map(
     State(state): State<AppState>,
     reader: Reader,
@@ -406,15 +519,21 @@ async fn map(
         "SELECT COALESCE(jsonb_agg(jsonb_build_object('slug', p.slug, 'name', p.name,
                  'name_en', p.name_en, 'country', p.country, 'country_en', p.country_en,
                  'latitude', round(p.latitude::numeric, 3), 'longitude', round(p.longitude::numeric, 3),
-                 'moments', recent.moments) ORDER BY recent.latest DESC, p.slug), '[]')
-         FROM (SELECT m.place_id, COUNT(*) AS moments, MAX(i.first_seen_at) AS latest
-               FROM travel_moments m JOIN items i ON i.id = m.item_id
-               WHERE NOT i.hidden AND i.topic_id = ",
+                 'moments', COALESCE(visited.moments, 0), 'recent', COALESCE(visited.last_day >= ",
+    )
+    .push_bind(since)
+    .push(
+        ", false)) ORDER BY visited.latest DESC NULLS LAST, p.slug), '[]')
+         FROM travel_places p LEFT JOIN (
+             SELECT m.place_id, COUNT(*) AS moments, MAX(i.first_seen_at) AS latest, MAX(i.day) AS last_day
+             FROM travel_moments m JOIN items i ON i.id = m.item_id
+             WHERE NOT i.hidden AND i.topic_id = ",
     )
     .push_bind(TOPIC_ID)
-    .push(" AND i.day >= ")
-    .push_bind(since)
-    .push(" GROUP BY m.place_id) recent JOIN travel_places p ON p.id = recent.place_id")
+    .push(
+        " GROUP BY m.place_id) visited ON visited.place_id = p.id
+         WHERE p.guide IS NOT NULL OR visited.place_id IS NOT NULL",
+    )
     .build_query_scalar::<Value>()
     .fetch_one(&state.pool)
     .await?;

@@ -105,6 +105,7 @@ pub(crate) async fn discover(
         Utc::now().with_timezone(&state.config.timezone),
         known,
         window,
+        "",
     );
     let searched = tokio::time::timeout(
         std::time::Duration::from_secs(180),

@@ -226,20 +226,28 @@ pub async fn fetch(
     known: &[Known],
     window: NewsWindow,
 ) -> Result<Fetched> {
+    let focus = if crate::travel::is_travel(topic) {
+        crate::travel::focus(state, window).await?
+    } else {
+        String::new()
+    };
     let body = request_body(
         topic,
         Utc::now().with_timezone(&state.config.timezone),
         known,
         window,
+        &focus,
     );
     parse_reply(crate::ai::request(state, body).await?)
 }
 
+/// `focus` follows the brief: what this run should look at besides the topic's direction.
 pub(crate) fn request_body(
     topic: &Topic,
     now: DateTime<Tz>,
     known: &[Known],
     window: NewsWindow,
+    focus: &str,
 ) -> Value {
     let mut web_search = json!({ "type": "web_search" });
     if topic.owner_user_id.is_none()
@@ -274,11 +282,6 @@ pub(crate) fn request_body(
         json!([web_search, { "type": "x_search", "enable_image_understanding": true }])
     } else {
         json!([web_search, { "type": "x_search" }])
-    };
-    let focus = if travel {
-        format!("\n本轮也留意：{}", crate::travel::region(window))
-    } else {
-        String::new()
     };
     json!({
         "model": topic.model,
