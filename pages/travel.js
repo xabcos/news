@@ -312,7 +312,10 @@
       if (loading || !entries.some((entry) => entry.isIntersecting)) return;
       loading = true;
       try {
-        const response = await fetch(`${grid.dataset.source}?before=${encodeURIComponent(next)}`, { headers: { Accept: "application/json" } });
+        // The source may already carry a filter.
+        const url = new URL(grid.dataset.source, location.href);
+        url.searchParams.set("before", next);
+        const response = await fetch(url, { headers: { Accept: "application/json" } });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const page = await response.json();
         grid.append(...page.moments.map((item) => postcard(item, { when: format.format(new Date(item.first_seen_at)) })));
