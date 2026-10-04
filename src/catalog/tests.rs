@@ -709,6 +709,23 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
         focus(&state, topic).await.unwrap(),
         "\n本轮深挖：海岸（The Shore，Ada）；潮水（Tidewater，Ada）"
     );
+    // The shelf leads with the work whose latest story was published last, even when another
+    // work's older story was collected later.
+    sqlx::query(
+        "UPDATE items SET published_at = NOW() - INTERVAL '20 minutes',
+             first_seen_at = NOW() - INTERVAL '10 minutes'
+         WHERE url LIKE '%/unavailable'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let page = get("/culture/book".into()).await.text().await.unwrap();
+    let shelf = page
+        .split_once("<section class=catalog-shelf>")
+        .and_then(|(_, rest)| rest.split_once("</section>"))
+        .unwrap()
+        .0;
+    assert!(shelf.find("tidewater-00000000").unwrap() < shelf.find(&slug).unwrap());
     let detail = get(format!("/culture/book/{slug}"))
         .await
         .text()

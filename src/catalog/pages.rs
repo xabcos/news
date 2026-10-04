@@ -330,7 +330,9 @@ fn kind<'a>(section: Section, topic: &str, params: &'a Params) -> Option<&'a str
         .as_deref()
         .filter(|kind| section.kinds(topic).contains(kind))
 }
-/// Which entries a shelf shows, all with a guide, the most recently active first.
+/// Which entries a shelf shows, all with a guide, the most recently active first: by when their
+/// latest story was published, the date its card shows. Collection time would tie every entry a
+/// run touched and lift an entry whenever an old story is found late.
 #[derive(Clone, Copy)]
 enum Shelf<'a> {
     /// A topic's, of one kind or all.
@@ -385,7 +387,7 @@ async fn shelved(state: &AppState, shelf: Shelf<'_>, limit: i64) -> Result<Vec<S
     }
     query
         .push(
-            " ORDER BY (SELECT MAX(i.first_seen_at) FROM catalog_items c JOIN items i ON i.id = c.item_id
+            " ORDER BY (SELECT MAX(COALESCE(i.published_at, i.first_seen_at)) FROM catalog_items c JOIN items i ON i.id = c.item_id
                  WHERE c.entry_id = e.id AND NOT i.hidden) DESC NULLS LAST, e.guide_at DESC LIMIT ",
         )
         .push_bind(limit);
