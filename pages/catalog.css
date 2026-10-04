@@ -54,9 +54,11 @@
 .catalog-sources a { color: inherit; }
 .catalog-related { max-width: 66rem; margin: 3rem auto 0; }
 .catalog-related > h2 { margin-bottom: 1.25rem; font-size: 1.1rem; }
+.catalog-onward { max-width: 66rem; margin: 3rem auto 0; }
+.catalog-onward > h2 { margin-bottom: 1rem; font-size: 1.1rem; }
 .catalog-back { margin: 2rem 0 0; text-align: center; font-size: .85rem; color: var(--muted); }
 .catalog-back a { text-decoration: none; }
-/* 𝑮𝒂𝒅𝒈𝒆𝒕𝒔: kind filters, a shelf of recently active products, specifications and official pictures. */
+/* Kind filters and shelves of entries; 𝑮𝒂𝒅𝒈𝒆𝒕𝒔' specifications and official pictures. */
 .catalog-kinds { display: flex; gap: .4rem; overflow-x: auto; padding: 1rem 0 .2rem; scrollbar-width: none; }
 .catalog-kinds::-webkit-scrollbar { display: none; }
 .catalog-kinds a { flex: none; padding: .25rem .75rem; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: .8rem; text-decoration: none; }

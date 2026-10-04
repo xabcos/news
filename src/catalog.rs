@@ -1,7 +1,8 @@
 //! A catalogue of works and products in two sections, Culture and 𝑮𝒂𝒅𝒈𝒆𝒕𝒔. Their topics share
-//! collection and news storage; items attach to entries, and each entry gets a guide written
-//! only from the sources the program read. Headlines publish first; guides are independent,
-//! bounded work at the end of each run.
+//! collection and news storage; items attach to entries as news, reviews or posts on X, and each
+//! entry gets a guide written only from the sources the program read. Headlines publish first;
+//! guides are independent, bounded work at the end of each run. Each run also looks into two
+//! entries (`focus`), and an entry leaves once its last item has (`prune`).
 mod culture;
 mod gadgets;
 mod images;
@@ -70,10 +71,25 @@ impl Section {
     }
 
     fn kinds(self, topic: &str) -> Vec<&'static str> {
+        self.labels(topic, false)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    /// A topic's kinds with their labels, for its filters and cards.
+    fn labels(self, topic: &str, en: bool) -> Vec<(&'static str, &'static str)> {
         match self {
-            Self::Culture => culture::kinds(topic).to_vec(),
-            Self::Gadgets => gadgets::kinds(topic),
+            Self::Culture => culture::labels(topic, en).collect(),
+            Self::Gadgets => gadgets::labels(topic, en).collect(),
         }
+    }
+
+    fn kind_label(self, topic: &str, kind: &str, en: bool) -> &'static str {
+        self.labels(topic, en)
+            .into_iter()
+            .find(|(id, _)| *id == kind)
+            .map_or("", |(_, label)| label)
     }
 
     /// Characters kept of each source: a product's full specifications run long.
@@ -101,6 +117,10 @@ pub(crate) fn section(topic: &Topic) -> Option<Section> {
         .flatten()
 }
 
+/// The topics whose reviews and posts outlive news retention: 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 builds up its product
+/// pages from them, while Culture's leave with the news.
+pub(crate) const KEPT_TOPICS: [&str; 3] = gadgets::TOPICS;
+
 pub(crate) const ITEM_JOIN: &str = "LEFT JOIN catalog_items ci ON ci.item_id = items.id LEFT JOIN catalog_entries ce ON ce.id = ci.entry_id";
 
 /// What a public item tells of its entry: its role, and once the guide is written, the
@@ -122,11 +142,13 @@ pub(crate) fn instructions(topic: &Topic, section: Section) -> String {
 pub(crate) fn schema(mut base: Value, topic: &Topic, section: Section) -> Value {
     let item = &mut base["properties"]["items"]["items"];
     let required = item["required"].as_array_mut().expect("item schema");
-    required.extend([json!("work"), json!("image"), json!("image_page_url")]);
-    if section == Section::Gadgets {
-        required.push(json!("role"));
-        item["properties"]["role"] = json!({"type":"string", "enum":["review","share","news"]});
-    }
+    required.extend([
+        json!("work"),
+        json!("image"),
+        json!("image_page_url"),
+        json!("role"),
+    ]);
+    item["properties"]["role"] = json!({"type":"string", "enum":["review","share","news"]});
     item["properties"]["image_page_url"] = json!({"type":["string","null"]});
     item["properties"]["published_at"] = json!({"type":"string"});
     item["properties"]["work"] = json!({
@@ -167,7 +189,7 @@ impl Proposal {
             .collect();
         self.source_urls.dedup();
         if self.name.is_empty()
-            || self.name_en.is_empty()
+            || fold(&self.name_en).is_empty()
             || !section.kinds(topic).contains(&self.kind.as_str())
         {
             return None;
@@ -189,10 +211,12 @@ impl Proposal {
         }
     }
 
-    /// Culture knows a work by its stable page, 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 a product by brand and model.
+    /// Culture knows a work by its kind and English name, 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 a product by brand and
+    /// model. Pages about one work differ from story to story, and its creator is written many
+    /// ways; its name does not change, and the kind keeps an album apart from its title single.
     fn key(&self, section: Section) -> String {
         match section {
-            Section::Culture => self.source_urls[0].clone(),
+            Section::Culture => format!("{}:{}", self.kind, fold(&self.name_en)),
             Section::Gadgets => {
                 let brand = fold(&self.creator);
                 // Galaxy S26+ is not Galaxy S26.
@@ -275,8 +299,8 @@ pub(crate) async fn attach(
             continue;
         };
         let id = Uuid::new_v4();
-        // A product's picture comes from its official pages, not from a reader's photograph.
-        let cover = image.filter(|_| section == Section::Culture);
+        // A product's picture comes from its official pages, and a work's never from a post.
+        let cover = image.filter(|_| section == Section::Culture && *role != "share");
         let entry: Uuid = sqlx::query_scalar("INSERT INTO catalog_entries (id, topic_id, key, slug, name, name_en, creator, kind, source_urls, image)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
             ON CONFLICT (topic_id, key) DO UPDATE SET image = COALESCE(catalog_entries.image, EXCLUDED.image),
@@ -300,6 +324,67 @@ pub(crate) async fn attach(
     }
     tx.commit().await?;
     Ok(())
+}
+
+/// The two entries a run looks into besides the news, so their pages fill up: one with the
+/// fewest items, preferring one still without a guide (a product without official sources),
+/// and one of the 24 most covered others, those with a guide first.
+pub(crate) async fn focus(state: &AppState, topic: &Topic) -> Result<String> {
+    let entries = sqlx::query_as::<_, (String, String, String)>(
+        "WITH counted AS (
+             SELECT e.id, e.name, e.name_en, e.creator, e.guide IS NOT NULL AS guided,
+                    (SELECT COUNT(*) FROM catalog_items c JOIN items i ON i.id = c.item_id
+                     WHERE c.entry_id = e.id AND NOT i.hidden) AS items
+             FROM catalog_entries e WHERE e.topic_id = $1),
+         fewest AS MATERIALIZED (
+             SELECT * FROM counted WHERE items > 0 ORDER BY guided, items, random() LIMIT 1)
+         SELECT name, name_en, creator FROM (
+             (SELECT 1 AS turn, name, name_en, creator FROM
+                  (SELECT * FROM counted WHERE items > 0 AND id NOT IN (SELECT id FROM fewest)
+                   ORDER BY guided DESC, items DESC, id LIMIT 24) covered
+              ORDER BY random() LIMIT 1)
+             UNION ALL
+             SELECT 2, name, name_en, creator FROM fewest) chosen
+         ORDER BY turn",
+    )
+    .bind(&topic.id)
+    .fetch_all(&state.pool)
+    .await?;
+    if entries.is_empty() {
+        return Ok(String::new());
+    }
+    let named = entries
+        .into_iter()
+        .map(|(name, name_en, creator)| {
+            let aside = [name_en, creator]
+                .into_iter()
+                .filter(|part| !part.is_empty() && *part != name)
+                .collect::<Vec<_>>();
+            if aside.is_empty() {
+                name
+            } else {
+                format!("{name}（{}）", aside.join("，"))
+            }
+        })
+        .collect::<Vec<_>>();
+    Ok(format!("\n本轮深挖：{}", named.join("；")))
+}
+
+/// Removes the entries whose last item has gone, through news retention or deletion; a locked
+/// entry, which a run may be attaching to, waits for the next pass.
+pub(crate) async fn prune(state: &AppState) -> Result<u64> {
+    crate::runner::delete_in_batches("catalog_entries", || {
+        sqlx::query(
+            "WITH orphaned AS (
+                 SELECT id FROM catalog_entries e
+                 WHERE NOT EXISTS (SELECT 1 FROM catalog_items c WHERE c.entry_id = e.id)
+                 LIMIT $1 FOR UPDATE SKIP LOCKED)
+             DELETE FROM catalog_entries USING orphaned WHERE catalog_entries.id = orphaned.id",
+        )
+        .bind(crate::runner::CLEANUP_BATCH_SIZE)
+        .execute(&state.pool)
+    })
+    .await
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

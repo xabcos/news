@@ -228,6 +228,8 @@ pub async fn fetch(
 ) -> Result<Fetched> {
     let focus = if crate::travel::is_travel(topic) {
         crate::travel::focus(state, window).await?
+    } else if crate::catalog::section(topic).is_some() {
+        crate::catalog::focus(state, topic).await?
     } else {
         String::new()
     };

@@ -97,6 +97,25 @@ fn proposals_require_a_work_page_and_matching_medium() {
         proposal.clone().clean("book", "").unwrap().source_urls[0],
         "https://publisher.example/books/shore"
     );
+    // A work is known by its English name, whichever page a story cites.
+    assert_eq!(proposal.key(Section::Culture), "book:theshore");
+    assert_eq!(
+        Proposal {
+            name_en: "THE SHORE!".into(),
+            source_urls: vec!["https://en.wikipedia.org/wiki/The_Shore".into()],
+            ..proposal.clone()
+        }
+        .key(Section::Culture),
+        "book:theshore"
+    );
+    assert!(
+        Proposal {
+            name_en: "……".into(),
+            ..proposal.clone()
+        }
+        .clean("book", "")
+        .is_none()
+    );
     assert!(proposal.clone().clean("movie", "").is_none());
     assert!(
         Proposal {
@@ -388,7 +407,7 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
                 ],"cover":null})
             } else if request["text"]["format"]["name"]=="catalog_guide" {
                 let published:i64=sqlx::query_scalar("SELECT COUNT(*) FROM items WHERE topic_id='book'").fetch_one(&pool).await.unwrap();
-                assert_eq!(published,2,"stories with and without pictures are already published while the guide is written");
+                assert_eq!(published,3,"stories with and without pictures are already published while the guide is written");
                 assert!(request.get("tools").is_none());
                 assert!(request["input"].as_str().unwrap().contains("not the full text"));
                 json!({"intro":"一部关于记忆、故乡与海岸生活的小说。","intro_en":"A novel about memory, home and life by the sea.",
@@ -400,7 +419,7 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
                 assert_eq!(request["tools"][1]["type"],"x_search");
                 assert_eq!(request["tools"][1]["enable_image_understanding"],true);
                 assert!(request["text"]["format"]["schema"]["properties"]["items"]["items"]["required"].as_array().unwrap().contains(&json!("image")));
-                let item=json!({"title":"《海岸》新书发布","title_en":"The Shore is published","summary":"Ada 的新小说聚焦海岸社区与故乡记忆。","summary_en":"Ada's new novel explores coastal communities and memories of home.","url":format!("{base}/news/shore"),"source":"Publisher","published_at":chrono::Utc::now()-chrono::Duration::hours(1),"importance":3,"tags":["小说"],"tags_en":["Fiction"],
+                let item=json!({"role":"news","title":"《海岸》新书发布","title_en":"The Shore is published","summary":"Ada 的新小说聚焦海岸社区与故乡记忆。","summary_en":"Ada's new novel explores coastal communities and memories of home.","url":format!("{base}/news/shore"),"source":"Publisher","published_at":chrono::Utc::now()-chrono::Duration::hours(1),"importance":3,"tags":["小说"],"tags_en":["Fiction"],
                     "image":{"url":format!("{base}/blocked.jpg"),"source_url":format!("{base}/news/shore"),"caption":"《海岸》书封","caption_en":"The Shore cover","credit":"Publisher"},"image_page_url":null,
                     "work":{"name":"海岸","name_en":"The Shore","creator":"Ada","kind":"book","source_urls":[format!("{base}/work/shore")]}});
                 let mut unpictured = item.clone();
@@ -409,7 +428,16 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
                 unpictured["url"]=json!(format!("{base}/unavailable"));
                 unpictured["image"]=Value::Null;
                 unpictured["work"]=Value::Null;
-                json!({"items":[item.clone(),item,unpictured],"cover":null})
+                // A review cites another page about the same work; its English name joins them.
+                let mut review = item.clone();
+                review["title"]=json!("书评：《海岸》写尽故乡的退潮");
+                review["title_en"]=json!("Review: The Shore and the ebb of home");
+                review["url"]=json!(format!("{base}/review/shore"));
+                review["image"]=Value::Null;
+                review["role"]=json!("review");
+                review["work"]["name_en"]=json!("THE SHORE");
+                review["work"]["source_urls"]=json!([format!("{base}/review/shore")]);
+                json!({"items":[item.clone(),item,unpictured,review],"cover":null})
             };
             Json(json!({"id":"culture-fixture","status":"completed","usage":{"input_tokens":10,"output_tokens":10},"output":[{"type":"message","content":[{"type":"output_text","text":"{\"items\":[],\"cover\":null}"}]},{"type":"message","content":[{"type":"output_text","text":payload.to_string()}]}]}))
         }
@@ -454,13 +482,25 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
     let run = crate::runner::start(&state, topic, "manual").await.unwrap();
     finished(&pool, run).await;
     let (new,dup,status):(i32,i32,String)=sqlx::query_as("SELECT new_count,dup_count,status FROM runs WHERE topic_id='book' ORDER BY started_at DESC LIMIT 1").fetch_one(&pool).await.unwrap();
-    assert_eq!((new, dup, status.as_str()), (2, 1, "ok"));
-    let (id, slug): (Uuid, String) = sqlx::query_as(
-        "SELECT id,slug FROM catalog_entries WHERE topic_id='book' AND guide IS NOT NULL",
+    assert_eq!((new, dup, status.as_str()), (3, 1, "ok"));
+    let (id, slug, key): (Uuid, String, String) = sqlx::query_as(
+        "SELECT id,slug,key FROM catalog_entries WHERE topic_id='book' AND guide IS NOT NULL",
     )
     .fetch_one(&pool)
     .await
     .unwrap();
+    assert_eq!(key, "book:theshore");
+    let entries: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM catalog_entries WHERE topic_id='book'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(entries, 1, "the review joins the work its news named");
+    // The next run looks into the work with the fewest items, here the only one.
+    assert_eq!(
+        focus(&state, topic).await.unwrap(),
+        "\n本轮深挖：海岸（The Shore，Ada）"
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let app_url = format!("http://{}", listener.local_addr().unwrap());
     let router = crate::web::router(state.clone());
@@ -479,6 +519,10 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
     assert!(
         page.contains("catalog-book") && page.contains(&slug) && page.contains("/files/cover.jpg")
     );
+    // A shelf of works heads the list; a collection of one kind has no filters.
+    assert!(page.contains("<section class=catalog-shelf><h2>作品</h2>"));
+    assert!(page.contains("<span class=\"badge catalog-role\">评论</span>"));
+    assert!(!page.contains("catalog-kinds"));
     assert_eq!(page.matches(">𝑪𝒖𝒍𝒕𝒖𝒓𝒆</a>").count(), 1);
     assert!(page.contains("data-last=\"/culture/book\""));
     let detail = get(format!("/culture/book/{slug}"))
@@ -489,6 +533,8 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
     assert!(
         detail.contains("内容与背景") && detail.contains("/sample") && detail.contains("source-0")
     );
+    assert!(detail.contains("<h2>评论</h2>") && detail.contains("书评：《海岸》"));
+    assert!(detail.contains("<p class=catalog-eyebrow>图书</p>"));
     let english = get(format!("/culture/book/{slug}?lang=en"))
         .await
         .text()
@@ -635,18 +681,70 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
     .await;
     assert!(previews[0].contains(&format!("/api/admin/preview/culture/book/{slug}")));
     assert!(previews[2].contains("/api/admin/preview/culture/book/"));
-    // Saved work guides survive the ordinary news retention policy.
-    sqlx::query("DELETE FROM items WHERE topic_id='book'")
+    // An entry leads on to more by its creator, then more of its kind.
+    sqlx::query("UPDATE topics SET visible=true WHERE id='book'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    state.digest.reload_topics(&state).await.unwrap();
+    sqlx::query(
+        "INSERT INTO catalog_entries (id, topic_id, key, slug, name, name_en, creator, kind, source_urls, image, guide, guide_at)
+         SELECT gen_random_uuid(), topic_id, 'book:tidewater', 'tidewater-00000000', '潮水', 'Tidewater', creator, kind,
+             source_urls, image, guide, guide_at FROM catalog_entries WHERE id = $1",
+    )
+    .bind(id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // With two works, a run looks into both: the one with fewer items second.
+    sqlx::query(
+        "INSERT INTO catalog_items (item_id, entry_id, role)
+         SELECT i.id, e.id, 'news' FROM items i, catalog_entries e
+         WHERE i.url LIKE '%/unavailable' AND e.slug = 'tidewater-00000000'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        focus(&state, topic).await.unwrap(),
+        "\n本轮深挖：海岸（The Shore，Ada）；潮水（Tidewater，Ada）"
+    );
+    let detail = get(format!("/culture/book/{slug}"))
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        detail.contains("<section class=catalog-onward><h2>Ada 的更多作品</h2>")
+            && detail.contains("href=\"/culture/book/tidewater-00000000\"")
+            && !detail.contains("<h2>更多图书</h2>")
+    );
+    let english = get(format!("/culture/book/{slug}?lang=en"))
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(english.contains("<h2>More from Ada</h2>") && english.contains("<h2>Reviews</h2>"));
+    // Drafts with items are looked into too when no work has a guide yet.
+    sqlx::query("UPDATE catalog_entries SET guide = NULL, guide_at = NULL WHERE topic_id = 'book'")
         .execute(&pool)
         .await
         .unwrap();
     assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM catalog_entries WHERE id=$1")
-            .bind(id)
+        focus(&state, topic).await.unwrap(),
+        "\n本轮深挖：海岸（The Shore，Ada）；潮水（Tidewater，Ada）"
+    );
+    // Culture's reviews leave with the news, and so do entries without items.
+    crate::runner::cleanup_items(&state, state.digest.today() + chrono::Duration::days(1))
+        .await
+        .unwrap();
+    assert_eq!(prune(&state).await.unwrap(), 2);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM catalog_entries WHERE topic_id='book'")
             .fetch_one(&pool)
             .await
             .unwrap(),
-        1
+        0
     );
     // 𝑮𝒂𝒅𝒈𝒆𝒕𝒔: a review and a reader's post join an official product, a rumor stays news.
     sqlx::query("UPDATE topics SET enabled=true, visible=true, brief = brief || ' culture.example' WHERE id=ANY($1)")
@@ -748,6 +846,11 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
             .await
             .unwrap();
     assert_eq!(kept, ["Kindle Colorsoft 一个月实测", "彩色 Kindle 到手"]);
+    assert_eq!(
+        prune(&state).await.unwrap(),
+        0,
+        "a product with reviews stays"
+    );
     // Once due, what the catalogue keeps is renewed whatever its day: the product's pictures
     // and an old review's photograph.
     sqlx::query(

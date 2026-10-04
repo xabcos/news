@@ -494,19 +494,21 @@ fn extension_for(content_type: &str) -> &'static str {
 
 /// Renews one week's media in one batch so stored copies of the same photograph
 /// reuse a transfer. Published daily images enter the batch before archive cards. What a
-/// catalogue keeps, its reviews, shares and entry pictures, joins once a copy is due, ahead
-/// of the recent days, until a week past expiry.
+/// catalogue keeps, 𝑮𝒂𝒅𝒈𝒆𝒕𝒔' reviews and shares and every entry's pictures, joins once a copy
+/// is due, ahead of the recent days, until a week past expiry.
 pub async fn startup_sync(state: &AppState) -> Result<()> {
     let keep_from = state.digest.today() - chrono::Duration::days(RENEW_DAYS);
     let rows = sqlx::query_as::<_, StoredImageRow>(
         "SELECT items.id, items.topic_id, items.day, items.image FROM items JOIN topics ON topics.id = items.topic_id
          WHERE items.image IS NOT NULL AND topics.owner_user_id IS NULL
            AND (items.day >= $1 OR (items.image->>'expires_at')::timestamptz BETWEEN NOW() - INTERVAL '7 days' AND NOW() + $2
+               AND items.topic_id = ANY($3)
                AND EXISTS (SELECT 1 FROM catalog_items c WHERE c.item_id = items.id AND c.role <> 'news'))
          ORDER BY items.day >= $1, items.day DESC LIMIT 500",
     )
     .bind(keep_from)
     .bind(RENEW_BEFORE)
+    .bind(crate::catalog::KEPT_TOPICS)
     .fetch_all(&state.pool)
     .await?;
     // An entry's cover, then its official pictures.

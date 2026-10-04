@@ -1171,6 +1171,12 @@ async fn prune(state: &AppState, today: NaiveDate) -> Result<()> {
         }
         state.digest.forget_pruned().await;
     }
+    if let Err(error) = crate::catalog::prune(state).await {
+        tracing::warn!(%error, "catalogue entry pruning failed");
+        if first_error.is_none() {
+            first_error = Some(error);
+        }
+    }
     first_error.map_or(Ok(()), Err)
 }
 
@@ -1232,7 +1238,8 @@ pub(crate) async fn cleanup_items(state: &AppState, keep_from: NaiveDate) -> Res
                 SELECT id
                 FROM items
                 WHERE day < $2 AND topic_id <> 'reads'
-                  AND NOT EXISTS (SELECT 1 FROM catalog_items c WHERE c.item_id = items.id AND c.role <> 'news')
+                  AND NOT (topic_id = ANY($3)
+                      AND EXISTS (SELECT 1 FROM catalog_items c WHERE c.item_id = items.id AND c.role <> 'news'))
                 ORDER BY day, id
                 LIMIT $1
                 FOR UPDATE SKIP LOCKED
@@ -1244,6 +1251,7 @@ pub(crate) async fn cleanup_items(state: &AppState, keep_from: NaiveDate) -> Res
         )
         .bind(CLEANUP_BATCH_SIZE)
         .bind(keep_from)
+        .bind(crate::catalog::KEPT_TOPICS)
         .execute(&state.pool)
     })
     .await?;

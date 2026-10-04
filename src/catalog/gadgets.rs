@@ -161,21 +161,11 @@ fn topic_kinds(topic: &str) -> &'static [Kind] {
         .map_or(&[], |(_, kinds)| kinds)
 }
 
-pub(super) fn kinds(topic: &str) -> Vec<&'static str> {
-    topic_kinds(topic).iter().map(|kind| kind.id).collect()
-}
-
 /// The kinds of a topic with their labels, for its filters and cards.
 pub(super) fn labels(topic: &str, en: bool) -> impl Iterator<Item = (&'static str, &'static str)> {
     topic_kinds(topic)
         .iter()
         .map(move |kind| (kind.id, choose(en, kind.zh, kind.en)))
-}
-
-pub(super) fn label(topic: &str, kind: &str, en: bool) -> &'static str {
-    labels(topic, en)
-        .find(|(id, _)| *id == kind)
-        .map_or("", |(_, label)| label)
 }
 
 pub(super) fn instructions(topic: &Topic) -> String {
@@ -191,7 +181,7 @@ pub(super) fn instructions(topic: &Topic) -> String {
         .join("、");
     format!(
         "你为 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 的「{name}」收集电子产品的真实测评、用户在 X 上的分享，以及值得关注的新动态。\n\
-        用 web_search 和 x_search 检索，共最多 12 次，兼顾{languages}。\n\
+        用 web_search 和 x_search 检索，共最多 12 次，兼顾{languages}。检索分两部分，两部分找到的合格内容都要返回：先用 10 次照常查找各类产品的评测、分享和动态，品牌与品类尽量多样；最后用 2 次查找输入中「本轮深挖」的产品近期的评测和用户分享，它还没有官方资料页时其中 1 次到官方域名查找，找不到也没关系。\n\
         role 区分三类：review 是有实际上手和测试的评测或开箱（专业媒体、独立评测者或视频作者），要写明测了什么、结论如何，不收新闻稿改写、参数罗列、广告软文和带货清单；share 是用户在 X 上亲自拍摄的使用分享、开箱或介绍，要有清晰的产品实拍照片，不收转发、表情包、广告和官方营销帖；news 是新品发布、上市、价格、固件与系统更新、服务与政策变化等消息，未经官方确认的爆料和传闻也可以收录，但首个标签写「传闻」，标题和摘要写明消息来自谁。\n\
         只返回本次窗口内有明确发布时间的内容。按内容去重，已收录的事件只有实质进展才再收。最多 {max} 条，没有合格内容时返回空数组。\n\
         标题直接说明内容，评测写明产品和核心结论；摘要用 2–3 句：review 写测了什么和结论，share 写作者的体验和看点，news 写事实和影响，中英文自然对应。source 写媒体、作者或账号的名称。importance 为 1–5，tags/tags_en 1–4 个对应短标签。不要编造评分、跑分、销量或互动数。\n\

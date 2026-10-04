@@ -1,6 +1,7 @@
-//! Each section's pages: `/{section}/{topic}` lists a topic's items, `/{section}/{topic}/{slug}`
-//! shows an entry with its guide and items, and `more.json` pages the list. 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 adds a
-//! shelf of recently active products, filters by kind and keeps reviews and shares apart.
+//! Each section's pages: `/{section}/{topic}` lists a topic's items under its kind filters and a
+//! shelf of recently active entries, `/{section}/{topic}/{slug}` shows an entry with its guide,
+//! its reviews, posts and news, then more by the same creator and more of its kind; `more.json`
+//! pages the list.
 use super::{Guide, ITEM_JOIN, Section, culture, gadgets, item_json};
 use crate::{
     digest::{PublicItem, Rendered, conditional},
@@ -23,8 +24,9 @@ use std::fmt::Write;
 use uuid::Uuid;
 
 const LIMIT: usize = 18;
-/// Products on the shelf of a 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 topic.
+/// Entries on a topic's shelf, and in each row of an entry's onward links.
 const SHELF: i64 = 12;
+const ONWARD: i64 = 6;
 const CONTENT: &str = "t.enabled AND t.owner_user_id IS NULL";
 /// The groups of an entry's items, in page order.
 const ROLES: [&str; 3] = ["review", "share", "news"];
@@ -169,7 +171,7 @@ fn layout(
         &Chrome {
             current: topic,
             section: &format!("catalog {} catalog-{topic}", section.path()),
-            stylesheet: "/catalog.css?v=1",
+            stylesheet: "/catalog.css?v=2",
             script: "/catalog.js?v=3",
             feed: (section.label(), &format!("/feed.xml?topic={topic}")),
         },
@@ -236,11 +238,10 @@ fn card(item: &PublicItem, topic: &str, en: bool, reader: Reader) -> String {
     }
     let at = item.published_at.unwrap_or(item.first_seen_at);
     let entry = item.catalog.as_ref();
-    let role = match entry.and_then(|entry| entry["role"].as_str()) {
-        Some("review") => choose(en, "评测", "Review"),
-        Some("share") => choose(en, "分享", "Shared"),
-        _ => "",
-    };
+    let section = Section::of(topic).unwrap_or(Section::Culture);
+    let role = entry
+        .and_then(|entry| entry["role"].as_str())
+        .map_or("", |role| role_label(section, role, en));
     let _ = write!(
         html,
         "<div class=catalog-card-body><p class=item-meta>{}{} <span>·</span> <time datetime=\"{}\">{}</time></p><h2 class=item-title><a href=\"{}\" target=_blank rel=\"noopener noreferrer\">{}</a></h2><p class=item-summary>{}</p>",
@@ -281,6 +282,16 @@ fn card(item: &PublicItem, topic: &str, en: bool, reader: Reader) -> String {
     html.push_str("</div></article>");
     html
 }
+/// A role's badge on a card.
+fn role_label(section: Section, role: &str, en: bool) -> &'static str {
+    match (section, role) {
+        (Section::Culture, "review") => choose(en, "评论", "Review"),
+        (Section::Culture, "share") => choose(en, "大家说", "On X"),
+        (Section::Gadgets, "review") => choose(en, "评测", "Review"),
+        (Section::Gadgets, "share") => choose(en, "分享", "Shared"),
+        _ => "",
+    }
+}
 fn cards(rows: &[PublicItem], topic: &str, en: bool, reader: Reader) -> String {
     rows.iter()
         .map(|item| card(item, topic, en, reader))
@@ -317,63 +328,75 @@ fn kind<'a>(section: Section, topic: &str, params: &'a Params) -> Option<&'a str
     params
         .kind
         .as_deref()
-        .filter(|kind| section == Section::Gadgets && section.kinds(topic).contains(kind))
+        .filter(|kind| section.kinds(topic).contains(kind))
 }
-/// Kind filters and the shelf of recently active products of a 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 topic.
-async fn shelf(
-    state: &AppState,
-    topic: &str,
-    kind: Option<&str>,
-    en: bool,
-    reader: Reader,
-) -> Result<String> {
-    let mut html = String::from("<nav class=catalog-kinds>");
-    let filters = std::iter::once((None, choose(en, "全部", "All")))
-        .chain(gadgets::labels(topic, en).map(|(id, label)| (Some(id), label)));
-    for (id, label) in filters {
-        let _ = write!(
-            html,
-            "<a href=\"{}\"{}>{}</a>",
-            escape(&reader.localized(&list_path(Section::Gadgets, topic, id), en)),
-            if id == kind {
-                " aria-current=\"true\""
-            } else {
-                ""
-            },
-            escape(label)
-        );
-    }
-    html.push_str("</nav>");
-    let products: Vec<Product> = sqlx::query_as(
-        "SELECT e.slug, e.name, e.name_en, e.kind, e.image, e.guide FROM catalog_entries e
-         WHERE e.topic_id = $1 AND e.guide IS NOT NULL AND ($2::text IS NULL OR e.kind = $2)
-         ORDER BY (SELECT MAX(i.first_seen_at) FROM catalog_items c JOIN items i ON i.id = c.item_id
-                   WHERE c.entry_id = e.id AND NOT i.hidden) DESC NULLS LAST, e.guide_at DESC
-         LIMIT $3",
-    )
-    .bind(topic)
-    .bind(kind)
-    .bind(SHELF)
-    .fetch_all(&state.pool)
-    .await?;
-    if products.is_empty() {
-        return Ok(html);
-    }
-    let _ = write!(
-        html,
-        "<section class=catalog-shelf><h2>{}</h2><div class=catalog-products>",
-        choose(en, "产品", "Products")
+/// Which entries a shelf shows, all with a guide, the most recently active first.
+#[derive(Clone, Copy)]
+enum Shelf<'a> {
+    /// A topic's, of one kind or all.
+    Topic(&'a str, Option<&'a str>),
+    /// By one creator in the given topics, but one entry.
+    Creator(&'a [String], &'a str, Uuid),
+    /// Of one kind in a topic, but the given entries.
+    Kind(&'a str, &'a str, &'a [Uuid]),
+}
+#[derive(sqlx::FromRow)]
+struct Shelved {
+    id: Uuid,
+    topic_id: String,
+    slug: String,
+    name: String,
+    name_en: String,
+    kind: String,
+    image: Option<Value>,
+    guide: sqlx::types::Json<Guide>,
+}
+async fn shelved(state: &AppState, shelf: Shelf<'_>, limit: i64) -> Result<Vec<Shelved>> {
+    let mut query = sqlx::QueryBuilder::new(
+        "SELECT e.id, e.topic_id, e.slug, e.name, e.name_en, e.kind, e.image, e.guide
+         FROM catalog_entries e WHERE e.guide IS NOT NULL AND ",
     );
-    for Product {
-        slug,
-        name,
-        name_en,
-        kind,
-        image,
-        guide,
-    } in products
-    {
-        let specs = guide
+    match shelf {
+        Shelf::Topic(topic, kind) => {
+            query.push("e.topic_id = ").push_bind(topic);
+            if let Some(kind) = kind {
+                query.push(" AND e.kind = ").push_bind(kind);
+            }
+        }
+        Shelf::Creator(topics, creator, except) => {
+            query
+                .push("e.topic_id = ANY(")
+                .push_bind(topics)
+                .push(") AND lower(e.creator) = lower(")
+                .push_bind(creator)
+                .push(") AND e.id <> ")
+                .push_bind(except);
+        }
+        Shelf::Kind(topic, kind, except) => {
+            query
+                .push("e.topic_id = ")
+                .push_bind(topic)
+                .push(" AND e.kind = ")
+                .push_bind(kind)
+                .push(" AND e.id <> ALL(")
+                .push_bind(except)
+                .push(")");
+        }
+    }
+    query
+        .push(
+            " ORDER BY (SELECT MAX(i.first_seen_at) FROM catalog_items c JOIN items i ON i.id = c.item_id
+                 WHERE c.entry_id = e.id AND NOT i.hidden) DESC NULLS LAST, e.guide_at DESC LIMIT ",
+        )
+        .push_bind(limit);
+    Ok(query.build_query_as().fetch_all(&state.pool).await?)
+}
+/// Entries as shelf cards: picture, kind, name and first facts.
+fn shelf_cards(section: Section, entries: &[Shelved], en: bool, reader: Reader) -> String {
+    let mut html = String::from("<div class=catalog-products>");
+    for entry in entries {
+        let facts = entry
+            .guide
             .0
             .facts
             .iter()
@@ -383,32 +406,125 @@ async fn shelf(
             .join(" · ");
         let _ = write!(
             html,
-            "<a class=catalog-product href=\"{}\">{}<span class=catalog-product-kind>{}</span><strong>{}</strong><span class=catalog-product-specs>{specs}</span></a>",
-            escape(&reader.localized(&format!("/gadgets/{topic}/{slug}"), en)),
-            image
+            "<a class=catalog-product href=\"{}\">{}<span class=catalog-product-kind>{}</span><strong>{}</strong><span class=catalog-product-specs>{facts}</span></a>",
+            escape(&reader.localized(
+                &format!("/{}/{}/{}", section.path(), entry.topic_id, entry.slug),
+                en
+            )),
+            entry
+                .image
                 .as_ref()
                 .and_then(|image| image["url"].as_str())
                 .map(|url| format!("<img src=\"{}\" alt=\"\" loading=lazy decoding=async referrerpolicy=no-referrer>", escape(url)))
                 .unwrap_or_default(),
-            gadgets::label(topic, &kind, en),
-            escape(choose(en, &name, &name_en)),
+            section.kind_label(&entry.topic_id, &entry.kind, en),
+            escape(choose(en, &entry.name, &entry.name_en)),
         );
+    }
+    html.push_str("</div>");
+    html
+}
+/// A topic's kind filters, when it has more than one kind, and its shelf of recently active
+/// entries.
+async fn shelf(
+    state: &AppState,
+    section: Section,
+    topic: &str,
+    kind: Option<&str>,
+    en: bool,
+    reader: Reader,
+) -> Result<String> {
+    let mut html = String::new();
+    let labels = section.labels(topic, en);
+    if labels.len() > 1 {
+        html.push_str("<nav class=catalog-kinds>");
+        let filters = std::iter::once((None, choose(en, "全部", "All")))
+            .chain(labels.into_iter().map(|(id, label)| (Some(id), label)));
+        for (id, label) in filters {
+            let _ = write!(
+                html,
+                "<a href=\"{}\"{}>{}</a>",
+                escape(&reader.localized(&list_path(section, topic, id), en)),
+                if id == kind {
+                    " aria-current=\"true\""
+                } else {
+                    ""
+                },
+                escape(label)
+            );
+        }
+        html.push_str("</nav>");
+    }
+    let entries = shelved(state, Shelf::Topic(topic, kind), SHELF).await?;
+    if entries.is_empty() {
+        return Ok(html);
     }
     let _ = write!(
         html,
-        "</div></section><h2 class=catalog-latest>{}</h2>",
+        "<section class=catalog-shelf><h2>{}</h2>{}</section><h2 class=catalog-latest>{}</h2>",
+        match section {
+            Section::Culture => choose(en, "作品", "Works"),
+            Section::Gadgets => choose(en, "产品", "Products"),
+        },
+        shelf_cards(section, &entries, en, reader),
         choose(en, "最新内容", "Latest")
     );
     Ok(html)
 }
-#[derive(sqlx::FromRow)]
-struct Product {
-    slug: String,
-    name: String,
-    name_en: String,
-    kind: String,
-    image: Option<Value>,
-    guide: sqlx::types::Json<Guide>,
+/// Where to go from an entry: more by its creator in the section, then more of its kind in
+/// its topic.
+async fn onward(
+    state: &AppState,
+    section: Section,
+    topics: &[(String, String)],
+    topic: &str,
+    work: &Work,
+    en: bool,
+    reader: Reader,
+) -> Result<String> {
+    let visible = topics.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+    let creator = work.creator.trim();
+    let by_creator = if creator.is_empty() {
+        Vec::new()
+    } else {
+        shelved(state, Shelf::Creator(&visible, creator, work.id), ONWARD).await?
+    };
+    let shown = by_creator
+        .iter()
+        .map(|entry| entry.id)
+        .chain([work.id])
+        .collect::<Vec<_>>();
+    let alike = shelved(state, Shelf::Kind(topic, &work.kind, &shown), ONWARD).await?;
+    let mut html = String::new();
+    if !by_creator.is_empty() {
+        let heading = if en {
+            format!("More from {creator}")
+        } else {
+            format!(
+                "{creator} 的更多{}",
+                match section {
+                    Section::Culture => "作品",
+                    Section::Gadgets => "产品",
+                }
+            )
+        };
+        let _ = write!(
+            html,
+            "<section class=catalog-onward><h2>{}</h2>{}</section>",
+            escape(&heading),
+            shelf_cards(section, &by_creator, en, reader)
+        );
+    }
+    if !alike.is_empty() {
+        let label = section.kind_label(topic, &work.kind, en);
+        let _ = write!(
+            html,
+            "<section class=catalog-onward><h2>{}{label}</h2>{}</section>",
+            choose(en, "更多", "More "),
+            shelf_cards(section, &alike, en, reader)
+        );
+    }
+    Ok(html)
 }
 async fn collection(
     Extension(section): Extension<Section>,
@@ -436,9 +552,7 @@ async fn collection(
         .map(|(_, name)| name.as_str())
         .ok_or_else(missing)?;
     let mut content = tabs(section, &topics, &topic, en, reader);
-    if section == Section::Gadgets {
-        content.push_str(&shelf(&state, &topic, kind, en, reader).await?);
-    }
+    content.push_str(&shelf(&state, section, &topic, kind, en, reader).await?);
     let _ = write!(
         content,
         "<div class=catalog-grid>{}</div>",
@@ -532,13 +646,10 @@ async fn detail(
     let guide = &work.guide.0;
     let intro = choose(en, &guide.intro, &guide.intro_en);
     let path = format!("/{}/{topic}/{slug}", section.path());
+    let label = section.kind_label(&topic, &work.kind, en);
     let eyebrow = match section {
-        Section::Culture => work.kind.clone(),
-        Section::Gadgets => format!(
-            "{} · {}",
-            work.creator,
-            gadgets::label(&topic, &work.kind, en)
-        ),
+        Section::Culture => label.to_owned(),
+        Section::Gadgets => format!("{} · {label}", work.creator),
     };
     let mut content = tabs(section, &topics, &topic, en, reader);
     content.push_str("<article class=catalog-work><header class=catalog-work-heading>");
@@ -650,16 +761,14 @@ async fn detail(
         content.push_str("<p>Wikipedia · <a href=\"https://creativecommons.org/licenses/by-sa/4.0/\" rel=license>CC BY-SA 4.0</a></p>");
     }
     content.push_str("</footer></div></article>");
-    let roles: &[&str] = match section {
-        Section::Culture => &["news"],
-        Section::Gadgets => &ROLES,
-    };
-    for &role in roles {
+    for role in ROLES {
         let (rows, _) = items(&state, section, &topic, Filter::Entry(work.id, role), None).await?;
         if rows.is_empty() {
             continue;
         }
         let heading = match (section, role) {
+            (Section::Culture, "review") => choose(en, "评论", "Reviews"),
+            (Section::Culture, "share") => choose(en, "大家说", "On X"),
             (Section::Gadgets, "review") => choose(en, "真实测评", "Reviews"),
             (Section::Gadgets, "share") => choose(en, "用户分享", "Shared on X"),
             _ => choose(en, "最新动态", "Latest stories"),
@@ -670,6 +779,7 @@ async fn detail(
             cards(&rows, &topic, en, reader)
         );
     }
+    content.push_str(&onward(&state, section, &topics, &topic, &work, en, reader).await?);
     let _ = write!(
         content,
         "<p class=catalog-back><a href=\"{}\">← {}</a></p>",

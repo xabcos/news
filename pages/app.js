@@ -61,7 +61,7 @@ const TEXT = {
     kind: "类型", horizon: "时间", beneficiaries: "受益者", entry: "切入方式", watch: "观察信号", risk: "主要风险",
     confidence: (n, grade) => `证据强度 ${n}/5${grade ? ` · 证据 ${grade}` : ""}`, sources: "来源",
     items: (n) => `${n} 条`, photos: (n) => `${n} 张`,
-    close: "关闭", previous: "上一张", next: "下一张", play: "播放", pause: "暂停", review: "评测", shared: "分享",
+    close: "关闭", previous: "上一张", next: "下一张", play: "播放", pause: "暂停",
   },
   en: {
     locale: "en", lang: "中文", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", today: "Today", top: "Top",
@@ -74,7 +74,7 @@ const TEXT = {
     kind: "Type", horizon: "Horizon", beneficiaries: "Who may benefit", entry: "Entry path", watch: "Signals to watch", risk: "Main risk",
     confidence: (n, grade) => `Evidence ${n}/5${grade ? ` · Grade ${grade}` : ""}`, sources: "Sources",
     items: (n) => `${n} ${n === 1 ? "item" : "items"}`, photos: (n) => `${n} ${n === 1 ? "photo" : "photos"}`,
-    close: "Close", previous: "Previous", next: "Next", play: "Play", pause: "Pause", review: "Review", shared: "Shared",
+    close: "Close", previous: "Previous", next: "Next", play: "Play", pause: "Pause",
   },
 };
 
@@ -117,10 +117,19 @@ let travelMap = null;
 
 document.addEventListener("DOMContentLoaded", init);
 
-// Catalogue sections share one tab over their topics, which have server-rendered pages.
+// Catalogue sections share one tab over their topics, which have server-rendered pages; each
+// names its reviews and posts on X in its own words.
 const CATALOG = {
-  culture: { label: "𝑪𝒖𝒍𝒕𝒖𝒓𝒆", topics: ["movie", "music", "game", "book"] },
-  gadgets: { label: "𝑮𝒂𝒅𝒈𝒆𝒕𝒔", topics: ["eink", "ai-hardware", "digital"] },
+  culture: {
+    label: "𝑪𝒖𝒍𝒕𝒖𝒓𝒆",
+    topics: ["movie", "music", "game", "book"],
+    roles: { zh: { review: "评论", share: "大家说" }, en: { review: "Review", share: "On X" } },
+  },
+  gadgets: {
+    label: "𝑮𝒂𝒅𝒈𝒆𝒕𝒔",
+    topics: ["eink", "ai-hardware", "digital"],
+    roles: { zh: { review: "评测", share: "分享" }, en: { review: "Review", share: "Shared" } },
+  },
 };
 const sectionOf = (id) => Object.keys(CATALOG).find((section) => CATALOG[section].topics.includes(id));
 // Topics with their own server-rendered page instead of a news feed.
@@ -1074,10 +1083,11 @@ function renderGroups(digest) {
 function renderGroupItem(group, item) {
   if (group.id === PHOTO_TOPIC) return photoCard(item);
   if (group.id === TRAVEL_TOPIC) return TravelUI.postcard(item, { when: relativeTime(item.first_seen_at) });
-  if (sectionOf(group.id)) {
+  const section = sectionOf(group.id);
+  if (section) {
     const article = imageNewsCard(item);
     article.classList.add("catalog-card", `catalog-${group.id}`);
-    const role = { review: t().review, share: t().shared }[item.catalog?.role];
+    const role = CATALOG[section].roles[state.lang === "en" ? "en" : "zh"][item.catalog?.role];
     if (role) article.querySelector(".item-meta").prepend(span(role, "badge catalog-role"));
     const body = document.createElement("div");
     body.className = "catalog-card-body";
