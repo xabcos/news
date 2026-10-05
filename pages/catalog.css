@@ -68,6 +68,7 @@
 .catalog-product { display: grid; gap: .35rem; align-content: start; padding: .75rem; border: 1px solid var(--line); border-radius: var(--radius-l); background: var(--surface-solid); color: inherit; text-decoration: none; scroll-snap-align: start; }
 .catalog-product img { width: 100%; aspect-ratio: 4 / 3; object-fit: contain; border-radius: var(--radius-m); background: var(--surface-soft); }
 .catalog-product-kind { color: var(--primary-strong); font-size: .72rem; }
+.catalog-product-buzz { color: var(--muted); font-size: .72rem; }
 .catalog-product strong { font-size: .95rem; line-height: 1.35; }
 .catalog-product-specs { display: -webkit-box; overflow: hidden; color: var(--muted); font-size: .76rem; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 .catalog-product:hover strong { color: var(--primary-strong); }

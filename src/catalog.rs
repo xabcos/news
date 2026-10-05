@@ -123,11 +123,11 @@ pub(crate) const KEPT_TOPICS: [&str; 3] = gadgets::TOPICS;
 
 pub(crate) const ITEM_JOIN: &str = "LEFT JOIN catalog_items ci ON ci.item_id = items.id LEFT JOIN catalog_entries ce ON ce.id = ci.entry_id";
 
-/// What a public item tells of its entry: its role, and once the guide is written, the
-/// entry's name, kind and page. Drafts stay private.
+/// What a public item tells of its entry: its role, name, kind and page. The item itself gives
+/// the entry its page; the entry's official sources stay private.
 pub(crate) fn item_json(section: Section) -> String {
     format!(
-        "CASE WHEN ci.item_id IS NOT NULL THEN jsonb_build_object('role', ci.role) || CASE WHEN ce.guide IS NOT NULL THEN jsonb_build_object('name', ce.name, 'name_en', ce.name_en, 'kind', ce.kind, 'path', '/{}/' || ce.topic_id || '/' || ce.slug) ELSE '{{}}' END END",
+        "CASE WHEN ci.item_id IS NOT NULL THEN jsonb_build_object('role', ci.role, 'name', ce.name, 'name_en', ce.name_en, 'kind', ce.kind, 'path', '/{}/' || ce.topic_id || '/' || ce.slug) END",
         section.path()
     )
 }
@@ -294,6 +294,7 @@ pub(crate) async fn attach(
     .fetch_all(&state.pool)
     .await?;
     let mut tx = state.pool.begin().await?;
+    let mut linked = 0;
     for (item, url, image) in published {
         let Some((proposal, role)) = canonical(&url).and_then(|url| proposals.get(&url)) else {
             continue;
@@ -313,16 +314,27 @@ pub(crate) async fn attach(
             .bind(id).bind(&topic.id).bind(proposal.key(section)).bind(slug(&proposal.name_en, id))
             .bind(&proposal.name).bind(&proposal.name_en).bind(&proposal.creator).bind(&proposal.kind)
             .bind(json!(proposal.source_urls)).bind(cover).fetch_one(&mut *tx).await?;
-        sqlx::query(
+        linked += sqlx::query(
             "INSERT INTO catalog_items (item_id, entry_id, role) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
         )
         .bind(item)
         .bind(entry)
         .bind(role)
         .execute(&mut *tx)
-        .await?;
+        .await?
+        .rows_affected();
+    }
+    // The run published its stories before linking them; their cards now name a role and a page.
+    if linked > 0 {
+        sqlx::query("UPDATE topics SET feed_revision = feed_revision + 1 WHERE id = $1")
+            .bind(&topic.id)
+            .execute(&mut *tx)
+            .await?;
     }
     tx.commit().await?;
+    if linked > 0 {
+        state.digest.forget_topic(&topic.id).await;
+    }
     Ok(())
 }
 

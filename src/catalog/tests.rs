@@ -198,6 +198,28 @@ fn products_keep_official_sources_and_are_known_by_brand_and_model() {
         .clean("eink", brief)
         .is_none()
     );
+    // `brand.*` stands for the brand's sites in every country, and only for that brand; an
+    // official shop's product page counts.
+    let regional = "官方来源：sony.* apple.com vmall.com。";
+    for (url, official) in [
+        ("https://www.sony.jp/headphone/products/WH-1000XM6/", true),
+        (
+            "https://www.sony.co.uk/electronics/headband-headphones/wh-1000xm6",
+            true,
+        ),
+        ("https://store.sony.com.cn/product/wh-1000xm6", true),
+        ("https://www.sony.com/electronics/support", true),
+        ("https://www.sony.jp/", false),
+        ("https://sony.example.com/wh-1000xm6", false),
+        ("https://notsony.jp/wh-1000xm6", false),
+        ("https://www.apple.com.cn/iphone/", false),
+        (
+            "https://item.vmall.com/product/comdetail/index.html?prdId=10086172940673",
+            true,
+        ),
+    ] {
+        assert_eq!(super::gadgets::official(regional, url), official, "{url}");
+    }
 }
 
 #[test]
@@ -520,7 +542,7 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
         page.contains("catalog-book") && page.contains(&slug) && page.contains("/files/cover.jpg")
     );
     // A shelf of works heads the list; a collection of one kind has no filters.
-    assert!(page.contains("<section class=catalog-shelf><h2>作品</h2>"));
+    assert!(page.contains("<section class=catalog-shelf><h2>近期有动态</h2>"));
     assert!(page.contains("<span class=\"badge catalog-role\">评论</span>"));
     assert!(!page.contains("catalog-kinds"));
     assert_eq!(page.matches(">𝑪𝒖𝒍𝒕𝒖𝒓𝒆</a>").count(), 1);
@@ -751,6 +773,26 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
         focus(&state, topic).await.unwrap(),
         "\n本轮深挖：海岸（The Shore，Ada）；潮水（Tidewater，Ada）"
     );
+    // Without its guide a work keeps its page, gathered from its stories, and its place on the
+    // shelf; only the guide's sections are missing.
+    let draft = get(format!("/culture/book/{slug}")).await;
+    assert_eq!(draft.status(), 200);
+    let draft = draft.text().await.unwrap();
+    assert!(
+        draft.contains("书评：《海岸》")
+            && draft.contains("海岸：评测、用户分享与最新动态")
+            && !draft.contains("catalog-sources")
+    );
+    let list = get("/culture/book".into()).await.text().await.unwrap();
+    assert!(
+        list.split_once("<section class=catalog-shelf>")
+            .unwrap()
+            .1
+            .split_once("</section>")
+            .unwrap()
+            .0
+            .contains(&format!("href=\"/culture/book/{slug}\""))
+    );
     // Culture's reviews leave with the news, and so do entries without items.
     crate::runner::cleanup_items(&state, state.digest.today() + chrono::Duration::days(1))
         .await
@@ -772,6 +814,13 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
         .await
         .unwrap();
     assert_eq!((eink.interval_minutes, eink.max_items), (360, 12));
+    let revision = || async {
+        sqlx::query_scalar::<_, i64>("SELECT feed_revision FROM topics WHERE id='eink'")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    let before = revision().await;
     let run = crate::runner::start(&state, &eink, "manual").await.unwrap();
     finished(&pool, run).await;
     let (new, status): (i32, String) =
@@ -781,6 +830,9 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
             .await
             .unwrap();
     assert_eq!((new, status.as_str()), (3, "ok"));
+    // The feed changes three times: the stories, their links to the product, and its guide; the
+    // links alone tell readers' pages to reload, whether or not a guide follows.
+    assert_eq!(revision().await, before + 3);
     let (key, sources, pictured, guide, slug): (String, Value, bool, Value, String) = sqlx::query_as(
         "SELECT key, source_urls, image->>'url' LIKE '%/files/cover.jpg', guide, slug FROM catalog_entries WHERE topic_id='eink'",
     )
@@ -814,7 +866,105 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
             ("彩色 Kindle 到手".to_owned(), "share".to_owned())
         ]
     );
+    // The most talked-about shelf: products with at least two reviews and posts in 30 days, the
+    // most first and the more recent among equals, shown once three have them. Colorsoft has a
+    // review and a post from an hour ago; the others get stories from the fixture below and no
+    // guide. Hidden stories, news and anything older than 30 days do not count.
+    let add = |name: &'static str,
+               n: usize,
+               role: &'static str,
+               age: &'static str,
+               hidden: bool,
+               picture: bool| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "WITH item AS (
+                     INSERT INTO items (id, topic_id, day, fingerprint, title, summary, url, published_at, hidden, image)
+                     VALUES (gen_random_uuid(), 'eink', CURRENT_DATE, sha256(convert_to($1, 'UTF8')),
+                         $1, $1, 'https://reviews.example/' || $1, NOW() - $3::interval, $4,
+                         CASE WHEN $5 THEN jsonb_build_object('url', 'https://media.example/' || $1 || '.jpg') END)
+                     RETURNING id)
+                 INSERT INTO catalog_items (item_id, entry_id, role)
+                 SELECT item.id, e.id, $2 FROM item, catalog_entries e WHERE e.slug = 'talked-' || $6",
+            )
+            .bind(format!("talked-{name}-{n}"))
+            .bind(role)
+            .bind(age)
+            .bind(hidden)
+            .bind(picture)
+            .bind(name)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    let talked = || async {
+        let page = get("/gadgets/eink".into()).await.text().await.unwrap();
+        page.split_once("<section class=catalog-shelf><h2>最受关注</h2>")
+            .map(|(_, rest)| rest.split_once("</section>").unwrap().0.to_owned())
+    };
+    assert!(talked().await.is_none());
+    for name in ["one", "two", "three"] {
+        sqlx::query(
+            "INSERT INTO catalog_entries (id, topic_id, key, slug, name, name_en, creator, kind, source_urls)
+             VALUES (gen_random_uuid(), 'eink', 'amazon:talked' || $1, 'talked-' || $1,
+                 'Talked ' || $1, 'Talked ' || $1, 'Amazon', 'reader', '[]')",
+        )
+        .bind(name)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    for n in 0..2 {
+        add("one", n, "review", "1 day", false, false).await;
+    }
+    add("one", 2, "review", "1 day", true, false).await;
+    add("one", 3, "review", "40 days", false, false).await;
+    add("one", 4, "news", "1 day", false, false).await;
+    // Two talked-about products are not yet a shelf; a third makes one.
+    assert!(talked().await.is_none());
+    for n in 0..3 {
+        add("two", n, "review", "1 day", false, false).await;
+    }
+    let shelf = talked().await.unwrap();
+    assert!(shelf.contains("2 条评测与分享") && shelf.contains("3 条评测与分享"));
+    // Three's picture is its newest visible review's: not a newer post's, nor a hidden one's.
+    for n in 0..3 {
+        add("three", n, "review", "2 days", false, n == 1).await;
+    }
+    add("three", 3, "review", "1 day", false, false).await;
+    add("three", 4, "share", "1 hour", false, true).await;
+    add("three", 5, "review", "1 hour", true, true).await;
+    let shelf = talked().await.unwrap();
+    let at = |slug: &str| shelf.find(&format!("/gadgets/eink/{slug}\"")).unwrap();
+    assert!(
+        shelf.contains("5 条评测与分享")
+            && at("talked-three") < at("talked-two")
+            && at("talked-two") < at(&slug)
+            && at(&slug) < at("talked-one")
+    );
     let page = get("/gadgets/eink".into()).await.text().await.unwrap();
+    let recent = page
+        .split_once("<section class=catalog-shelf><h2>近期有动态</h2>")
+        .unwrap()
+        .1;
+    assert!(recent.contains("talked-one"));
+    let unguided = get("/gadgets/eink/talked-three".into()).await;
+    assert_eq!(unguided.status(), 200);
+    let unguided = unguided.text().await.unwrap();
+    assert!(
+        unguided.contains("talked-three-0")
+            && unguided
+                .contains("class=catalog-cover src=\"https://media.example/talked-three-1.jpg\"")
+            && !unguided.contains("catalog-specs")
+    );
+    for statement in [
+        "DELETE FROM items WHERE url LIKE 'https://reviews.example/%'",
+        "DELETE FROM catalog_entries WHERE slug LIKE 'talked-%'",
+    ] {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
     assert!(
         page.contains("catalog-shelf")
             && page.contains("7 英寸，300 ppi")

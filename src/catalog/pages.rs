@@ -27,7 +27,21 @@ const LIMIT: usize = 18;
 /// Entries on a topic's shelf, and in each row of an entry's onward links.
 const SHELF: i64 = 12;
 const ONWARD: i64 = 6;
+/// The most talked-about shelf counts the reviews and posts of this many recent days, needs this
+/// many of them for an entry, and shows only when this many entries have them.
+const TALKED_DAYS: i64 = 30;
+const TALKED_ITEMS: i64 = 2;
+const TALKED_SHELF: usize = 3;
 const CONTENT: &str = "t.enabled AND t.owner_user_id IS NULL";
+/// An entry has a page once a visible item belongs to it; its guide adds facts when written.
+const LISTED: &str = "EXISTS (SELECT 1 FROM catalog_items c JOIN items i ON i.id = c.item_id
+     WHERE c.entry_id = e.id AND NOT i.hidden)";
+
+/// An entry's picture: its own (official, or a work's cover), otherwise the newest picture of
+/// its reviews and news. Readers' photographs never stand for the entry.
+const COVER: &str = "COALESCE(e.image, (SELECT i.image FROM catalog_items c JOIN items i ON i.id = c.item_id
+     WHERE c.entry_id = e.id AND NOT i.hidden AND jsonb_typeof(i.image) = 'object' AND c.role <> 'share'
+     ORDER BY COALESCE(i.published_at, i.first_seen_at) DESC LIMIT 1))";
 /// The groups of an entry's items, in page order.
 const ROLES: [&str; 3] = ["review", "share", "news"];
 
@@ -171,7 +185,7 @@ fn layout(
         &Chrome {
             current: topic,
             section: &format!("catalog {} catalog-{topic}", section.path()),
-            stylesheet: "/catalog.css?v=2",
+            stylesheet: "/catalog.css?v=3",
             script: "/catalog.js?v=3",
             feed: (section.label(), &format!("/feed.xml?topic={topic}")),
         },
@@ -330,13 +344,15 @@ fn kind<'a>(section: Section, topic: &str, params: &'a Params) -> Option<&'a str
         .as_deref()
         .filter(|kind| section.kinds(topic).contains(kind))
 }
-/// Which entries a shelf shows, all with a guide, the most recently active first: by when their
+/// Which entries a shelf shows, those with a page, the most recently active first: by when their
 /// latest story was published, the date its card shows. Collection time would tie every entry a
 /// run touched and lift an entry whenever an old story is found late.
 #[derive(Clone, Copy)]
 enum Shelf<'a> {
     /// A topic's, of one kind or all.
     Topic(&'a str, Option<&'a str>),
+    /// Likewise, but those with the most reviews and posts lately first, and only those with a few.
+    Talked(&'a str, Option<&'a str>),
     /// By one creator in the given topics, but one entry.
     Creator(&'a [String], &'a str, Uuid),
     /// Of one kind in a topic, but the given entries.
@@ -351,15 +367,24 @@ struct Shelved {
     name_en: String,
     kind: String,
     image: Option<Value>,
-    guide: sqlx::types::Json<Guide>,
+    guide: Option<sqlx::types::Json<Guide>>,
+    /// Reviews and posts of the last `TALKED_DAYS` days.
+    talked: i64,
 }
 async fn shelved(state: &AppState, shelf: Shelf<'_>, limit: i64) -> Result<Vec<Shelved>> {
-    let mut query = sqlx::QueryBuilder::new(
-        "SELECT e.id, e.topic_id, e.slug, e.name, e.name_en, e.kind, e.image, e.guide
-         FROM catalog_entries e WHERE e.guide IS NOT NULL AND ",
+    let talked = format!(
+        "(SELECT COUNT(*) FROM catalog_items c JOIN items i ON i.id = c.item_id
+          WHERE c.entry_id = e.id AND NOT i.hidden AND c.role IN ('review', 'share')
+            AND COALESCE(i.published_at, i.first_seen_at) >= NOW() - INTERVAL '{TALKED_DAYS} days')"
     );
+    let mut query = sqlx::QueryBuilder::new(format!(
+        "SELECT e.id, e.topic_id, e.slug, e.name, e.name_en, e.kind, {} AS image, e.guide,
+                {talked} AS talked
+         FROM catalog_entries e WHERE (e.guide IS NOT NULL OR {LISTED}) AND ",
+        COVER
+    ));
     match shelf {
-        Shelf::Topic(topic, kind) => {
+        Shelf::Topic(topic, kind) | Shelf::Talked(topic, kind) => {
             query.push("e.topic_id = ").push_bind(topic);
             if let Some(kind) = kind {
                 query.push(" AND e.kind = ").push_bind(kind);
@@ -385,30 +410,54 @@ async fn shelved(state: &AppState, shelf: Shelf<'_>, limit: i64) -> Result<Vec<S
                 .push(")");
         }
     }
-    query
-        .push(
-            " ORDER BY (SELECT MAX(COALESCE(i.published_at, i.first_seen_at)) FROM catalog_items c JOIN items i ON i.id = c.item_id
-                 WHERE c.entry_id = e.id AND NOT i.hidden) DESC NULLS LAST, e.guide_at DESC LIMIT ",
-        )
-        .push_bind(limit);
+    let recent = "(SELECT MAX(COALESCE(i.published_at, i.first_seen_at)) FROM catalog_items c
+         JOIN items i ON i.id = c.item_id WHERE c.entry_id = e.id AND NOT i.hidden) DESC NULLS LAST";
+    if let Shelf::Talked(..) = shelf {
+        query.push(format!(
+            " AND {talked} >= {TALKED_ITEMS} ORDER BY {talked} DESC, {recent}, e.guide_at DESC NULLS LAST LIMIT "
+        ));
+    } else {
+        query.push(format!(
+            " ORDER BY {recent}, e.guide_at DESC NULLS LAST LIMIT "
+        ));
+    }
+    query.push_bind(limit);
     Ok(query.build_query_as().fetch_all(&state.pool).await?)
 }
 /// Entries as shelf cards: picture, kind, name and first facts.
-fn shelf_cards(section: Section, entries: &[Shelved], en: bool, reader: Reader) -> String {
+fn shelf_cards(
+    section: Section,
+    entries: &[Shelved],
+    talked: bool,
+    en: bool,
+    reader: Reader,
+) -> String {
     let mut html = String::from("<div class=catalog-products>");
     for entry in entries {
+        let buzz = if talked {
+            let count = entry.talked;
+            format!(
+                "<span class=catalog-product-buzz>{}</span>",
+                match (section, en) {
+                    (_, true) => format!("{count} reviews and posts"),
+                    (Section::Culture, false) => format!("{count} 条评论与分享"),
+                    (Section::Gadgets, false) => format!("{count} 条评测与分享"),
+                }
+            )
+        } else {
+            String::new()
+        };
         let facts = entry
             .guide
-            .0
-            .facts
             .iter()
+            .flat_map(|guide| &guide.0.facts)
             .take(3)
             .map(|fact| escape(choose(en, &fact.text, &fact.text_en)))
             .collect::<Vec<_>>()
             .join(" · ");
         let _ = write!(
             html,
-            "<a class=catalog-product href=\"{}\">{}<span class=catalog-product-kind>{}</span><strong>{}</strong><span class=catalog-product-specs>{facts}</span></a>",
+            "<a class=catalog-product href=\"{}\">{}<span class=catalog-product-kind>{}</span><strong>{}</strong>{buzz}<span class=catalog-product-specs>{facts}</span></a>",
             escape(&reader.localized(
                 &format!("/{}/{}/{}", section.path(), entry.topic_id, entry.slug),
                 en
@@ -426,8 +475,8 @@ fn shelf_cards(section: Section, entries: &[Shelved], en: bool, reader: Reader) 
     html.push_str("</div>");
     html
 }
-/// A topic's kind filters, when it has more than one kind, and its shelf of recently active
-/// entries.
+/// A topic's kind filters, when it has more than one kind, then its shelves: the most talked-about
+/// entries, when there are a few, and the recently active ones.
 async fn shelf(
     state: &AppState,
     section: Section,
@@ -457,6 +506,15 @@ async fn shelf(
         }
         html.push_str("</nav>");
     }
+    let talked = shelved(state, Shelf::Talked(topic, kind), SHELF).await?;
+    if talked.len() >= TALKED_SHELF {
+        let _ = write!(
+            html,
+            "<section class=catalog-shelf><h2>{}</h2>{}</section>",
+            choose(en, "最受关注", "Most talked about"),
+            shelf_cards(section, &talked, true, en, reader)
+        );
+    }
     let entries = shelved(state, Shelf::Topic(topic, kind), SHELF).await?;
     if entries.is_empty() {
         return Ok(html);
@@ -464,11 +522,8 @@ async fn shelf(
     let _ = write!(
         html,
         "<section class=catalog-shelf><h2>{}</h2>{}</section><h2 class=catalog-latest>{}</h2>",
-        match section {
-            Section::Culture => choose(en, "作品", "Works"),
-            Section::Gadgets => choose(en, "产品", "Products"),
-        },
-        shelf_cards(section, &entries, en, reader),
+        choose(en, "近期有动态", "Recently active"),
+        shelf_cards(section, &entries, false, en, reader),
         choose(en, "最新内容", "Latest")
     );
     Ok(html)
@@ -514,7 +569,7 @@ async fn onward(
             html,
             "<section class=catalog-onward><h2>{}</h2>{}</section>",
             escape(&heading),
-            shelf_cards(section, &by_creator, en, reader)
+            shelf_cards(section, &by_creator, false, en, reader)
         );
     }
     if !alike.is_empty() {
@@ -523,7 +578,7 @@ async fn onward(
             html,
             "<section class=catalog-onward><h2>{}{label}</h2>{}</section>",
             choose(en, "更多", "More "),
-            shelf_cards(section, &alike, en, reader)
+            shelf_cards(section, &alike, false, en, reader)
         );
     }
     Ok(html)
@@ -622,8 +677,8 @@ struct Work {
     kind: String,
     image: Option<Value>,
     images: sqlx::types::Json<Vec<Value>>,
-    guide: sqlx::types::Json<Guide>,
-    guide_at: DateTime<Utc>,
+    guide: Option<sqlx::types::Json<Guide>>,
+    guide_at: Option<DateTime<Utc>>,
 }
 fn paragraphs(text: &str) -> String {
     text.split("\n\n")
@@ -642,11 +697,21 @@ async fn detail(
 ) -> Result<Response> {
     let topics = check(&state, section, &topic, reader)?;
     let en = params.en();
-    let work: Work = sqlx::query_as("SELECT id, name, name_en, creator, kind, image, images, guide, guide_at FROM catalog_entries WHERE topic_id = $1 AND slug = $2 AND guide IS NOT NULL")
-        .bind(&topic).bind(&slug).fetch_optional(&state.pool).await?.ok_or_else(missing)?;
+    let work: Work = sqlx::QueryBuilder::new(format!(
+        "SELECT e.id, e.name, e.name_en, e.creator, e.kind, {} AS image, e.images, e.guide, e.guide_at
+         FROM catalog_entries e WHERE (e.guide IS NOT NULL OR {LISTED}) AND e.topic_id = ",
+        COVER
+    ))
+    .push_bind(&topic)
+    .push(" AND e.slug = ")
+    .push_bind(&slug)
+    .build_query_as()
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(missing)?;
     let name = choose(en, &work.name, &work.name_en);
-    let guide = &work.guide.0;
-    let intro = choose(en, &guide.intro, &guide.intro_en);
+    let guide = work.guide.as_ref().map(|guide| &guide.0);
+    let intro = guide.map_or("", |guide| choose(en, &guide.intro, &guide.intro_en));
     let path = format!("/{}/{topic}/{slug}", section.path());
     let label = section.kind_label(&topic, &work.kind, en);
     let eyebrow = match section {
@@ -691,78 +756,10 @@ async fn detail(
         }
         content.push_str("</div>");
     }
-    if !guide.facts.is_empty() {
-        let _ = write!(
-            content,
-            "<dl class=\"catalog-facts{}\">",
-            if section == Section::Gadgets {
-                " catalog-specs"
-            } else {
-                ""
-            }
-        );
-        for entry in &guide.facts {
-            let _ = write!(
-                content,
-                "<div><dt>{}</dt><dd>{} <a class=catalog-citation href=\"#source-{}\">[{}]</a></dd></div>",
-                escape(choose(en, &entry.label, &entry.label_en)),
-                escape(choose(en, &entry.text, &entry.text_en)),
-                entry.source,
-                entry.source + 1
-            );
-        }
-        content.push_str("</dl>");
+    if let (Some(guide), Some(at)) = (guide, work.guide_at) {
+        content.push_str(&guide_html(section, guide, at, en));
     }
-    if !guide.links.is_empty() {
-        content.push_str("<div class=catalog-links>");
-        for link in &guide.links {
-            let _ = write!(
-                content,
-                "<a class=\"button button-secondary\" href=\"{}\" target=_blank rel=\"noopener noreferrer\">{} ↗</a>",
-                escape(&link.url),
-                escape(choose(en, &link.label, &link.label_en))
-            );
-        }
-        content.push_str("</div>");
-    }
-    content.push_str("<div class=catalog-reading>");
-    for entry in &guide.sections {
-        let _ = write!(
-            content,
-            "<section><h2>{}</h2>{}<a class=catalog-citation href=\"#source-{}\">[{}]</a></section>",
-            escape(choose(en, &entry.label, &entry.label_en)),
-            paragraphs(choose(en, &entry.text, &entry.text_en)),
-            entry.source,
-            entry.source + 1
-        );
-    }
-    let _ = write!(
-        content,
-        "<footer class=catalog-sources><p>{} · {}</p><ol>",
-        match section {
-            Section::Culture => choose(en, "资料导读", "About this work"),
-            Section::Gadgets => choose(en, "官方资料", "Official sources"),
-        },
-        work.guide_at.format("%Y-%m-%d")
-    );
-    let mut wiki = false;
-    for (i, source) in guide.sources.iter().enumerate() {
-        let _ = write!(
-            content,
-            "<li id=source-{i}><a href=\"{}\" target=_blank rel=\"noopener noreferrer\">{}</a></li>",
-            escape(&source.url),
-            escape(&source.title)
-        );
-        wiki |= url::Url::parse(&source.url)
-            .ok()
-            .and_then(|u| u.host_str().map(str::to_owned))
-            .is_some_and(|h| h.ends_with(".wikipedia.org"));
-    }
-    content.push_str("</ol>");
-    if wiki {
-        content.push_str("<p>Wikipedia · <a href=\"https://creativecommons.org/licenses/by-sa/4.0/\" rel=license>CC BY-SA 4.0</a></p>");
-    }
-    content.push_str("</footer></div></article>");
+    content.push_str("</article>");
     for role in ROLES {
         let (rows, _) = items(&state, section, &topic, Filter::Entry(work.id, role), None).await?;
         if rows.is_empty() {
@@ -772,7 +769,7 @@ async fn detail(
             (Section::Culture, "review") => choose(en, "评论", "Reviews"),
             (Section::Culture, "share") => choose(en, "大家说", "On X"),
             (Section::Gadgets, "review") => choose(en, "真实测评", "Reviews"),
-            (Section::Gadgets, "share") => choose(en, "用户分享", "Shared on X"),
+            (Section::Gadgets, "share") => choose(en, "用户分享", "Shared by owners"),
             _ => choose(en, "最新动态", "Latest stories"),
         };
         let _ = write!(
@@ -789,12 +786,22 @@ async fn detail(
         choose(en, "回到栏目", "Back to collection")
     );
     let url = absolute(&state, &localized(&path, en));
+    // Before its guide, an entry is described by what the page gathers.
+    let description = if intro.is_empty() {
+        if en {
+            format!("{name}: reviews, owners' posts and news")
+        } else {
+            format!("{name}：评测、用户分享与最新动态")
+        }
+    } else {
+        intro.to_owned()
+    };
     let schema = match section {
         Section::Culture => {
-            json!({"@context":"https://schema.org","@type":match topic.as_str(){"book"=>"Book","game"=>"VideoGame","music"=>"CreativeWork",_=>if work.kind=="series"{"TVSeries"}else{"Movie"}},"name":name,"description":intro,"url":url,"dateModified":work.guide_at.to_rfc3339()})
+            json!({"@context":"https://schema.org","@type":match topic.as_str(){"book"=>"Book","game"=>"VideoGame","music"=>"CreativeWork",_=>if work.kind=="series"{"TVSeries"}else{"Movie"}},"name":name,"description":description,"url":url,"dateModified":work.guide_at.map(|at| at.to_rfc3339())})
         }
         Section::Gadgets => {
-            json!({"@context":"https://schema.org","@type":"Product","name":name,"brand":{"@type":"Brand","name":work.creator},"description":intro,"url":url,"image":work.image.as_ref().and_then(|image| image["url"].as_str())})
+            json!({"@context":"https://schema.org","@type":"Product","name":name,"brand":{"@type":"Brand","name":work.creator},"description":description,"url":url,"image":work.image.as_ref().and_then(|image| image["url"].as_str())})
         }
     };
     let html = layout(
@@ -805,7 +812,7 @@ async fn detail(
         en,
         &path,
         &format!("{name} · {} · News", section.label()),
-        intro,
+        &description,
         &content,
         Some(schema),
     );
@@ -814,6 +821,83 @@ async fn detail(
         &Rendered::new(html),
         "text/html; charset=utf-8",
     ))
+}
+/// The guide below an entry's heading: its facts, links and sections, then the sources they cite.
+fn guide_html(section: Section, guide: &Guide, at: DateTime<Utc>, en: bool) -> String {
+    let mut html = String::new();
+    if !guide.facts.is_empty() {
+        let _ = write!(
+            html,
+            "<dl class=\"catalog-facts{}\">",
+            if section == Section::Gadgets {
+                " catalog-specs"
+            } else {
+                ""
+            }
+        );
+        for entry in &guide.facts {
+            let _ = write!(
+                html,
+                "<div><dt>{}</dt><dd>{} <a class=catalog-citation href=\"#source-{}\">[{}]</a></dd></div>",
+                escape(choose(en, &entry.label, &entry.label_en)),
+                escape(choose(en, &entry.text, &entry.text_en)),
+                entry.source,
+                entry.source + 1
+            );
+        }
+        html.push_str("</dl>");
+    }
+    if !guide.links.is_empty() {
+        html.push_str("<div class=catalog-links>");
+        for link in &guide.links {
+            let _ = write!(
+                html,
+                "<a class=\"button button-secondary\" href=\"{}\" target=_blank rel=\"noopener noreferrer\">{} ↗</a>",
+                escape(&link.url),
+                escape(choose(en, &link.label, &link.label_en))
+            );
+        }
+        html.push_str("</div>");
+    }
+    html.push_str("<div class=catalog-reading>");
+    for entry in &guide.sections {
+        let _ = write!(
+            html,
+            "<section><h2>{}</h2>{}<a class=catalog-citation href=\"#source-{}\">[{}]</a></section>",
+            escape(choose(en, &entry.label, &entry.label_en)),
+            paragraphs(choose(en, &entry.text, &entry.text_en)),
+            entry.source,
+            entry.source + 1
+        );
+    }
+    let _ = write!(
+        html,
+        "<footer class=catalog-sources><p>{} · {}</p><ol>",
+        match section {
+            Section::Culture => choose(en, "资料导读", "About this work"),
+            Section::Gadgets => choose(en, "官方资料", "Official sources"),
+        },
+        at.format("%Y-%m-%d")
+    );
+    let mut wiki = false;
+    for (i, source) in guide.sources.iter().enumerate() {
+        let _ = write!(
+            html,
+            "<li id=source-{i}><a href=\"{}\" target=_blank rel=\"noopener noreferrer\">{}</a></li>",
+            escape(&source.url),
+            escape(&source.title)
+        );
+        wiki |= url::Url::parse(&source.url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_owned))
+            .is_some_and(|h| h.ends_with(".wikipedia.org"));
+    }
+    html.push_str("</ol>");
+    if wiki {
+        html.push_str("<p>Wikipedia · <a href=\"https://creativecommons.org/licenses/by-sa/4.0/\" rel=license>CC BY-SA 4.0</a></p>");
+    }
+    html.push_str("</footer></div>");
+    html
 }
 async fn sitemap(
     Extension(section): Extension<Section>,
