@@ -214,7 +214,8 @@ impl Proposal {
                 if self.creator.is_empty() {
                     return None;
                 }
-                self.source_urls.retain(|url| gadgets::official(brief, url));
+                self.source_urls
+                    .retain(|url| gadgets::official(brief, &self.creator, url));
                 Some(self)
             }
         }
@@ -301,8 +302,9 @@ fn canonical(value: &str) -> Option<String> {
 }
 
 /// Attach only items actually published by this run, never rejected candidates. An entry
-/// seen again gains the sources it was missing, up to four. It is found by its key, or else by
-/// its name: the model titles a foreign work in English, and spells a brand, in several ways.
+/// seen again gains the sources it was missing, up to four, also from a story the run did not
+/// publish again. It is found by its key, or else by its name: the model titles a foreign work
+/// in English, and spells a brand, in several ways.
 pub(crate) async fn attach(
     state: &AppState,
     topic: &Topic,
@@ -321,14 +323,14 @@ pub(crate) async fn attach(
         .into_iter()
         .filter_map(|(id, url, image)| Some((canonical(&url)?, (id, image))))
         .collect();
-    // The published stories and what they name, once each, in the order the model gave them.
+    // The stories and what they name, once each, in the order the model gave them.
     let mut seen = HashSet::new();
     let mut stories: Vec<_> = payload["items"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|item| {
-            let (id, image) = published.get(&canonical(item["url"].as_str()?)?)?;
+            let url = canonical(item["url"].as_str()?)?;
             let work = serde_json::from_value::<Proposal>(item["work"].clone())
                 .ok()?
                 .clean(&topic.id, &topic.brief)?;
@@ -336,7 +338,8 @@ pub(crate) async fn attach(
                 .as_str()
                 .filter(|role| matches!(*role, "review" | "share"))
                 .unwrap_or("news");
-            seen.insert(*id).then(|| (*id, image.clone(), work, role))
+            let story = published.get(&url).cloned();
+            seen.insert(url).then_some((story, work, role))
         })
         .collect();
     let entries: Vec<(String, String, String, String)> =
@@ -357,7 +360,7 @@ pub(crate) async fn attach(
     stories.sort_by_key(|(.., work, _)| !keys.contains(&work.key(section)));
     let mut tx = state.pool.begin().await?;
     let mut linked = 0;
-    for (item, image, proposal, role) in stories {
+    for (story, proposal, role) in stories {
         let id = Uuid::new_v4();
         let found: Vec<_> = names(&proposal.kind, &proposal.name, &proposal.name_en).collect();
         let mut key = proposal.key(section);
@@ -368,11 +371,18 @@ pub(crate) async fn attach(
         {
             key = existing;
         }
+        // A story the run did not publish again only lends its entry the pages it cites.
+        if story.is_none() && !(keys.contains(&key) && !proposal.source_urls.is_empty()) {
+            continue;
+        }
         for name in found {
             alias(&mut named, name, &key);
         }
         // A product's picture comes from its official pages, and a work's never from a post.
-        let cover = image.filter(|_| section == Section::Culture && role != "share");
+        let cover = story
+            .as_ref()
+            .and_then(|(_, image)| image.clone())
+            .filter(|_| section == Section::Culture && role != "share");
         let entry: Uuid = sqlx::query_scalar("INSERT INTO catalog_entries (id, topic_id, key, slug, name, name_en, creator, kind, source_urls, image)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
             ON CONFLICT (topic_id, key) DO UPDATE SET image = COALESCE(catalog_entries.image, EXCLUDED.image),
@@ -386,6 +396,9 @@ pub(crate) async fn attach(
             .bind(&proposal.name).bind(&proposal.name_en).bind(&proposal.creator).bind(&proposal.kind)
             .bind(json!(proposal.source_urls)).bind(cover).fetch_one(&mut *tx).await?;
         keys.insert(key);
+        let Some((item, _)) = story else {
+            continue;
+        };
         linked += sqlx::query(
             "INSERT INTO catalog_items (item_id, entry_id, role) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
         )
@@ -625,7 +638,8 @@ async fn compose(
         match source::read(state, url, section.source_limit()).await {
             // What was read must still be official: a redirect or a post's author may differ.
             Ok(source)
-                if section == Section::Culture || gadgets::official(&topic.brief, &source.url) =>
+                if section == Section::Culture
+                    || gadgets::official(&topic.brief, &entry.creator, &source.url) =>
             {
                 sources.push(source)
             }
@@ -635,6 +649,10 @@ async fn compose(
     }
     if sources.is_empty() {
         return Ok(Composed::Unavailable);
+    }
+    // A product's pages may come from a search, so each must name it.
+    if section == Section::Gadgets {
+        sources.retain(|source| named(section, entry, &source.text));
     }
     if !sources
         .iter()
@@ -722,6 +740,90 @@ async fn official_images(state: &AppState, entry: &Pending, sources: &[Source]) 
 
 /// Two guides at a time, at most eight per run; sources are read again weekly, their changed
 /// words rewrite a guide and their pictures replace the official ones either way.
+/// Products without any official page get a search for theirs, the most talked-about first and a
+/// few each run, since the collection's searches go to stories. Found pages are guided below at
+/// once; a product with none found is looked for again in a week.
+async fn locate(
+    state: &AppState,
+    topic: &Topic,
+    usage: &mut Usage,
+    deadline: Instant,
+) -> Result<Vec<Value>> {
+    // The guides keep two minutes of the run.
+    let Some(until) = deadline.checked_sub(Duration::from_secs(120)) else {
+        return Ok(Vec::new());
+    };
+    let products = sqlx::query_as::<_, (Uuid, String, String, String, String)>(
+        "SELECT id, name, name_en, creator, kind FROM catalog_entries e
+         WHERE topic_id = $1 AND jsonb_array_length(source_urls) = 0
+         AND (checked_at IS NULL OR checked_at < NOW() - INTERVAL '7 days')
+         AND EXISTS (SELECT 1 FROM catalog_items c JOIN items i ON i.id = c.item_id WHERE c.entry_id = e.id AND NOT i.hidden)
+         ORDER BY checked_at IS NOT NULL,
+             (SELECT COUNT(*) FROM catalog_items c JOIN items i ON i.id = c.item_id WHERE c.entry_id = e.id AND NOT i.hidden) DESC,
+             checked_at, id
+         LIMIT 6",
+    )
+    .bind(&topic.id)
+    .fetch_all(&state.pool)
+    .await?;
+    if products.is_empty() || Instant::now() + Duration::from_secs(30) >= until {
+        return Ok(Vec::new());
+    }
+    let mut jobs = JoinSet::new();
+    for (id, name, name_en, creator, kind) in products {
+        let request = gadgets::locate(topic, &name, &name_en, &creator, &kind);
+        let state = state.clone();
+        jobs.spawn(async move {
+            let reply = timeout_at(until, crate::ai::request(&state, request)).await;
+            (id, creator, reply)
+        });
+    }
+    let mut outcomes = Vec::new();
+    while let Some(job) = jobs.join_next().await {
+        let (id, creator, reply) =
+            job.map_err(|error| AppError::Internal(error.to_string().into()))?;
+        let reply = match reply {
+            Ok(Ok(reply)) => reply,
+            Ok(Err(error)) => {
+                outcomes.push(json!({"entry": id, "official_error": error.to_string()}));
+                continue;
+            }
+            Err(_) => {
+                outcomes.push(json!({"entry": id, "official_error": "超时"}));
+                continue;
+            }
+        };
+        *usage += Usage::from_reply(&reply);
+        let Some(found) = crate::ai::parse_payload(&reply)
+            .ok()
+            .and_then(|payload| payload["urls"].as_array().cloned())
+        else {
+            outcomes.push(json!({"entry": id, "official_error": "回复无法解析"}));
+            continue;
+        };
+        let mut urls = Vec::new();
+        for url in found {
+            if let Some(url) = url.as_str().and_then(public_url)
+                && gadgets::official(&topic.brief, &creator, &url)
+                && !urls.contains(&url)
+            {
+                urls.push(url);
+            }
+        }
+        if urls.is_empty() {
+            sqlx::query("UPDATE catalog_entries SET checked_at = NOW() WHERE id = $1")
+                .bind(id)
+                .execute(&state.pool)
+                .await?;
+        } else {
+            sqlx::query("UPDATE catalog_entries SET source_urls = $2, checked_at = NULL, attempts = 0 WHERE id = $1 AND jsonb_array_length(source_urls) = 0")
+                .bind(id).bind(json!(urls)).execute(&state.pool).await?;
+        }
+        outcomes.push(json!({"entry": id, "official": urls}));
+    }
+    Ok(outcomes)
+}
+
 pub(crate) async fn guides(
     state: &AppState,
     topic: &Topic,
@@ -729,6 +831,10 @@ pub(crate) async fn guides(
     usage: &mut Usage,
     deadline: Instant,
 ) -> Result<Vec<Value>> {
+    let mut outcomes = match section {
+        Section::Culture => Vec::new(),
+        Section::Gadgets => locate(state, topic, usage, deadline).await?,
+    };
     // New entries are tried at each run until their third failure; every entry is checked
     // again weekly, those that failed three times last.
     let pending = sqlx::query_as::<_, Pending>("SELECT id, name, name_en, creator, kind, source_urls, source_hash, images FROM catalog_entries e
@@ -739,7 +845,6 @@ pub(crate) async fn guides(
         .bind(&topic.id).fetch_all(&state.pool).await?;
     let mut pending = pending.into_iter();
     let mut jobs = JoinSet::new();
-    let mut outcomes = Vec::new();
     let mut any_written = false;
     loop {
         while jobs.len() < 2 && Instant::now() + Duration::from_secs(60) < deadline {

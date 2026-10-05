@@ -199,26 +199,53 @@ fn products_keep_official_sources_and_are_known_by_brand_and_model() {
         .is_none()
     );
     // `brand.*` stands for the brand's sites in every country, and only for that brand; an
-    // official shop's product page counts.
+    // official shop's product page counts. A product's own brand needs no mention: its name,
+    // folded, is a site's name in any country.
     let regional = "官方来源：sony.* apple.com vmall.com。";
-    for (url, official) in [
-        ("https://www.sony.jp/headphone/products/WH-1000XM6/", true),
+    for (brand, url, official) in [
         (
+            "Sony",
+            "https://www.sony.jp/headphone/products/WH-1000XM6/",
+            true,
+        ),
+        (
+            "Sony",
             "https://www.sony.co.uk/electronics/headband-headphones/wh-1000xm6",
             true,
         ),
-        ("https://store.sony.com.cn/product/wh-1000xm6", true),
-        ("https://www.sony.com/electronics/support", true),
-        ("https://www.sony.jp/", false),
-        ("https://sony.example.com/wh-1000xm6", false),
-        ("https://notsony.jp/wh-1000xm6", false),
-        ("https://www.apple.com.cn/iphone/", false),
+        ("Sony", "https://store.sony.com.cn/product/wh-1000xm6", true),
+        ("Sony", "https://www.sony.com/electronics/support", true),
+        ("Sony", "https://www.sony.jp/", false),
+        ("Sony", "https://sony.example.com/wh-1000xm6", false),
+        ("Sony", "https://notsony.jp/wh-1000xm6", false),
+        ("Sony", "https://www.apple.com.cn/iphone/", false),
         (
+            "HUAWEI",
             "https://item.vmall.com/product/comdetail/index.html?prdId=10086172940673",
             true,
         ),
+        (
+            "Cambridge Audio",
+            "https://www.cambridgeaudio.com/gbr/en/products/headphones/melomania-a100-se",
+            true,
+        ),
+        (
+            "MemoMind",
+            "https://www.memo-mind.com/pages/memomind-one",
+            true,
+        ),
+        (
+            "Cambridge Audio",
+            "https://cambridgeaudio.shop/melomania-a100-se",
+            false,
+        ),
+        ("Cambridge Audio", "https://www.cambridgeaudio.com/", false),
     ] {
-        assert_eq!(super::gadgets::official(regional, url), official, "{url}");
+        assert_eq!(
+            super::gadgets::official(regional, brand, url),
+            official,
+            "{brand} {url}"
+        );
     }
 }
 
@@ -423,7 +450,14 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
         async move {
             seen.lock().unwrap().push(request.clone());
             let input = request["input"].as_str().unwrap_or_default();
-            let payload=if request["text"]["format"]["name"]=="catalog_guide" && input.contains("Kindle Colorsoft") {
+            let payload=if request["text"]["format"]["name"]=="official_pages" {
+                // One product's official page is found, beside a reseller's; the others have none.
+                if input.contains("Talked one") {
+                    json!({"urls":[format!("{base}/products/talked-one"),"https://reseller.example/talked-one"]})
+                } else {
+                    json!({"urls":[]})
+                }
+            } else if request["text"]["format"]["name"]=="catalog_guide" && input.contains("Kindle Colorsoft") {
                 assert!(input.contains("7-inch Colorsoft display"));
                 json!({"intro":"亚马逊首款彩色 Kindle 阅读器。","intro_en":"Amazon's first color Kindle.",
                     "facts":[{"label":"屏幕","label_en":"Display","text":"7 英寸，300 ppi","text_en":"7-inch, 300 ppi","source":0,"quote":"7-inch Colorsoft display with 300 ppi"},
@@ -1221,6 +1255,93 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
     .await
     .unwrap();
     assert_eq!(renewed, [true, true, true]);
+    // A product without official pages gets a search for them, the most talked-about first;
+    // only the brand's or the brief's sites are kept, and one with none found waits a week.
+    for name in ["one", "two", "three"] {
+        sqlx::query(
+            "INSERT INTO catalog_entries (id, topic_id, key, slug, name, name_en, creator, kind, source_urls)
+             VALUES (gen_random_uuid(), 'eink', 'amazon:talked' || $1, 'talked-' || $1,
+                 'Talked ' || $1, 'Talked ' || $1, 'Amazon', 'reader', '[]')",
+        )
+        .bind(name)
+        .execute(&pool)
+        .await
+        .unwrap();
+        add(name, 0, "review", "1 day", false, false).await;
+    }
+    let looked = guides(
+        &state,
+        &eink,
+        Section::Gadgets,
+        &mut Usage::default(),
+        Instant::now() + Duration::from_secs(300),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        looked
+            .iter()
+            .filter(|outcome| outcome.get("official").is_some())
+            .count(),
+        3
+    );
+    let sources = |slug: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_as::<_, (Value, bool)>(
+                "SELECT source_urls, checked_at IS NOT NULL FROM catalog_entries WHERE slug = $1",
+            )
+            .bind(slug)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(
+        sources("talked-one").await.0,
+        json!([format!("{base}/products/talked-one")])
+    );
+    assert_eq!(sources("talked-two").await, (json!([]), true));
+    let before = calls.lock().unwrap().len();
+    guides(
+        &state,
+        &eink,
+        Section::Gadgets,
+        &mut Usage::default(),
+        Instant::now() + Duration::from_secs(300),
+    )
+    .await
+    .unwrap();
+    assert!(
+        calls.lock().unwrap()[before..]
+            .iter()
+            .all(|request| request["text"]["format"]["name"] != "official_pages")
+    );
+    // A story the run did not publish again still lends its product the official pages it cites,
+    // and is not linked twice.
+    let links = || async {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM catalog_items")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    let linked = links().await;
+    attach(
+        &state,
+        &eink,
+        Section::Gadgets,
+        Uuid::new_v4(),
+        &json!({"items": [{"url": "https://reviews.example/talked-three-again", "role": "review",
+            "work": {"name": "Talked three", "name_en": "Talked three", "creator": "Amazon", "kind": "reader",
+                "source_urls": [format!("{base}/products/talked-three"), "https://reseller.example/talked-three"]}}]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        sources("talked-three").await.0,
+        json!([format!("{base}/products/talked-three")])
+    );
+    assert_eq!(links().await, linked);
     // The briefing collects nothing from 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 either.
     let before = calls.lock().unwrap().len();
     sqlx::query("UPDATE topics SET enabled=(id=ANY($1))")

@@ -1184,7 +1184,7 @@ fn instructions() -> &'static str {
 5. data_signals 优先2–4条新闻本身的关键数字：价格、成本、效率、性能或开放范围，不足可少写或留空。每条必须引用输入新闻，保留单位、比较基准和适用条件，说明是官方公告、厂商自测、客户案例还是社区反馈；不得将局部案例外推为行业水平。不以本站采样量、栏目条数或其增幅填充关键数据，也不重复热点中已完整说清的数字。watch_signals 最多3条，写未来具体时间节点、可核验信号与可能改变判断的条件。
 6. wealth（商业与机遇）、employment（岗位与技能）、risks、actions 各0–2条。只有新证据和实际价值才写，和前文重复就留空；克制编辑口吻。wealth 的 kind 取 business/income/industry/asset_watch，horizon 取 0-3m/3-12m/12m+；受益环节、切入点、后续验证和风险用短句。禁止收益承诺或个性化投资建议。
 7. 配图：实际观察附带图片，从图片新闻专栏 p 优先挑选与本期AI热点有关、画面有故事且吸引人的照片：机器人动作、产品实物、演示现场、有趣细节优于Logo、纯文字截图和无关美女。cover_source_index 选1张，picture_source_indexes 选最多2张补充图；总计1–3张，不凑数。近7日用过的封面降权，同一画面不重复。过去7天资料图仅在确有解释价值时用，系统标注资料图；无可靠发布日期或不合适可不选，cover 返回 null。AI生成图只能在原图说明明确标明其性质时使用。只引用已看过的候选索引，不造图址、署名或画面描述。
-8. 每条新闻/信号引用有效 source_indexes，只能使用输入资料原有的 index，不得重新编号；资料为空时不编造条目，相关数组留空。检索结果没有资料 index，只能通过 research_source_urls 引用，不得将检索结果编号填入 source_indexes 或 changes_source_indexes。confidence 1–5 表示证据强度，evidence_grade A=官方或一手且有交叉验证，B=可靠单一来源，C=早期或社区线索。正文不写来源编号、HTML、Markdown和URL。确需核验缺失事实才检索，最多6次，优先原始公告；research_source_urls 只写本次实际检索引用的HTTPS地址，没有检索则为空。检索不得绕过新闻时间窗口。"#
+8. 每条新闻/信号引用有效 source_indexes，只能使用输入资料原有的 index，不得重新编号；资料为空时不编造条目，相关数组留空。检索结果没有资料 index，只能通过 research_source_urls 引用，不得将检索结果编号填入 source_indexes 或 changes_source_indexes。confidence 1–5 表示证据强度，evidence_grade A=官方或一手且有交叉验证，B=可靠单一来源，C=早期或社区线索。正文不写来源编号、HTML、Markdown和URL。确需核验缺失事实才检索，次数按需要安排，优先原始公告；research_source_urls 只写本次实际检索引用的HTTPS地址，没有检索则为空。检索不得绕过新闻时间窗口。"#
 }
 
 fn index_schema(indexes: &[usize]) -> Value {
