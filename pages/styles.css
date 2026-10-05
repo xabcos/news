@@ -650,6 +650,24 @@ p { margin-top: 0; }
   mask: url("/world.svg") center / 100% 100% no-repeat;
 }
 .travel-map figcaption { margin-top: .35rem; color: var(--muted); font-size: .72rem; text-align: center; }
+/* Two of the week's favorites stand beside the map where the screen leaves room for them. */
+.travel-atlas { display: grid; grid-template-columns: 1fr minmax(0, 50rem) 1fr; align-items: center; gap: 2rem; margin: .25rem 0 1.1rem; }
+.travel-atlas .travel-map { grid-column: 2; width: 100%; margin: 0; }
+.travel-favorite { position: relative; display: block; width: min(15rem, 100%); aspect-ratio: 3 / 4; overflow: hidden; border-radius: var(--radius-l); background: var(--surface-soft); box-shadow: var(--shadow-small); color: #fff; text-decoration: none; }
+.travel-favorite.is-left { grid-column: 1; justify-self: end; }
+.travel-favorite.is-right { grid-column: 3; justify-self: start; }
+.travel-favorite[hidden] { display: none; }
+.travel-favorite img { display: block; width: 100%; height: 100%; object-fit: cover; transition: transform .5s ease; }
+.travel-favorite:hover img { transform: scale(1.03); }
+.travel-favorite-text { position: absolute; inset: auto 0 0; display: flex; flex-direction: column; gap: .15rem; padding: 2.4rem .9rem .8rem; background: linear-gradient(transparent, rgba(0, 0, 0, .72)); }
+.travel-favorite-place { color: #f5a48f; font-size: .72rem; font-weight: 650; letter-spacing: .02em; }
+.travel-favorite strong { font-size: .95rem; line-height: 1.35; }
+.travel-favorite-likes { color: rgba(255, 255, 255, .85); font-size: .75rem; }
+@media (max-width: 87.49rem) {
+  .travel-atlas { display: block; }
+  .travel-atlas .travel-map { max-width: 50rem; margin: 0 auto; }
+  .travel-favorite { display: none; }
+}
 .travel-wander { margin-left: .6rem; padding: 0; border: 0; color: var(--primary-strong); background: none; font-weight: 650; cursor: pointer; }
 .travel-wander:hover { text-decoration: underline; text-underline-offset: .15em; }
 .travel-pin {
@@ -775,6 +793,9 @@ p { margin-top: 0; }
 .viewer-about h3 { margin: 0 0 .3rem; color: rgba(255, 255, 255, .6); font-size: .76rem; font-weight: 650; letter-spacing: .04em; }
 .viewer-about p { margin: 0 0 .45rem; }
 .viewer-about .viewer-fact { padding-left: .65rem; border-left: 2px solid #f5a48f; }
+.viewer-part { margin: .2rem 0 .65rem; padding: .7rem .8rem; border-radius: var(--radius-m); background: rgba(255, 255, 255, .06); }
+.viewer-about .viewer-part p { margin: 0; }
+.viewer-about .viewer-part .viewer-part-label { margin-bottom: .3rem; color: #f5a48f; font-size: .76rem; font-weight: 650; letter-spacing: .02em; }
 .viewer-guide { font-size: .84rem; }
 .viewer-story { display: contents; }
 .viewer-map { flex-shrink: 0; max-width: 20rem; margin-bottom: .35rem; }

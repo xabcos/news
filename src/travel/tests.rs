@@ -621,6 +621,17 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
         if n == 12 {
             post["possibly_sensitive"] = json!(true);
         }
+        // Hokkaido's posts are the most liked, then Bangkok's, then Kyoto's; X gives the High
+        // Line's no count.
+        let likes = match n {
+            6..=9 => Some(900 + n),
+            14 => Some(500),
+            11 => None,
+            _ => Some(100 + n),
+        };
+        if let Some(likes) = likes {
+            post["favorite_count"] = json!(likes);
+        }
         posts.insert(id(n), post);
     }
     let entities = HashMap::from([
@@ -1039,6 +1050,15 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
         .find(|item| item.url.contains("/mali/"))
         .unwrap();
     assert_eq!(bangkok.travel.as_ref().unwrap()["place"]["name"], "曼谷");
+    // A moment keeps the likes its post had when X confirmed it.
+    let likes: Vec<(String, Option<i64>)> = sqlx::query_as(
+        "SELECT i.source, m.likes FROM travel_moments m JOIN items i ON i.id = m.item_id
+         WHERE i.source IN ('ALICE', 'JACK') ORDER BY i.source",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(likes, [("ALICE".into(), Some(101)), ("JACK".into(), None)]);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -1117,6 +1137,7 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
         &[
             "/travel/kyoto".into(),
             "/travel/map.json".into(),
+            "/travel/kyoto/guide.json".into(),
             format!(
                 "/travel/kyoto/moments?before={}_{newest}",
                 time.timestamp_micros()
@@ -1220,6 +1241,49 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
         .collect::<Vec<_>>();
     slugs.sort();
     assert_eq!(slugs, ["bangkok", "hokkaido", "kyoto", "manhattan"]);
+    // Beside the map: the most liked moment of each destination, the most liked first, and a
+    // moment without a count last.
+    let featured = |map: &Value| {
+        map["featured"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|moment| moment["slug"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        featured(&map),
+        ["hokkaido", "bangkok", "kyoto", "manhattan"]
+    );
+    // Hokkaido has several moments; its most liked one stands for it.
+    let hokkaido: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT m.likes, i.image->>'url' FROM travel_moments m JOIN items i ON i.id = m.item_id
+         JOIN travel_places p ON p.id = m.place_id WHERE p.slug = 'hokkaido' ORDER BY m.likes DESC",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .unwrap();
+    assert!(hokkaido.len() > 1 && hokkaido[0].0 > hokkaido[1].0);
+    assert_eq!(map["featured"][0]["likes"], hokkaido[0].0);
+    assert_eq!(map["featured"][0]["photo"]["url"], hokkaido[0].1);
+    assert!(map["featured"][3]["likes"].is_null());
+    assert!(
+        map["featured"][0]["photo"]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://media.example.test/")
+            && map["featured"][0]["photo"].get("origin_url").is_none()
+    );
+    // The viewer reads a destination's guide without its sources.
+    let guide = get("/travel/kyoto/guide.json").await.unwrap();
+    assert_eq!(guide.status(), 200);
+    let guide: Value = guide.json().await.unwrap();
+    assert_eq!(guide["guide"]["tagline"], "千年古都，庭园与老街");
+    assert_eq!(guide["guide"]["highlights"][0]["name"], "金阁");
+    assert!(guide["guide"].get("sources").is_none());
+    for path in ["/travel/manhattan/guide.json", "/travel/nowhere/guide.json"] {
+        assert_eq!(get(path).await.unwrap().status(), 404, "{path}");
+    }
     assert!(
         map["places"]
             .as_array()
@@ -1341,6 +1405,8 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
             ("nara", false)
         ])
     );
+    // Favorites come from the last seven days' visible moments only.
+    assert_eq!(featured(&map), ["hokkaido", "kyoto"]);
     let html = get("/travel/kyoto").await.unwrap().text().await.unwrap();
     assert!(html.contains("href=\"/travel/bangkok\"") && !html.contains("manhattan"));
     assert!(html.contains(

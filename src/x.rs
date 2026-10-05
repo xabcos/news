@@ -32,6 +32,9 @@ pub(crate) struct Post {
     pub lang: String,
     #[serde(default, rename = "mediaDetails")]
     pub media: Vec<Media>,
+    /// Likes when the post was read.
+    #[serde(default)]
+    pub favorite_count: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]

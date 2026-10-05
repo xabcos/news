@@ -1,7 +1,8 @@
 //! A page per destination at `/travel/{slug}` with its guide and moments, all of them or only
 //! those mainly of people (`?kind=portraits`), which load page by page from
 //! `/travel/{slug}/moments`, then the destinations nearby and in the same country to go on to;
-//! the map's data and the sitemap. The feed itself is the 𝑻𝒓𝒂𝒗𝒆𝒍 tab of the news
+//! its guide for the photograph viewer (`/travel/{slug}/guide.json`); the map's data with the
+//! favorite moments shown beside it, and the sitemap. The feed itself is the 𝑻𝒓𝒂𝒗𝒆𝒍 tab of the news
 //! page.
 
 use super::{
@@ -32,11 +33,13 @@ const CHROME: Chrome<'static> = Chrome {
     current: TOPIC_ID,
     section: "travel",
     stylesheet: "/travel.css?v=5",
-    script: "/travel.js?v=8",
+    script: "/travel.js?v=9",
     feed: ("𝑻𝒓𝒂𝒗𝒆𝒍", "/feed.xml?topic=travel"),
 };
-/// Map pins of destinations with moments from this many recent days stand out.
+/// Map pins of destinations with moments from this many recent days stand out, and the most
+/// liked of those moments, one per destination, are offered to show beside the map.
 const MAP_DAYS: i64 = 7;
+const FEATURED: i64 = 6;
 /// Moments per page of a destination, newest first.
 const PAGE_MOMENTS: usize = 24;
 /// Destinations to go on to: the nearest with a photograph, then names in the same country.
@@ -51,7 +54,8 @@ pub(crate) fn router() -> Router<AppState> {
             .route("/travel", get(index))
             .route("/travel/map.json", get(map))
             .route("/travel/{slug}", get(destination))
-            .route("/travel/{slug}/moments", get(more)),
+            .route("/travel/{slug}/moments", get(more))
+            .route("/travel/{slug}/guide.json", get(guide)),
     )
     .route("/travel/sitemap.xml", get(sitemap))
     .layer(tower_http::compression::CompressionLayer::new())
@@ -542,6 +546,29 @@ async fn more(
     ))
 }
 
+/// A destination's guide for the photograph viewer, which shows one part of it beside each
+/// photograph. Its sources stay on the destination page.
+async fn guide(
+    State(state): State<AppState>,
+    reader: Reader,
+    Path(slug): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    reader.check(&state, TOPIC_ID)?;
+    let guide = sqlx::query_scalar::<_, Value>(
+        "SELECT guide - 'sources' FROM travel_places WHERE slug = $1 AND guide IS NOT NULL",
+    )
+    .bind(&slug)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("目的地没有导读".into()))?;
+    Ok(conditional(
+        &headers,
+        &Rendered::new(json!({ "guide": guide }).to_string()),
+        "application/json",
+    ))
+}
+
 /// "35.01°N 135.77°E"
 fn coordinates(latitude: f64, longitude: f64) -> String {
     format!(
@@ -554,7 +581,9 @@ fn coordinates(latitude: f64, longitude: f64) -> String {
 }
 
 /// Every destination with a page, the most recently visited first; those with moments from the
-/// last `MAP_DAYS` days are marked recent.
+/// last `MAP_DAYS` days are marked recent. Beside them, the most liked moments of those days, one
+/// per destination; likes are counted when X confirms a post, so older moments without them
+/// follow by importance and time.
 async fn map(
     State(state): State<AppState>,
     reader: Reader,
@@ -584,9 +613,30 @@ async fn map(
     .build_query_scalar::<Value>()
     .fetch_one(&state.pool)
     .await?;
+    let featured = sqlx::query_scalar::<_, Value>(
+        "SELECT COALESCE(jsonb_agg(moment ORDER BY likes DESC NULLS LAST, importance DESC, first_seen_at DESC), '[]')
+         FROM (SELECT * FROM (
+                 SELECT DISTINCT ON (m.place_id) m.likes, i.importance, i.first_seen_at,
+                        jsonb_build_object('slug', p.slug, 'name', p.name, 'name_en', p.name_en,
+                            'country', p.country, 'country_en', p.country_en, 'title', i.title,
+                            'title_en', i.title_en, 'likes', m.likes,
+                            'photo', i.image - 'origin_url' - 'content_hash' - 'expires_at') AS moment
+                 FROM travel_moments m JOIN items i ON i.id = m.item_id
+                 JOIN travel_places p ON p.id = m.place_id
+                 WHERE NOT i.hidden AND i.topic_id = $1 AND i.day >= $2
+                   AND jsonb_typeof(i.image) = 'object'
+                 ORDER BY m.place_id, m.likes DESC NULLS LAST, i.importance DESC, i.first_seen_at DESC
+               ) best
+               ORDER BY likes DESC NULLS LAST, importance DESC, first_seen_at DESC LIMIT $3) chosen",
+    )
+    .bind(TOPIC_ID)
+    .bind(since)
+    .bind(FEATURED)
+    .fetch_one(&state.pool)
+    .await?;
     Ok(conditional(
         &headers,
-        &Rendered::new(json!({ "places": places }).to_string()),
+        &Rendered::new(json!({ "places": places, "featured": featured }).to_string()),
         "application/json",
     ))
 }

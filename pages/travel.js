@@ -12,13 +12,15 @@
       more: (name) => `了解${name} →`, about: (name) => `关于${name}`, guide: "阅读导读 →",
       original: "原文", photos: (n) => `${n} 张照片`, photo: (i, n) => `第 ${i} / ${n} 张`,
       close: "关闭", previous: "上一张", next: "下一张", map: (n, recent) => `${n} 个目的地${recent < n ? ` · 最近 7 天 ${recent} 个` : ""}`,
-      wander: "漫游", pause: "暂停",
+      wander: "漫游", pause: "暂停", favorite: "最近 7 天最受喜爱",
+      sections: { highlights: "必看", flavors: "风味", people: "人物", culture: "文化", season: "时节与节庆", customs: "入乡随俗", origin: "地名由来", history: "历史" },
     },
     en: {
       more: (name) => `About ${name} →`, about: (name) => `About ${name}`, guide: "Read the guide →",
       original: "Original", photos: (n) => `${n} photos`, photo: (i, n) => `Photo ${i} of ${n}`,
       close: "Close", previous: "Previous", next: "Next", map: (n, recent) => `${n} ${n === 1 ? "destination" : "destinations"}${recent < n ? ` · ${recent} in the last 7 days` : ""}`,
-      wander: "Wander", pause: "Pause",
+      wander: "Wander", pause: "Pause", favorite: "Most liked in the last 7 days",
+      sections: { highlights: "Must-see", flavors: "Flavors", people: "People", culture: "Culture", season: "Seasons & festivals", customs: "Local customs", origin: "The name", history: "History" },
     },
   };
   const items = new WeakMap();
@@ -215,6 +217,54 @@
     viewer.ui.shown(card);
   }
 
+  // Each destination's guide, fetched once when the viewer first shows one of its moments. A
+  // destination without a guide answers 404 and stays null; a failed request is tried again.
+  const guides = new Map();
+  function guideOf(slug) {
+    if (!guides.has(slug)) {
+      guides.set(slug, fetch(PublicPage.readPath(`/travel/${encodeURIComponent(slug)}/guide.json`), { headers: { Accept: "application/json" } })
+        .then(async (response) => (response.ok ? (await response.json()).guide : response.status === 404 ? null : Promise.reject()))
+        .catch(() => {
+          guides.delete(slug);
+          return null;
+        }));
+    }
+    return guides.get(slug);
+  }
+
+  const hash = (value) => [...String(value)].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) >>> 0, 0);
+
+  // One part of the guide beside a photograph: the sight, dish or person the photograph's spot
+  // names, otherwise a part chosen by the moment, so a moment keeps its part and neighbors differ.
+  function guidePart(guide, item) {
+    const label = text().sections;
+    const parts = [];
+    for (const key of ["highlights", "flavors", "people"]) {
+      for (const entry of guide[key] || []) {
+        const words = pick(entry, "text");
+        if (words) parts.push({ label: label[key], name: pick(entry, "name"), text: words, names: [entry.name, entry.name_en] });
+      }
+    }
+    for (const key of ["culture", "season", "customs", "origin"]) {
+      const words = pick(guide, key);
+      if (words) parts.push({ label: label[key], text: words });
+    }
+    for (const paragraph of pick(guide, "history").split("\n").map((line) => line.trim()).filter(Boolean)) {
+      parts.push({ label: label.history, text: paragraph });
+    }
+    if (!parts.length) return null;
+    // A spot the destination's own name contains, such as 京都 in 京都市, names nothing in
+    // particular; one that contains it, such as 伦敦塔 in 伦敦, is a sight.
+    const place = [item.travel?.place?.name, item.travel?.place?.name_en].filter(Boolean).map((name) => name.toLowerCase());
+    const spots = [item.travel?.spot, item.travel?.spot_en].filter(Boolean).map((spot) => spot.toLowerCase())
+      .filter((spot) => !place.some((name) => name.includes(spot)));
+    const named = parts.find((part) => part.names?.some((name) => {
+      const known = name?.toLowerCase();
+      return known?.length > 1 && spots.some((spot) => spot.includes(known) || known.includes(spot));
+    }));
+    return named || parts[hash(item.id) % parts.length];
+  }
+
   function panel(item) {
     const place = item.travel?.place;
     viewer.map.hidden = place?.latitude == null;
@@ -250,7 +300,16 @@
         about.append(element("h3", "", text().about(pick(place, "name"))), element("p", "", tagline));
         const fact = pick(place, "fact");
         if (fact) about.append(element("p", "viewer-fact", fact));
-        about.append(link(destination(place.slug), "viewer-guide", text().guide));
+        const more = link(destination(place.slug), "viewer-guide", text().guide);
+        about.append(more);
+        // The part of the guide arrives after the panel; the viewer may have moved on by then.
+        guideOf(place.slug).then((guide) => {
+          const part = guide && viewer.id === item.id && guidePart(guide, item);
+          if (!part) return;
+          const node = element("div", "viewer-part");
+          node.append(element("p", "viewer-part-label", part.name ? `${part.label} · ${part.name}` : part.label), element("p", "", part.text));
+          more.before(node);
+        });
       } else {
         about.append(link(destination(place.slug), "viewer-guide", text().more(pick(place, "name"))));
       }
@@ -260,12 +319,44 @@
     viewer.panel.scrollTop = 0;
   }
 
-  // Every destination on a dotted world map, the recent ones larger; a pin opens its page.
+  // One of the week's most liked moments beside the map; it leads to its destination.
+  function favorite(moment, side) {
+    const card = link(destination(moment.slug), `travel-favorite is-${side}`);
+    card.title = text().favorite;
+    const image = element("img");
+    image.src = moment.photo.url;
+    image.alt = pick(moment, "title");
+    image.decoding = "async";
+    image.referrerPolicy = "no-referrer";
+    image.addEventListener("error", () => { card.hidden = true; }, { once: true });
+    const caption = element("span", "travel-favorite-text");
+    caption.append(element("span", "travel-favorite-place", placeName(moment)), element("strong", "", pick(moment, "title")));
+    if (moment.likes > 0) {
+      const count = new Intl.NumberFormat(english() ? "en" : "zh-CN", { notation: "compact" }).format(moment.likes);
+      caption.append(element("span", "travel-favorite-likes", `\u2665\uFE0E ${count}`));
+    }
+    card.append(image, caption);
+    return card;
+  }
+
+  // Two of the offered favorites, picked anew on each visit.
+  function pickTwo(moments) {
+    const pool = moments.filter((moment) => moment.photo?.url);
+    for (let index = pool.length - 1; index > 0; index -= 1) {
+      const other = Math.floor(Math.random() * (index + 1));
+      [pool[index], pool[other]] = [pool[other], pool[index]];
+    }
+    return pool.slice(0, 2);
+  }
+
+  // Every destination on a dotted world map, the recent ones larger; a pin opens its page. Wide
+  // screens show two of the week's most liked moments on either side.
   async function map(container) {
     let places = [];
+    let featured = [];
     try {
       const response = await fetch(PublicPage.readPath("/travel/map.json"), { headers: { Accept: "application/json" } });
-      if (response.ok) places = (await response.json()).places || [];
+      if (response.ok) ({ places = [], featured = [] } = await response.json());
     } catch {
       // The tab works without its map.
     }
@@ -294,7 +385,16 @@
     const caption = element("figcaption", "", text().map(places.length, places.filter((place) => place.recent !== false).length));
     caption.append(start);
     figure.append(caption);
-    container.append(figure);
+    const atlas = element("div", "travel-atlas");
+    atlas.append(figure);
+    container.append(atlas);
+    // The atlas is a grid only on a wide screen with this version's stylesheet, so a narrow
+    // screen downloads no favorites, and neither does a page whose stylesheet is older.
+    const sides = pickTwo(featured);
+    if (sides.length === 2 && getComputedStyle(atlas).display === "grid") {
+      figure.before(favorite(sides[0], "left"));
+      figure.after(favorite(sides[1], "right"));
+    }
   }
 
   window.TravelUI = { postcard, map };
