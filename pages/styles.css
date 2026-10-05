@@ -653,10 +653,15 @@ p { margin-top: 0; }
 /* Two of the week's favorites stand beside the map where the screen leaves room for them. */
 .travel-atlas { display: grid; grid-template-columns: 1fr minmax(0, 50rem) 1fr; align-items: center; gap: 2rem; margin: .25rem 0 1.1rem; }
 .travel-atlas .travel-map { grid-column: 2; width: 100%; margin: 0; }
-.travel-favorite { position: relative; display: block; width: min(15rem, 100%); aspect-ratio: 3 / 4; overflow: hidden; border-radius: var(--radius-l); background: var(--surface-soft); box-shadow: var(--shadow-small); color: #fff; text-decoration: none; }
-.travel-favorite.is-left { grid-column: 1; justify-self: end; }
-.travel-favorite.is-right { grid-column: 3; justify-self: start; }
-.travel-favorite[hidden] { display: none; }
+/* A side holds its favorite nearest the map, and an outer one where its own width allows. */
+.travel-side { display: flex; gap: 1rem; container-type: inline-size; }
+.travel-side.is-left { grid-column: 1; flex-direction: row-reverse; }
+.travel-side.is-right { grid-column: 3; }
+.travel-favorite { position: relative; display: block; flex: 0 1 15rem; min-width: 0; aspect-ratio: 3 / 4; overflow: hidden; border-radius: var(--radius-l); background: var(--surface-soft); box-shadow: var(--shadow-small); color: #fff; text-decoration: none; }
+.travel-favorite[hidden], .travel-favorite + .travel-favorite { display: none; }
+@container (min-width: 25rem) {
+  .travel-favorite + .travel-favorite:not([hidden]) { display: block; }
+}
 .travel-favorite img { display: block; width: 100%; height: 100%; object-fit: cover; transition: transform .5s ease; }
 .travel-favorite:hover img { transform: scale(1.03); }
 .travel-favorite-text { position: absolute; inset: auto 0 0; display: flex; flex-direction: column; gap: .15rem; padding: 2.4rem .9rem .8rem; background: linear-gradient(transparent, rgba(0, 0, 0, .72)); }
@@ -666,7 +671,7 @@ p { margin-top: 0; }
 @media (max-width: 87.49rem) {
   .travel-atlas { display: block; }
   .travel-atlas .travel-map { max-width: 50rem; margin: 0 auto; }
-  .travel-favorite { display: none; }
+  .travel-side { display: none; }
 }
 .travel-wander { margin-left: .6rem; padding: 0; border: 0; color: var(--primary-strong); background: none; font-weight: 650; cursor: pointer; }
 .travel-wander:hover { text-decoration: underline; text-underline-offset: .15em; }

@@ -319,11 +319,13 @@
     viewer.panel.scrollTop = 0;
   }
 
-  // One of the week's most liked moments beside the map; it leads to its destination.
-  function favorite(moment, side) {
-    const card = link(destination(moment.slug), `travel-favorite is-${side}`);
+  // One of the week's most liked moments beside the map; it leads to its destination. An outer
+  // one loads only once its side is wide enough to show it.
+  function favorite(moment, outer) {
+    const card = link(destination(moment.slug), "travel-favorite");
     card.title = text().favorite;
     const image = element("img");
+    if (outer) image.loading = "lazy";
     image.src = moment.photo.url;
     image.alt = pick(moment, "title");
     image.decoding = "async";
@@ -339,18 +341,18 @@
     return card;
   }
 
-  // Two of the offered favorites, picked anew on each visit.
-  function pickTwo(moments) {
+  // Up to four of the offered favorites, picked anew on each visit.
+  function pickFavorites(moments) {
     const pool = moments.filter((moment) => moment.photo?.url);
     for (let index = pool.length - 1; index > 0; index -= 1) {
       const other = Math.floor(Math.random() * (index + 1));
       [pool[index], pool[other]] = [pool[other], pool[index]];
     }
-    return pool.slice(0, 2);
+    return pool.slice(0, 4);
   }
 
   // Every destination on a dotted world map, the recent ones larger; a pin opens its page. Wide
-  // screens show two of the week's most liked moments on either side.
+  // screens show the week's most liked moments on either side, one or two as the side allows.
   async function map(container) {
     let places = [];
     let featured = [];
@@ -389,11 +391,17 @@
     atlas.append(figure);
     container.append(atlas);
     // The atlas is a grid only on a wide screen with this version's stylesheet, so a narrow
-    // screen downloads no favorites, and neither does a page whose stylesheet is older.
-    const sides = pickTwo(featured);
-    if (sides.length === 2 && getComputedStyle(atlas).display === "grid") {
-      figure.before(favorite(sides[0], "left"));
-      figure.after(favorite(sides[1], "right"));
+    // screen downloads no favorites, and neither does a page whose stylesheet is older. Each
+    // side holds the favorite nearest the map, then an outer one shown where it fits.
+    const picks = pickFavorites(featured);
+    if (picks.length >= 2 && getComputedStyle(atlas).display === "grid") {
+      const side = (place, moments) => {
+        const group = element("div", `travel-side is-${place}`);
+        group.append(...moments.filter(Boolean).map((moment, index) => favorite(moment, index > 0)));
+        return group;
+      };
+      figure.before(side("left", [picks[0], picks[2]]));
+      figure.after(side("right", [picks[1], picks[3]]));
     }
   }
 
