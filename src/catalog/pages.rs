@@ -42,10 +42,19 @@ const LISTED: &str = "EXISTS (SELECT 1 FROM catalog_items c JOIN items i ON i.id
      WHERE c.entry_id = e.id AND NOT i.hidden)";
 
 /// An entry's picture: its own (official, or a work's cover), otherwise the newest picture of
-/// its reviews and news. Readers' photographs never stand for the entry.
-const COVER: &str = "COALESCE(e.image, (SELECT i.image FROM catalog_items c JOIN items i ON i.id = c.item_id
-     WHERE c.entry_id = e.id AND NOT i.hidden AND jsonb_typeof(i.image) = 'object' AND c.role <> 'share'
-     ORDER BY COALESCE(i.published_at, i.first_seen_at) DESC LIMIT 1))";
+/// its reviews and news, and last of readers' posts where they picture the entry itself.
+fn cover(section: Section) -> String {
+    format!(
+        "COALESCE(e.image, (SELECT i.image FROM catalog_items c JOIN items i ON i.id = c.item_id
+             WHERE c.entry_id = e.id AND NOT i.hidden AND jsonb_typeof(i.image) = 'object'{}
+             ORDER BY c.role = 'share', COALESCE(i.published_at, i.first_seen_at) DESC LIMIT 1))",
+        if section.posts_picture_entries() {
+            ""
+        } else {
+            " AND c.role <> 'share'"
+        }
+    )
+}
 /// The groups of an entry's items, in page order.
 const ROLES: [&str; 3] = ["review", "share", "news"];
 
@@ -396,7 +405,12 @@ struct Shelved {
     /// Reviews and posts of the last `TALKED_DAYS` days.
     talked: i64,
 }
-async fn shelved(state: &AppState, shelf: Shelf<'_>, limit: i64) -> Result<Vec<Shelved>> {
+async fn shelved(
+    state: &AppState,
+    section: Section,
+    shelf: Shelf<'_>,
+    limit: i64,
+) -> Result<Vec<Shelved>> {
     let talked = format!(
         "(SELECT COUNT(*) FROM catalog_items c JOIN items i ON i.id = c.item_id
           WHERE c.entry_id = e.id AND NOT i.hidden AND c.role IN ('review', 'share')
@@ -406,7 +420,7 @@ async fn shelved(state: &AppState, shelf: Shelf<'_>, limit: i64) -> Result<Vec<S
         "SELECT e.id, e.topic_id, e.slug, e.name, e.name_en, e.kind, {} AS image, e.guide,
                 {talked} AS talked
          FROM catalog_entries e WHERE (e.guide IS NOT NULL OR {LISTED}) AND ",
-        COVER
+        cover(section)
     ));
     match shelf {
         Shelf::Topic(topic, kind) | Shelf::Talked(topic, kind) => {
@@ -555,7 +569,7 @@ async fn shelf(
         }
         html.push_str("</nav>");
     }
-    let talked = shelved(state, Shelf::Talked(topic, kind), SHELF).await?;
+    let talked = shelved(state, section, Shelf::Talked(topic, kind), SHELF).await?;
     if talked.len() >= TALKED_SHELF {
         let _ = write!(
             html,
@@ -564,7 +578,7 @@ async fn shelf(
             shelf_cards(section, &talked, true, en, reader)
         );
     }
-    let entries = shelved(state, Shelf::Topic(topic, kind), SHELF).await?;
+    let entries = shelved(state, section, Shelf::Topic(topic, kind), SHELF).await?;
     if entries.is_empty() {
         return Ok(html);
     }
@@ -598,14 +612,26 @@ async fn onward(
     let by_creator = if creator.is_empty() {
         Vec::new()
     } else {
-        shelved(state, Shelf::Creator(&visible, creator, work.id), ONWARD).await?
+        shelved(
+            state,
+            section,
+            Shelf::Creator(&visible, creator, work.id),
+            ONWARD,
+        )
+        .await?
     };
     let shown = by_creator
         .iter()
         .map(|entry| entry.id)
         .chain([work.id])
         .collect::<Vec<_>>();
-    let alike = shelved(state, Shelf::Kind(topic, &work.kind, &shown), ONWARD).await?;
+    let alike = shelved(
+        state,
+        section,
+        Shelf::Kind(topic, &work.kind, &shown),
+        ONWARD,
+    )
+    .await?;
     let mut html = String::new();
     if !by_creator.is_empty() {
         let heading = if en {
@@ -771,6 +797,7 @@ async fn search(
     });
     let entries = shelved(
         &state,
+        section,
         Shelf::Found(&ids, pattern.as_deref()),
         if pattern.is_some() { FOUND } else { i64::MAX },
     )
@@ -924,7 +951,7 @@ async fn detail(
     let work: Work = sqlx::QueryBuilder::new(format!(
         "SELECT e.id, e.name, e.name_en, e.creator, e.kind, {} AS image, e.images, e.guide, e.guide_at
          FROM catalog_entries e WHERE (e.guide IS NOT NULL OR {LISTED}) AND e.topic_id = ",
-        COVER
+        cover(section)
     ))
     .push_bind(&topic)
     .push(" AND e.slug = ")

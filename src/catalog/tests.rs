@@ -232,6 +232,7 @@ fn sources_name_works_whole_and_products_word_by_word() {
         kind: String::new(),
         source_urls: sqlx::types::Json(Vec::new()),
         source_hash: None,
+        images: sqlx::types::Json(Vec::new()),
     };
     let page = "Meet the all-new Kindle. Available in 2026 in Black and Raspberry.";
     assert!(named(
@@ -1020,6 +1021,16 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
             && at("talked-two") < at(&slug)
             && at(&slug) < at("talked-one")
     );
+    // Two has no picture but an owner's photograph, which then pictures the product.
+    add("two", 3, "share", "1 hour", false, true).await;
+    assert!(
+        get("/gadgets/eink/talked-two".into())
+            .await
+            .text()
+            .await
+            .unwrap()
+            .contains("class=catalog-cover src=\"https://media.example/talked-two-3.jpg\"")
+    );
     let page = get("/gadgets/eink".into()).await.text().await.unwrap();
     let recent = page
         .split_once("<section class=catalog-shelf><h2>近期有动态 ")
@@ -1066,6 +1077,75 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
             && product.contains("用户分享")
             && product.contains("官方资料")
     );
+    // The weekly check brings the official pictures back when their words have not changed,
+    // without asking the model; a product whose sources failed three times waits a week.
+    let pictured = || async {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT image->>'url' LIKE '%/files/%' AND jsonb_array_length(images) > 0
+             FROM catalog_entries WHERE topic_id = 'eink'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+    let check = || async {
+        guides(
+            &state,
+            &eink,
+            Section::Gadgets,
+            &mut Usage::default(),
+            Instant::now() + Duration::from_secs(120),
+        )
+        .await
+        .unwrap()
+    };
+    sqlx::query(
+        "UPDATE catalog_entries SET image = NULL, images = '[]', checked_at = NOW() - INTERVAL '8 days'
+         WHERE topic_id = 'eink'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let before = calls.lock().unwrap().len();
+    let results = check().await;
+    assert_eq!(results[0]["unchanged"], true);
+    assert!(pictured().await);
+    assert_eq!(calls.lock().unwrap().len(), before);
+    // A picture whose origin the page still shows keeps its stored copy: an upload would bring
+    // a new expiry.
+    let copy = || async {
+        sqlx::query_scalar::<_, String>(
+            "SELECT image->>'expires_at' FROM catalog_entries WHERE topic_id = 'eink'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+    let kept = copy().await;
+    sqlx::query(
+        "UPDATE catalog_entries SET checked_at = NOW() - INTERVAL '8 days' WHERE topic_id = 'eink'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(check().await[0]["unchanged"], true);
+    assert_eq!(copy().await, kept);
+    // A new product whose sources failed three times waits a week, then is written.
+    sqlx::query(
+        "UPDATE catalog_entries SET guide = NULL, guide_at = NULL, source_hash = NULL, attempts = 3,
+             checked_at = NOW() - INTERVAL '1 day' WHERE topic_id = 'eink'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(check().await.is_empty());
+    sqlx::query(
+        "UPDATE catalog_entries SET checked_at = NOW() - INTERVAL '8 days' WHERE topic_id = 'eink'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(check().await[0]["written"], true);
     let digest: Value = get("/digest?topic=eink".into()).await.json().await.unwrap();
     let stories = digest["topics"][0]["items"].as_array().unwrap();
     let review = stories

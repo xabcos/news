@@ -106,6 +106,12 @@ impl Section {
             Self::Gadgets => 24,
         }
     }
+
+    /// Whether readers' posts picture the entry itself: owners photograph their products, while
+    /// audiences react to a work.
+    fn posts_picture_entries(self) -> bool {
+        self == Self::Gadgets
+    }
 }
 
 /// The section of a public catalogue topic.
@@ -499,6 +505,8 @@ struct Pending {
     kind: String,
     source_urls: sqlx::types::Json<Vec<String>>,
     source_hash: Option<Vec<u8>>,
+    /// The official pictures already copied, kept while their origin stays.
+    images: sqlx::types::Json<Vec<Value>>,
 }
 
 fn guide_request(topic: &Topic, section: Section, entry: &Pending, sources: &[Source]) -> Value {
@@ -523,9 +531,11 @@ fn guide_request(topic: &Topic, section: Section, entry: &Pending, sources: &[So
     }}}})
 }
 
+/// A guide written from changed sources, or the same sources; either way with the official
+/// pictures as they stand now, which follow the pages even when their words do not change.
 enum Composed {
     Written(Guide, Vec<u8>, Vec<NewsImage>),
-    Unchanged,
+    Unchanged(Vec<NewsImage>),
     Unavailable,
 }
 
@@ -558,18 +568,18 @@ async fn compose(
     {
         return Err(AppError::Internal("资料未确认名称与出品方".into()));
     }
+    let images = match section {
+        Section::Culture => Vec::new(),
+        Section::Gadgets => official_images(state, entry, &sources).await,
+    };
     let hash = Sha256::digest(serde_json::to_vec(&sources)?).to_vec();
     if entry.source_hash.as_ref() == Some(&hash) {
-        return Ok(Composed::Unchanged);
+        return Ok(Composed::Unchanged(images));
     }
     let reply = crate::ai::request(state, guide_request(topic, section, entry, &sources)).await?;
     *usage += Usage::from_reply(&reply);
     let mut guide: Guide = serde_json::from_value(crate::ai::parse_payload(&reply)?)?;
     guide.verify(&sources, section.facts_limit())?;
-    let images = match section {
-        Section::Culture => Vec::new(),
-        Section::Gadgets => official_images(state, entry, &sources).await,
-    };
     Ok(Composed::Written(guide, hash, images))
 }
 
@@ -599,10 +609,24 @@ fn named(section: Section, entry: &Pending, text: &str) -> bool {
 /// Up to four pictures a product's official pages and posts show, kept on the file server;
 /// eight are tried, as an official page may still serve a placeholder.
 async fn official_images(state: &AppState, entry: &Pending, sources: &[Source]) -> Vec<NewsImage> {
+    let stored = entry
+        .images
+        .0
+        .iter()
+        .filter_map(|image| serde_json::from_value::<NewsImage>(image.clone()).ok())
+        .collect::<Vec<_>>();
+    fn origin(image: &NewsImage) -> &str {
+        image.origin_url.as_deref().unwrap_or(&image.url)
+    }
     let mut images: Vec<Option<NewsImage>> = Vec::new();
     for source in sources {
         for url in &source.images {
-            if images.len() < 8 && !images.iter().flatten().any(|known| &known.url == url) {
+            if images.len() < 8 && !images.iter().flatten().any(|known| origin(known) == url) {
+                // A picture copied before keeps its copy; the mirror renews it only when due.
+                if let Some(copy) = stored.iter().find(|image| origin(image) == url) {
+                    images.push(Some(copy.clone()));
+                    continue;
+                }
                 images.push(Some(NewsImage {
                     url: url.clone(),
                     source_url: source.url.clone(),
@@ -622,7 +646,8 @@ async fn official_images(state: &AppState, entry: &Pending, sources: &[Source]) 
     images.into_iter().flatten().take(4).collect()
 }
 
-/// Two guides at a time, at most eight per run; changed sources refresh older guides weekly.
+/// Two guides at a time, at most eight per run; sources are read again weekly, their changed
+/// words rewrite a guide and their pictures replace the official ones either way.
 pub(crate) async fn guides(
     state: &AppState,
     topic: &Topic,
@@ -630,11 +655,13 @@ pub(crate) async fn guides(
     usage: &mut Usage,
     deadline: Instant,
 ) -> Result<Vec<Value>> {
-    let pending = sqlx::query_as::<_, Pending>("SELECT id, name, name_en, creator, kind, source_urls, source_hash FROM catalog_entries e
-        WHERE topic_id = $1 AND attempts < 3 AND jsonb_array_length(source_urls) > 0
-        AND (guide IS NULL OR checked_at < NOW() - INTERVAL '7 days')
+    // New entries are tried at each run until their third failure; every entry is checked
+    // again weekly, those that failed three times last.
+    let pending = sqlx::query_as::<_, Pending>("SELECT id, name, name_en, creator, kind, source_urls, source_hash, images FROM catalog_entries e
+        WHERE topic_id = $1 AND jsonb_array_length(source_urls) > 0
+        AND ((guide IS NULL AND attempts < 3) OR checked_at < NOW() - INTERVAL '7 days')
         AND EXISTS (SELECT 1 FROM catalog_items c JOIN items i ON i.id = c.item_id WHERE c.entry_id = e.id AND NOT i.hidden)
-        ORDER BY guide IS NOT NULL, checked_at NULLS FIRST, id LIMIT 8")
+        ORDER BY attempts >= 3, guide IS NOT NULL, checked_at NULLS FIRST, id LIMIT 8")
         .bind(&topic.id).fetch_all(&state.pool).await?;
     let mut pending = pending.into_iter();
     let mut jobs = JoinSet::new();
@@ -671,11 +698,14 @@ pub(crate) async fn guides(
                 any_written = true;
                 outcomes.push(json!({"entry":id,"written":true}));
             }
-            Ok(Ok(Composed::Unchanged)) => {
+            Ok(Ok(Composed::Unchanged(images))) => {
                 sqlx::query(
-                    "UPDATE catalog_entries SET checked_at = NOW(), attempts = 0 WHERE id = $1",
+                    "UPDATE catalog_entries SET checked_at = NOW(), attempts = 0,
+                        images = CASE WHEN jsonb_array_length($2) > 0 THEN $2 ELSE images END,
+                        image = COALESCE($2->0, image) WHERE id = $1",
                 )
                 .bind(id)
+                .bind(json!(images))
                 .execute(&state.pool)
                 .await?;
                 outcomes.push(json!({"entry":id,"unchanged":true}));
