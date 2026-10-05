@@ -22,6 +22,9 @@ const TICK_ERROR_LOG_INTERVAL: Duration = Duration::from_secs(300);
 const MAINTENANCE_TICK: Duration = Duration::from_secs(60);
 const HOUSEKEEPING_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const KNOWN_LIMIT: i64 = 80;
+/// A story collected in the last week is a repeat even when the model dates its page anew; older
+/// news leaves with retention.
+const REPEAT_DAYS: i64 = 7;
 const RUN_RETENTION_DAYS: i64 = 3;
 const INSIGHT_RETENTION_DAYS: i64 = 32;
 pub(crate) const CLEANUP_BATCH_SIZE: i64 = 500;
@@ -660,9 +663,7 @@ async fn execute(
             dropped: 0,
         });
     }
-    // A story published inside the window was collected inside it, if at all, and one without a
-    // date is compared back to yesterday. The model is shown the newest of them; every one of
-    // them is checked by its URL.
+    // The model is shown the newest stories since the window's first day, or since yesterday.
     let since = window
         .start
         .with_timezone(&state.config.timezone)
@@ -681,15 +682,6 @@ async fn execute(
     .bind(is_reads)
     .fetch_all(&state.pool)
     .await?;
-    let mut fingerprints = sqlx::query_scalar::<_, Vec<u8>>(
-        "SELECT fingerprint FROM items WHERE topic_id = $1 AND day >= $2",
-    )
-    .bind(&topic.id)
-    .bind(since)
-    .fetch_all(&state.pool)
-    .await?
-    .into_iter()
-    .collect::<HashSet<_>>();
     let mut fetched = if is_reads {
         reads::discover(state, topic, &known, window).await?
     } else {
@@ -702,8 +694,7 @@ async fn execute(
         .collect::<Vec<_>>();
     let returned = fetched.candidates.len() as i32;
     let (mut dup, mut dropped) = (0, 0);
-    let mut items = Vec::new();
-    let mut duplicate_fingerprints = Vec::new();
+    let mut candidates = Vec::new();
     for candidate in std::mem::take(&mut fetched.candidates) {
         let Some(mut item) = fetch::validate(candidate, window.start)
             .filter(|item| item.published_at.is_none_or(|at| window.contains(at)))
@@ -724,6 +715,27 @@ async fn execute(
             dropped += 1;
             continue;
         }
+        candidates.push(item);
+    }
+    // Only this response's addresses are looked up.
+    let mut fingerprints = sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT fingerprint FROM items WHERE topic_id = $1 AND fingerprint = ANY($2) AND day >= $3",
+    )
+    .bind(&topic.id)
+    .bind(
+        candidates
+            .iter()
+            .map(|item| &item.fingerprint)
+            .collect::<Vec<_>>(),
+    )
+    .bind(today - ChronoDuration::days(REPEAT_DAYS))
+    .fetch_all(&state.pool)
+    .await?
+    .into_iter()
+    .collect::<HashSet<_>>();
+    let mut items = Vec::new();
+    let mut duplicate_fingerprints = Vec::new();
+    for item in candidates {
         // Travelers at one place write alike; their posts are told apart by id alone.
         let title = fetch::normalize_title(&item.title);
         if !fingerprints.insert(item.fingerprint.clone())
@@ -841,7 +853,6 @@ async fn execute(
         topic,
         run_id,
         today,
-        since,
         items,
         articles,
         moments,
@@ -907,7 +918,6 @@ pub(crate) async fn persist_items(
     topic: &Topic,
     run_id: Uuid,
     today: NaiveDate,
-    since: NaiveDate,
     items: Vec<fetch::NewItem>,
     mut articles: HashMap<Vec<u8>, reads::Article>,
     mut moments: HashMap<Vec<u8>, travel::Moment>,
@@ -978,11 +988,11 @@ pub(crate) async fn persist_items(
     // updates the row that was just inserted, matching the previous per-item ordering.
     for fingerprint in duplicate_fingerprints {
         sqlx::query(
-            "UPDATE items SET last_seen_at = NOW(), seen_count = seen_count + 1 WHERE topic_id = $1 AND ($4 OR day >= $2) AND fingerprint = $3",
+            "UPDATE items SET last_seen_at = NOW(), seen_count = seen_count + 1 WHERE topic_id = $1 AND fingerprint = $2 AND ($4 OR day >= $3)",
         )
         .bind(&topic.id)
-        .bind(since)
         .bind(fingerprint)
+        .bind(today - ChronoDuration::days(REPEAT_DAYS))
         .bind(is_reads)
         .execute(&mut *tx)
         .await?;

@@ -1240,8 +1240,8 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
     .await
     .unwrap();
     assert_eq!(calls.lock().unwrap().len(), before);
-    // A story collected yesterday is still known by its URL after 80 newer ones push it off the
-    // list shown to the model: the next run counts it as a repeat instead of filing it again.
+    // A story collected within the week stays a repeat however many newer ones push it off the
+    // list shown to the model, and even when its page is dated anew; an older one may return.
     sqlx::query("UPDATE topics SET enabled = true WHERE id = 'movie'")
         .execute(&pool)
         .await
@@ -1268,7 +1268,7 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
     assert_eq!(runs(run).await, (3, 1));
     let today = state.digest.today();
     sqlx::query("UPDATE items SET day = $1 WHERE topic_id = 'movie'")
-        .bind(today.pred_opt().unwrap())
+        .bind(today - chrono::Duration::days(5))
         .execute(&pool)
         .await
         .unwrap();
@@ -1290,6 +1290,22 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
         .unwrap();
     finished(&pool, run).await;
     assert_eq!(runs(run).await, (0, 4));
+    sqlx::query(
+        "UPDATE items SET day = $1 WHERE topic_id = 'movie' AND url NOT LIKE 'https://filler.example/%'",
+    )
+    .bind(today - chrono::Duration::days(8))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE topics SET last_run_at = NULL WHERE id = 'movie'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let run = crate::runner::start(&state, &movie, "manual")
+        .await
+        .unwrap();
+    finished(&pool, run).await;
+    assert_eq!(runs(run).await, (3, 1));
     server.abort();
     ai_server.abort();
     origin_server.abort();

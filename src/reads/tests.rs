@@ -236,7 +236,6 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             &topic,
             run_id,
             old,
-            old.pred_opt().unwrap(),
             vec![full_item, brief_item],
             articles,
             HashMap::new(),
@@ -269,7 +268,6 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             &topic,
             run_id,
             today,
-            today.pred_opt().unwrap(),
             vec![repeat],
             HashMap::new(),
             HashMap::new(),
@@ -279,6 +277,15 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         .unwrap(),
         (0, 1, 0)
     );
+    // The archive keeps an essay once however old, and counts each sighting of it.
+    let seen: i32 = sqlx::query_scalar(
+        "SELECT seen_count FROM items WHERE topic_id = 'reads' AND fingerprint = $1",
+    )
+    .bind(fingerprint(&source("essay").url))
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(seen, 2);
     // No metadata-only placeholder survives a body failure.
     assert!(
         crate::runner::persist_items(
@@ -286,7 +293,6 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             &topic,
             run_id,
             today,
-            today.pred_opt().unwrap(),
             vec![item(999)],
             HashMap::new(),
             HashMap::new(),
@@ -304,7 +310,6 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             &topic,
             run_id,
             today,
-            today.pred_opt().unwrap(),
             vec![item(998)],
             HashMap::from([(item(998).fingerprint, broken)]),
             HashMap::new(),
@@ -327,7 +332,6 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
             &topic,
             run_id,
             today,
-            today.pred_opt().unwrap(),
             items,
             articles,
             HashMap::new(),
@@ -372,7 +376,6 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         &news_topic,
         run_id,
         old,
-        old.pred_opt().unwrap(),
         vec![item(1000)],
         HashMap::new(),
         HashMap::new(),
@@ -567,7 +570,6 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         &topic,
         run_id,
         old,
-        old.pred_opt().unwrap(),
         items,
         articles,
         HashMap::new(),
