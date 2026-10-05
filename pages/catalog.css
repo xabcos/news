@@ -69,6 +69,14 @@
 .catalog-product img { width: 100%; aspect-ratio: 4 / 3; object-fit: contain; border-radius: var(--radius-m); background: var(--surface-soft); }
 .catalog-product-kind { color: var(--primary-strong); font-size: .72rem; }
 .catalog-product-buzz { color: var(--muted); font-size: .72rem; }
+/* The search box, the link to a topic's full list, and found entries wrapping into rows. */
+.catalog-search { margin: 1rem 0 0; }
+.catalog-search input { width: min(100%, 26rem); padding: .5rem .85rem; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-solid); color: inherit; font: inherit; font-size: 1rem; }
+.catalog-search input:focus { border-color: var(--primary); outline: none; }
+.catalog-all { margin-left: .5rem; color: var(--muted); font-size: .8rem; font-weight: 500; text-decoration: none; }
+.catalog-all:hover { color: var(--primary-strong); }
+.catalog-found h2 span { color: var(--muted); font-size: .85rem; font-weight: 500; }
+.catalog-found .catalog-products { grid-auto-flow: row; grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); overflow-x: visible; }
 .catalog-product strong { font-size: .95rem; line-height: 1.35; }
 .catalog-product-specs { display: -webkit-box; overflow: hidden; color: var(--muted); font-size: .76rem; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 .catalog-product:hover strong { color: var(--primary-strong); }

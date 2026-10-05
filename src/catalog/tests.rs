@@ -542,7 +542,7 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
         page.contains("catalog-book") && page.contains(&slug) && page.contains("/files/cover.jpg")
     );
     // A shelf of works heads the list; a collection of one kind has no filters.
-    assert!(page.contains("<section class=catalog-shelf><h2>近期有动态</h2>"));
+    assert!(page.contains("<section class=catalog-shelf><h2>近期有动态 <a class=catalog-all"));
     assert!(page.contains("<span class=\"badge catalog-role\">评论</span>"));
     assert!(!page.contains("catalog-kinds"));
     assert_eq!(page.matches(">𝑪𝒖𝒍𝒕𝒖𝒓𝒆</a>").count(), 1);
@@ -563,6 +563,82 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
         .await
         .unwrap();
     assert!(english.contains("Story and background") && english.contains("hreflang=\"zh-CN\""));
+    // Search finds works by name, English name or creator and stories by title across the
+    // section, reading its words literally; its pages stay out of search engines. A topic
+    // without words lists all of its works, and nothing at all leads back to the section.
+    assert!(
+        page.contains("<form class=catalog-search action=\"/culture/search\" role=search>")
+            && page.contains("href=\"/culture/search?topic=book\">全部作品 →</a>")
+    );
+    let found = get("/culture/search?q=%E6%B5%B7%E5%B2%B8".into()).await;
+    assert_eq!(found.headers()["x-robots-tag"], "noindex");
+    let found = found.text().await.unwrap();
+    assert!(
+        found.contains(&format!("href=\"/culture/book/{slug}\""))
+            && found.contains("《海岸》新书发布")
+            && found.contains("value=\"海岸\"")
+    );
+    for words in ["ADA", "the%20shore"] {
+        let page = get(format!("/culture/search?q={words}"))
+            .await
+            .text()
+            .await
+            .unwrap();
+        assert!(
+            page.contains(&format!("href=\"/culture/book/{slug}\"")),
+            "{words}"
+        );
+    }
+    // A work is found by its stories' titles too, while they are visible.
+    let found_works = |page: String| {
+        page.split_once("<section class=\"catalog-shelf catalog-found\">")
+            .is_some_and(|(_, rest)| {
+                rest.split_once("</section>")
+                    .unwrap()
+                    .0
+                    .contains(&format!("href=\"/culture/book/{slug}\""))
+            })
+    };
+    let by_story = "/culture/search?q=%E6%96%B0%E4%B9%A6%E5%8F%91%E5%B8%83";
+    assert!(found_works(
+        get(by_story.into()).await.text().await.unwrap()
+    ));
+    sqlx::query("UPDATE items SET hidden = NOT hidden WHERE url LIKE '%/news/shore'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(!found_works(
+        get(by_story.into()).await.text().await.unwrap()
+    ));
+    sqlx::query("UPDATE items SET hidden = NOT hidden WHERE url LIKE '%/news/shore'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let literal = get("/culture/search?q=%25".into())
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(literal.contains("没有找到") && !literal.contains(&slug));
+    let all = get("/culture/search?topic=book".into()).await;
+    assert!(all.headers().get("x-robots-tag").is_none());
+    assert!(
+        all.text()
+            .await
+            .unwrap()
+            .contains(&format!("href=\"/culture/book/{slug}\""))
+    );
+    let nothing = get("/culture/search?q=%20".into()).await;
+    assert_eq!(nothing.status(), 307);
+    assert_eq!(nothing.headers()["location"], "/culture");
+    assert!(
+        get("/culture/search?q=shore&lang=en".into())
+            .await
+            .text()
+            .await
+            .unwrap()
+            .contains("<input type=hidden name=lang value=en>")
+    );
     let digest: Value = get("/digest?topic=book".into()).await.json().await.unwrap();
     let stories = digest["topics"][0]["items"].as_array().unwrap();
     let story = stories
@@ -946,7 +1022,7 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
     );
     let page = get("/gadgets/eink".into()).await.text().await.unwrap();
     let recent = page
-        .split_once("<section class=catalog-shelf><h2>近期有动态</h2>")
+        .split_once("<section class=catalog-shelf><h2>近期有动态 ")
         .unwrap()
         .1;
     assert!(recent.contains("talked-one"));

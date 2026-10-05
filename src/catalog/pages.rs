@@ -1,7 +1,8 @@
-//! Each section's pages: `/{section}/{topic}` lists a topic's items under its kind filters and a
-//! shelf of recently active entries, `/{section}/{topic}/{slug}` shows an entry with its guide,
-//! its reviews, posts and news, then more by the same creator and more of its kind; `more.json`
-//! pages the list.
+//! Each section's pages: `/{section}/{topic}` lists a topic's items under its kind filters and
+//! shelves of entries, `/{section}/{topic}/{slug}` shows an entry with its guide, its reviews,
+//! posts and news, then more by the same creator and more of its kind; `more.json` pages the
+//! list; `/{section}/search` finds entries and stories across the section's topics, or lists all
+//! of one topic's entries.
 use super::{Guide, ITEM_JOIN, Section, culture, gadgets, item_json};
 use crate::{
     digest::{PublicItem, Rendered, conditional},
@@ -32,6 +33,9 @@ const ONWARD: i64 = 6;
 const TALKED_DAYS: i64 = 30;
 const TALKED_ITEMS: i64 = 2;
 const TALKED_SHELF: usize = 3;
+/// Search reads this many characters of its words and shows this many entries for them.
+const QUERY_CHARS: usize = 40;
+const FOUND: i64 = 60;
 const CONTENT: &str = "t.enabled AND t.owner_user_id IS NULL";
 /// An entry has a page once a visible item belongs to it; its guide adds facts when written.
 const LISTED: &str = "EXISTS (SELECT 1 FROM catalog_items c JOIN items i ON i.id = c.item_id
@@ -51,6 +55,12 @@ struct Params {
     before: Option<String>,
     kind: Option<String>,
 }
+#[derive(Default, Deserialize)]
+struct Search {
+    lang: Option<String>,
+    q: Option<String>,
+    topic: Option<String>,
+}
 impl Params {
     fn en(&self) -> bool {
         self.lang.as_deref() == Some("en")
@@ -66,6 +76,7 @@ pub(crate) fn router() -> Router<AppState> {
                 reading::pages(
                     Router::new()
                         .route(&base, get(index))
+                        .route(&format!("{base}/search"), get(search))
                         .route(&format!("{base}/{{topic}}"), get(collection))
                         .route(&format!("{base}/{{topic}}/more.json"), get(more))
                         .route(&format!("{base}/{{topic}}/{{slug}}"), get(detail)),
@@ -185,7 +196,7 @@ fn layout(
         &Chrome {
             current: topic,
             section: &format!("catalog {} catalog-{topic}", section.path()),
-            stylesheet: "/catalog.css?v=3",
+            stylesheet: "/catalog.css?v=4",
             script: "/catalog.js?v=3",
             feed: (section.label(), &format!("/feed.xml?topic={topic}")),
         },
@@ -223,6 +234,14 @@ async fn items(
                 .push(" AND ci.role = ")
                 .push_bind(role);
         }
+        Filter::Matching(pattern) => {
+            query
+                .push(" AND (items.title ILIKE ")
+                .push_bind(pattern)
+                .push(" OR items.title_en ILIKE ")
+                .push_bind(pattern)
+                .push(")");
+        }
     }
     push_page(&mut query, before, LIMIT);
     let mut rows = query
@@ -237,6 +256,8 @@ enum Filter<'a> {
     All,
     Kind(&'a str),
     Entry(Uuid, &'a str),
+    /// Titles matching an ILIKE pattern.
+    Matching(&'a str),
 }
 fn card(item: &PublicItem, topic: &str, en: bool, reader: Reader) -> String {
     let title = choose(en, &item.title, &item.title_en);
@@ -353,6 +374,10 @@ enum Shelf<'a> {
     Topic(&'a str, Option<&'a str>),
     /// Likewise, but those with the most reviews and posts lately first, and only those with a few.
     Talked(&'a str, Option<&'a str>),
+    /// In the given topics, ordered as the talked-about shelf; with an ILIKE pattern, those whose
+    /// name, English name or creator matches, or the title of one of their stories, which finds
+    /// HUAWEI Mate 90 for 华为.
+    Found(&'a [String], Option<&'a str>),
     /// By one creator in the given topics, but one entry.
     Creator(&'a [String], &'a str, Uuid),
     /// Of one kind in a topic, but the given entries.
@@ -390,6 +415,26 @@ async fn shelved(state: &AppState, shelf: Shelf<'_>, limit: i64) -> Result<Vec<S
                 query.push(" AND e.kind = ").push_bind(kind);
             }
         }
+        Shelf::Found(topics, pattern) => {
+            query.push("e.topic_id = ANY(").push_bind(topics).push(")");
+            if let Some(pattern) = pattern {
+                query
+                    .push(" AND (e.name ILIKE ")
+                    .push_bind(pattern)
+                    .push(" OR e.name_en ILIKE ")
+                    .push_bind(pattern)
+                    .push(" OR e.creator ILIKE ")
+                    .push_bind(pattern)
+                    .push(
+                        " OR EXISTS (SELECT 1 FROM catalog_items c JOIN items i ON i.id = c.item_id
+                           WHERE c.entry_id = e.id AND NOT i.hidden AND (i.title ILIKE ",
+                    )
+                    .push_bind(pattern)
+                    .push(" OR i.title_en ILIKE ")
+                    .push_bind(pattern)
+                    .push(")))");
+            }
+        }
         Shelf::Creator(topics, creator, except) => {
             query
                 .push("e.topic_id = ANY(")
@@ -416,6 +461,10 @@ async fn shelved(state: &AppState, shelf: Shelf<'_>, limit: i64) -> Result<Vec<S
         query.push(format!(
             " AND {talked} >= {TALKED_ITEMS} ORDER BY {talked} DESC, {recent}, e.guide_at DESC NULLS LAST LIMIT "
         ));
+    } else if let Shelf::Found(..) = shelf {
+        query.push(format!(
+            " ORDER BY {talked} DESC, {recent}, e.guide_at DESC NULLS LAST LIMIT "
+        ));
     } else {
         query.push(format!(
             " ORDER BY {recent}, e.guide_at DESC NULLS LAST LIMIT "
@@ -434,7 +483,7 @@ fn shelf_cards(
 ) -> String {
     let mut html = String::from("<div class=catalog-products>");
     for entry in entries {
-        let buzz = if talked {
+        let buzz = if talked && entry.talked > 0 {
             let count = entry.talked;
             format!(
                 "<span class=catalog-product-buzz>{}</span>",
@@ -521,8 +570,13 @@ async fn shelf(
     }
     let _ = write!(
         html,
-        "<section class=catalog-shelf><h2>{}</h2>{}</section><h2 class=catalog-latest>{}</h2>",
+        "<section class=catalog-shelf><h2>{} <a class=catalog-all href=\"{}\">{} →</a></h2>{}</section><h2 class=catalog-latest>{}</h2>",
         choose(en, "近期有动态", "Recently active"),
+        escape(&reader.localized(&format!("/{}/search?topic={topic}", section.path()), en)),
+        match section {
+            Section::Culture => choose(en, "全部作品", "All works"),
+            Section::Gadgets => choose(en, "全部产品", "All products"),
+        },
         shelf_cards(section, &entries, false, en, reader),
         choose(en, "最新内容", "Latest")
     );
@@ -609,6 +663,7 @@ async fn collection(
         .map(|(_, name)| name.as_str())
         .ok_or_else(missing)?;
     let mut content = tabs(section, &topics, &topic, en, reader);
+    content.push_str(&search_form(section, "", en, reader));
     content.push_str(&shelf(&state, section, &topic, kind, en, reader).await?);
     let _ = write!(
         content,
@@ -641,6 +696,175 @@ async fn collection(
         &Rendered::new(html),
         "text/html; charset=utf-8",
     ))
+}
+/// The search box of a section's pages; its words search every topic of the section.
+fn search_form(section: Section, words: &str, en: bool, reader: Reader) -> String {
+    let hint = match section {
+        Section::Culture => choose(
+            en,
+            "搜索作品、创作者或内容",
+            "Search works, creators or stories",
+        ),
+        Section::Gadgets => choose(
+            en,
+            "搜索产品、品牌或内容",
+            "Search products, brands or stories",
+        ),
+    };
+    format!(
+        "<form class=catalog-search action=\"{}\" role=search><input type=search name=q value=\"{}\" maxlength={QUERY_CHARS} placeholder=\"{hint}\" aria-label=\"{hint}\" enterkeyhint=search>{}</form>",
+        escape(&reader.path(&format!("/{}/search", section.path()))),
+        escape(words),
+        if en {
+            "<input type=hidden name=lang value=en>"
+        } else {
+            ""
+        }
+    )
+}
+/// Entries whose name, English name, creator or a story's title holds the words, and stories
+/// whose title does, across the section's topics; or, with a topic and no words, all of that topic's entries. The
+/// most talked-about entries come first, and the newest stories. Pages for words stay out of
+/// search engines; a topic's full list is meant to be found.
+async fn search(
+    Extension(section): Extension<Section>,
+    State(state): State<AppState>,
+    reader: Reader,
+    Query(params): Query<Search>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    let topics = catalogue(&state, section, reader);
+    let en = params.lang.as_deref() == Some("en");
+    let words = params
+        .q
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(QUERY_CHARS)
+        .collect::<String>()
+        .trim_end()
+        .to_owned();
+    let listed = params
+        .topic
+        .as_deref()
+        .and_then(|id| topics.iter().find(|(topic, _)| topic == id));
+    if words.is_empty() && listed.is_none() {
+        return Ok(
+            Redirect::temporary(&reader.localized(&format!("/{}", section.path()), en))
+                .into_response(),
+        );
+    }
+    let ids = listed.map_or_else(
+        || topics.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+        |(id, _)| vec![id.clone()],
+    );
+    // ILIKE's own wildcards in the words are matched literally.
+    let pattern = (!words.is_empty()).then(|| {
+        format!(
+            "%{}%",
+            words
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        )
+    });
+    let entries = shelved(
+        &state,
+        Shelf::Found(&ids, pattern.as_deref()),
+        if pattern.is_some() { FOUND } else { i64::MAX },
+    )
+    .await?;
+    let mut stories = Vec::new();
+    if let Some(pattern) = &pattern {
+        for id in &ids {
+            let (rows, _) = items(&state, section, id, Filter::Matching(pattern), None).await?;
+            stories.extend(rows.into_iter().map(|item| (id.as_str(), item)));
+        }
+        stories.sort_by_key(|(_, item)| std::cmp::Reverse((item.first_seen_at, item.id)));
+        stories.truncate(LIMIT);
+    }
+    let noun = match section {
+        Section::Culture => choose(en, "作品", "Works"),
+        Section::Gadgets => choose(en, "产品", "Products"),
+    };
+    let current = listed.map_or_else(|| section.topics()[0], |(id, _)| id.as_str());
+    let mut content = tabs(
+        section,
+        &topics,
+        listed.map_or("", |(id, _)| id.as_str()),
+        en,
+        reader,
+    );
+    content.push_str(&search_form(section, &words, en, reader));
+    let title = match listed {
+        Some((_, name)) if words.is_empty() => format!(
+            "{name} · {}",
+            match section {
+                Section::Culture => choose(en, "全部作品", "All works"),
+                Section::Gadgets => choose(en, "全部产品", "All products"),
+            }
+        ),
+        _ => format!("{} · {words}", choose(en, "搜索", "Search")),
+    };
+    if !entries.is_empty() {
+        let _ = write!(
+            content,
+            "<section class=\"catalog-shelf catalog-found\"><h2>{noun} <span>{}</span></h2>{}</section>",
+            entries.len(),
+            shelf_cards(section, &entries, true, en, reader)
+        );
+    }
+    if !stories.is_empty() {
+        let _ = write!(
+            content,
+            "<h2 class=catalog-latest>{}</h2><div class=catalog-grid>{}</div>",
+            choose(en, "相关内容", "Stories"),
+            stories
+                .iter()
+                .map(|(topic, item)| card(item, topic, en, reader))
+                .collect::<String>()
+        );
+    }
+    if entries.is_empty() && stories.is_empty() {
+        let _ = write!(
+            content,
+            "<p class=empty>{}</p>",
+            choose(
+                en,
+                "没有找到相关的内容，换个词试试。",
+                "Nothing found; try other words."
+            )
+        );
+    }
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    if !words.is_empty() {
+        query.append_pair("q", &words);
+    }
+    if let Some((id, _)) = listed {
+        query.append_pair("topic", id);
+    }
+    let path = format!("/{}/search?{}", section.path(), query.finish());
+    let html = layout(
+        &state,
+        reader,
+        section,
+        current,
+        en,
+        &path,
+        &format!("{title} · {} · News", section.label()),
+        &title,
+        &content,
+        None,
+    );
+    let mut response = conditional(&headers, &Rendered::new(html), "text/html; charset=utf-8");
+    if !words.is_empty() {
+        response.headers_mut().insert(
+            axum::http::header::HeaderName::from_static("x-robots-tag"),
+            axum::http::HeaderValue::from_static("noindex"),
+        );
+    }
+    Ok(response)
 }
 async fn more(
     Extension(section): Extension<Section>,
