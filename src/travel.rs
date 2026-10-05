@@ -27,11 +27,7 @@ use chrono::NaiveDate;
 use place::{Destination, Named, Wikidata};
 use serde_json::{Value, json};
 use sqlx::{Postgres, Transaction};
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::{
     sync::Semaphore,
     task::JoinSet,
@@ -221,7 +217,6 @@ pub(crate) struct Moment {
 /// the moments of `day`, the day they are published on. Why the others left is kept on the run.
 pub(crate) async fn select(
     state: &AppState,
-    topic: &Topic,
     items: Vec<NewItem>,
     window: NewsWindow,
     day: NaiveDate,
@@ -229,32 +224,12 @@ pub(crate) async fn select(
     deadline: Instant,
 ) -> Result<(Vec<NewItem>, HashMap<Vec<u8>, Moment>)> {
     let named = named_places(&fetched.payload);
-    // `known` lists only the newest items; a copy stored within the window is still a repeat.
-    let stored = sqlx::query_scalar::<_, Vec<u8>>(
-        "SELECT fingerprint FROM items WHERE topic_id = $1 AND day >= $2 AND fingerprint = ANY($3)",
-    )
-    .bind(TOPIC_ID)
-    .bind(day - chrono::Duration::days(i64::from(topic.lookback_hours + 23) / 24))
-    .bind(
-        items
-            .iter()
-            .map(|item| &item.fingerprint)
-            .collect::<Vec<_>>(),
-    )
-    .fetch_all(&state.pool)
-    .await?
-    .into_iter()
-    .collect::<HashSet<_>>();
     let lookups = Arc::new(Semaphore::new(LOOKUPS));
     let wikidata = Arc::new(Wikidata::default());
     let mut skipped = Vec::new();
     let mut pending = HashMap::new();
     let mut checks = JoinSet::new();
     for (index, mut item) in items.into_iter().enumerate() {
-        if stored.contains(&item.fingerprint) {
-            skipped.push(json!({ "url": item.url, "reason": "已收录" }));
-            continue;
-        }
         pending.insert(index, item.url.clone());
         let id = Url::parse(&item.url)
             .ok()

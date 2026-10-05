@@ -464,14 +464,15 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
                 unpictured["url"]=json!(format!("{base}/unavailable"));
                 unpictured["image"]=Value::Null;
                 unpictured["work"]=Value::Null;
-                // A review cites another page about the same work; its English name joins them.
+                // A review cites another page about the same work under another English title;
+                // its name joins them.
                 let mut review = item.clone();
                 review["title"]=json!("书评：《海岸》写尽故乡的退潮");
                 review["title_en"]=json!("Review: The Shore and the ebb of home");
                 review["url"]=json!(format!("{base}/review/shore"));
                 review["image"]=Value::Null;
                 review["role"]=json!("review");
-                review["work"]["name_en"]=json!("THE SHORE");
+                review["work"]["name_en"]=json!("Shore: A Novel");
                 review["work"]["source_urls"]=json!([format!("{base}/review/shore")]);
                 json!({"items":[item.clone(),item,unpictured,review],"cover":null})
             };
@@ -1239,6 +1240,56 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
     .await
     .unwrap();
     assert_eq!(calls.lock().unwrap().len(), before);
+    // A story collected yesterday is still known by its URL after 80 newer ones push it off the
+    // list shown to the model: the next run counts it as a repeat instead of filing it again.
+    sqlx::query("UPDATE topics SET enabled = true WHERE id = 'movie'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    state.digest.reload_topics(&state).await.unwrap();
+    let movie: Topic = sqlx::query_as("SELECT * FROM topics WHERE id = 'movie'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let runs = |run: Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_as::<_, (i32, i32)>("SELECT new_count, dup_count FROM runs WHERE id = $1")
+                .bind(run)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    let run = crate::runner::start(&state, &movie, "manual")
+        .await
+        .unwrap();
+    finished(&pool, run).await;
+    assert_eq!(runs(run).await, (3, 1));
+    let today = state.digest.today();
+    sqlx::query("UPDATE items SET day = $1 WHERE topic_id = 'movie'")
+        .bind(today.pred_opt().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE topics SET last_run_at = NULL WHERE id = 'movie'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO items (id, topic_id, day, fingerprint, title, summary, url)
+         SELECT gen_random_uuid(), 'movie', $1, sha256(n::text::bytea), 'Filler ' || n, '', 'https://filler.example/' || n
+         FROM generate_series(1, 80) n",
+    )
+    .bind(today)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let run = crate::runner::start(&state, &movie, "manual")
+        .await
+        .unwrap();
+    finished(&pool, run).await;
+    assert_eq!(runs(run).await, (0, 4));
     server.abort();
     ai_server.abort();
     origin_server.abort();

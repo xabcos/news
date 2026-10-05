@@ -30,13 +30,12 @@ impl NewsWindow {
     }
 }
 
-/// A story already stored for the topic: shown to the model so it does not repeat it, and
-/// used again on the way back to catch the repeats it makes anyway.
+/// A recent story already stored for the topic, shown to the model so it does not repeat it;
+/// its title also catches the repeats it makes anyway under another address.
 #[derive(Debug, FromRow)]
 pub struct Known {
     pub title: String,
     pub url: String,
-    pub fingerprint: Vec<u8>,
 }
 
 /// The Responses API usage block, reduced to what the run history shows.

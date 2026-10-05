@@ -1,6 +1,7 @@
 use super::*;
 use chrono::{Duration, Utc};
 use place::{fold, is_item, matched, slug};
+use std::collections::HashSet;
 use unicode_normalization::UnicodeNormalization;
 
 fn window() -> NewsWindow {

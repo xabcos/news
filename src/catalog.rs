@@ -24,7 +24,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use source::{Source, excerpt, fold, public_url};
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 use tokio::{
     task::JoinSet,
     time::{Instant, timeout_at},
@@ -225,12 +228,42 @@ impl Proposal {
             Section::Culture => format!("{}:{}", self.kind, fold(&self.name_en)),
             Section::Gadgets => {
                 let brand = fold(&self.creator);
-                // Galaxy S26+ is not Galaxy S26.
-                let name = fold(&self.name_en.replace('+', "plus"));
+                let name = folded(&self.name_en);
                 format!("{brand}:{}", name.strip_prefix(&brand).unwrap_or(&name))
             }
         }
     }
+}
+
+/// A name as entries are told apart by it: Galaxy S26+ is not Galaxy S26.
+fn folded(name: &str) -> String {
+    fold(&name.replace('+', "plus"))
+}
+
+/// Records that `name` names the entry `key`; a name two entries share finds neither.
+fn alias(named: &mut HashMap<(String, String), Option<String>>, name: (String, String), key: &str) {
+    named
+        .entry(name)
+        .and_modify(|found| {
+            if found.as_deref() != Some(key) {
+                *found = None;
+            }
+        })
+        .or_insert_with(|| Some(key.to_owned()));
+}
+
+/// What an entry is also found by besides its key: its name and its English name, each within
+/// its kind.
+fn names<'a>(
+    kind: &'a str,
+    name: &'a str,
+    name_en: &'a str,
+) -> impl Iterator<Item = (String, String)> + 'a {
+    [name, name_en]
+        .into_iter()
+        .map(folded)
+        .filter(|name| !name.is_empty())
+        .map(|name| (kind.to_owned(), name))
 }
 
 fn slug(name: &str, id: Uuid) -> String {
@@ -268,7 +301,8 @@ fn canonical(value: &str) -> Option<String> {
 }
 
 /// Attach only items actually published by this run, never rejected candidates. An entry
-/// seen again gains the sources it was missing, up to four.
+/// seen again gains the sources it was missing, up to four. It is found by its key, or else by
+/// its name: the model titles a foreign work in English, and spells a brand, in several ways.
 pub(crate) async fn attach(
     state: &AppState,
     topic: &Topic,
@@ -276,12 +310,25 @@ pub(crate) async fn attach(
     run: Uuid,
     payload: &Value,
 ) -> Result<()> {
-    let proposals: HashMap<_, _> = payload["items"]
+    let published: HashMap<String, (Uuid, Option<Value>)> =
+        sqlx::query_as::<_, (Uuid, String, Option<Value>)>(
+            "SELECT id, url, image FROM items WHERE first_run_id = $1 AND topic_id = $2",
+        )
+        .bind(run)
+        .bind(&topic.id)
+        .fetch_all(&state.pool)
+        .await?
+        .into_iter()
+        .filter_map(|(id, url, image)| Some((canonical(&url)?, (id, image))))
+        .collect();
+    // The published stories and what they name, once each, in the order the model gave them.
+    let mut seen = HashSet::new();
+    let mut stories: Vec<_> = payload["items"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|item| {
-            let key = canonical(item["url"].as_str()?)?;
+            let (id, image) = published.get(&canonical(item["url"].as_str()?)?)?;
             let work = serde_json::from_value::<Proposal>(item["work"].clone())
                 .ok()?
                 .clean(&topic.id, &topic.brief)?;
@@ -289,25 +336,43 @@ pub(crate) async fn attach(
                 .as_str()
                 .filter(|role| matches!(*role, "review" | "share"))
                 .unwrap_or("news");
-            Some((key, (work, role)))
+            seen.insert(*id).then(|| (*id, image.clone(), work, role))
         })
         .collect();
-    let published: Vec<(Uuid, String, Option<Value>)> = sqlx::query_as(
-        "SELECT id, url, image FROM items WHERE first_run_id = $1 AND topic_id = $2",
-    )
-    .bind(run)
-    .bind(&topic.id)
-    .fetch_all(&state.pool)
-    .await?;
+    let entries: Vec<(String, String, String, String)> =
+        sqlx::query_as("SELECT key, kind, name, name_en FROM catalog_entries WHERE topic_id = $1")
+            .bind(&topic.id)
+            .fetch_all(&state.pool)
+            .await?;
+    let mut keys = HashSet::new();
+    let mut named = HashMap::new();
+    for (key, kind, name, name_en) in entries {
+        for name in names(&kind, &name, &name_en) {
+            alias(&mut named, name, &key);
+        }
+        keys.insert(key);
+    }
+    // Stories that name an entry by its key go first and lend it their names, so the run's other
+    // stories of it find it by them, in any order.
+    stories.sort_by_key(|(.., work, _)| !keys.contains(&work.key(section)));
     let mut tx = state.pool.begin().await?;
     let mut linked = 0;
-    for (item, url, image) in published {
-        let Some((proposal, role)) = canonical(&url).and_then(|url| proposals.get(&url)) else {
-            continue;
-        };
+    for (item, image, proposal, role) in stories {
         let id = Uuid::new_v4();
+        let found: Vec<_> = names(&proposal.kind, &proposal.name, &proposal.name_en).collect();
+        let mut key = proposal.key(section);
+        if !keys.contains(&key)
+            && let Some(existing) = found
+                .iter()
+                .find_map(|name| named.get(name).cloned().flatten())
+        {
+            key = existing;
+        }
+        for name in found {
+            alias(&mut named, name, &key);
+        }
         // A product's picture comes from its official pages, and a work's never from a post.
-        let cover = image.filter(|_| section == Section::Culture && *role != "share");
+        let cover = image.filter(|_| section == Section::Culture && role != "share");
         let entry: Uuid = sqlx::query_scalar("INSERT INTO catalog_entries (id, topic_id, key, slug, name, name_en, creator, kind, source_urls, image)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
             ON CONFLICT (topic_id, key) DO UPDATE SET image = COALESCE(catalog_entries.image, EXCLUDED.image),
@@ -317,9 +382,10 @@ pub(crate) async fn attach(
                     SELECT url, MIN(n) AS first FROM jsonb_array_elements_text(catalog_entries.source_urls || EXCLUDED.source_urls)
                         WITH ORDINALITY AS sources(url, n) GROUP BY url ORDER BY first LIMIT 4) merged)
             RETURNING id")
-            .bind(id).bind(&topic.id).bind(proposal.key(section)).bind(slug(&proposal.name_en, id))
+            .bind(id).bind(&topic.id).bind(&key).bind(slug(&proposal.name_en, id))
             .bind(&proposal.name).bind(&proposal.name_en).bind(&proposal.creator).bind(&proposal.kind)
             .bind(json!(proposal.source_urls)).bind(cover).fetch_one(&mut *tx).await?;
+        keys.insert(key);
         linked += sqlx::query(
             "INSERT INTO catalog_items (item_id, entry_id, role) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
         )

@@ -635,7 +635,6 @@ async fn execute(
             dropped: outcome.rejected,
         });
     }
-    let yesterday = today.pred_opt().expect("date in range");
     let is_reads = topic.id == "reads" && topic.owner_user_id.is_none();
     let is_gallery = gallery::is_gallery(topic);
     let is_travel = travel::is_travel(topic);
@@ -661,11 +660,19 @@ async fn execute(
             dropped: 0,
         });
     }
+    // A story published inside the window was collected inside it, if at all, and one without a
+    // date is compared back to yesterday. The model is shown the newest of them; every one of
+    // them is checked by its URL.
+    let since = window
+        .start
+        .with_timezone(&state.config.timezone)
+        .date_naive()
+        .min(today.pred_opt().expect("date in range"));
     let known = sqlx::query_as::<_, Known>(
-        "SELECT title, url, fingerprint FROM items WHERE topic_id = $1 AND ($4 OR day >= $2) ORDER BY first_seen_at DESC LIMIT $3",
+        "SELECT title, url FROM items WHERE topic_id = $1 AND ($4 OR day >= $2) ORDER BY first_seen_at DESC LIMIT $3",
     )
     .bind(&topic.id)
-    .bind(if is_catalog { today - ChronoDuration::days(i64::from(topic.lookback_hours + 23) / 24) } else { yesterday })
+    .bind(since)
     .bind(if is_gallery {
         gallery::KNOWN_LIMIT
     } else {
@@ -674,16 +681,21 @@ async fn execute(
     .bind(is_reads)
     .fetch_all(&state.pool)
     .await?;
+    let mut fingerprints = sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT fingerprint FROM items WHERE topic_id = $1 AND day >= $2",
+    )
+    .bind(&topic.id)
+    .bind(since)
+    .fetch_all(&state.pool)
+    .await?
+    .into_iter()
+    .collect::<HashSet<_>>();
     let mut fetched = if is_reads {
         reads::discover(state, topic, &known, window).await?
     } else {
         fetch::fetch(state, topic, &known, window).await?
     };
 
-    let mut fingerprints = known
-        .iter()
-        .map(|item| item.fingerprint.clone())
-        .collect::<HashSet<_>>();
     let mut titles = known
         .iter()
         .map(|item| fetch::normalize_title(&item.title))
@@ -740,7 +752,7 @@ async fn execute(
                 .fetch_timeout
                 .saturating_sub(started.elapsed() + Duration::from_secs(120));
         (items, moments) =
-            travel::select(state, topic, items, window, today, &mut fetched, deadline).await?;
+            travel::select(state, items, window, today, &mut fetched, deadline).await?;
         dropped += (proposed - items.len()) as i32;
     }
     let destinations = travel::destinations(&moments);
@@ -829,6 +841,7 @@ async fn execute(
         topic,
         run_id,
         today,
+        since,
         items,
         articles,
         moments,
@@ -894,13 +907,13 @@ pub(crate) async fn persist_items(
     topic: &Topic,
     run_id: Uuid,
     today: NaiveDate,
+    since: NaiveDate,
     items: Vec<fetch::NewItem>,
     mut articles: HashMap<Vec<u8>, reads::Article>,
     mut moments: HashMap<Vec<u8>, travel::Moment>,
     mut duplicate_fingerprints: Vec<Vec<u8>>,
 ) -> Result<(i32, i32, i32)> {
     let is_reads = topic.id == "reads" && topic.owner_user_id.is_none();
-    let yesterday = today.pred_opt().expect("date in range");
     let (mut new, mut dup, mut dropped) = (0, 0, 0);
     let mut tx = state.pool.begin().await?;
     let mut available = i64::MAX;
@@ -968,7 +981,7 @@ pub(crate) async fn persist_items(
             "UPDATE items SET last_seen_at = NOW(), seen_count = seen_count + 1 WHERE topic_id = $1 AND ($4 OR day >= $2) AND fingerprint = $3",
         )
         .bind(&topic.id)
-        .bind(yesterday)
+        .bind(since)
         .bind(fingerprint)
         .bind(is_reads)
         .execute(&mut *tx)
