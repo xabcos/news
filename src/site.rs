@@ -214,7 +214,7 @@ pub(crate) fn layout(
 <body class="public {section}"><header class="topbar"><a class="brand" href="{home}" aria-label="News"><img class="brand-logo" src="/icon.svg" alt=""><span>𝑵𝒆𝒘𝒔</span></a><nav class="tabs" aria-label="{topics_label}">{tabs}</nav><div class="tools"><a class="space-link button button-quiet button-small" href="/me/">{workspace}</a><a class="space-link button button-quiet button-small" href="{other_lang}" hreflang="{other_code}">{language_label}</a></div></header>
 <main class="shell">{content}</main>
 <button id="backToTop" class="button back-to-top" type="button" aria-label="{back_to_top}" title="{back_to_top}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 12 6-6 6 6M12 6v12"/></svg></button>
-<script src="/public.js?v=8" defer></script><script src="{script}" defer></script><script src="/stats.js?v=3" data-track-url="{track_url}" defer></script></body></html>"##,
+<script src="/public.js?v=9" defer></script><script src="{script}" defer></script><script src="/stats.js?v=3" data-track-url="{track_url}" defer></script></body></html>"##,
         lang = choose(en, "zh-CN", "en"),
         title = escape(title),
         description = escape(description),

@@ -2,7 +2,7 @@
   "use strict";
 
   const preview = "/api/admin/preview";
-  const DWELL = 12000; // milliseconds each photograph stays while a viewer plays
+  const DWELL = 12000; // milliseconds each photograph stays while a viewer plays, unless it says
   const role = () => document.cookie.split(";").map((part) => part.trim())
     .find((part) => part.startsWith("news_role="))?.slice("news_role=".length) || "";
   const readPath = (path) => role() === "admin" && !path.startsWith(preview) ? `${preview}${path}` : path;
@@ -33,8 +33,8 @@
     // the one `ahead()` names loads in the background. `next()` shows the following
     // photograph and returns nothing at the end, which stops the play. The button, Space and
     // a tap on the photograph switch it, and closing stops it. The viewer calls `shown()`
-    // whenever it changes the photograph.
-    autoplay({ dialog, image, className, next, ahead, names }) {
+    // whenever it changes the photograph. Each photograph stays `dwell` milliseconds.
+    autoplay({ dialog, image, className, next, ahead, names, dwell = DWELL }) {
       const progress = document.createElement("div");
       progress.className = "play-progress";
       const button = document.createElement("button");
@@ -52,7 +52,7 @@
         walk?.cancel();
         if (!playing || !image.complete || document.hidden) return;
         if (!image.naturalWidth) return advance(); // a photograph that failed is passed by
-        walk = progress.animate({ transform: ["scaleX(0)", "scaleX(1)"] }, DWELL);
+        walk = progress.animate({ transform: ["scaleX(0)", "scaleX(1)"] }, dwell);
         walk.onfinish = advance;
       };
       function toggle(on = !playing) {
@@ -93,7 +93,7 @@
     // shows the photograph that many places away and returns it, or nothing at either end;
     // `neighbor(offset)` only finds it. Cards that load into `root` behind the open viewer
     // bring its next arrow back.
-    viewer({ className = "", frame, image, root, step, neighbor, ahead, names }) {
+    viewer({ className = "", frame, image, root, step, neighbor, ahead, names, dwell }) {
       const dialog = document.createElement("dialog");
       dialog.className = `viewer ${className}`.trim();
       dialog.tabIndex = -1;
@@ -123,7 +123,7 @@
       new MutationObserver(() => { if (dialog.open) next.disabled = !neighbor(1); })
         .observe(root, { childList: true, subtree: true });
       const play = window.PublicPage.autoplay({
-        dialog, image, className: "viewer-button", next: () => step(1), ahead, names,
+        dialog, image, className: "viewer-button", next: () => step(1), ahead, names, dwell,
       });
       // A horizontal swipe on the photograph turns the page on touch screens.
       let start = null;

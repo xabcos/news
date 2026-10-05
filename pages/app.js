@@ -21,8 +21,10 @@ const DAYS_LIMIT = 366;
 const PRELOAD_MARGIN = "0px 0px 70% 0px";
 const INSIGHT_ID = "insight";
 const EQUITY_ID = "equity-insight";
-// The photograph gallery: rows of photographs at their own ratio, opened in a lightbox.
+// The photograph gallery: rows of photographs at their own ratio, opened in a lightbox that
+// plays faster than the travel viewer, since there is nothing to read beside a photograph.
 const PHOTO_TOPIC = "w";
+const PHOTO_DWELL = 6000;
 // Travelers' postcards in packed columns, with a map of recent destinations (travel.js).
 const TRAVEL_TOPIC = "travel";
 const storage = (() => {
@@ -1170,6 +1172,7 @@ function createLightbox() {
     neighbor: neighborPhoto,
     ahead: () => photoItems.get(neighborPhoto(1))?.image?.url,
     names: () => ({ play: t().play, pause: t().pause, close: t().close, previous: t().previous, next: t().next }),
+    dwell: PHOTO_DWELL,
   });
   return { ui, image, caption, current: null };
 }
