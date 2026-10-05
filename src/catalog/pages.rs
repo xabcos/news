@@ -205,7 +205,7 @@ fn layout(
         &Chrome {
             current: topic,
             section: &format!("catalog {} catalog-{topic}", section.path()),
-            stylesheet: "/catalog.css?v=4",
+            stylesheet: "/catalog.css?v=5",
             script: "/catalog.js?v=3",
             feed: (section.label(), &format!("/feed.xml?topic={topic}")),
         },

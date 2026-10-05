@@ -223,6 +223,19 @@ fn products_keep_official_sources_and_are_known_by_brand_and_model() {
 }
 
 #[test]
+fn gadgets_runs_look_for_each_kind_in_turn() {
+    let kinds = Section::Gadgets.kinds("digital");
+    let rotation = |turn| super::gadgets::rotation("digital", turn);
+    let seen = (0..kinds.len() as i64)
+        .filter_map(rotation)
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(seen.len(), kinds.len());
+    assert_eq!(rotation(-1), rotation(kinds.len() as i64 - 1));
+    assert_eq!(rotation(3).as_deref(), Some("显示器（monitor）"));
+    assert_eq!(super::gadgets::rotation("book", 0), None);
+}
+
+#[test]
 fn sources_name_works_whole_and_products_word_by_word() {
     let entry = |name_en: &str, creator: &str| Pending {
         id: Uuid::nil(),
@@ -519,9 +532,14 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
             .await
             .unwrap();
     assert_eq!(entries, 1, "the review joins the work its news named");
-    // The next run looks into the work with the fewest items, here the only one.
+    // The next run looks into the work with the fewest items, here the only one; Culture has no
+    // kind to look for in turn.
+    let window = NewsWindow {
+        start: chrono::Utc::now() - chrono::Duration::hours(24),
+        end: chrono::Utc::now(),
+    };
     assert_eq!(
-        focus(&state, topic).await.unwrap(),
+        focus(&state, topic, window).await.unwrap(),
         "\n本轮深挖：海岸（The Shore，Ada）"
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -805,7 +823,7 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
     .await
     .unwrap();
     assert_eq!(
-        focus(&state, topic).await.unwrap(),
+        focus(&state, topic, window).await.unwrap(),
         "\n本轮深挖：海岸（The Shore，Ada）；潮水（Tidewater，Ada）"
     );
     // The shelf leads with the work whose latest story was published last, even when another
@@ -847,7 +865,7 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
         .await
         .unwrap();
     assert_eq!(
-        focus(&state, topic).await.unwrap(),
+        focus(&state, topic, window).await.unwrap(),
         "\n本轮深挖：海岸（The Shore，Ada）；潮水（Tidewater，Ada）"
     );
     // Without its guide a work keeps its page, gathered from its stories, and its place on the

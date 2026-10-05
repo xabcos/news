@@ -63,6 +63,8 @@
 .catalog-kinds::-webkit-scrollbar { display: none; }
 .catalog-kinds a { flex: none; padding: .25rem .75rem; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: .8rem; text-decoration: none; }
 .catalog-kinds a[aria-current] { color: var(--primary-strong); border-color: var(--primary); background: var(--primary-soft); }
+/* A mouse cannot swipe the row, whose scrollbar is hidden, so the filters wrap instead. */
+@media (hover: hover) { .catalog-kinds { flex-wrap: wrap; } }
 .catalog-shelf h2, .catalog-latest { margin: 1.4rem 0 .8rem; font-size: 1rem; }
 .catalog-products { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(12rem, 15rem); gap: 1rem; overflow-x: auto; padding-bottom: .5rem; scroll-snap-type: x proximity; }
 .catalog-product { display: grid; gap: .35rem; align-content: start; padding: .75rem; border: 1px solid var(--line); border-radius: var(--radius-l); background: var(--surface-solid); color: inherit; text-decoration: none; scroll-snap-align: start; }

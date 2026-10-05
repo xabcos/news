@@ -13,7 +13,7 @@ mod tests;
 
 use crate::{
     error::{AppError, Result},
-    fetch::{NewsImage, Usage},
+    fetch::{NewsImage, NewsWindow, Usage},
     media,
     state::AppState,
     topics::Topic,
@@ -344,10 +344,18 @@ pub(crate) async fn attach(
     Ok(())
 }
 
-/// The two entries a run looks into besides the news, so their pages fill up: one with the
-/// fewest items, preferring one still without a guide (a product without official sources),
-/// and one of the 24 most covered others, those with a guide first.
-pub(crate) async fn focus(state: &AppState, topic: &Topic) -> Result<String> {
+/// What a run looks at besides the news: in 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 one kind in turn, and two entries, so
+/// their pages fill up: one with the fewest items, preferring one still without a guide (a
+/// product without official sources), and one of the 24 most covered others, those with a
+/// guide first.
+pub(crate) async fn focus(state: &AppState, topic: &Topic, window: NewsWindow) -> Result<String> {
+    let turn = window
+        .end
+        .timestamp()
+        .div_euclid(i64::from(topic.interval_minutes) * 60);
+    let focus = gadgets::rotation(&topic.id, turn)
+        .map(|kind| format!("\n本轮也留意：{kind}"))
+        .unwrap_or_default();
     let entries = sqlx::query_as::<_, (String, String, String)>(
         "WITH counted AS (
              SELECT e.id, e.name, e.name_en, e.creator, e.guide IS NOT NULL AS guided,
@@ -369,7 +377,7 @@ pub(crate) async fn focus(state: &AppState, topic: &Topic) -> Result<String> {
     .fetch_all(&state.pool)
     .await?;
     if entries.is_empty() {
-        return Ok(String::new());
+        return Ok(focus);
     }
     let named = entries
         .into_iter()
@@ -385,7 +393,7 @@ pub(crate) async fn focus(state: &AppState, topic: &Topic) -> Result<String> {
             }
         })
         .collect::<Vec<_>>();
-    Ok(format!("\n本轮深挖：{}", named.join("；")))
+    Ok(format!("{focus}\n本轮深挖：{}", named.join("；")))
 }
 
 /// Removes the entries whose last item has gone, through news retention or deletion; a locked
