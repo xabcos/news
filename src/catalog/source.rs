@@ -26,9 +26,11 @@ pub(super) struct Link {
     pub url: String,
 }
 
+/// A public page at the address given, cleaned but on its own host, since some sites answer
+/// only with `www.`.
 pub(super) fn public_url(value: &str) -> Option<String> {
     let url = Url::parse(value.trim()).ok()?;
-    crate::media::is_public_origin(&url).then(|| crate::fetch::canonical_url(&url))
+    crate::media::is_public_origin(&url).then(|| crate::fetch::clean_url(&url))
 }
 
 pub(super) fn fold(text: &str) -> String {

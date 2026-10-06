@@ -478,11 +478,10 @@ pub(crate) fn parse_time(value: &str) -> Option<DateTime<Utc>> {
         })
 }
 
-/// The identity of a story: `www.` dropped, fragment and tracking parameters removed,
-/// trailing slash trimmed. Scheme, host and default ports are already normalised by `Url`.
+/// The identity of a story: its clean address with `www.` dropped. Some sites answer only
+/// with `www.`, so this is compared, never fetched.
 pub fn canonical_url(url: &Url) -> String {
     let mut url = url.clone();
-    url.set_fragment(None);
     if let Some(host) = url
         .host_str()
         .and_then(|host| host.strip_prefix("www."))
@@ -490,6 +489,14 @@ pub fn canonical_url(url: &Url) -> String {
     {
         let _ = url.set_host(Some(&host));
     }
+    clean_url(&url)
+}
+
+/// An address on the host it names, with fragment and tracking parameters removed and the
+/// trailing slash trimmed. Scheme, host and default ports are already normalised by `Url`.
+pub fn clean_url(url: &Url) -> String {
+    let mut url = url.clone();
+    url.set_fragment(None);
     let kept = url
         .query_pairs()
         .filter(|(key, _)| !is_tracking(key))
@@ -544,7 +551,7 @@ fn clip(value: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Candidate, NewsImage, canonical_url, normalize_title, parse_reply, parse_time,
+        Candidate, NewsImage, canonical_url, clean_url, normalize_title, parse_reply, parse_time,
         similar_title, validate,
     };
     use chrono::{Duration, TimeZone, Utc};
@@ -599,6 +606,7 @@ mod tests {
         let url = Url::parse("https://www.Example.com:443/a/b/?utm_source=x&id=7&fbclid=1#top")
             .expect("valid url");
         assert_eq!(canonical_url(&url), "https://example.com/a/b?id=7");
+        assert_eq!(clean_url(&url), "https://www.example.com/a/b?id=7");
         let root = Url::parse("https://example.com/?utm_medium=m").expect("valid url");
         assert_eq!(canonical_url(&root), "https://example.com/");
     }

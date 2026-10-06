@@ -153,7 +153,7 @@ fn products_keep_official_sources_and_are_known_by_brand_and_model() {
     assert_eq!(
         product.source_urls,
         [
-            "https://amazon.com/dp/B0DK",
+            "https://www.amazon.com/dp/B0DK",
             "https://x.com/AmazonKindle/status/2105624259129127408"
         ]
     );
