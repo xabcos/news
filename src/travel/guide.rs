@@ -5,7 +5,7 @@
 //! named there too. A guide that fails is tried again in later runs, at most three times.
 
 use super::{TOPIC_ID, place::fold};
-use crate::{error::Result, fetch::Usage, reads, state::AppState, topics::Topic};
+use crate::{error::Result, fetch::Usage, state::AppState, topics::Topic};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
@@ -246,7 +246,10 @@ async fn compose(
     deadline: Instant,
 ) -> (Written, Usage) {
     let mut usage = Usage::default();
-    let (materials, unreadable) = sources(state, place).await;
+    // Wikimedia may make the reads wait; the run's end is no fault of the guide.
+    let Ok((materials, unreadable)) = timeout_at(deadline, sources(state, place)).await else {
+        return (Written::Later("本轮时间不足"), usage);
+    };
     if materials
         .iter()
         .map(|material| material.text.chars().count())
@@ -458,7 +461,7 @@ async fn extract(state: &AppState, host: &str, title: &str) -> Result<String> {
     if host.starts_with("zh.") {
         url.query_pairs_mut().append_pair("variant", "zh-cn");
     }
-    let (_, bytes) = reads::download(state, url, reads::Content::Json).await?;
+    let bytes = super::wikimedia(state, url).await?;
     let value = serde_json::from_slice::<Value>(&bytes)?;
     Ok(value["query"]["pages"][0]["extract"]
         .as_str()

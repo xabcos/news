@@ -4,7 +4,6 @@ use crate::{
     media::{self, is_public_origin},
     state::AppState,
 };
-use reqwest::header::USER_AGENT;
 use scraper::{ElementRef, Html, Node, Selector};
 use serde::Deserialize;
 use std::time::Duration;
@@ -67,10 +66,7 @@ pub(crate) async fn download(
             MAX_BYTES,
         ),
     };
-    let request = state.origin_http.get(url).timeout(TIMEOUT).header(
-        USER_AGENT,
-        "XABCNews-Reads/1.0 (+https://xabcnews.com/reads)",
-    );
+    let request = state.origin_http.get(url).timeout(TIMEOUT);
     let (url, _, bytes) = media::read_bounded(request, types, max_bytes)
         .await
         .map_err(|refused| refused.error("原文"))?;

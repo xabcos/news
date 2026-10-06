@@ -6,7 +6,6 @@
 
 use crate::{
     error::{AppError, Result},
-    reads,
     state::AppState,
 };
 use serde::{Deserialize, de::IgnoredAny};
@@ -427,7 +426,7 @@ async fn api(state: &AppState, query: &[(&str, &str)]) -> Result<Response> {
     url.query_pairs_mut()
         .extend_pairs(query)
         .append_pair("format", "json");
-    let (_, bytes) = reads::download(state, url, reads::Content::Json).await?;
+    let bytes = super::wikimedia(state, url).await?;
     let response = serde_json::from_slice::<Response>(&bytes)?;
     if let Some(error) = response.error {
         return Err(AppError::Internal(

@@ -6,7 +6,7 @@ use crate::{
     media::is_public_origin,
     state::AppState,
 };
-use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, USER_AGENT};
+use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE};
 use scraper::{ElementRef, Html, Node, Selector};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -26,8 +26,6 @@ const CHANGELOG_CHARS: usize = 16_000;
 const MIN_CHARS: usize = 500;
 pub(crate) const MAX_LINKS: usize = 400;
 const MAX_DEPTH: usize = 128;
-const AGENT: &str = "XABCNews-LLM/1.0 (+https://xabcnews.com/llm)";
-
 /// Not page content, or struck-through text such as the old price beside a discount.
 const SKIPPED: [&str; 11] = [
     "script", "style", "noscript", "svg", "template", "iframe", "nav", "aside", "del", "s",
@@ -333,7 +331,6 @@ async fn download(state: &AppState, url: Url, english: bool, body: Body) -> Resu
         .origin_http
         .get(url)
         .timeout(TIMEOUT)
-        .header(USER_AGENT, AGENT)
         .header(ACCEPT, body.accept())
         .header(
             ACCEPT_LANGUAGE,

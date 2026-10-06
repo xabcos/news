@@ -330,11 +330,7 @@ pub(crate) async fn download_image(
     url: &str,
     accept: &str,
 ) -> Option<(Vec<u8>, &'static str)> {
-    let request = state
-        .origin_http
-        .get(url)
-        .header(header::USER_AGENT, "xabcnews.com image mirror")
-        .header(header::ACCEPT, accept);
+    let request = state.origin_http.get(url).header(header::ACCEPT, accept);
     match read_bounded(request, &IMAGE_TYPES, state.config.image_max_bytes).await {
         Ok((_, content_type, bytes)) => Some((bytes, content_type)),
         Err(refused) => {
@@ -393,8 +389,12 @@ pub(crate) fn is_public_origin(url: &Url) -> bool {
 /// redirect hops included, must resolve only to public addresses, and the connection uses
 /// exactly the addresses checked, so neither a redirect nor DNS rebinding reaches internal
 /// services. No proxy, cookies or application credentials are involved.
+/// Who reads other sites, with where to find out more, as Wikimedia asks of automated clients.
+const USER_AGENT: &str = "XABCNEWS/1.0 (+https://xabcnews.com)";
+
 pub(crate) fn origin_client(timeout: Duration) -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder()
+        .user_agent(USER_AGENT)
         .no_proxy()
         .dns_resolver(PublicDns)
         .connect_timeout(ORIGIN_CONNECT_TIMEOUT)
