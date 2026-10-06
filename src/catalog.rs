@@ -23,7 +23,7 @@ pub(crate) use pages::{listed, router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use source::{Source, excerpt, fold, public_url};
+use source::{Source, excerpt, fold, public_url, same_page};
 use std::{
     collections::{HashMap, HashSet},
     time::Duration,
@@ -190,13 +190,18 @@ impl Proposal {
         self.name = self.name.trim().chars().take(200).collect();
         self.name_en = self.name_en.trim().chars().take(200).collect();
         self.creator = self.creator.trim().chars().take(200).collect();
-        self.source_urls = self
+        let mut pages: Vec<String> = Vec::new();
+        for url in self
             .source_urls
             .iter()
             .filter_map(|url| public_url(url))
             .take(3)
-            .collect();
-        self.source_urls.dedup();
+        {
+            if !pages.iter().any(|page| same_page(page, &url)) {
+                pages.push(url);
+            }
+        }
+        self.source_urls = pages;
         if self.name.is_empty()
             || fold(&self.name_en).is_empty()
             || !section.kinds(topic).contains(&self.kind.as_str())
@@ -383,6 +388,20 @@ pub(crate) async fn attach(
             .as_ref()
             .and_then(|(_, image)| image.clone())
             .filter(|_| section == Section::Culture && role != "share");
+        // A page the entry lists already keeps its address, in whatever form the story cites it.
+        let listed = sqlx::query_scalar::<_, sqlx::types::Json<Vec<String>>>(
+            "SELECT source_urls FROM catalog_entries WHERE topic_id = $1 AND key = $2 FOR UPDATE",
+        )
+        .bind(&topic.id)
+        .bind(&key)
+        .fetch_optional(&mut *tx)
+        .await?
+        .map_or_else(Vec::new, |urls| urls.0);
+        let sources: Vec<_> = proposal
+            .source_urls
+            .iter()
+            .filter(|url| !listed.iter().any(|page| same_page(page, url)))
+            .collect();
         let entry: Uuid = sqlx::query_scalar("INSERT INTO catalog_entries (id, topic_id, key, slug, name, name_en, creator, kind, source_urls, image)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
             ON CONFLICT (topic_id, key) DO UPDATE SET image = COALESCE(catalog_entries.image, EXCLUDED.image),
@@ -394,7 +413,7 @@ pub(crate) async fn attach(
             RETURNING id")
             .bind(id).bind(&topic.id).bind(&key).bind(slug(&proposal.name_en, id))
             .bind(&proposal.name).bind(&proposal.name_en).bind(&proposal.creator).bind(&proposal.kind)
-            .bind(json!(proposal.source_urls)).bind(cover).fetch_one(&mut *tx).await?;
+            .bind(json!(sources)).bind(cover).fetch_one(&mut *tx).await?;
         keys.insert(key);
         let Some((item, _)) = story else {
             continue;
@@ -559,15 +578,27 @@ impl Guide {
         self.facts.truncate(facts);
         self.sections.retain(cited);
         self.sections.truncate(6);
+        // A link is a page read or one they link to, and keeps the address it was seen at.
         self.links.retain_mut(|link| {
-            let Some(url) = public_url(&link.url) else {
-                return false;
-            };
-            link.url = url;
-            sources.iter().any(|s| {
-                public_url(&s.url).as_ref() == Some(&link.url)
-                    || s.links.iter().any(|known| known.url == link.url)
-            })
+            let seen = public_url(&link.url).and_then(|url| {
+                sources.iter().find_map(|s| {
+                    if same_page(&s.url, &url) {
+                        public_url(&s.url)
+                    } else {
+                        s.links
+                            .iter()
+                            .find(|known| same_page(&known.url, &url))
+                            .map(|known| known.url.clone())
+                    }
+                })
+            });
+            match seen {
+                Some(url) => {
+                    link.url = url;
+                    true
+                }
+                None => false,
+            }
         });
         self.links.truncate(5);
         self.sources = sources
@@ -749,8 +780,6 @@ async fn official_images(state: &AppState, entry: &Pending, sources: &[Source]) 
     images.into_iter().flatten().take(4).collect()
 }
 
-/// Two guides at a time, at most eight per run; sources are read again weekly, their changed
-/// words rewrite a guide and their pictures replace the official ones either way.
 /// Products without any official page get a search for theirs, the most talked-about first and a
 /// few each run, since the collection's searches go to stories. Found pages are guided below at
 /// once; a product with none found is looked for again in a week.
@@ -812,11 +841,11 @@ async fn locate(
             outcomes.push(json!({"entry": id, "official_error": "回复无法解析"}));
             continue;
         };
-        let mut urls = Vec::new();
+        let mut urls: Vec<String> = Vec::new();
         for url in found {
             if let Some(url) = url.as_str().and_then(public_url)
                 && gadgets::official(&topic.brief, &creator, &url)
-                && !urls.contains(&url)
+                && !urls.iter().any(|known| same_page(known, &url))
             {
                 urls.push(url);
             }
@@ -835,6 +864,8 @@ async fn locate(
     Ok(outcomes)
 }
 
+/// Two guides at a time, at most eight per run; sources are read again weekly, their changed
+/// words rewrite a guide and their pictures replace the official ones either way.
 pub(crate) async fn guides(
     state: &AppState,
     topic: &Topic,

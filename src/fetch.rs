@@ -478,10 +478,11 @@ pub(crate) fn parse_time(value: &str) -> Option<DateTime<Utc>> {
         })
 }
 
-/// The identity of a story: its clean address with `www.` dropped. Some sites answer only
-/// with `www.`, so this is compared, never fetched.
+/// The identity of a story: its clean address without `www.` or the trailing slash, so every
+/// form a page is cited in agrees. Some sites serve only one form, so this is compared, never
+/// fetched.
 pub fn canonical_url(url: &Url) -> String {
-    let mut url = url.clone();
+    let mut url = clean_url(url);
     if let Some(host) = url
         .host_str()
         .and_then(|host| host.strip_prefix("www."))
@@ -489,12 +490,14 @@ pub fn canonical_url(url: &Url) -> String {
     {
         let _ = url.set_host(Some(&host));
     }
-    clean_url(&url)
+    let path = url.path().trim_end_matches('/').to_owned();
+    url.set_path(if path.is_empty() { "/" } else { &path });
+    url.to_string()
 }
 
-/// An address on the host it names, with fragment and tracking parameters removed and the
-/// trailing slash trimmed. Scheme, host and default ports are already normalised by `Url`.
-pub fn clean_url(url: &Url) -> String {
+/// The address as given, without the fragment and tracking parameters, which the site never
+/// sees. Scheme, host and default ports are already normalised by `Url`.
+pub fn clean_url(url: &Url) -> Url {
     let mut url = url.clone();
     url.set_fragment(None);
     let kept = url
@@ -506,9 +509,7 @@ pub fn clean_url(url: &Url) -> String {
     if !kept.is_empty() {
         url.query_pairs_mut().extend_pairs(kept);
     }
-    let path = url.path().trim_end_matches('/').to_owned();
-    url.set_path(if path.is_empty() { "/" } else { &path });
-    url.to_string()
+    url
 }
 
 fn is_tracking(key: &str) -> bool {
@@ -606,7 +607,10 @@ mod tests {
         let url = Url::parse("https://www.Example.com:443/a/b/?utm_source=x&id=7&fbclid=1#top")
             .expect("valid url");
         assert_eq!(canonical_url(&url), "https://example.com/a/b?id=7");
-        assert_eq!(clean_url(&url), "https://www.example.com/a/b?id=7");
+        assert_eq!(
+            clean_url(&url).as_str(),
+            "https://www.example.com/a/b/?id=7"
+        );
         let root = Url::parse("https://example.com/?utm_medium=m").expect("valid url");
         assert_eq!(canonical_url(&root), "https://example.com/");
     }

@@ -397,8 +397,7 @@ fn parse_feed(
 pub(super) fn allowed_url(value: &str) -> Option<Url> {
     let url = Url::parse(value).ok()?;
     let host = url.host_str()?;
-    (crate::media::is_public_https_url(&url)
-        && url.port_or_known_default() == Some(443)
+    (crate::media::is_public_origin(&url)
         && !host.ends_with(".cn")
         && ![
             "sspai.com",

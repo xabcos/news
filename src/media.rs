@@ -385,13 +385,13 @@ pub(crate) fn is_public_origin(url: &Url) -> bool {
     is_public_https_url(url) && url.port_or_known_default() == Some(443)
 }
 
+/// Who reads other sites, with where to find out more, as Wikimedia asks of automated clients.
+const USER_AGENT: &str = "XABCNEWS/1.0 (+https://xabcnews.com)";
+
 /// The client for untrusted origins: news images and every Reads download. Each host,
 /// redirect hops included, must resolve only to public addresses, and the connection uses
 /// exactly the addresses checked, so neither a redirect nor DNS rebinding reaches internal
 /// services. No proxy, cookies or application credentials are involved.
-/// Who reads other sites, with where to find out more, as Wikimedia asks of automated clients.
-const USER_AGENT: &str = "XABCNEWS/1.0 (+https://xabcnews.com)";
-
 pub(crate) fn origin_client(timeout: Duration) -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder()
         .user_agent(USER_AGENT)

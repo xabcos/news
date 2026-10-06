@@ -45,10 +45,11 @@ fn guides_drop_uncited_fields_and_invented_links() {
         ],
         sections: vec![],
         links: vec![
+            // The page read, cited in another form.
             Link {
                 label: "原文".into(),
                 label_en: "Source".into(),
-                url: sources[0].url.clone(),
+                url: "https://www.publisher.example/books/shore/".into(),
             },
             Link {
                 label: "伪造".into(),
@@ -81,6 +82,10 @@ fn guides_drop_uncited_fields_and_invented_links() {
     assert_eq!(guide.facts.len(), 2);
     assert_eq!(guide.facts[1].text, "6.8 小时");
     assert_eq!(guide.links.len(), 1);
+    assert_eq!(
+        guide.links[0].url, sources[0].url,
+        "the address it was read at"
+    );
     assert_eq!(guide.sources.len(), 1);
 }
 
@@ -158,6 +163,18 @@ fn products_keep_official_sources_and_are_known_by_brand_and_model() {
         ]
     );
     assert_eq!(product.key(Section::Gadgets), "amazon:kindlecolorsoft");
+    // A page is kept at the address given, once however many forms it is cited in.
+    let forms = Proposal {
+        source_urls: vec![
+            "https://www.amazon.com/dp/B0DK/#specs".into(),
+            "https://amazon.com/dp/B0DK".into(),
+        ],
+        ..proposal.clone()
+    };
+    assert_eq!(
+        forms.clean("eink", brief).unwrap().source_urls,
+        ["https://www.amazon.com/dp/B0DK/"]
+    );
     let renamed = Proposal {
         name_en: "Kindle Colorsoft".into(),
         ..proposal.clone()
@@ -1342,6 +1359,43 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
         json!([format!("{base}/products/talked-three")])
     );
     assert_eq!(links().await, linked);
+    // The same page cited with `www.` or a trailing slash is not a new source, and gives the
+    // guide no tries back; a page it lacks joins at the address cited and does.
+    sqlx::query("UPDATE catalog_entries SET attempts = 2 WHERE slug = 'talked-three'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let lend = |urls: Vec<String>| {
+        let (state, eink) = (state.clone(), eink.clone());
+        async move {
+            attach(&state, &eink, Section::Gadgets, Uuid::new_v4(),
+                &json!({"items": [{"url": "https://reviews.example/talked-three-again", "role": "review",
+                    "work": {"name": "Talked three", "name_en": "Talked three", "creator": "Amazon", "kind": "reader", "source_urls": urls}}]}))
+                .await
+                .unwrap();
+            sqlx::query_as::<_, (Value, i16)>(
+                "SELECT source_urls, attempts FROM catalog_entries WHERE slug = 'talked-three'",
+            )
+            .fetch_one(&state.pool)
+            .await
+            .unwrap()
+        }
+    };
+    let www = base.replace("https://", "https://www.");
+    assert_eq!(
+        lend(vec![format!("{www}/products/talked-three/")]).await,
+        (json!([format!("{base}/products/talked-three")]), 2)
+    );
+    assert_eq!(
+        lend(vec![format!("{base}/products/talked-three/specs/")]).await,
+        (
+            json!([
+                format!("{base}/products/talked-three"),
+                format!("{base}/products/talked-three/specs/")
+            ]),
+            0
+        )
+    );
     // A new story about a product still without official pages has it looked for again, but not
     // twice in a day.
     let story = |n: usize| {

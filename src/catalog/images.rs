@@ -1,5 +1,8 @@
 //! Resolve missing pictures from known pages; use the existing image transport and budget.
-use super::{Topic, source::public_url};
+use super::{
+    Topic,
+    source::{public_url, same_page},
+};
 use crate::{
     error::Result,
     fetch::{NewItem, NewsImage},
@@ -38,7 +41,7 @@ pub(crate) async fn prepare(
             let candidate = public_url(&item.url)
                 .and_then(|url| candidates.get(&url))
                 .copied();
-            let mut pages = Vec::new();
+            let mut pages: Vec<String> = Vec::new();
             let hint = candidate.and_then(|c| c["image_page_url"].as_str());
             let work = candidate.and_then(|c| c["work"]["source_urls"][0].as_str());
             let ordered = if book {
@@ -47,7 +50,7 @@ pub(crate) async fn prepare(
                 [hint, Some(item.url.as_str()), work]
             };
             for page in ordered.into_iter().flatten().filter_map(public_url) {
-                if !pages.contains(&page) {
+                if !pages.iter().any(|known| same_page(known, &page)) {
                     pages.push(page);
                 }
             }

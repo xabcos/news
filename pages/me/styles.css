@@ -8,8 +8,7 @@
 .workspace-heading h1 { margin: 0; font-size: 1.8rem; letter-spacing: -.035em; }
 .workspace-heading p { margin: 0; white-space: nowrap; }
 .panel { border: 1px solid var(--line); border-radius: var(--radius-xl); background: var(--surface); box-shadow: var(--shadow-small); }
-.topics-panel, .content-panel { min-width: 0; padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; }
-.briefing-panel { min-width: 0; padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; }
+.topics-panel, .content-panel, .briefing-panel { min-width: 0; padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; }
 .panel-heading { justify-content: space-between; margin-bottom: 1rem; }
 .panel-heading h2 { font-size: 1.05rem; }
 .panel-heading p { margin: .2rem 0 0; }
@@ -111,8 +110,7 @@ fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
   .account-email { flex: 1; max-width: none; }
   .workspace-heading { margin: 1.1rem 0; }
   .workspace-heading h1 { font-size: 1.5rem; }
-  .topics-panel, .content-panel { padding: 1rem; }
-  .briefing-panel { padding: 1rem; }
+  .topics-panel, .content-panel, .briefing-panel { padding: 1rem; }
   .briefing-images { grid-template-columns: 1fr; }
   .content-panel > .panel-heading { align-items: flex-start; flex-direction: column; }
   .topic-row { gap: .5rem; }

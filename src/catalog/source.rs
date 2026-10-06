@@ -5,11 +5,11 @@ use crate::{
     state::AppState,
 };
 use scraper::{ElementRef, Html, Selector};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub(super) struct Source {
     pub title: String,
     pub url: String,
@@ -20,17 +20,23 @@ pub(super) struct Source {
     pub images: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub(super) struct Link {
     pub label: String,
     pub url: String,
 }
 
-/// A public page at the address given, cleaned but on its own host, since some sites answer
-/// only with `www.`.
+/// A public page at the address given, which is where it is read and linked: some sites answer
+/// only with `www.`, or send the address without its trailing slash to plain HTTP.
 pub(super) fn public_url(value: &str) -> Option<String> {
     let url = Url::parse(value.trim()).ok()?;
-    crate::media::is_public_origin(&url).then(|| crate::fetch::clean_url(&url))
+    crate::media::is_public_origin(&url).then(|| crate::fetch::clean_url(&url).into())
+}
+
+/// Whether two addresses are one page, cited with or without `www.` or the trailing slash.
+pub(super) fn same_page(left: &str, right: &str) -> bool {
+    let identity = |value: &str| Url::parse(value).map(|url| crate::fetch::canonical_url(&url));
+    matches!((identity(left), identity(right)), (Ok(left), Ok(right)) if left == right)
 }
 
 pub(super) fn fold(text: &str) -> String {
