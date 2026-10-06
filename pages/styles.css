@@ -495,6 +495,27 @@ p { margin-top: 0; }
   letter-spacing: .06em;
   pointer-events: none;
 }
+/* An administrator's switch on 𝑾 photographs (app.js): an outlined heart until the
+   photograph is published, then filled. */
+.publish-button svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linejoin: round; }
+.publish-button[aria-pressed="true"] { color: #f5a48f; }
+.publish-button[aria-pressed="true"] svg { fill: currentColor; }
+.photo-publish {
+  position: absolute;
+  top: .4rem;
+  right: .4rem;
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  color: #fff;
+  background: rgba(0, 0, 0, .42);
+  cursor: pointer;
+}
+.photo-publish:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .photo-caption {
   position: absolute;
   right: 0;
@@ -826,6 +847,8 @@ p { margin-top: 0; }
 .viewer-button:hover:not(:disabled) { background: rgba(255, 255, 255, .18); }
 .viewer-button:disabled { opacity: 0; pointer-events: none; }
 .viewer-close { top: .6rem; right: .6rem; }
+.viewer-publish { top: .6rem; right: 3.85rem; }
+.viewer-publish svg { width: 1.35rem; height: 1.35rem; }
 .viewer-previous, .viewer-next { top: 50%; transform: translateY(-50%); }
 .viewer-previous { left: .6rem; }
 .viewer-next { right: calc(min(24rem, 34vw) + .6rem); }

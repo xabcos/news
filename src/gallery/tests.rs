@@ -446,8 +446,11 @@ async fn postgres_gallery_keeps_confirmed_photographs_until_their_copies_expire(
         .snapshot(&state, TOPIC_ID, today)
         .await
         .unwrap();
+    // The photographs wait for an administrator's ❤️: readers see none, the preview both.
+    assert!(snapshot.items.is_empty());
+    assert!(snapshot.preview.iter().all(|item| item.hidden));
     let urls = snapshot
-        .items
+        .preview
         .iter()
         .map(|item| item.url.as_str())
         .collect::<Vec<_>>();
@@ -459,7 +462,7 @@ async fn postgres_gallery_keeps_confirmed_photographs_until_their_copies_expire(
             &format!("https://x.com/erin/status/{}", id(7))
         ]
     );
-    let alice = &snapshot.items[0];
+    let alice = &snapshot.preview[0];
     assert_eq!(alice.source, "ALICE");
     assert_eq!(
         alice.published_at.unwrap().timestamp(),
@@ -478,7 +481,7 @@ async fn postgres_gallery_keeps_confirmed_photographs_until_their_copies_expire(
     );
     assert_eq!(image["credit"], "ALICE @alice");
     assert!(image.get("origin_url").is_none() && image.get("expires_at").is_none());
-    assert_eq!(snapshot.items[1].tags, ["AI", "人像"]);
+    assert_eq!(snapshot.preview[1].tags, ["AI", "人像"]);
     let origin: String = sqlx::query_scalar(
         "SELECT image->>'origin_url' FROM items WHERE topic_id = 'w' AND url = $1",
     )

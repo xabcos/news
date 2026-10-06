@@ -924,6 +924,8 @@ pub(crate) async fn persist_items(
     mut duplicate_fingerprints: Vec<Vec<u8>>,
 ) -> Result<(i32, i32, i32)> {
     let is_reads = topic.id == "reads" && topic.owner_user_id.is_none();
+    // 𝑾's photographs start hidden (`gallery`).
+    let hidden = gallery::is_gallery(topic);
     let (mut new, mut dup, mut dropped) = (0, 0, 0);
     let mut tx = state.pool.begin().await?;
     let mut available = i64::MAX;
@@ -945,8 +947,8 @@ pub(crate) async fn persist_items(
         }
         let id = Uuid::new_v4();
         let inserted = sqlx::query(
-            "INSERT INTO items (id, topic_id, day, fingerprint, title, summary, title_en, summary_en, url, source, published_at, tags, tags_en, importance, first_run_id, image) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) ON CONFLICT DO NOTHING",
+            "INSERT INTO items (id, topic_id, day, fingerprint, title, summary, title_en, summary_en, url, source, published_at, tags, tags_en, importance, first_run_id, image, hidden) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) ON CONFLICT DO NOTHING",
         )
         .bind(id)
         .bind(&topic.id)
@@ -964,6 +966,7 @@ pub(crate) async fn persist_items(
         .bind(item.importance)
         .bind(run_id)
         .bind(item.image.map(serde_json::to_value).transpose()?)
+        .bind(hidden)
         .execute(&mut *tx)
         .await?
         .rows_affected();

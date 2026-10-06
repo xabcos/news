@@ -955,10 +955,7 @@ async fn update_item(
     }
     transaction.commit().await?;
     if scope.is_public() {
-        state
-            .digest
-            .refresh(&state, &item.topic_id, item.day)
-            .await?;
+        republish(&state, &item.topic_id, item.day).await;
     }
     Ok(Json(item))
 }
@@ -984,9 +981,18 @@ async fn delete_item(
         .await?;
     transaction.commit().await?;
     if scope.is_public() {
-        state.digest.refresh(&state, &topic_id, day).await?;
+        republish(&state, &topic_id, day).await;
     }
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// Shows readers an edit that is already committed. Should reloading the day fail, the
+/// topic's kept days go, so the next read loads them again instead of serving the old ones.
+async fn republish(state: &AppState, topic: &str, day: NaiveDate) {
+    if let Err(error) = state.digest.refresh(state, topic, day).await {
+        tracing::warn!(%error, topic, "feed refresh after an edit failed");
+        state.digest.forget_topic(topic).await;
+    }
 }
 
 /// Translates the schema's own guarantees back into the API's error contract, so the

@@ -250,6 +250,7 @@ pub(crate) async fn feed(state: &AppState) {
     );
     assert_eq!(response.json::<Value>().await.unwrap(), warmed);
 
+    // The preview counts and shows 𝑾's photograph that waits for a ❤️, marked as waiting.
     let days = preview("/days?topic=w")
         .await
         .unwrap()
@@ -257,6 +258,7 @@ pub(crate) async fn feed(state: &AppState) {
         .await
         .unwrap();
     assert_eq!(days["days"].as_array().unwrap().len(), 2);
+    assert_eq!(days["days"][1]["count"], 3);
     let mut ids = std::collections::HashSet::new();
     for day in days["days"].as_array().unwrap() {
         let mut after = None;
@@ -272,7 +274,7 @@ pub(crate) async fn feed(state: &AppState) {
             let group = &data["topics"][0];
             for item in group["items"].as_array().unwrap() {
                 assert!(ids.insert(item["id"].as_str().unwrap().to_owned()));
-                assert_ne!(item["title"], "Preview 28");
+                assert_eq!(item["hidden"] == true, item["title"] == "Preview 28");
             }
             after = group["next"].as_str().map(str::to_owned);
             if after.is_none() {
@@ -280,7 +282,7 @@ pub(crate) async fn feed(state: &AppState) {
             }
         }
     }
-    assert_eq!(ids.len(), 27);
+    assert_eq!(ids.len(), 28);
     sqlx::query("UPDATE items SET title='Updated private photo' WHERE topic_id='w' AND day=$1")
         .bind(today)
         .execute(&state.pool)
@@ -379,6 +381,112 @@ pub(crate) async fn feed(state: &AppState) {
             .unwrap()
             .status(),
         200
+    );
+    // Readers don't see the waiting photograph until an administrator gives it a ❤️.
+    let yesterday = today.pred_opt().unwrap();
+    let public = |path: String| http.get(format!("{base}{path}")).send();
+    let photos = public(format!("/digest?topic=w&day={yesterday}"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(photos.contains("Preview 27") && !photos.contains("Preview 28"));
+    let counts = public("/days?topic=w".into())
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(counts["days"][1]["count"], 2);
+    let waiting: Uuid = sqlx::query_scalar("SELECT id FROM items WHERE title='Preview 28'")
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    let mark = |hidden: bool| {
+        http.patch(format!("{base}/api/admin/items/{waiting}"))
+            .header("cookie", &admin)
+            .header("sec-fetch-site", "same-origin")
+            .json(&serde_json::json!({ "hidden": hidden }))
+            .send()
+    };
+    // A ❤️ publishes it in the feed and the Atom feed; a second click withdraws it again.
+    for hidden in [false, true] {
+        assert_eq!(mark(hidden).await.unwrap().status(), 200);
+        for path in [
+            format!("/digest?topic=w&day={yesterday}"),
+            "/feed.xml?topic=w".into(),
+        ] {
+            let body = public(path).await.unwrap().text().await.unwrap();
+            assert_eq!(body.contains("Preview 28"), !hidden);
+        }
+    }
+    // With today's photographs all hidden, readers fall back to yesterday while the
+    // administrator stays on today.
+    sqlx::query("UPDATE items SET hidden=true WHERE topic_id='w' AND day=$1")
+        .bind(today)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    state.digest.refresh(state, "w", today).await.unwrap();
+    let w = |topics: Value| {
+        topics["topics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|topic| topic["id"] == "w")
+            .unwrap()
+            .clone()
+    };
+    let readers = w(public("/topics".into())
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap());
+    let admins = w(preview("/topics").await.unwrap().json().await.unwrap());
+    assert_eq!(
+        (&readers["today_count"], &readers["latest_day"]),
+        (&0.into(), &yesterday.to_string().into())
+    );
+    assert_eq!(
+        (&admins["today_count"], &admins["latest_day"]),
+        (&25.into(), &today.to_string().into())
+    );
+    // Older days come from PostgreSQL, answered apart for readers and the administrator.
+    sqlx::query("DELETE FROM items WHERE topic_id='w' AND day >= $1")
+        .bind(yesterday)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    for (n, ago, hidden) in [(30_u8, 3, false), (31, 2, true)] {
+        sqlx::query("INSERT INTO items(id,topic_id,day,fingerprint,title,summary,url,hidden) VALUES($1,'w',$2,$3,$4,'Test',$5,$6)")
+            .bind(Uuid::new_v4()).bind(today - chrono::Duration::days(ago)).bind(Sha256::digest([n]).to_vec())
+            .bind(format!("Preview {n}")).bind(format!("https://example.test/preview/{n}")).bind(hidden)
+            .execute(&state.pool).await.unwrap();
+    }
+    for day in [today, yesterday] {
+        state.digest.refresh(state, "w", day).await.unwrap();
+    }
+    let readers = public("/digest?topic=w".into())
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    let admins = preview("/digest?topic=w")
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(
+        readers["day"],
+        (today - chrono::Duration::days(3)).to_string()
+    );
+    assert_eq!(
+        admins["day"],
+        (today - chrono::Duration::days(2)).to_string()
     );
     sqlx::query("UPDATE topics SET visible=false WHERE id='w'")
         .execute(&state.pool)

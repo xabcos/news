@@ -4,6 +4,8 @@
 //! The model proposes posts. Each proposal is read back from X's public embed data, so the
 //! post, its time, its author and the photograph are X's own, and a post X marks as
 //! sensitive stays out. Photographs are stored and renewed on the file server like 𝑷's.
+//! They arrive hidden: readers see one once an administrator gives it a ❤️ in the gallery,
+//! and until then only the administrator's preview shows it.
 
 use crate::{
     fetch::{Known, NewItem, NewsImage, NewsWindow},

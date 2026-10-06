@@ -86,6 +86,10 @@ pub struct PublicItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[sqlx(default)]
     pub catalog: Option<serde_json::Value>,
+    /// Set only in an administrator's preview of 𝑾, on photographs readers don't see.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[sqlx(default)]
+    pub hidden: bool,
 }
 
 /// One topic on one day: the visible items in display order, as PostgreSQL returned them.
@@ -96,6 +100,24 @@ pub struct Snapshot {
     /// Changes whenever the topic's visible feed changes.
     pub revision: i64,
     pub items: Vec<PublicItem>,
+    /// An administrator's view of 𝑾: the whole day in display order, hidden photographs
+    /// included; empty while none is hidden.
+    pub preview: Vec<PublicItem>,
+}
+
+impl Snapshot {
+    /// The items `reader` sees, and when the newest of them was collected.
+    fn view(&self, reader: Reader) -> (&[PublicItem], Option<DateTime<Utc>>) {
+        if reader.is_admin() && !self.preview.is_empty() {
+            (&self.preview, newest(&self.preview))
+        } else {
+            (&self.items, self.updated_at)
+        }
+    }
+}
+
+fn newest(items: &[PublicItem]) -> Option<DateTime<Utc>> {
+    items.iter().map(|item| item.first_seen_at).max()
 }
 
 /// The display-order key of one item: `pinned DESC, published_at DESC NULLS LAST,
@@ -182,8 +204,9 @@ struct Inner {
     tz: Tz,
     topics: RwLock<Catalogue>,
     days: RwLock<HashMap<(String, NaiveDate), Arc<Snapshot>>>,
-    /// PostgreSQL's answer for topics with nothing in the last two days, until the next write.
-    latest: RwLock<HashMap<String, Option<NaiveDate>>>,
+    /// PostgreSQL's answer for topics with nothing in the last two days, until the next write;
+    /// the flag marks an administrator's answer for 𝑾, which counts hidden photographs too.
+    latest: RwLock<HashMap<(String, bool), Option<NaiveDate>>>,
     /// The first page of the all-topics `/digest`, pre-rendered per `limit` until the next
     /// write. The public page and the API default ask for different limits.
     hot: RwLock<HashMap<usize, Arc<Rendered>>>,
@@ -364,7 +387,7 @@ impl DigestCache {
         if self.is_recent(day) {
             write(&self.0.days).insert((topic.to_owned(), day), snapshot);
         }
-        write(&self.0.latest).remove(topic);
+        write(&self.0.latest).retain(|(id, _), _| id != topic);
         self.0.generation.fetch_add(1, Ordering::AcqRel);
         self.forget_rendered();
         Ok(())
@@ -392,7 +415,7 @@ impl DigestCache {
         // the second stops renders that read the old snapshot.
         self.0.generation.fetch_add(1, Ordering::AcqRel);
         write(&self.0.days).retain(|(id, _), _| id != topic);
-        write(&self.0.latest).remove(topic);
+        write(&self.0.latest).retain(|(id, _), _| id != topic);
         self.0.generation.fetch_add(1, Ordering::AcqRel);
         self.forget_rendered();
     }
@@ -407,27 +430,41 @@ impl DigestCache {
         self.forget_rendered();
     }
 
-    /// The most recent day with visible items for the topic.
-    pub async fn latest_day(&self, state: &AppState, topic: &str) -> Result<Option<NaiveDate>> {
+    /// The most recent day with items the reader sees in the topic.
+    pub async fn latest_day(
+        &self,
+        state: &AppState,
+        topic: &str,
+        reader: Reader,
+    ) -> Result<Option<NaiveDate>> {
         for day in [self.today(), self.yesterday()] {
-            if !self.snapshot(state, topic, day).await?.items.is_empty() {
+            if !self
+                .snapshot(state, topic, day)
+                .await?
+                .view(reader)
+                .0
+                .is_empty()
+            {
                 return Ok(Some(day));
             }
         }
-        if let Some(cached) = read(&self.0.latest).get(topic).copied() {
+        let include_hidden = reader.is_admin() && topic == crate::gallery::TOPIC_ID;
+        let key = (topic.to_owned(), include_hidden);
+        if let Some(cached) = read(&self.0.latest).get(&key).copied() {
             return Ok(cached);
         }
         let generation = self.0.generation.load(Ordering::Acquire);
         let day = sqlx::query_scalar::<_, Option<NaiveDate>>(
-            "SELECT MAX(items.day) FROM items JOIN topics ON topics.id = items.topic_id WHERE items.topic_id = $1 AND topics.enabled AND topics.owner_user_id IS NULL AND NOT items.hidden",
+            "SELECT MAX(items.day) FROM items JOIN topics ON topics.id = items.topic_id WHERE items.topic_id = $1 AND topics.enabled AND topics.owner_user_id IS NULL AND (NOT items.hidden OR $2)",
         )
         .bind(topic)
+        .bind(include_hidden)
         .fetch_one(&state.pool)
         .await?;
         // Checked under the lock: a write bumps the generation before it clears this map.
         let mut latest = write(&self.0.latest);
         if self.0.generation.load(Ordering::Acquire) == generation {
-            latest.insert(topic.to_owned(), day);
+            latest.insert(key, day);
         }
         Ok(day)
     }
@@ -465,15 +502,18 @@ impl DigestCache {
         let cacheable =
             topic.is_none_or(|id| self.topics_for(reader).iter().any(|topic| topic.id == id));
         let generation = self.0.generation.load(Ordering::Acquire);
+        // An administrator's counts include 𝑾's hidden photographs.
         let days = sqlx::query_as::<_, DayCount>(
             "SELECT items.day, COUNT(*) AS count FROM items \
              JOIN topics ON topics.id = items.topic_id \
-             WHERE ($1::text IS NULL OR items.topic_id = $1) AND topics.enabled AND (topics.visible OR $3) AND topics.owner_user_id IS NULL AND NOT items.hidden \
+             WHERE ($1::text IS NULL OR items.topic_id = $1) AND topics.enabled AND (topics.visible OR $3) AND topics.owner_user_id IS NULL \
+             AND (NOT items.hidden OR ($3 AND items.topic_id = $4)) \
              GROUP BY items.day ORDER BY items.day DESC LIMIT $2",
         )
         .bind(topic)
         .bind(limit)
         .bind(reader.is_admin())
+        .bind(crate::gallery::TOPIC_ID)
         .fetch_all(&state.pool)
         .await?;
         let rendered = Arc::new(Rendered::new(
@@ -542,7 +582,7 @@ impl DigestCache {
         let (topics, selected) = self.selected(topic, reader)?;
         let mut latest = Vec::with_capacity(selected.len());
         for &index in &selected {
-            latest.push(self.latest_day(state, &topics[index].id).await?);
+            latest.push(self.latest_day(state, &topics[index].id, reader).await?);
         }
         let day = day.or_else(|| latest.iter().flatten().max().copied());
         let mut snapshots = Vec::with_capacity(selected.len());
@@ -561,7 +601,9 @@ impl DigestCache {
                 .zip(&snapshots)
                 .map(|((&index, latest_day), snapshot)| {
                     let topic = &topics[index];
-                    let items = snapshot.as_ref().map_or(&[][..], |s| s.items.as_slice());
+                    let (items, updated_at) = snapshot
+                        .as_ref()
+                        .map_or((&[][..], None), |s| s.view(reader));
                     let (page_items, next) = page(items, after, limit);
                     TopicDigest {
                         id: &topic.id,
@@ -569,7 +611,7 @@ impl DigestCache {
                         name_en: &topic.name_en,
                         description: &topic.description,
                         latest_day: *latest_day,
-                        updated_at: snapshot.as_ref().and_then(|s| s.updated_at),
+                        updated_at,
                         revision: snapshot.as_ref().map_or(0, |s| s.revision),
                         total: items.len(),
                         next,
@@ -621,7 +663,7 @@ async fn load(state: &AppState, topic: &str, day: NaiveDate) -> Result<Snapshot>
         .fetch_one(&state.pool)
         .await?;
     let mut query = sqlx::QueryBuilder::new(
-        "SELECT items.id, items.title, items.summary, items.title_en, items.summary_en, items.url, items.source, items.published_at, items.first_seen_at, items.tags, items.tags_en, items.importance, items.pinned, items.image, ",
+        "SELECT items.id, items.title, items.summary, items.title_en, items.summary_en, items.url, items.source, items.published_at, items.first_seen_at, items.tags, items.tags_en, items.importance, items.pinned, items.hidden, items.image, ",
     );
     let section = crate::catalog::Section::of(topic);
     query
@@ -633,14 +675,19 @@ async fn load(state: &AppState, topic: &str, day: NaiveDate) -> Result<Snapshot>
     if section.is_some() {
         query.push(" ").push(crate::catalog::ITEM_JOIN);
     }
-    query.push(" WHERE items.topic_id = ")
+    query
+        .push(" WHERE items.topic_id = ")
         .push_bind(topic)
         .push(" AND items.day = ")
         .push_bind(day)
-        .push(
-            " AND topics.enabled AND topics.owner_user_id IS NULL AND NOT items.hidden \
-             ORDER BY items.pinned DESC, items.published_at DESC NULLS LAST, items.first_seen_at DESC, items.id DESC",
-        );
+        .push(" AND topics.enabled AND topics.owner_user_id IS NULL");
+    // 𝑾's hidden photographs are read for the administrator's preview (`gallery`).
+    if topic != crate::gallery::TOPIC_ID {
+        query.push(" AND NOT items.hidden");
+    }
+    query.push(
+        " ORDER BY items.pinned DESC, items.published_at DESC NULLS LAST, items.first_seen_at DESC, items.id DESC",
+    );
     let mut items = query
         .build_query_as::<PublicItem>()
         .fetch_all(&state.pool)
@@ -648,10 +695,19 @@ async fn load(state: &AppState, topic: &str, day: NaiveDate) -> Result<Snapshot>
     for item in &mut items {
         item.image = public_image(item.image.take());
     }
+    let (items, preview) = if items.iter().any(|item| item.hidden) {
+        (
+            items.iter().filter(|item| !item.hidden).cloned().collect(),
+            items,
+        )
+    } else {
+        (items, Vec::new())
+    };
     Ok(Snapshot {
-        updated_at: items.iter().map(|item| item.first_seen_at).max(),
+        updated_at: newest(&items),
         revision,
         items,
+        preview,
     })
 }
 
@@ -820,14 +876,15 @@ async fn topics(
     let mut list = Vec::new();
     for topic in cache.topics_for(reader).iter() {
         let snapshot = cache.snapshot(&state, &topic.id, today).await?;
+        let (items, updated_at) = snapshot.view(reader);
         list.push(json!({
             "id": topic.id,
             "name": topic.name,
             "name_en": topic.name_en,
             "description": topic.description,
-            "latest_day": cache.latest_day(&state, &topic.id).await?,
-            "today_count": snapshot.items.len(),
-            "updated_at": snapshot.updated_at,
+            "latest_day": cache.latest_day(&state, &topic.id, reader).await?,
+            "today_count": items.len(),
+            "updated_at": updated_at,
         }));
     }
     let rendered = Rendered::new(json!({ "topics": list }).to_string());
@@ -1010,7 +1067,10 @@ async fn personal_topic_cards(state: &AppState, user_id: i64) -> Result<Vec<Pers
             name: topic.name.clone(),
             name_en: topic.name_en.clone(),
             description: topic.description.clone(),
-            latest_day: state.digest.latest_day(state, &topic.id).await?,
+            latest_day: state
+                .digest
+                .latest_day(state, &topic.id, Reader::Public)
+                .await?,
             today_count: snapshot.items.len() as i64,
             updated_at: snapshot.updated_at,
             revision: snapshot.revision,
@@ -1378,6 +1438,7 @@ mod tests {
             image: None,
             travel: None,
             catalog: None,
+            hidden: false,
         }
     }
 
@@ -1403,9 +1464,8 @@ mod tests {
         let mut undated = item(9, false);
         undated.published_at = None;
         let mut snapshot = Snapshot {
-            updated_at: None,
-            revision: 0,
             items: vec![item(1, false), undated, item(2, true), item(3, false)],
+            ..Snapshot::default()
         };
         snapshot
             .items
@@ -1416,9 +1476,8 @@ mod tests {
     #[test]
     fn pages_continue_after_a_key_even_when_the_snapshot_changed() {
         let mut snapshot = Snapshot {
-            updated_at: None,
-            revision: 0,
             items: (0..7).map(|n| item(n, n % 5 == 0)).collect(),
+            ..Snapshot::default()
         };
         snapshot
             .items

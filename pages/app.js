@@ -64,6 +64,7 @@ const TEXT = {
     confidence: (n, grade) => `证据强度 ${n}/5${grade ? ` · 证据 ${grade}` : ""}`, sources: "来源",
     items: (n) => `${n} 条`, photos: (n) => `${n} 张`,
     close: "关闭", previous: "上一张", next: "下一张", play: "播放", pause: "暂停",
+    publish: "公开", unpublish: "取消公开",
   },
   en: {
     locale: "en", lang: "中文", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", today: "Today", top: "Top",
@@ -77,6 +78,7 @@ const TEXT = {
     confidence: (n, grade) => `Evidence ${n}/5${grade ? ` · Grade ${grade}` : ""}`, sources: "Sources",
     items: (n) => `${n} ${n === 1 ? "item" : "items"}`, photos: (n) => `${n} ${n === 1 ? "photo" : "photos"}`,
     close: "Close", previous: "Previous", next: "Next", play: "Play", pause: "Pause",
+    publish: "Publish", unpublish: "Unpublish",
   },
 };
 
@@ -1140,6 +1142,7 @@ function photoCard(item) {
   });
   figure.append(link);
   if ([...(item.tags || []), ...(item.tags_en || [])].includes("AI")) figure.append(span("AI", "photo-badge"));
+  if (viewerRole() === "admin") figure.append(publishButton("photo-publish", () => item));
   const caption = document.createElement("figcaption");
   caption.className = "photo-caption";
   caption.append(span(pick(item, "title"), "photo-title"), span(photoCredit(item), "photo-credit"));
@@ -1174,14 +1177,19 @@ function createLightbox() {
     names: () => ({ play: t().play, pause: t().pause, close: t().close, previous: t().previous, next: t().next }),
     dwell: PHOTO_DWELL,
   });
-  return { ui, image, caption, current: null };
+  const box = { ui, image, caption, item: null, publish: null };
+  if (viewerRole() === "admin") {
+    box.publish = publishButton("viewer-button viewer-publish", () => box.item);
+    figure.append(box.publish);
+  }
+  return box;
 }
 
 // The photograph `offset` places from the open one. The lightbox remembers it by id: a
 // background refresh draws new cards.
 function neighborPhoto(offset) {
   const photos = [...el.digest.querySelectorAll(".photo")];
-  let index = photos.findIndex((figure) => photoItems.get(figure)?.id === lightbox.current);
+  let index = photos.findIndex((figure) => photoItems.get(figure)?.id === lightbox.item?.id);
   if (index < 0) return null;
   do index += offset; while (photos[index]?.hidden);
   return photos[index] || null;
@@ -1196,14 +1204,91 @@ function stepPhoto(offset) {
 function showPhoto(figure) {
   const item = photoItems.get(figure);
   if (!item) return;
-  const { image, caption, ui } = lightbox;
-  lightbox.current = item.id;
+  const { image, caption, ui, publish } = lightbox;
+  lightbox.item = item;
+  if (publish) paintPublished(publish, item);
   image.src = item.image?.url || "";
   image.alt = figure.querySelector("img")?.alt || "";
   caption.replaceChildren(span(pick(item, "title"), "viewer-caption-title"));
   const source = sourceLink(item.url, `${photoCredit(item)} ↗`);
   if (source) caption.append(source);
   ui.shown(figure);
+}
+
+// An administrator's switch on 𝑾's cards and in its lightbox: a ❤️ publishes the photograph,
+// a second click withdraws it.
+const HEART = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 20.2s-7.6-4.6-9.4-9.4C1.4 7.6 3.5 4.2 7 4.2c2.1 0 3.7 1.1 5 2.9 1.3-1.8 2.9-2.9 5-2.9 3.5 0 5.6 3.4 4.4 6.6-1.8 4.8-9.4 9.4-9.4 9.4Z"/></svg>';
+const publishing = new Set();
+
+function publishButton(className, target) {
+  const node = document.createElement("button");
+  node.type = "button";
+  node.className = `publish-button ${className}`;
+  node.innerHTML = HEART;
+  // A press acts on the photograph it began on; if the lightbox moved on meanwhile, nothing
+  // changes.
+  let pressed = null;
+  node.addEventListener("pointerdown", () => { pressed = target(); });
+  node.addEventListener("click", (event) => {
+    const item = target();
+    if (item && (!event.detail || item.id === pressed?.id)) void togglePublished(item);
+    pressed = null;
+    // After a pointer click, Space plays the viewer or scrolls the page again instead of
+    // pressing the switch a second time.
+    if (event.detail) {
+      const dialog = node.closest("dialog");
+      if (dialog) dialog.focus();
+      else node.blur();
+    }
+  });
+  const item = target();
+  if (item) paintPublished(node, item);
+  return node;
+}
+
+// The name stays; the pressed state tells whether readers see the photograph, the tooltip
+// what a click does.
+function paintPublished(node, item) {
+  const published = !item.hidden;
+  node.dataset.item = item.id;
+  node.setAttribute("aria-label", t().publish);
+  node.setAttribute("aria-pressed", String(published));
+  node.title = published ? t().unpublish : t().publish;
+}
+
+// The switch flips at once and settles on the server's answer. Every card and the lightbox
+// holding the photograph follow, so a card drawn meanwhile never acts on an old copy.
+async function togglePublished(item) {
+  if (publishing.has(item.id)) return;
+  publishing.add(item.id);
+  const show = (hidden) => {
+    const copies = [...el.digest.querySelectorAll(".photo")].map((figure) => photoItems.get(figure));
+    for (const copy of [item, lightbox?.item, ...copies]) {
+      if (copy?.id === item.id) copy.hidden = hidden;
+    }
+    for (const node of document.querySelectorAll(".publish-button")) {
+      if (node.dataset.item === item.id) paintPublished(node, item);
+    }
+  };
+  const hidden = !item.hidden;
+  show(hidden);
+  try {
+    const response = await fetch(`/api/admin/items/${encodeURIComponent(item.id)}`, {
+      method: "PATCH",
+      credentials: "same-origin",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ hidden }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    show(Boolean((await response.json()).hidden));
+  } catch {
+    // A refused change did not happen. A lost answer may hide one that did; the feed's new
+    // revision brings it with the next refresh.
+    show(!hidden);
+  } finally {
+    publishing.delete(item.id);
+  }
 }
 
 function imageNewsCard(item) {
