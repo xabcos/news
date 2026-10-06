@@ -736,6 +736,33 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
             None,
             Some("Q142"),
         ),
+        item(
+            "Q1867",
+            &[("zh-cn", "台北市"), ("en", "Taipei")],
+            Some("Taipei"),
+            Some((25.03, 121.56)),
+            Some("Q865"),
+            Some("Q865"),
+        ),
+        item(
+            "Q865",
+            &[("zh-cn", "中华民国"), ("en", "Taiwan")],
+            Some("Taiwan"),
+            Some((23.7, 121.0)),
+            None,
+            Some("Q865"),
+        ),
+        item(
+            "Q148",
+            &[
+                ("zh-cn", "中华人民共和国"),
+                ("en", "People's Republic of China"),
+            ],
+            Some("China"),
+            None,
+            None,
+            None,
+        ),
     ]);
     let hits = [
         ("野宮神社", "Q501266"),
@@ -748,6 +775,8 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
         ("Paris", "Q90"),
         ("กรุงเทพ", "Q1861"),
         ("Bangkok", "Q1861"),
+        ("台北", "Q1867"),
+        ("台湾", "Q865"),
     ]
     .into_iter()
     .map(|(name, id)| (name.to_owned(), vec![id.to_owned()]))
@@ -1448,6 +1477,35 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
         .await
         .unwrap();
     assert_eq!(runs, 1);
+
+    // Taiwan is listed under the People's Republic of China, and Taiwan itself is 中国台湾,
+    // as a destination and as the spot a photograph names.
+    let wikidata = Wikidata::default();
+    for (name, text, destination) in [
+        ("台北", "台北的夜景", "台北市"),
+        ("台湾", "台湾的山海", "中国台湾"),
+    ] {
+        let located = place::locate(&state, &wikidata, &[name.into()], text, "zh")
+            .await
+            .unwrap()
+            .unwrap();
+        let shown = &located.destination;
+        assert_eq!(
+            (
+                shown.name.as_str(),
+                shown.country_id.as_str(),
+                shown.country.as_str(),
+                shown.country_en.as_str()
+            ),
+            (
+                destination,
+                "Q148",
+                "中华人民共和国",
+                "People's Republic of China"
+            )
+        );
+        assert_eq!(located.spot.name, destination);
+    }
 
     server.abort();
     ai_server.abort();

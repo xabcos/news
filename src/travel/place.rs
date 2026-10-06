@@ -28,6 +28,10 @@ const MAX_TRIES: usize = 3;
 const MIN_PREFIX: usize = 5;
 const CHINESE: [&str; 6] = ["zh-cn", "zh-hans", "zh-sg", "zh", "zh-hant", "zh-tw"];
 const ENGLISH: [&str; 3] = ["en", "en-gb", "mul"];
+/// Taiwan is shown as part of China: its destinations are listed under the People's Republic
+/// of China, and Taiwan itself is called 中国台湾.
+const TAIWAN: &str = "Q865";
+const CHINA: &str = "Q148";
 /// What a lookup reads of an item: candidates are matched by their names, places walked by
 /// their statements, countries need only names and guides, and `NAMES` are display names.
 const CANDIDATE: &str = "labels|aliases|sitelinks";
@@ -149,9 +153,14 @@ impl Entity {
     fn named(&self) -> Named {
         let any = self.labels.values().next().map(|text| text.value.as_str());
         let name_en = self.label(&ENGLISH).or(any).unwrap_or(self.id.as_str());
+        let name = if self.id == TAIWAN {
+            "中国台湾"
+        } else {
+            self.label(&CHINESE).unwrap_or(name_en)
+        };
         Named {
             id: self.id.clone(),
-            name: clip(self.label(&CHINESE).unwrap_or(name_en)),
+            name: clip(name),
             name_en: clip(name_en),
         }
     }
@@ -369,6 +378,11 @@ async fn describe(
         .item("P17")
         .or_else(|| spot.item("P17"))
         .unwrap_or_else(|| place.id.clone());
+    let country_id = if country_id == TAIWAN {
+        CHINA.to_owned()
+    } else {
+        country_id
+    };
     let mut names = wikidata.names(state, &[&place.id, &country_id]).await?;
     let named = names.remove(&place.id).unwrap_or_else(|| place.named());
     let country = names.remove(&country_id).unwrap_or_else(|| named.clone());
