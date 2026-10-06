@@ -1146,7 +1146,9 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
         ],
     )
     .await;
-    assert!(previews[0].contains("data-source=\"/api/admin/preview/travel/kyoto/moments\""));
+    // A preview carries only public addresses; its script reads the preview by itself.
+    assert!(previews[0].contains("data-source=\"/travel/kyoto/moments\""));
+    assert!(!previews[0].contains(crate::reading::PREFIX));
     assert_eq!(page["moments"].as_array().unwrap().len(), 4);
     assert!(page["next"].is_null());
     assert!(page["moments"][0]["travel"]["photos"].is_array());

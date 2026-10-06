@@ -30,7 +30,7 @@
   const english = () => document.documentElement.lang === "en";
   const text = () => TEXT[english() ? "en" : "zh"];
   const pick = (object, field) => (english() && object?.[`${field}_en`]) || object?.[field] || "";
-  const destination = (slug) => PublicPage.readPath(`/travel/${encodeURIComponent(slug)}${english() ? "?lang=en" : ""}`);
+  const destination = (slug) => `/travel/${encodeURIComponent(slug)}${english() ? "?lang=en" : ""}`;
   const photosOf = (item) => (item.travel?.photos?.length ? item.travel.photos : [item.image]).filter((photo) => photo?.url);
   const placeName = (place) => {
     const name = pick(place, "name");
@@ -421,7 +421,7 @@
       loading = true;
       try {
         // The source may already carry a filter.
-        const url = new URL(grid.dataset.source, location.href);
+        const url = new URL(PublicPage.readPath(grid.dataset.source), location.href);
         url.searchParams.set("before", next);
         const response = await fetch(url, { headers: { Accept: "application/json" } });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);

@@ -136,7 +136,7 @@ const CATALOG = {
 const sectionOf = (id) => Object.keys(CATALOG).find((section) => CATALOG[section].topics.includes(id));
 // Topics with their own server-rendered page instead of a news feed.
 const PAGE_TOPICS = ["reads", "llm", ...Object.keys(CATALOG), ...Object.values(CATALOG).flatMap((section) => section.topics)];
-const topicPage = (id) => PublicPage.readPath(`/${sectionOf(id) ? `${sectionOf(id)}/${id}` : id}${state.lang === "en" ? "?lang=en" : ""}`);
+const topicPage = (id) => `/${sectionOf(id) ? `${sectionOf(id)}/${id}` : id}${state.lang === "en" ? "?lang=en" : ""}`;
 
 async function init() {
   if (PAGE_TOPICS.includes(state.topic)) {
@@ -1099,7 +1099,7 @@ function renderGroupItem(group, item) {
     if (item.catalog?.path) {
       const link = document.createElement("a");
       link.className = "catalog-work-link";
-      link.href = PublicPage.readPath(`${item.catalog.path}${state.lang === "en" ? "?lang=en" : ""}`);
+      link.href = `${item.catalog.path}${state.lang === "en" ? "?lang=en" : ""}`;
       link.textContent = `${state.lang === "en" ? "Explore " : "了解 "}${pick(item.catalog, "name")} →`;
       body.append(link);
     }
@@ -1279,7 +1279,7 @@ function card(item, reading = false) {
   const title = document.createElement("h3");
   title.className = "item-title";
   const link = document.createElement("a");
-  link.href = reading ? PublicPage.readPath(`/reads/${item.id}${state.lang === "en" ? "?lang=en" : ""}`) : item.url;
+  link.href = reading ? `/reads/${item.id}${state.lang === "en" ? "?lang=en" : ""}` : item.url;
   if (!reading) {
     link.target = "_blank";
     link.rel = "noopener noreferrer";

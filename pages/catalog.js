@@ -20,7 +20,7 @@
     more.setAttribute("aria-busy", "true");
     more.textContent = labels.loading;
     try {
-      const url = new URL(more.dataset.source, location.origin);
+      const url = new URL(PublicPage.readPath(more.dataset.source), location.origin);
       url.searchParams.set("before", more.dataset.before);
       if (en) url.searchParams.set("lang", "en");
       const response = await fetch(url, { signal: AbortSignal.timeout(20000) });

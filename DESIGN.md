@@ -64,7 +64,7 @@ Culture 的四个公共主题与 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 的三个公共主
 
 公共路由为 `/digest`、`/topics`、`/days`、`/insight`、`/feed.xml`、`/llm`、`/llm.json`、`/llm/feed.xml`、`/reads`、`/reads/{uuid}`、`/travel/{slug}`、`/travel/{slug}/moments`、`/travel/map.json`、`/culture/{topic}`、`/gadgets/{topic}`、`/sitemap.xml`。今天和昨天的新闻在内存中，其余日期直接读 PostgreSQL；内容更新、日切和清理触发缓存失效。公共响应支持 ETag，工作台和账户响应使用 `no-store`。Nginx 只缓存公共响应。
 
-管理员预览在 `/api/admin/preview` 下复用信息流、Reads、Travel、Culture、𝑮𝒂𝒅𝒈𝒆𝒕𝒔 和 LLM 的原有处理函数、页面与分页。首页按角色选择读取地址，详情页的导航和后续分页保留预览路径；原地址的 HTML 请求可跳转到预览，命中旧公共 HTML 时由共享脚本完成跳转。`news_role` 仅用于选路，不能授予权限。预览 HTTP 响应统一为 `private, no-store` 且不启用公共 CORS；沿用 Nginx 的 `/api` 缓存隔离，不新增代理规则。
+页面对所有人只有一个地址，公开页面管理员也直接阅读。访客看不到的内容由管理员在 `/api/admin/preview` 下预览，复用信息流、Reads、Travel、Culture、𝑮𝒂𝒅𝒈𝒆𝒕𝒔 和 LLM 的原有处理函数、页面与分页。页面里只写公开地址，首页和页面脚本经 `PublicPage.readPath` 按角色选择读取地址；管理员打开访客看不到的页面（404）时，HTML 请求跳转到对应预览，脚本请求不跳转，错误响应不缓存，这一跳总能到达应用。`news_role` 仅用于选路，不能授予权限。预览 HTTP 响应统一为 `private, no-store` 且不启用公共 CORS；沿用 Nginx 的 `/api` 缓存隔离，不新增代理规则。
 
 信息流按主题、日期共用内存内容快照；可见性在取快照前判断。管理员请求的回填可供普通请求复用，采集和编辑同样刷新不公开主题；导航、日期汇总和整页响应按可见范围组装，管理员聚合响应不写入公共响应缓存。有效缓存直接复用，不因管理员翻页强制查库；CDN 仍沿用现有有效期。
 

@@ -28,7 +28,7 @@ const CHROME: Chrome<'static> = Chrome {
     current: "reads",
     section: "reads",
     stylesheet: "/reads.css?v=6",
-    script: "/reads.js?v=7",
+    script: "/reads.js?v=8",
     feed: ("Reads", "/feed.xml?topic=reads"),
 };
 
@@ -88,8 +88,8 @@ struct Detail {
     full_text: Option<sqlx::types::Json<super::full_text::Document>>,
 }
 
-fn listing(page: u32, en: bool, reader: Reader) -> String {
-    reader.localized(
+fn listing(page: u32, en: bool) -> String {
+    localized(
         &if page == 1 {
             "/reads".into()
         } else {
@@ -154,10 +154,10 @@ async fn index(
         content,
         "<nav class=reads-views aria-label=\"{}\"><a href=\"{}\"{}>{}</a><a href=\"{}\"{}>{}</a></nav></header><div class=reads-list>",
         choose(en, "阅读排序", "Reading order"),
-        reader.localized("/reads", en),
+        localized("/reads", en),
         if !hot { " aria-current=\"page\"" } else { "" },
         choose(en, "最新", "Latest"),
-        escape(&reader.localized("/reads?view=hot", en)),
+        escape(&localized("/reads?view=hot", en)),
         if hot { " aria-current=\"page\"" } else { "" },
         choose(en, "热读", "Popular")
     );
@@ -167,7 +167,6 @@ async fn index(
             en,
             hot.then_some(index + 1),
             state.config.timezone,
-            reader,
         ));
     }
     if rows.is_empty() {
@@ -186,7 +185,7 @@ async fn index(
         let _ = write!(
             content,
             "<a rel=prev href=\"{}\">{}</a>",
-            escape(&listing(page - 1, en, reader)),
+            escape(&listing(page - 1, en)),
             choose(en, "上一页", "Newer")
         );
     }
@@ -194,7 +193,7 @@ async fn index(
         let _ = write!(
             content,
             "<a rel=next href=\"{}\">{}</a>",
-            escape(&listing(page + 1, en, reader)),
+            escape(&listing(page + 1, en)),
             choose(en, "继续阅读", "Older reads")
         );
     }
@@ -202,7 +201,7 @@ async fn index(
     let path = if hot {
         "/reads?view=hot".into()
     } else {
-        listing(page, false, Reader::Public)
+        listing(page, false)
     };
     let title = if hot {
         format!("{} · 𝑹𝒆𝒂𝒅𝒔", choose(en, "热读", "Popular"))
@@ -319,7 +318,7 @@ async fn detail(
     let _ = write!(
         content,
         "</footer><div class=read-actions><a href=\"{}\">← 𝑹𝒆𝒂𝒅𝒔</a></div></article>",
-        reader.localized("/reads", en)
+        localized("/reads", en)
     );
     // Rank only the latest 200 visible alternatives, then load the three cards.
     let mut query = sqlx::QueryBuilder::new(
@@ -358,7 +357,7 @@ async fn detail(
             choose(en, "继续阅读", "Keep reading")
         );
         for row in &related {
-            content.push_str(&card(row, en, None, state.config.timezone, reader));
+            content.push_str(&card(row, en, None, state.config.timezone));
         }
         content.push_str("</aside>");
     }
@@ -392,13 +391,7 @@ async fn detail(
 
 const EYE: &str = r#"<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>"#;
 
-fn card(
-    item: &Card,
-    en: bool,
-    rank: Option<usize>,
-    timezone: chrono_tz::Tz,
-    reader: Reader,
-) -> String {
+fn card(item: &Card, en: bool, rank: Option<usize>, timezone: chrono_tz::Tz) -> String {
     let rank = rank
         .map(|rank| format!("<span class=read-rank aria-hidden=true>{rank:02}</span>"))
         .unwrap_or_default();
@@ -419,7 +412,7 @@ fn card(
         item.first_seen_at
             .with_timezone(&timezone)
             .format("%Y-%m-%d"),
-        reader.localized(&format!("/reads/{}", item.id), en),
+        localized(&format!("/reads/{}", item.id), en),
         escape(choose(en, &item.title, &item.title_en)),
         escape(choose(en, &item.summary, &item.summary_en))
     )

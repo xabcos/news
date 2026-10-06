@@ -1,15 +1,16 @@
-//! Reading permissions are checked before shared content is loaded. Admin previews use
+//! Reading permissions are checked before shared content is loaded. A page has one address
+//! for everyone, administrators included, and carries only public addresses; its scripts read
+//! through `PublicPage.readPath`. What readers can't see yet, an administrator previews through
 //! the same handlers under /api, where neither the gateway nor the browser caches them.
 use crate::{
     auth::{self, User},
     error::{AppError, Result},
-    site,
     state::AppState,
 };
 use axum::{
     Extension, Router,
     extract::{FromRequestParts, Request},
-    http::{HeaderValue, header, request::Parts},
+    http::{HeaderValue, StatusCode, header, request::Parts},
     middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
 };
@@ -55,23 +56,11 @@ impl Reader {
             .then_some(())
             .ok_or_else(|| AppError::NotFound("主题不存在".into()))
     }
-
-    pub(crate) fn path(self, path: &str) -> String {
-        if self.is_admin() && path != "/" && !path.starts_with("/?") {
-            format!("{PREFIX}{path}")
-        } else {
-            path.to_owned()
-        }
-    }
-
-    pub(crate) fn localized(self, path: &str, en: bool) -> String {
-        site::localized(&self.path(path), en)
-    }
 }
 
 pub(crate) fn public(routes: Router<AppState>) -> Router<AppState> {
     routes
-        .layer(middleware::from_fn(redirect_admin))
+        .layer(middleware::from_fn(preview_unpublished))
         .layer(Extension(Reader::Public))
 }
 
@@ -97,8 +86,10 @@ async fn private_response(request: Request, next: Next) -> Response {
     response
 }
 
-// The role cookie only chooses a URL; the preview endpoint verifies the real session.
-async fn redirect_admin(request: Request, next: Next) -> Response {
+// A page readers can't see sends an administrator on to its preview. The role cookie only
+// chooses the address; the preview endpoint verifies the real session. Errors are never
+// cached, so the gateway always passes such a request on to here.
+async fn preview_unpublished(request: Request, next: Next) -> Response {
     let html = request
         .headers()
         .get(header::ACCEPT)
@@ -111,15 +102,17 @@ async fn redirect_admin(request: Request, next: Next) -> Response {
         .filter_map(|v| v.to_str().ok())
         .flat_map(|v| v.split(';'))
         .any(|v| v.trim() == "news_role=admin");
-    if html && admin {
-        let mut response =
-            Redirect::temporary(&format!("{PREFIX}{}", request.uri())).into_response();
-        response.headers_mut().insert(
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("private, no-store"),
-        );
-        response
-    } else {
-        next.run(request).await
+    let preview = (html && admin).then(|| format!("{PREFIX}{}", request.uri()));
+    let response = next.run(request).await;
+    match preview {
+        Some(preview) if response.status() == StatusCode::NOT_FOUND => {
+            let mut response = Redirect::temporary(&preview).into_response();
+            response.headers_mut().insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("private, no-store"),
+            );
+            response
+        }
+        _ => response,
     }
 }

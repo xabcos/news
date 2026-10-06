@@ -68,7 +68,7 @@ const english = document.documentElement.lang === "en";
     try {
       // Reuse the ordinary HTML pagination; only cards are imported, so fetching
       // a page never executes its scripts or records another page view.
-      const response = await fetch(next, { signal: request.signal });
+      const response = await fetch(PublicPage.readPath(next), { signal: request.signal });
       if (response.status === 404) {
         if (controller === request) next = "";
         return;

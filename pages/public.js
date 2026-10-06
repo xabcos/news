@@ -5,6 +5,8 @@
   const DWELL = 12000; // milliseconds each photograph stays while a viewer plays, unless it says
   const role = () => document.cookie.split(";").map((part) => part.trim())
     .find((part) => part.startsWith("news_role="))?.slice("news_role=".length) || "";
+  // Pages carry only public addresses; whatever their scripts read goes through here, so an
+  // administrator reads the preview, which also holds what readers can't see yet.
   const readPath = (path) => role() === "admin" && !path.startsWith(preview) ? `${preview}${path}` : path;
 
   // Shared by the news feed and server-rendered public pages.
@@ -175,11 +177,6 @@
     },
 
     init({ canSwipe = () => true } = {}) {
-      // Cached public HTML may arrive before the server sees the administrator's session.
-      if (role() === "admin" && /^\/(reads|culture|gadgets|travel|llm)(\/|$)/.test(location.pathname)) {
-        location.replace(readPath(location.pathname + location.search + location.hash));
-        return;
-      }
       const topbar = document.querySelector(".topbar");
       const backToTop = document.querySelector("#backToTop");
       let last = window.scrollY;

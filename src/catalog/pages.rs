@@ -137,20 +137,13 @@ async fn index(
 ) -> Result<Response> {
     let topics = catalogue(&state, section, reader);
     let (topic, _) = topics.first().ok_or_else(missing)?;
-    Ok(
-        Redirect::temporary(
-            &reader.localized(&format!("/{}/{topic}", section.path()), params.en()),
-        )
-        .into_response(),
-    )
+    Ok(Redirect::temporary(&localized(
+        &format!("/{}/{topic}", section.path()),
+        params.en(),
+    ))
+    .into_response())
 }
-fn tabs(
-    section: Section,
-    topics: &[(String, String)],
-    current: &str,
-    en: bool,
-    reader: Reader,
-) -> String {
+fn tabs(section: Section, topics: &[(String, String)], current: &str, en: bool) -> String {
     let mut html = format!(
         "<nav class=catalog-tabs aria-label=\"{}\">",
         match section {
@@ -162,7 +155,7 @@ fn tabs(
         let _ = write!(
             html,
             "<a href=\"{}\"{}>{}</a>",
-            escape(&reader.localized(&format!("/{}/{id}", section.path()), en)),
+            escape(&localized(&format!("/{}/{id}", section.path()), en)),
             if id == current {
                 " aria-current=\"true\""
             } else {
@@ -206,7 +199,7 @@ fn layout(
             current: topic,
             section: &format!("catalog {} catalog-{topic}", section.path()),
             stylesheet: "/catalog.css?v=5",
-            script: "/catalog.js?v=3",
+            script: "/catalog.js?v=4",
             feed: (section.label(), &format!("/feed.xml?topic={topic}")),
         },
     )
@@ -268,7 +261,7 @@ enum Filter<'a> {
     /// Titles matching an ILIKE pattern.
     Matching(&'a str),
 }
-fn card(item: &PublicItem, topic: &str, en: bool, reader: Reader) -> String {
+fn card(item: &PublicItem, topic: &str, en: bool) -> String {
     let title = choose(en, &item.title, &item.title_en);
     let mut html = format!("<article class=\"image-news-card catalog-card catalog-{topic}\">");
     if let Some(url) = item.image.as_ref().and_then(|image| image["url"].as_str()) {
@@ -318,7 +311,7 @@ fn card(item: &PublicItem, topic: &str, en: bool, reader: Reader) -> String {
         let _ = write!(
             html,
             "<a class=catalog-work-link href=\"{}\">{}{} <span aria-hidden=true>→</span></a>",
-            escape(&reader.localized(path, en)),
+            escape(&localized(path, en)),
             choose(en, "了解 ", "Explore "),
             escape(name)
         );
@@ -336,10 +329,8 @@ fn role_label(section: Section, role: &str, en: bool) -> &'static str {
         _ => "",
     }
 }
-fn cards(rows: &[PublicItem], topic: &str, en: bool, reader: Reader) -> String {
-    rows.iter()
-        .map(|item| card(item, topic, en, reader))
-        .collect()
+fn cards(rows: &[PublicItem], topic: &str, en: bool) -> String {
+    rows.iter().map(|item| card(item, topic, en)).collect()
 }
 /// The path of a topic's list, with its kind filter.
 fn list_path(section: Section, topic: &str, kind: Option<&str>) -> String {
@@ -355,14 +346,13 @@ fn pager(
     kind: Option<&str>,
     next: Option<&str>,
     en: bool,
-    reader: Reader,
 ) -> String {
     next.map(|next| {
         let separator = if kind.is_some() { '&' } else { '?' };
         format!("<a class=\"button button-secondary catalog-more\" href=\"{}\" data-before=\"{}\" data-source=\"{}\">{}</a>",
-            escape(&reader.localized(&format!("{}{separator}before={next}", list_path(section, topic, kind)), en)),
+            escape(&localized(&format!("{}{separator}before={next}", list_path(section, topic, kind)), en)),
             escape(next),
-            escape(&reader.path(&format!("/{}/{topic}/more.json{}", section.path(), kind.map(|kind| format!("?kind={kind}")).unwrap_or_default()))),
+            escape(&format!("/{}/{topic}/more.json{}", section.path(), kind.map(|kind| format!("?kind={kind}")).unwrap_or_default())),
             choose(en, "更多动态", "More stories"))
     })
     .unwrap_or_default()
@@ -488,13 +478,7 @@ async fn shelved(
     Ok(query.build_query_as().fetch_all(&state.pool).await?)
 }
 /// Entries as shelf cards: picture, kind, name and first facts.
-fn shelf_cards(
-    section: Section,
-    entries: &[Shelved],
-    talked: bool,
-    en: bool,
-    reader: Reader,
-) -> String {
+fn shelf_cards(section: Section, entries: &[Shelved], talked: bool, en: bool) -> String {
     let mut html = String::from("<div class=catalog-products>");
     for entry in entries {
         let buzz = if talked && entry.talked > 0 {
@@ -521,7 +505,7 @@ fn shelf_cards(
         let _ = write!(
             html,
             "<a class=catalog-product href=\"{}\">{}<span class=catalog-product-kind>{}</span><strong>{}</strong>{buzz}<span class=catalog-product-specs>{facts}</span></a>",
-            escape(&reader.localized(
+            escape(&localized(
                 &format!("/{}/{}/{}", section.path(), entry.topic_id, entry.slug),
                 en
             )),
@@ -546,7 +530,6 @@ async fn shelf(
     topic: &str,
     kind: Option<&str>,
     en: bool,
-    reader: Reader,
 ) -> Result<String> {
     let mut html = String::new();
     let labels = section.labels(topic, en);
@@ -558,7 +541,7 @@ async fn shelf(
             let _ = write!(
                 html,
                 "<a href=\"{}\"{}>{}</a>",
-                escape(&reader.localized(&list_path(section, topic, id), en)),
+                escape(&localized(&list_path(section, topic, id), en)),
                 if id == kind {
                     " aria-current=\"true\""
                 } else {
@@ -575,7 +558,7 @@ async fn shelf(
             html,
             "<section class=catalog-shelf><h2>{}</h2>{}</section>",
             choose(en, "最受关注", "Most talked about"),
-            shelf_cards(section, &talked, true, en, reader)
+            shelf_cards(section, &talked, true, en)
         );
     }
     let entries = shelved(state, section, Shelf::Topic(topic, kind), SHELF).await?;
@@ -586,12 +569,15 @@ async fn shelf(
         html,
         "<section class=catalog-shelf><h2>{} <a class=catalog-all href=\"{}\">{} →</a></h2>{}</section><h2 class=catalog-latest>{}</h2>",
         choose(en, "近期有动态", "Recently active"),
-        escape(&reader.localized(&format!("/{}/search?topic={topic}", section.path()), en)),
+        escape(&localized(
+            &format!("/{}/search?topic={topic}", section.path()),
+            en
+        )),
         match section {
             Section::Culture => choose(en, "全部作品", "All works"),
             Section::Gadgets => choose(en, "全部产品", "All products"),
         },
-        shelf_cards(section, &entries, false, en, reader),
+        shelf_cards(section, &entries, false, en),
         choose(en, "最新内容", "Latest")
     );
     Ok(html)
@@ -605,7 +591,6 @@ async fn onward(
     topic: &str,
     work: &Work,
     en: bool,
-    reader: Reader,
 ) -> Result<String> {
     let visible = topics.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
     let creator = work.creator.trim();
@@ -649,7 +634,7 @@ async fn onward(
             html,
             "<section class=catalog-onward><h2>{}</h2>{}</section>",
             escape(&heading),
-            shelf_cards(section, &by_creator, false, en, reader)
+            shelf_cards(section, &by_creator, false, en)
         );
     }
     if !alike.is_empty() {
@@ -658,7 +643,7 @@ async fn onward(
             html,
             "<section class=catalog-onward><h2>{}{label}</h2>{}</section>",
             choose(en, "更多", "More "),
-            shelf_cards(section, &alike, false, en, reader)
+            shelf_cards(section, &alike, false, en)
         );
     }
     Ok(html)
@@ -688,13 +673,13 @@ async fn collection(
         .find(|(id, _)| id == &topic)
         .map(|(_, name)| name.as_str())
         .ok_or_else(missing)?;
-    let mut content = tabs(section, &topics, &topic, en, reader);
-    content.push_str(&search_form(section, "", en, reader));
-    content.push_str(&shelf(&state, section, &topic, kind, en, reader).await?);
+    let mut content = tabs(section, &topics, &topic, en);
+    content.push_str(&search_form(section, "", en));
+    content.push_str(&shelf(&state, section, &topic, kind, en).await?);
     let _ = write!(
         content,
         "<div class=catalog-grid>{}</div>",
-        cards(&rows, &topic, en, reader)
+        cards(&rows, &topic, en)
     );
     if rows.is_empty() {
         let _ = write!(
@@ -703,7 +688,7 @@ async fn collection(
             choose(en, "新故事正在路上。", "New stories are on their way.")
         );
     }
-    content.push_str(&pager(section, &topic, kind, next.as_deref(), en, reader));
+    content.push_str(&pager(section, &topic, kind, next.as_deref(), en));
     let path = list_path(section, &topic, kind);
     let html = layout(
         &state,
@@ -724,7 +709,7 @@ async fn collection(
     ))
 }
 /// The search box of a section's pages; its words search every topic of the section.
-fn search_form(section: Section, words: &str, en: bool, reader: Reader) -> String {
+fn search_form(section: Section, words: &str, en: bool) -> String {
     let hint = match section {
         Section::Culture => choose(
             en,
@@ -739,7 +724,7 @@ fn search_form(section: Section, words: &str, en: bool, reader: Reader) -> Strin
     };
     format!(
         "<form class=catalog-search action=\"{}\" role=search><input type=search name=q value=\"{}\" maxlength={QUERY_CHARS} placeholder=\"{hint}\" aria-label=\"{hint}\" enterkeyhint=search>{}</form>",
-        escape(&reader.path(&format!("/{}/search", section.path()))),
+        escape(&format!("/{}/search", section.path())),
         escape(words),
         if en {
             "<input type=hidden name=lang value=en>"
@@ -771,14 +756,24 @@ async fn search(
         .collect::<String>()
         .trim_end()
         .to_owned();
+    // A section or topic readers can't see is missing here too, so an administrator is sent to
+    // its preview.
+    if topics.is_empty() {
+        return Err(missing());
+    }
     let listed = params
         .topic
         .as_deref()
-        .and_then(|id| topics.iter().find(|(topic, _)| topic == id));
+        .map(|id| {
+            topics
+                .iter()
+                .find(|(topic, _)| topic == id)
+                .ok_or_else(missing)
+        })
+        .transpose()?;
     if words.is_empty() && listed.is_none() {
         return Ok(
-            Redirect::temporary(&reader.localized(&format!("/{}", section.path()), en))
-                .into_response(),
+            Redirect::temporary(&localized(&format!("/{}", section.path()), en)).into_response(),
         );
     }
     let ids = listed.map_or_else(
@@ -821,9 +816,8 @@ async fn search(
         &topics,
         listed.map_or("", |(id, _)| id.as_str()),
         en,
-        reader,
     );
-    content.push_str(&search_form(section, &words, en, reader));
+    content.push_str(&search_form(section, &words, en));
     let title = match listed {
         Some((_, name)) if words.is_empty() => format!(
             "{name} · {}",
@@ -839,7 +833,7 @@ async fn search(
             content,
             "<section class=\"catalog-shelf catalog-found\"><h2>{noun} <span>{}</span></h2>{}</section>",
             entries.len(),
-            shelf_cards(section, &entries, true, en, reader)
+            shelf_cards(section, &entries, true, en)
         );
     }
     if !stories.is_empty() {
@@ -849,7 +843,7 @@ async fn search(
             choose(en, "相关内容", "Stories"),
             stories
                 .iter()
-                .map(|(topic, item)| card(item, topic, en, reader))
+                .map(|(topic, item)| card(item, topic, en))
                 .collect::<String>()
         );
     }
@@ -913,9 +907,7 @@ async fn more(
     .await?;
     Ok(conditional(
         &headers,
-        &Rendered::new(
-            json!({"html":cards(&rows, &topic, params.en(), reader),"next":next}).to_string(),
-        ),
+        &Rendered::new(json!({"html":cards(&rows, &topic, params.en()),"next":next}).to_string()),
         "application/json",
     ))
 }
@@ -969,7 +961,7 @@ async fn detail(
         Section::Culture => label.to_owned(),
         Section::Gadgets => format!("{} · {label}", work.creator),
     };
-    let mut content = tabs(section, &topics, &topic, en, reader);
+    let mut content = tabs(section, &topics, &topic, en);
     content.push_str("<article class=catalog-work><header class=catalog-work-heading>");
     if let Some(url) = work.image.as_ref().and_then(|image| image["url"].as_str()) {
         let _ = write!(
@@ -1026,14 +1018,14 @@ async fn detail(
         let _ = write!(
             content,
             "<section class=catalog-related><h2>{heading}</h2><div class=catalog-grid>{}</div></section>",
-            cards(&rows, &topic, en, reader)
+            cards(&rows, &topic, en)
         );
     }
-    content.push_str(&onward(&state, section, &topics, &topic, &work, en, reader).await?);
+    content.push_str(&onward(&state, section, &topics, &topic, &work, en).await?);
     let _ = write!(
         content,
         "<p class=catalog-back><a href=\"{}\">← {}</a></p>",
-        escape(&reader.localized(&format!("/{}/{topic}", section.path()), en)),
+        escape(&localized(&format!("/{}/{topic}", section.path()), en)),
         choose(en, "回到栏目", "Back to collection")
     );
     let url = absolute(&state, &localized(&path, en));

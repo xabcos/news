@@ -208,7 +208,7 @@ GET /sitemap.xml
 
 省略 `topic` 读取全部公共栏目，省略 `day` 读取最近有内容的日期。`limit` 为 1–128，`next` 为后续分页游标。公共响应支持 ETag 和短期缓存，私有响应不缓存。
 
-管理员登录后，前台也能阅读启用但不公开的站点主题。信息流、主题目录、日期列表及 Reads、Travel、Culture、𝑮𝒂𝒅𝒈𝒆𝒕𝒔、LLM 页面使用 `/api/admin/preview` 前缀复用原接口，导航与分页自动衔接。真实会话逐次鉴权，响应为 `private, no-store`。管理员和普通信息流共用主题内容缓存：管理员访问可回填，采集与编辑统一刷新；公开目录、订阅和站点地图仍只含公开内容。
+管理员登录后，前台也能阅读启用但不公开的站点主题。页面对所有人只有一个地址，公开页面管理员也直接阅读；信息流、主题目录、日期列表和页面脚本读取的数据使用 `/api/admin/preview` 前缀复用原接口，打开访客看不到的 Reads、Travel、Culture、𝑮𝒂𝒅𝒈𝒆𝒕𝒔 或 LLM 页面时自动跳到预览。真实会话逐次鉴权，响应为 `private, no-store`。管理员和普通信息流共用主题内容缓存：管理员访问可回填，采集与编辑统一刷新；公开目录、订阅和站点地图仍只含公开内容。
 
 账户与个人主题使用 `/api/auth/*`、`/api/me/*`；公共主题管理使用 `/api/admin/topics`；日报状态和生成使用 `GET /api/admin/insight`、`POST /api/admin/insight`；股市笔记使用 `GET /api/admin/equity-insight`、`POST /api/admin/equity-insight`；𝑳𝑳𝑴 状态使用 `GET /api/admin/llm`，暂停服务商和隐藏模型分别使用 `PATCH /api/admin/llm/vendors/{id}`、`PATCH /api/admin/llm/models/{vendor}/{model}`。股市公开接口返回 `note` 与 `editions`，不带参数时读取最新成功笔记，`day` 读取当日最新一期，`at` 按历史列表中的 `window_end` 读取指定一期；网页链接也支持 `/?topic=equity-insight&at=...`。套餐、订单和支付回调分别位于 `/api/plans`、`/api/orders`、`/api/webhooks/payment`。Free 用户阅读公共内容，Pro 用户可创建最多 4 个个人主题。
 

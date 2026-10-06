@@ -845,11 +845,45 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
             "/culture/book".into(),
             format!("/culture/book/{slug}"),
             "/culture/book/more.json".into(),
+            "/culture/search?topic=book".into(),
         ],
     )
     .await;
-    assert!(previews[0].contains(&format!("/api/admin/preview/culture/book/{slug}")));
-    assert!(previews[2].contains("/api/admin/preview/culture/book/"));
+    // A preview links to the pages' own addresses.
+    assert!(previews[0].contains(&format!("href=\"/culture/book/{slug}\"")));
+    assert!(previews[2].contains("/culture/book/"));
+    assert!(
+        previews
+            .iter()
+            .all(|body| !body.contains(crate::reading::PREFIX))
+    );
+    // A section readers can't see at all has no search either, so an administrator is sent on.
+    sqlx::query("UPDATE topics SET visible=false WHERE id=ANY($1)")
+        .bind(Section::Culture.topics())
+        .execute(&pool)
+        .await
+        .unwrap();
+    state.digest.reload_topics(&state).await.unwrap();
+    assert_eq!(get("/culture/search?q=book".into()).await.status(), 404);
+    let admin = crate::reading::tests::session(&state, "admin").await;
+    let response = http
+        .get(format!("{app_url}/culture/search?q=book"))
+        .header("cookie", &admin)
+        .header("accept", "text/html")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 307);
+    assert_eq!(
+        response.headers()["location"],
+        format!("{}/culture/search?q=book", crate::reading::PREFIX)
+    );
+    sqlx::query("UPDATE topics SET visible=(id<>'book') WHERE id=ANY($1)")
+        .bind(Section::Culture.topics())
+        .execute(&pool)
+        .await
+        .unwrap();
+    state.digest.reload_topics(&state).await.unwrap();
     // An entry leads on to more by its creator, then more of its kind.
     sqlx::query("UPDATE topics SET visible=true WHERE id='book'")
         .execute(&pool)

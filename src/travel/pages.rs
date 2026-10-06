@@ -33,7 +33,7 @@ const CHROME: Chrome<'static> = Chrome {
     current: TOPIC_ID,
     section: "travel",
     stylesheet: "/travel.css?v=5",
-    script: "/travel.js?v=10",
+    script: "/travel.js?v=11",
     feed: ("𝑻𝒓𝒂𝒗𝒆𝒍", "/feed.xml?topic=travel"),
 };
 /// Map pins of destinations with moments from this many recent days stand out, and the most
@@ -235,7 +235,7 @@ async fn destination(
                     kind.map_or_else(|| path.clone(), |kind| format!("{path}?kind={kind}"));
                 format!(
                     "<a href=\"{}#photos\"{}>{label}</a>",
-                    escape(&reader.localized(&target, en)),
+                    escape(&localized(&target, en)),
                     if kind.is_some() == only_portraits {
                         " aria-current=\"true\""
                     } else {
@@ -254,7 +254,7 @@ async fn destination(
         } else {
             String::new()
         };
-        let mut source = reader.path(&format!("{path}/moments"));
+        let mut source = format!("{path}/moments");
         if only_portraits {
             let _ = write!(source, "?kind={PORTRAITS}");
         }
@@ -266,7 +266,7 @@ async fn destination(
             next.map_or_else(String::new, |next| format!(" data-next=\"{next}\"")),
         );
     }
-    content.push_str(&onward(&state, reader, &place, en).await?);
+    content.push_str(&onward(&state, &place, en).await?);
     let _ = write!(
         content,
         "<nav class=destination-back><a href=\"{}\">← 𝑻𝒓𝒂𝒗𝒆𝒍</a></nav></article>",
@@ -320,7 +320,7 @@ async fn destination(
 /// Where to go next: the nearest destinations with a photograph, by great-circle distance, then
 /// the other destinations of the same country, the most visited first. Only destinations with
 /// a page are named: a guide or a moment.
-async fn onward(state: &AppState, reader: Reader, place: &Place, en: bool) -> Result<String> {
+async fn onward(state: &AppState, place: &Place, en: bool) -> Result<String> {
     let nearby = sqlx::query_as::<_, (String, String, String, String, String, f64, Value)>(
         "SELECT n.slug, n.name, n.name_en, n.country, n.country_en, n.km, c.image
          FROM (SELECT p.id, p.slug, p.name, p.name_en, p.country, p.country_en,
@@ -376,7 +376,7 @@ async fn onward(state: &AppState, reader: Reader, place: &Place, en: bool) -> Re
             let _ = write!(
                 html,
                 "<a class=nearby-card href=\"{}\"><img src=\"{}\" alt=\"{}\"{} loading=lazy decoding=async referrerpolicy=no-referrer><span class=nearby-name>{}</span><span class=nearby-meta>{}{} km</span></a>",
-                escape(&reader.localized(&format!("/travel/{slug}"), en)),
+                escape(&localized(&format!("/travel/{slug}"), en)),
                 escape(image["url"].as_str().unwrap_or_default()),
                 escape(
                     image[choose(en, "caption", "caption_en")]
@@ -413,7 +413,7 @@ async fn onward(state: &AppState, reader: Reader, place: &Place, en: bool) -> Re
             let _ = write!(
                 html,
                 "<a href=\"{}\">{}</a>",
-                escape(&reader.localized(&format!("/travel/{slug}"), en)),
+                escape(&localized(&format!("/travel/{slug}"), en)),
                 escape(choose(en, name, name_en))
             );
         }

@@ -1,22 +1,9 @@
-use super::{PREFIX, Reader};
+use super::PREFIX;
 use crate::state::AppState;
 use reqwest::Client;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
-
-#[test]
-fn preview_links_keep_the_home_feed_and_language() {
-    assert_eq!(
-        Reader::Admin.localized("/?topic=w", true),
-        "/?topic=w&lang=en"
-    );
-    assert_eq!(
-        Reader::Admin.localized("/reads?page=2", true),
-        format!("{PREFIX}/reads?page=2&lang=en")
-    );
-    assert_eq!(Reader::Public.path("/culture/book"), "/culture/book");
-}
 
 pub(crate) async fn session(state: &AppState, role: &str) -> String {
     let token = Uuid::new_v4().to_string();
@@ -102,20 +89,44 @@ pub(crate) async fn pages(
         );
         bodies.push(response.text().await.unwrap());
     }
-    // The original bookmarked page resolves to the authenticated preview, without caching the redirect.
-    let response = http
-        .get(format!("{base}{}", paths[0]))
-        .header("cookie", &admin)
-        .header("accept", "text/html")
-        .send()
-        .await
-        .unwrap();
+    // A page readers can't see sends an administrator on to its preview, without caching the redirect.
+    let page = || {
+        http.get(format!("{base}{}", paths[0]))
+            .header("cookie", &admin)
+            .header("accept", "text/html")
+            .send()
+    };
+    let response = page().await.unwrap();
     assert_eq!(response.status(), 307);
     assert_eq!(
         response.headers()["location"],
         format!("{PREFIX}{}", paths[0])
     );
     assert_eq!(response.headers()["cache-control"], "private, no-store");
+    // A script is not sent on: it reads the preview itself (`PublicPage.readPath`).
+    let response = http
+        .get(format!("{base}{}", paths[0]))
+        .header("cookie", &admin)
+        .header("accept", "application/json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 404);
+    // Once readers can see it, the administrator reads it at its own address, as they do.
+    sqlx::query("UPDATE topics SET visible=true WHERE id=$1")
+        .bind(topic)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    state.digest.reload_topics(state).await.unwrap();
+    let response = page().await.unwrap();
+    assert_eq!(response.status(), 200, "{}", paths[0]);
+    assert!(
+        response.headers()["cache-control"]
+            .to_str()
+            .unwrap()
+            .starts_with("public,")
+    );
     sqlx::query("UPDATE topics SET enabled=false WHERE id=$1")
         .bind(topic)
         .execute(&state.pool)

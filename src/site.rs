@@ -123,12 +123,12 @@ pub(crate) fn layout(
     let topics = state.digest.topics_for(reader);
     let mut tabs = format!(
         "<a class=tab href=\"{}\">𝐀𝐋𝐋</a><a class=tab href=\"{}\">𝐀𝐈</a>",
-        reader.localized("/", en),
-        escape(&reader.localized("/?topic=insight", en))
+        localized("/", en),
+        escape(&localized("/?topic=insight", en))
     );
     let equity_tab = format!(
         "<a class=tab href=\"{}\">𝑬</a>",
-        escape(&reader.localized("/?topic=equity-insight", en))
+        escape(&localized("/?topic=equity-insight", en))
     );
     if !topics.iter().any(|topic| topic.id == "overseas-ai") {
         tabs.push_str(&equity_tab);
@@ -155,8 +155,8 @@ pub(crate) fn layout(
                 let _ = write!(
                     tabs,
                     "<a class=tab href=\"{}\" data-last=\"{}\"{}>{}</a>",
-                    escape(&reader.localized(&path, en)),
-                    escape(&reader.localized(&format!("{path}/{last}"), en)),
+                    escape(&localized(&path, en)),
+                    escape(&localized(&format!("{path}/{last}"), en)),
                     if crate::catalog::Section::of(chrome.current) == Some(section) {
                         " aria-current=\"true\""
                     } else {
@@ -168,7 +168,7 @@ pub(crate) fn layout(
             continue;
         }
         let href = if PAGE_TOPICS.contains(&id.as_str()) {
-            reader.localized(&format!("/{id}"), en)
+            localized(&format!("/{id}"), en)
         } else {
             let mut query = url::form_urlencoded::Serializer::new(String::new());
             query.append_pair("topic", id);
@@ -214,7 +214,7 @@ pub(crate) fn layout(
 <body class="public {section}"><header class="topbar"><a class="brand" href="{home}" aria-label="News"><img class="brand-logo" src="/icon.svg" alt=""><span>𝑵𝒆𝒘𝒔</span></a><nav class="tabs" aria-label="{topics_label}">{tabs}</nav><div class="tools"><a class="space-link button button-quiet button-small" href="/me/">{workspace}</a><a class="space-link button button-quiet button-small" href="{other_lang}" hreflang="{other_code}">{language_label}</a></div></header>
 <main class="shell">{content}</main>
 <button id="backToTop" class="button back-to-top" type="button" aria-label="{back_to_top}" title="{back_to_top}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 12 6-6 6 6M12 6v12"/></svg></button>
-<script src="/public.js?v=9" defer></script><script src="{script}" defer></script><script src="/stats.js?v=3" data-track-url="{track_url}" defer></script></body></html>"##,
+<script src="/public.js?v=10" defer></script><script src="{script}" defer></script><script src="/stats.js?v=3" data-track-url="{track_url}" defer></script></body></html>"##,
         lang = choose(en, "zh-CN", "en"),
         title = escape(title),
         description = escape(description),
@@ -234,7 +234,7 @@ pub(crate) fn layout(
         home = localized("/", en),
         topics_label = choose(en, "主题", "Topics"),
         workspace = choose(en, "工作台", "Workspace"),
-        other_lang = escape(&reader.localized(path, !en)),
+        other_lang = escape(&localized(path, !en)),
         other_code = choose(en, "en", "zh-CN"),
         language_label = choose(en, "EN", "中文"),
         back_to_top = choose(en, "回到顶部", "Back to top"),
