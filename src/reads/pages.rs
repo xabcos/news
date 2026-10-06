@@ -20,14 +20,14 @@ use sqlx::FromRow;
 use std::fmt::Write;
 use uuid::Uuid;
 
-const PAGE_SIZE: i64 = 12;
+const PAGE_SIZE: i64 = 24;
 const SITEMAP_SIZE: i64 = 10000;
 const CONTENT: &str = "FROM items i JOIN read_articles a ON a.item_id = i.id JOIN topics t ON t.id = i.topic_id WHERE i.topic_id = 'reads' AND t.enabled AND t.owner_user_id IS NULL AND NOT i.hidden";
 const CARD: &str = "i.id, i.title, i.title_en, i.summary, i.summary_en, i.source, i.url, i.first_seen_at, a.author, a.views";
 const CHROME: Chrome<'static> = Chrome {
     current: "reads",
     section: "reads",
-    stylesheet: "/reads.css?v=6",
+    stylesheet: "/reads.css?v=7",
     script: "/reads.js?v=8",
     feed: ("Reads", "/feed.xml?topic=reads"),
 };
@@ -219,7 +219,11 @@ async fn index(
         description,
         &content,
         None,
-        &CHROME,
+        // The list fills the window with cards; an article keeps the reading column.
+        &Chrome {
+            section: "reads reads-index",
+            ..CHROME
+        },
     );
     Ok(conditional(
         &headers,
@@ -315,11 +319,7 @@ async fn detail(
             "AI-assisted reading guide and translation. Original content is attributed to its author.",
         )
     );
-    let _ = write!(
-        content,
-        "</footer><div class=read-actions><a href=\"{}\">← 𝑹𝒆𝒂𝒅𝒔</a></div></article>",
-        localized("/reads", en)
-    );
+    content.push_str("</footer></article>");
     // Rank only the latest 200 visible alternatives, then load the three cards.
     let mut query = sqlx::QueryBuilder::new(
         "WITH recent AS MATERIALIZED (
@@ -361,6 +361,12 @@ async fn detail(
         }
         content.push_str("</aside>");
     }
+    // The way back closes the page, after the related reads, as on Culture's pages.
+    let _ = write!(
+        content,
+        "<div class=read-actions><a href=\"{}\">← 𝑹𝒆𝒂𝒅𝒔</a></div>",
+        localized("/reads", en)
+    );
     let path = format!("/reads/{id}");
     let canonical = absolute(&state, &localized(&path, en));
     let structured = json!({
@@ -406,7 +412,7 @@ fn card(item: &Card, en: bool, rank: Option<usize>, timezone: chrono_tz::Tz) -> 
         })
         .unwrap_or_default();
     format!(
-        "<article class=item>{rank}<div class=read-card><div class=item-meta><span>{}</span> · <span class=read-date><time datetime=\"{}\">{}</time>{views}</span></div><h2 class=item-title><a href=\"{}\">{}</a></h2><p class=item-summary>{}</p></div></article>",
+        "<article class=\"item image-news-card\">{rank}<div class=read-card><div class=item-meta><span>{}</span> · <span class=read-date><time datetime=\"{}\">{}</time>{views}</span></div><h2 class=item-title><a href=\"{}\">{}</a></h2><p class=item-summary>{}</p></div></article>",
         escape(&item.source),
         item.first_seen_at.to_rfc3339(),
         item.first_seen_at

@@ -459,7 +459,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
     assert!(!html.contains("授权全文"));
     assert!(!html.contains("Republished under"));
     let list = client
-        .get(format!("{base}/reads?page=3"))
+        .get(format!("{base}/reads?page=2"))
         .send()
         .await
         .unwrap()
@@ -592,14 +592,14 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         .unwrap();
     assert!(first_page.contains("rel=next href=\"/reads?page=2\""));
     let last_page = client
-        .get(format!("{base}/reads?page=4&lang=en"))
+        .get(format!("{base}/reads?page=2&lang=en"))
         .send()
         .await
         .unwrap()
         .text()
         .await
         .unwrap();
-    assert!(last_page.contains("rel=prev href=\"/reads?page=3&amp;lang=en\""));
+    assert!(last_page.contains("rel=prev href=\"/reads?lang=en\""));
     assert!(!last_page.contains("rel=next"));
     let feed = client
         .get(format!("{base}/feed.xml?topic=reads"))
@@ -772,6 +772,13 @@ async fn check_full_text_image_renewal(state: &AppState, id: Uuid) {
     assert_eq!(updated.zh, document.zh);
 }
 
+/// The cards a Reads page lists, in the site's shared card style.
+fn cards(html: &str, selector: &str) -> usize {
+    scraper::Html::parse_document(html)
+        .select(&scraper::Selector::parse(&format!("{selector} > .item.image-news-card")).unwrap())
+        .count()
+}
+
 async fn check_related_candidates(
     state: &AppState,
     client: &reqwest::Client,
@@ -834,6 +841,15 @@ async fn check_related_candidates(
         links,
         [200, 2, 1].map(|g| format!("/reads/{}", Uuid::from_u128(g + 1)))
     );
+    // Related reads are the list's cards, the way back closes the page, and only the list
+    // fills the window.
+    assert_eq!(cards(&html, ".read-related"), 3);
+    let parts: Vec<_> = document
+        .select(&scraper::Selector::parse("main > *").unwrap())
+        .map(|node| node.value().attr("class").unwrap_or_default())
+        .collect();
+    assert_eq!(parts, ["read", "read-related", "read-actions"]);
+    assert!(!html.contains("reads-index"));
     let html = client
         .get(format!("{base}/reads"))
         .send()
@@ -850,7 +866,9 @@ async fn check_related_candidates(
         .select(&selector)
         .map(|node| node.value().attr("href").unwrap())
         .collect();
-    assert_eq!(links.len(), 12);
+    assert_eq!(links.len(), 24);
+    assert_eq!(cards(&html, ".reads-list"), 24);
+    assert!(html.contains("<body class=\"public reads reads-index\">"));
     assert_eq!(links[0], format!("/reads/{}", Uuid::from_u128(202)));
     assert_eq!(links[1], format!("/reads/{current}"));
     assert_eq!(links[2], format!("/reads/{}", Uuid::from_u128(3)));
@@ -894,7 +912,7 @@ async fn check_cached_reads_stats(state: &AppState, client: &reqwest::Client, ba
     assert!(!cold.contains("class=read-rank"));
     assert!(cold.contains("href=\"/reads?view=hot\" aria-current=\"page\">热读</a>"));
     assert!(cold.contains("热读正在积累"));
-    assert!(!cold.contains("<article class=item>"));
+    assert_eq!(cards(&cold, ".reads-list"), 0);
     // A single ranked article must keep the hot route and active tab.
     sqlx::query("UPDATE read_articles SET views=15, hot_rank=1 WHERE item_id=(SELECT id FROM items WHERE topic_id='reads' AND NOT hidden ORDER BY first_seen_at DESC LIMIT 1)")
         .execute(&state.pool).await.unwrap();
@@ -907,6 +925,7 @@ async fn check_cached_reads_stats(state: &AppState, client: &reqwest::Client, ba
         .await
         .unwrap();
     assert_eq!(sparse.matches("class=read-rank").count(), 1);
+    assert_eq!(cards(&sparse, ".reads-list"), 1);
     assert!(sparse.contains("href=\"/reads?view=hot\" aria-current=\"page\">热读</a>"));
     assert!(sparse.contains("</time> · <span class=read-views"));
     assert!(!sparse.contains("热读 24"));
@@ -925,6 +944,7 @@ async fn check_cached_reads_stats(state: &AppState, client: &reqwest::Client, ba
         .await
         .unwrap();
     assert_eq!(hot.matches("class=read-rank").count(), 24);
+    assert_eq!(cards(&hot, ".reads-list"), 24);
     assert!(hot.contains(">Popular</a>"));
     assert!(!hot.contains("Popular 24"));
     assert!(hot.contains("/reads?view=hot&amp;lang=en"));
