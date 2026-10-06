@@ -466,7 +466,9 @@ p { margin-top: 0; }
 .public.w-topic .group-title { display: none; }
 .photo {
   position: relative;
-  flex: var(--ratio) 1 calc(var(--ratio) * var(--row));
+  /* Growth is the ratio scaled up: a line whose factors sum below 1 shares out only that
+     fraction of its free space, which left a lone portrait short of the row's end. */
+  flex: calc(var(--ratio) * 100) 1 calc(var(--ratio) * var(--row));
   min-width: 0;
   margin: 0;
   overflow: hidden;
