@@ -1342,6 +1342,35 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
         json!([format!("{base}/products/talked-three")])
     );
     assert_eq!(links().await, linked);
+    // A new story about a product still without official pages has it looked for again, but not
+    // twice in a day.
+    let story = |n: usize| {
+        let (state, eink) = (state.clone(), eink.clone());
+        async move {
+            let run = Uuid::new_v4();
+            let url = format!("https://reviews.example/talked-two-again-{n}");
+            sqlx::query("INSERT INTO runs (id, topic_id, triggered_by, status, model) VALUES ($1, 'eink', 'manual', 'ok', 'fixture')")
+                .bind(run).execute(&state.pool).await.unwrap();
+            sqlx::query(
+                "INSERT INTO items (id, topic_id, day, fingerprint, title, summary, url, published_at, first_run_id)
+                 VALUES (gen_random_uuid(), 'eink', CURRENT_DATE, sha256(convert_to($1, 'UTF8')), $1, $1, $1, NOW(), $2)",
+            )
+            .bind(&url).bind(run).execute(&state.pool).await.unwrap();
+            attach(&state, &eink, Section::Gadgets, run, &json!({"items": [{"url": url, "role": "review",
+                "work": {"name": "Talked two", "name_en": "Talked two", "creator": "Amazon", "kind": "reader", "source_urls": []}}]}))
+                .await.unwrap();
+            sources("talked-two").await.1
+        }
+    };
+    assert!(story(0).await, "looked for today, so not again");
+    sqlx::query("UPDATE catalog_entries SET checked_at = NOW() - INTERVAL '2 days' WHERE slug = 'talked-two'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        !story(1).await,
+        "a day later, a new story has it looked for again"
+    );
     // The briefing collects nothing from 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 either.
     let before = calls.lock().unwrap().len();
     sqlx::query("UPDATE topics SET enabled=(id=ANY($1))")

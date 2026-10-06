@@ -408,6 +408,17 @@ pub(crate) async fn attach(
         .execute(&mut *tx)
         .await?
         .rows_affected();
+        // A product still without official pages is looked for again when a new story names it,
+        // at most once a day.
+        if section == Section::Gadgets {
+            sqlx::query(
+                "UPDATE catalog_entries SET checked_at = NULL WHERE id = $1
+                 AND jsonb_array_length(source_urls) = 0 AND checked_at < NOW() - INTERVAL '1 day'",
+            )
+            .bind(entry)
+            .execute(&mut *tx)
+            .await?;
+        }
     }
     // The run published its stories before linking them; their cards now name a role and a page.
     if linked > 0 {

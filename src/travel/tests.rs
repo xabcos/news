@@ -1359,6 +1359,20 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
             .await
             .unwrap();
     assert_eq!(attempts, 3);
+    // Photographed again, a destination that used up its tries gets fresh ones at once.
+    let outcomes = guide::write(&state, &topic, &["Q11299".to_owned()], &mut usage, deadline)
+        .await
+        .unwrap();
+    assert!(
+        outcomes.iter().any(|outcome| outcome["place"] == "Q11299"),
+        "{outcomes:?}"
+    );
+    let attempts: i16 =
+        sqlx::query_scalar("SELECT guide_attempts FROM travel_places WHERE id = 'Q11299'")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(attempts, 1);
 
     // The map and the onward links name only destinations with a page: a place with only a guide
     // joins both, one whose moments are all hidden leaves them, and old moments fade its pin.

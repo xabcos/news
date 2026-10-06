@@ -165,6 +165,12 @@ pub(super) async fn write(
     usage: &mut Usage,
     deadline: Instant,
 ) -> Result<Vec<Value>> {
+    // A destination photographed again gets fresh tries, first in line: people go there, and a
+    // failed guide often succeeds on another try.
+    sqlx::query("UPDATE travel_places SET guide_attempts = 0 WHERE id = ANY($1) AND guide IS NULL")
+        .bind(first)
+        .execute(&state.pool)
+        .await?;
     let pending = sqlx::query_as::<_, Pending>(
         "SELECT id, name, name_en, voyage, wiki_zh, wiki_en FROM travel_places
          WHERE guide IS NULL AND guide_attempts < $1
