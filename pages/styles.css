@@ -496,7 +496,8 @@ p { margin-top: 0; }
   pointer-events: none;
 }
 /* An administrator's switch on 𝑾 photographs (app.js): an outlined heart until the
-   photograph is published, then filled. */
+   photograph is published, then filled. A card shows it when pointed at; otherwise only a
+   published photograph keeps a faint mark, and on touch screens a waiting one takes no tap. */
 .publish-button svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linejoin: round; }
 .publish-button[aria-pressed="true"] { color: #f5a48f; }
 .publish-button[aria-pressed="true"] svg { fill: currentColor; }
@@ -512,10 +513,21 @@ p { margin-top: 0; }
   border: 0;
   border-radius: 999px;
   color: #fff;
-  background: rgba(0, 0, 0, .42);
+  background: none;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .5));
+  opacity: 0;
   cursor: pointer;
+  transition: opacity .2s ease;
 }
+.photo-publish[aria-pressed="true"] { opacity: .1; }
+.photo:focus-within .photo-publish { opacity: 1; }
 .photo-publish:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+@media (hover: hover) {
+  .photo:hover .photo-publish { opacity: 1; }
+}
+@media (hover: none) {
+  .photo-publish[aria-pressed="false"] { visibility: hidden; }
+}
 .photo-caption {
   position: absolute;
   right: 0;
@@ -828,6 +840,7 @@ p { margin-top: 0; }
 .viewer-map .travel-map-land { background: rgba(255, 255, 255, .32); }
 .viewer-map .travel-pin { transition: left .8s ease, top .8s ease; }
 .viewer-trail { position: absolute; width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 999px; background: #f5a48f; opacity: .6; }
+/* The viewer's buttons stay faint, nine-tenths see-through, until pointed at or focused. */
 .viewer-button {
   position: absolute;
   display: grid;
@@ -838,13 +851,15 @@ p { margin-top: 0; }
   border: 0;
   border-radius: 999px;
   color: #fff;
-  background: rgba(255, 255, 255, .08);
+  background: none;
+  opacity: .1;
   font-size: 1.6rem;
   line-height: 1;
   cursor: pointer;
   transition: background-color .18s ease, opacity .18s ease;
 }
-.viewer-button:hover:not(:disabled) { background: rgba(255, 255, 255, .18); }
+.viewer-button:hover:not(:disabled),
+.viewer-button:focus-visible { opacity: 1; background: rgba(255, 255, 255, .18); }
 .viewer-button:disabled { opacity: 0; pointer-events: none; }
 .viewer-close { top: .6rem; right: .6rem; }
 .viewer-publish { top: .6rem; right: 3.85rem; }
