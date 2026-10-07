@@ -1,12 +1,11 @@
-//! A page per destination at `/travel/{slug}` with its guide and moments, all of them or only
-//! those mainly of people (`?kind=portraits`), which load page by page from
-//! `/travel/{slug}/moments`, then the destinations nearby and in the same country to go on to;
-//! its guide for the photograph viewer (`/travel/{slug}/guide.json`); the map's data with the
-//! favorite moments shown beside it, and the sitemap. The feed itself is the 𝑻𝒓𝒂𝒗𝒆𝒍 tab of the news
-//! page.
+//! A page per destination at `/travel/{slug}` with its guide and moments, which load page by
+//! page from `/travel/{slug}/moments`, then the destinations nearby and in the same country to
+//! go on to; its guide for the photograph viewer (`/travel/{slug}/guide.json`); the map's data
+//! with the favorite moments shown beside it, and the sitemap. The feed itself is the 𝑻𝒓𝒂𝒗𝒆𝒍
+//! tab of the news page.
 
 use super::{
-    MOMENT_JOIN, MOMENT_JSON, PORTRAIT, TOPIC_ID,
+    MOMENT_JOIN, MOMENT_JSON, TOPIC_ID,
     guide::{Entry, Guide},
 };
 use crate::{
@@ -32,8 +31,8 @@ use uuid::Uuid;
 const CHROME: Chrome<'static> = Chrome {
     current: TOPIC_ID,
     section: "travel",
-    stylesheet: "/travel.css?v=5",
-    script: "/travel.js?v=11",
+    stylesheet: "/travel.css?v=6",
+    script: "/travel.js?v=12",
     feed: ("𝑻𝒓𝒂𝒗𝒆𝒍", "/feed.xml?topic=travel"),
 };
 /// Map pins of destinations with moments from this many recent days stand out, and the most
@@ -45,8 +44,6 @@ const PAGE_MOMENTS: usize = 24;
 /// Destinations to go on to: the nearest with a photograph, then names in the same country.
 const NEARBY: i64 = 6;
 const SAME_COUNTRY: i64 = 40;
-/// The `kind` that narrows a destination's moments to those mainly of people.
-const PORTRAITS: &str = "portraits";
 
 pub(crate) fn router() -> Router<AppState> {
     reading::pages(
@@ -61,16 +58,14 @@ pub(crate) fn router() -> Router<AppState> {
     .layer(tower_http::compression::CompressionLayer::new())
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Deserialize)]
 struct Params {
     lang: Option<String>,
-    kind: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct Page {
     before: String,
-    kind: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -111,21 +106,15 @@ async fn destination(
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(missing)?;
-    let (total, portraits) =
-        sqlx::QueryBuilder::new("SELECT COUNT(*), COUNT(*) FILTER (WHERE i.tags[1] = ")
-            .push_bind(PORTRAIT)
-            .push(
-                ") FROM travel_moments m JOIN items i ON i.id = m.item_id
-                 JOIN travel_places p ON p.id = m.place_id WHERE NOT i.hidden AND p.slug = ",
-            )
-            .push_bind(&slug)
-            .build_query_as::<(i64, i64)>()
-            .fetch_one(&state.pool)
-            .await?;
-    // Portraits are offered beside all moments only when they narrow the list.
-    let choice = portraits > 0 && portraits < total;
-    let only_portraits = choice && params.kind.as_deref() == Some(PORTRAITS);
-    let (moments, next) = moments(&state, &slug, only_portraits, None).await?;
+    let (moments, next) = moments(&state, &slug, None).await?;
+    let total = sqlx::QueryBuilder::new(
+        "SELECT COUNT(*) FROM travel_moments m JOIN items i ON i.id = m.item_id
+         JOIN travel_places p ON p.id = m.place_id WHERE NOT i.hidden AND p.slug = ",
+    )
+    .push_bind(&slug)
+    .build_query_scalar::<i64>()
+    .fetch_one(&state.pool)
+    .await?;
     let guide = place.guide.as_ref().map(|guide| &guide.0);
     if guide.is_none() && moments.is_empty() {
         return Err(missing());
@@ -152,7 +141,7 @@ async fn destination(
             let landscape = width * 5 >= height * 6;
             Some((
                 (landscape, importance, Reverse(order), Reverse(index)),
-                (url, photo),
+                (url, photo, width, height),
             ))
         })
         .max_by_key(|(key, _)| *key)
@@ -161,20 +150,16 @@ async fn destination(
         "<article class=destination><header class=\"destination-hero{}\">",
         if cover.is_some() { " has-photo" } else { "" }
     );
-    if let Some((url, image)) = cover {
+    if let Some((url, image, width, height)) = cover {
         let _ = write!(
             content,
-            "<img class=destination-photo src=\"{}\" alt=\"{}\"{} fetchpriority=high decoding=async referrerpolicy=no-referrer>",
+            "<img class=destination-photo src=\"{}\" alt=\"{}\" width={width} height={height} fetchpriority=high decoding=async referrerpolicy=no-referrer>",
             escape(url),
             escape(
                 image[choose(en, "caption", "caption_en")]
                     .as_str()
                     .unwrap_or(name)
             ),
-            match (image["width"].as_u64(), image["height"].as_u64()) {
-                (Some(width), Some(height)) => format!(" width={width} height={height}"),
-                _ => String::new(),
-            }
         );
     }
     let alternate = choose(en, &place.name_en, &place.name);
@@ -228,41 +213,11 @@ async fn destination(
             .replace('&', "\\u0026")
             .replace('<', "\\u003c")
             .replace('>', "\\u003e");
-        // The filters link to the moments themselves, below the guide.
-        let kinds = if choice {
-            let link = |kind: Option<&str>, label: String| {
-                let target =
-                    kind.map_or_else(|| path.clone(), |kind| format!("{path}?kind={kind}"));
-                format!(
-                    "<a href=\"{}#photos\"{}>{label}</a>",
-                    escape(&localized(&target, en)),
-                    if kind.is_some() == only_portraits {
-                        " aria-current=\"true\""
-                    } else {
-                        ""
-                    }
-                )
-            };
-            format!(
-                "<nav class=moment-kinds>{}{}</nav>",
-                link(None, choose(en, "全部", "All").to_owned()),
-                link(
-                    Some(PORTRAITS),
-                    format!("{} {portraits}", choose(en, "人像", "Portraits"))
-                )
-            )
-        } else {
-            String::new()
-        };
-        let mut source = format!("{path}/moments");
-        if only_portraits {
-            let _ = write!(source, "?kind={PORTRAITS}");
-        }
         let _ = write!(
             content,
-            "<section class=destination-moments id=photos><h2>{} <span>{total}</span></h2>{kinds}<div class=\"postcards\" data-moments data-source=\"{}\"{}></div><script type=\"application/json\" id=moments>{data}</script></section>",
+            "<section class=destination-moments><h2>{} <span>{total}</span></h2><div class=\"postcards\" data-moments data-source=\"{}\"{}></div><script type=\"application/json\" id=moments>{data}</script></section>",
             choose(en, "旅人瞬间", "Moments"),
-            escape(&source),
+            escape(&format!("{path}/moments")),
             next.map_or_else(String::new, |next| format!(" data-next=\"{next}\"")),
         );
     }
@@ -296,7 +251,7 @@ async fn destination(
         "url": absolute(&state, &localized(&path, en)),
         "geo": { "@type": "GeoCoordinates", "latitude": place.latitude, "longitude": place.longitude },
     });
-    if let Some((url, _)) = cover {
+    if let Some((url, ..)) = cover {
         structured["image"] = json!(url);
     }
     let html = crate::site::layout(
@@ -491,12 +446,10 @@ fn guide_sections(guide: &Guide, en: bool) -> String {
     html
 }
 
-/// One page of a destination's moments, or of those mainly of people, newest first, and the
-/// cursor of the next page.
+/// One page of a destination's moments, newest first, and the cursor of the next page.
 async fn moments(
     state: &AppState,
     slug: &str,
-    portraits: bool,
     before: Option<After>,
 ) -> Result<(Vec<Value>, Option<String>)> {
     let mut query = sqlx::QueryBuilder::new(
@@ -515,9 +468,6 @@ async fn moments(
         .push_bind(TOPIC_ID)
         .push(" AND NOT items.hidden AND p.slug = ")
         .push_bind(slug);
-    if portraits {
-        query.push(" AND items.tags[1] = ").push_bind(PORTRAIT);
-    }
     push_page(&mut query, before, PAGE_MOMENTS);
     let mut rows = query
         .build_query_as::<(DateTime<Utc>, Uuid, Value)>()
@@ -537,8 +487,7 @@ async fn more(
 ) -> Result<Response> {
     let after = parse_after(&page.before)?;
     reader.check(&state, TOPIC_ID)?;
-    let portraits = page.kind.as_deref() == Some(PORTRAITS);
-    let (moments, next) = moments(&state, &slug, portraits, Some(after)).await?;
+    let (moments, next) = moments(&state, &slug, Some(after)).await?;
     Ok(conditional(
         &headers,
         &Rendered::new(json!({ "moments": moments, "next": next }).to_string()),

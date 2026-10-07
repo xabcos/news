@@ -77,7 +77,7 @@ pub(crate) struct Located {
     pub destination: Destination,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct Response {
     #[serde(default)]
     entities: HashMap<String, Entity>,
@@ -91,7 +91,7 @@ struct Hit {
     id: String,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct Entity {
     /// Absent for missing items.
     #[serde(default)]

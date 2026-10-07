@@ -1115,7 +1115,7 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
         "旅人瞬间 <span>5</span>",
         "data-source=\"/travel/kyoto/moments\"",
         "TouristDestination",
-        "<section class=destination-moments id=photos>",
+        "<section class=destination-moments>",
         "id=moments>",
         "35.01°N 135.77°E",
         "维基导游 · Kyoto",
@@ -1138,8 +1138,6 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
         "依据资料整理",
         "destination-more",
         "href=\"/travel/kyoto\"",
-        // Without portraits there is nothing to filter.
-        "moment-kinds",
     ] {
         assert!(!html.contains(text), "unexpected {text}");
     }
@@ -1188,57 +1186,26 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
             .status(),
         400
     );
-    // Two of Kyoto's five moments are mainly of people: the page offers them on their own, and
-    // the filter carries through the next pages. All of Bangkok's are, so it offers no choice.
+    // Links shared while the page offered a portraits filter still show every moment.
     sqlx::query(
         "UPDATE items SET tags = ARRAY['人像'] || tags WHERE id IN (
-             SELECT m.item_id FROM travel_moments m JOIN items i ON i.id = m.item_id
-             WHERE m.place_id = 'Q34600' ORDER BY i.first_seen_at DESC, i.id DESC LIMIT 2)
-         OR id IN (SELECT m.item_id FROM travel_moments m JOIN travel_places p ON p.id = m.place_id
-             WHERE p.slug = 'bangkok')",
+             SELECT item_id FROM travel_moments WHERE place_id = 'Q34600' LIMIT 2)",
     )
     .execute(&state.pool)
     .await
     .unwrap();
-    let text = |path: &'static str| async move { get(path).await.unwrap().text().await.unwrap() };
-    assert!(text("/travel/kyoto").await.contains(
-        "旅人瞬间 <span>5</span></h2><nav class=moment-kinds><a href=\"/travel/kyoto#photos\" aria-current=\"true\">全部</a><a href=\"/travel/kyoto?kind=portraits#photos\">人像 2</a></nav>"
-    ));
-    let portraits = text("/travel/kyoto?kind=portraits").await;
-    assert!(
-        portraits.contains(
-            "<a href=\"/travel/kyoto?kind=portraits#photos\" aria-current=\"true\">人像 2</a>"
-        ) && portraits.contains("data-source=\"/travel/kyoto/moments?kind=portraits\"")
-    );
-    let data = portraits
+    let shared = get("/travel/kyoto?kind=portraits")
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let data = shared
         .split_once("id=moments>")
         .and_then(|(_, rest)| rest.split_once("</script>"))
         .unwrap()
         .0;
-    let shown: Vec<Value> = serde_json::from_str(data).unwrap();
-    assert!(shown.len() == 2 && shown.iter().all(|moment| moment["tags"][0] == "人像"));
-    let newest = shown[0]["id"].as_str().unwrap();
-    let time = chrono::DateTime::parse_from_rfc3339(shown[0]["first_seen_at"].as_str().unwrap())
-        .unwrap()
-        .timestamp_micros();
-    let page: Value = get(&format!(
-        "/travel/kyoto/moments?kind=portraits&before={time}_{newest}"
-    ))
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
-    // Unfiltered, the four older moments would follow; filtered, only the other portrait does.
-    assert_eq!(page["moments"].as_array().unwrap().len(), 1);
-    assert_eq!(page["moments"][0]["id"], shown[1]["id"]);
-    assert!(
-        text("/travel/kyoto?kind=else")
-            .await
-            .contains("<a href=\"/travel/kyoto#photos\" aria-current=\"true\">全部</a>")
-    );
-    let bangkok = text("/travel/bangkok?kind=portraits").await;
-    assert!(bangkok.contains("曼谷") && !bangkok.contains("moment-kinds"));
+    assert_eq!(serde_json::from_str::<Vec<Value>>(data).unwrap().len(), 5);
     let english = get("/travel/kyoto?lang=en")
         .await
         .unwrap()
@@ -1249,9 +1216,6 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
     assert!(
         english.contains("<h2>Nearby</h2>")
             && english.contains("href=\"/travel/hokkaido?lang=en\"")
-            && english.contains(
-                "<a href=\"/travel/kyoto?kind=portraits&amp;lang=en#photos\">Portraits 2</a>"
-            )
     );
     let manhattan = get("/travel/manhattan")
         .await

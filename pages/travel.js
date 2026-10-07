@@ -122,7 +122,10 @@
     if (words) body.append(element("p", "postcard-words", words));
     const meta = element("p", "postcard-meta");
     meta.append(link(item.url, "", item.source || "X", true));
-    if (when) meta.append(` · ${when}`);
+    if (when) meta.append(" · ", element("span", "", when));
+    // The subjects follow the time, set apart by a wider space that hangs where a line breaks.
+    const tags = english() && item.tags_en?.length ? item.tags_en : item.tags || [];
+    for (const tag of tags) meta.append("\u2002", element("span", "postcard-tag", tag));
     body.append(meta);
     if (place?.slug) body.append(link(destination(place.slug), "postcard-more", text().more(pick(place, "name"))));
     card.append(media, body);
@@ -420,7 +423,6 @@
       if (loading || !entries.some((entry) => entry.isIntersecting)) return;
       loading = true;
       try {
-        // The source may already carry a filter.
         const url = new URL(PublicPage.readPath(grid.dataset.source), location.href);
         url.searchParams.set("before", next);
         const response = await fetch(url, { headers: { Accept: "application/json" } });
