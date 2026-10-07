@@ -655,9 +655,11 @@ function applyLang() {
 }
 
 function renderTabs() {
-  // The visual feed gets a wider desktop canvas while every other topic keeps the
-  // narrow reading measure. This class also updates when navigating between tabs.
-  document.body.classList.toggle("p-topic", state.topic === "p");
+  // Feeds fill the window with cards: ALL tiles each topic under its heading, and a topic's
+  // cards flow across its days. The daily briefing and equity notes keep the reading measure.
+  const reading = state.topic === INSIGHT_ID || state.topic === EQUITY_ID;
+  document.body.classList.toggle("all-topic", !state.topic);
+  document.body.classList.toggle("card-topic", Boolean(state.topic) && !reading && state.topic !== PHOTO_TOPIC && state.topic !== TRAVEL_TOPIC);
   document.body.classList.toggle("w-topic", state.topic === PHOTO_TOPIC);
   document.body.classList.toggle("travel-topic", state.topic === TRAVEL_TOPIC);
   renderTravelMap();
@@ -1057,7 +1059,6 @@ function renderGroups(digest) {
   return visible.map((group) => {
     const section = document.createElement("section");
     section.className = "group";
-    section.classList.toggle("image-news-group", group.id === "p" || Boolean(sectionOf(group.id)));
     section.classList.toggle("photo-group", group.id === PHOTO_TOPIC);
     section.classList.toggle("catalog-book-group", group.id === "book");
     section.classList.toggle("postcard-group", group.id === TRAVEL_TOPIC);

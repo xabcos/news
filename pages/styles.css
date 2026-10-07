@@ -163,9 +163,9 @@ p { margin-top: 0; }
 
 .public .shell { max-width: 46rem; margin: 0 auto; padding: .75rem 1.25rem 3rem; }
 
-/* The visual tabs fill the window. */
-.public:is(.p-topic, .w-topic, .travel-topic) .shell { max-width: none; padding-inline: clamp(1.25rem, 3vw, 3rem); }
-.public:is(.p-topic, .w-topic, .travel-topic) .back-to-top { right: calc(1rem + env(safe-area-inset-right, 0px)); }
+/* Feeds fill the window; the daily briefing and equity notes keep the reading measure. */
+.public:is(.all-topic, .card-topic, .w-topic, .travel-topic) .shell { max-width: none; padding-inline: clamp(1.25rem, 3vw, 3rem); }
+.public:is(.all-topic, .card-topic, .w-topic, .travel-topic) .back-to-top { right: calc(1rem + env(safe-area-inset-right, 0px)); }
 
 .back-to-top {
   position: fixed;
@@ -364,25 +364,28 @@ p { margin-top: 0; }
 
 /* ---------- visual news (𝐏) ---------- */
 
-.image-news-group {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-items: flex-start;
-  gap: .9rem;
-}
-.public.p-topic .digest {
+/* A topic's cards flow across its days; ALL tiles each topic's cards under its heading. */
+.public.card-topic .digest,
+.public.all-topic .group:not(.photo-group, .postcard-group) {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(var(--tile), 100%), 1fr));
-  align-items: flex-start;
   gap: clamp(.9rem, 1.6vw, 1.5rem);
 }
-.public.p-topic .day-block,
-.public.p-topic .image-news-group { display: contents; }
-.public.p-topic .day-divider,
-.public.p-topic .group-title { display: none; }
-.public.p-topic .group-more { grid-column: 1 / -1; }
-.image-news-group > .group-title { grid-column: 1 / -1; }
-.image-news-group > .group-more { grid-column: 1 / -1; }
+.public.card-topic :is(.day-block, .group) { display: contents; }
+.public.card-topic :is(.day-divider, .group-title) { display: none; }
+.public:is(.all-topic, .card-topic) :is(.group-title, .group-more, .empty) { grid-column: 1 / -1; }
+.public:is(.all-topic, .card-topic) .item:not(.image-news-card) {
+  min-width: 0;
+  padding: 1.2rem 1.35rem 1.25rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-small);
+}
+.public:is(.all-topic, .card-topic) .item.is-pinned::before { display: none; }
+@media (max-width: 560px) {
+  .public:is(.all-topic, .card-topic) .item:not(.image-news-card) { padding: 1rem; }
+}
 .image-news-card {
   min-width: 0;
   padding: 0 0 .85rem;
@@ -434,7 +437,6 @@ p { margin-top: 0; }
 }
 
 @media (max-width: 560px) {
-  .image-news-group { grid-template-columns: 1fr; }
   .insight-gallery { grid-template-columns: 1fr; }
   .insight-hotspots-date { white-space: normal; text-align: right; }
 }
@@ -668,12 +670,6 @@ p { margin-top: 0; }
   .postcard { transition: transform .2s ease, box-shadow .2s ease; }
   .postcard:hover { transform: translateY(-2px); box-shadow: var(--shadow-small), 0 0 0 1px var(--line-strong); }
   .postcard-media:hover img { transform: scale(1.03); }
-}
-/* In ALL the postcards share the reading column with the news, so they stay small. */
-.public:not(.travel-topic) .postcard-group > .postcards { --tile: 13rem; --postcard-gap: .75rem; }
-@media (min-width: 769px) {
-  .public:not(.travel-topic) .postcard-group .postcard-title { font-size: .92rem; }
-  .public:not(.travel-topic) .postcard-group .postcard-words { font-size: .84rem; -webkit-line-clamp: 2; }
 }
 
 /* The land is a dotted mask, so it takes the theme's colour. */

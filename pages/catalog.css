@@ -10,7 +10,7 @@
 .catalog-music .catalog-grid { --tile: 16rem; }
 .catalog-book .catalog-grid { --tile: 30rem; }
 .catalog-card { min-width: 0; }
-.image-news-group.catalog-book-group { grid-template-columns: 1fr; }
+.public.all-topic .catalog-book-group { --tile: 30rem; }
 .catalog-card.catalog-movie .image-news-media img { object-fit: contain; }
 .catalog-card.catalog-music .image-news-media { aspect-ratio: 1; }
 .catalog-card.catalog-music .image-news-media img { object-fit: contain; }
