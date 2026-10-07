@@ -58,13 +58,13 @@ fn cover(section: Section) -> String {
 /// The groups of an entry's items, in page order.
 const ROLES: [&str; 3] = ["review", "share", "news"];
 
-#[derive(Default, Deserialize)]
+#[derive(Deserialize)]
 struct Params {
     lang: Option<String>,
     before: Option<String>,
     kind: Option<String>,
 }
-#[derive(Default, Deserialize)]
+#[derive(Deserialize)]
 struct Search {
     lang: Option<String>,
     q: Option<String>,

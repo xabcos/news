@@ -13,7 +13,7 @@ use tokio::task::JoinSet;
 use url::Url;
 
 const POOL_LIMIT: i64 = 160;
-pub(super) const CANDIDATE_LIMIT: usize = 32;
+const CANDIDATE_LIMIT: usize = 32;
 
 const FEEDS: &[(&str, &str, &str)] = &[
     ("Cloudflare", "en", "https://blog.cloudflare.com/rss/"),

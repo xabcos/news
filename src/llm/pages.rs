@@ -44,12 +44,12 @@ pub(crate) fn router() -> Router<AppState> {
         .layer(tower_http::compression::CompressionLayer::new())
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Deserialize)]
 struct Params {
     lang: Option<String>,
 }
 
-#[derive(Clone, FromRow)]
+#[derive(Clone)]
 struct VendorRow {
     id: String,
     name: String,

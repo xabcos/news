@@ -420,7 +420,7 @@ async function load(silent = false) {
       await load();
       return;
     }
-    if (epoch === state.epoch && !silent) setStatus(t().failed, true);
+    if (epoch === state.epoch && !silent) setStatus(t().failed);
   }
 }
 
@@ -477,7 +477,7 @@ async function loadInsight(silent = false) {
     else renderInsight(state.insight, silent);
   } catch (error) {
     if (error.name === "AbortError") return;
-    if (epoch === state.epoch && !silent) setStatus(t().failed, true);
+    if (epoch === state.epoch && !silent) setStatus(t().failed);
   }
 }
 
@@ -635,14 +635,10 @@ function navigate(changes) {
   load();
 }
 
-function setStatus(message, failed = false) {
+function setStatus(message) {
   el.status.replaceChildren();
   if (!message) return;
-  el.status.append(message);
-  if (failed) {
-    const retry = button(t().retry, () => load(), "button button-secondary button-small");
-    el.status.append(" ", retry);
-  }
+  el.status.append(message, " ", button(t().retry, () => load(), "button button-secondary button-small"));
 }
 
 function applyLang() {
@@ -1352,7 +1348,6 @@ function emptyState(groups, day) {
 function card(item, reading = false) {
   const article = document.createElement("article");
   article.className = "item";
-  article.classList.toggle("is-pinned", item.pinned);
 
   const meta = document.createElement("div");
   meta.className = "item-meta";

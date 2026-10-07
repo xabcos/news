@@ -9,7 +9,6 @@
 .catalog-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(var(--tile), 100%), 1fr)); gap: 1.5rem; align-items: start; }
 .catalog-music .catalog-grid { --tile: 16rem; }
 .catalog-book .catalog-grid { --tile: 30rem; }
-.catalog-card { min-width: 0; }
 .public.all-topic .catalog-book-group { --tile: 30rem; }
 .catalog-card.catalog-movie .image-news-media img { object-fit: contain; }
 .catalog-card.catalog-music .image-news-media { aspect-ratio: 1; }

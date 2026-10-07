@@ -46,13 +46,12 @@ const MAX_CURSOR_LEN: usize = 256;
 const PUBLIC_CACHE_CONTROL: HeaderValue =
     HeaderValue::from_static("public, max-age=60, stale-while-revalidate=300");
 
-#[derive(Debug, Clone, Serialize, FromRow)]
+#[derive(Debug, Clone, FromRow)]
 pub struct TopicMeta {
     pub id: String,
     pub name: String,
     pub name_en: String,
     pub description: String,
-    #[serde(skip_serializing)]
     pub visible: bool,
 }
 
@@ -532,13 +531,8 @@ impl DigestCache {
 
     /// Returns typed public day counts for private-feed assembly. The rendered response is
     /// already cached by `(topic, limit)`, so authenticated pages do not rescan public items.
-    pub(crate) async fn day_counts(
-        &self,
-        state: &AppState,
-        topic: Option<&str>,
-        limit: i64,
-    ) -> Result<Vec<DayCount>> {
-        let rendered = self.days(state, topic, limit).await?;
+    async fn day_counts(&self, state: &AppState, topic: Option<&str>) -> Result<Vec<DayCount>> {
+        let rendered = self.days(state, topic, MAX_DAYS).await?;
         let payload: CachedDays = serde_json::from_slice(&rendered.body)?;
         Ok(payload.days)
     }
@@ -777,8 +771,8 @@ struct DaysQuery {
     limit: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub(crate) struct DayCount {
+#[derive(Debug, Serialize, Deserialize, FromRow)]
+struct DayCount {
     day: NaiveDate,
     count: i64,
 }
@@ -951,7 +945,7 @@ async fn me_feed(
     let public_days = if include_public {
         state
             .digest
-            .day_counts(&state, query.topic.as_deref(), MAX_DAYS)
+            .day_counts(&state, query.topic.as_deref())
             .await?
     } else {
         Vec::new()
@@ -1005,7 +999,7 @@ async fn me_feed(
     for index in selected {
         let card = &cards[index];
         let ((items, next), total, updated_at) = match selected_day {
-            Some(day) if selected_public || public_ids.contains(&card.id) => {
+            Some(day) if public_ids.contains(&card.id) => {
                 let snapshot = state.digest.snapshot(&state, &card.id, day).await?;
                 let (items, next) = page(&snapshot.items, after, limit);
                 (

@@ -76,7 +76,7 @@ struct Event {
     source_indexes: Vec<usize>,
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Deserialize)]
 pub(crate) struct Query {
     day: Option<NaiveDate>,
     at: Option<DateTime<Utc>>,

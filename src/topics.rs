@@ -152,7 +152,7 @@ struct Item {
 }
 
 /// Every editable column, all optional: a PATCH body, or the settings part of a create.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct TopicFields {
     name: Option<String>,
     name_en: Option<String>,
@@ -329,7 +329,7 @@ pub(crate) fn router() -> Router<AppState> {
 // ---------------------------------------------------------------------------
 
 /// An interval covering a whole day means "once per active day, at the start time".
-pub(crate) const DAILY_INTERVAL_MINUTES: i32 = 1440;
+const DAILY_INTERVAL_MINUTES: i32 = 1440;
 
 /// When the topic should run next, in UTC. `last` is the run the cadence continues from;
 /// `None` (a new or re-enabled topic) asks for the first run as soon as the window allows.

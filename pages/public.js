@@ -36,12 +36,12 @@
     // photograph and returns nothing at the end, which stops the play. The button, Space and
     // a tap on the photograph switch it, and closing stops it. The viewer calls `shown()`
     // whenever it changes the photograph. Each photograph stays `dwell` milliseconds.
-    autoplay({ dialog, image, className, next, ahead, names, dwell = DWELL }) {
+    autoplay({ dialog, image, next, ahead, names, dwell = DWELL }) {
       const progress = document.createElement("div");
       progress.className = "play-progress";
       const button = document.createElement("button");
       button.type = "button";
-      button.className = `${className} play-button`;
+      button.className = "viewer-button play-button";
       dialog.prepend(progress, button);
       let playing = false;
       let walk = null;
@@ -125,7 +125,7 @@
       new MutationObserver(() => { if (dialog.open) next.disabled = !neighbor(1); })
         .observe(root, { childList: true, subtree: true });
       const play = window.PublicPage.autoplay({
-        dialog, image, className: "viewer-button", next: () => step(1), ahead, names, dwell,
+        dialog, image, next: () => step(1), ahead, names, dwell,
       });
       // A horizontal swipe on the photograph turns the page on touch screens.
       let start = null;

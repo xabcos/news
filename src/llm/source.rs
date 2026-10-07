@@ -207,7 +207,7 @@ pub(crate) async fn links(
     Ok(anchors(&html, &url, domains))
 }
 
-pub(crate) fn anchors(html: &str, base: &Url, domains: &[String]) -> Vec<Link> {
+fn anchors(html: &str, base: &Url, domains: &[String]) -> Vec<Link> {
     let document = Html::parse_document(html);
     let mut writer = Writer::new(base, domains, 0);
     for anchor in document.select(&selector("a[href]")) {

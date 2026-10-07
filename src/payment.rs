@@ -30,14 +30,14 @@ use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
 
-pub(crate) const PRO_PRICE_FEN: i64 = 9_900;
-pub(crate) const PRO_DURATION_DAYS: i32 = 31;
+const PRO_PRICE_FEN: i64 = 9_900;
+const PRO_DURATION_DAYS: i32 = 31;
 const PAYMENT_CREATE_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 const PAYMENT_CLAIM_TTL: ChronoDuration = ChronoDuration::minutes(2);
 const ORDER_CLEANUP_BATCH_SIZE: i64 = 500;
 const ORDER_CLEANUP_MAX_BATCHES: usize = 20;
 
-#[derive(Debug, Clone, Serialize, FromRow)]
+#[derive(Debug, Serialize, FromRow)]
 pub(crate) struct Plan {
     pub(crate) code: String,
     pub(crate) name: String,
@@ -50,7 +50,7 @@ pub(crate) struct Plan {
     pub(crate) updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, FromRow)]
+#[derive(Debug, Serialize, FromRow)]
 pub(crate) struct Order {
     pub(crate) id: i64,
     pub(crate) plan_code: String,
@@ -87,7 +87,7 @@ pub(crate) struct PlansResponse {
     pub(crate) checkout_enabled: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct YpayPayment {
     #[serde(default)]
     pub(crate) order_id: Option<i64>,

@@ -28,7 +28,7 @@ use uuid::Uuid;
 /// Mirrored copies are renewed this long before tmpfile expires them.
 pub(crate) const RENEW_BEFORE: TimeDelta = TimeDelta::hours(6);
 /// News images of this many recent days are renewed, even after a copy has lapsed.
-pub(crate) const RENEW_DAYS: i64 = 7;
+const RENEW_DAYS: i64 = 7;
 const IMAGE_BATCH_TIMEOUT: Duration = Duration::from_secs(90);
 const ORIGIN_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 // Tiny square thumbnails are commonly used by publishers for "image unavailable"

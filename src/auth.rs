@@ -24,9 +24,9 @@ const GLOBAL_RATE_WINDOW_MAX: i64 = 120;
 const LOGIN_GLOBAL_LOCK_ID: i64 = 0x584e_4557_534c_4f43; // "XNEWSLOC"
 /// Set beside the session cookie, but readable by the public page's script. It only decides
 /// which feed the page asks for first; that request is authorized by the session as usual.
-pub(crate) const ROLE_COOKIE_NAME: &str = "news_role";
+const ROLE_COOKIE_NAME: &str = "news_role";
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, sqlx::FromRow)]
 pub(crate) struct User {
     pub(crate) id: i64,
     pub(crate) email: String,
@@ -61,7 +61,7 @@ impl User {
         self.role == "admin"
     }
 
-    pub(crate) fn is_pro(&self) -> bool {
+    fn is_pro(&self) -> bool {
         self.pro_until.is_some_and(|until| until > Utc::now())
     }
 

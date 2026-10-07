@@ -317,17 +317,6 @@ p { margin-top: 0; }
 .group-title p { margin: 0; }
 
 .item { position: relative; padding: 1.05rem 0 1.1rem; border-bottom: 1px solid var(--line); }
-.item.is-pinned { padding-left: .9rem; }
-.item.is-pinned::before {
-  content: "";
-  position: absolute;
-  top: 1.2rem;
-  bottom: 1.2rem;
-  left: 0;
-  width: 3px;
-  border-radius: 3px;
-  background: var(--primary);
-}
 .item-meta {
   display: flex;
   flex-wrap: wrap;
@@ -362,7 +351,7 @@ p { margin-top: 0; }
 .empty { padding: 3rem 1rem; text-align: center; }
 .empty .button { margin-top: .8rem; }
 
-/* ---------- visual news (𝐏) ---------- */
+/* ---------- feed cards ---------- */
 
 /* A topic's cards flow across its days; ALL tiles each topic's cards under its heading. */
 .public.card-topic .digest,
@@ -374,30 +363,24 @@ p { margin-top: 0; }
 .public.card-topic :is(.day-block, .group) { display: contents; }
 .public.card-topic :is(.day-divider, .group-title) { display: none; }
 .public:is(.all-topic, .card-topic) :is(.group-title, .group-more, .empty) { grid-column: 1 / -1; }
-.public:is(.all-topic, .card-topic) .item:not(.image-news-card) {
+/* Text, picture and travel cards share one look; a photograph runs to its card's edges. */
+.image-news-card,
+.postcard,
+.public:is(.all-topic, .card-topic) .item {
   min-width: 0;
-  padding: 1.2rem 1.35rem 1.25rem;
   border: 1px solid var(--line);
   border-radius: var(--radius-l);
   background: var(--surface-solid);
   box-shadow: var(--shadow-small);
 }
-.public:is(.all-topic, .card-topic) .item.is-pinned::before { display: none; }
+.public:is(.all-topic, .card-topic) .item:not(.image-news-card) { padding: 1.2rem 1.35rem 1.25rem; }
 @media (max-width: 560px) {
   .public:is(.all-topic, .card-topic) .item:not(.image-news-card) { padding: 1rem; }
 }
-.image-news-card {
-  min-width: 0;
-  padding: 0 0 .85rem;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-l);
-  background: var(--surface-solid);
-  box-shadow: var(--shadow-small);
-}
-.image-news-card::before,
-.image-news-card.is-pinned::before { display: none; }
-.image-news-card.is-pinned { padding-left: 0; }
+
+/* ---------- visual news (𝐏) ---------- */
+
+.image-news-card { padding: 0 0 .85rem; overflow: hidden; }
 .image-news-card .image-news-media {
   display: block;
   overflow: hidden;
@@ -585,15 +568,7 @@ p { margin-top: 0; }
 .postcards > .group-more,
 .public.travel-topic .group-more,
 .public.travel-topic .empty { grid-column: 1 / -1; }
-.postcard {
-  min-width: 0;
-  margin: 0 0 var(--postcard-gap);
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-l);
-  background: var(--surface-solid);
-  box-shadow: var(--shadow-small);
-}
+.postcard { margin: 0 0 var(--postcard-gap); overflow: hidden; }
 .postcard-media {
   position: relative;
   display: block;
