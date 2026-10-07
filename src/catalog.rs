@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use source::{Source, excerpt, fold, public_url, same_page};
+pub(crate) use source::{is_logo, meta_images};
 use std::{
     collections::{HashMap, HashSet},
     time::Duration,

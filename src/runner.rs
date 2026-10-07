@@ -643,6 +643,9 @@ async fn execute(
     let is_travel = travel::is_travel(topic);
     let catalog = crate::catalog::section(topic);
     let is_catalog = catalog.is_some();
+    let is_fashion = topic.id == fetch::FASHION_TOPIC_ID;
+    // 𝑷's and 𝑭𝒂𝒔𝒉𝒊𝒐𝒏's cards are photographs; a story without one is not collected.
+    let pictured = topic.id == "p" || is_fashion;
     let window = if is_reads {
         NewsWindow {
             start: window.end - ChronoDuration::days(30),
@@ -709,6 +712,9 @@ async fn execute(
         }
         if is_reads {
             item.image = None;
+        }
+        if is_fashion && let Some(image) = &mut item.image {
+            fetch::upright(&mut image.url);
         }
         if (topic.id == "p" && item.image.is_none()) || (is_catalog && item.published_at.is_none())
         {
@@ -816,6 +822,15 @@ async fn execute(
         fetched.payload["skipped"] = serde_json::json!(skipped);
         fetched.payload["cover"] = Value::Null;
     }
+    if is_fashion {
+        // Leave time to store the photographs and publish the stories.
+        let remaining = state
+            .config
+            .fetch_timeout
+            .saturating_sub(started.elapsed() + Duration::from_secs(120));
+        let deadline = tokio::time::Instant::now() + remaining.min(Duration::from_secs(60));
+        fetch::shared_pictures(state, &mut items, deadline).await;
+    }
 
     let mut images = std::iter::once(media::stored_image(&fetched.payload["cover"]))
         .chain(items.iter_mut().map(|item| item.image.take()))
@@ -835,7 +850,7 @@ async fn execute(
         crate::catalog::prepare_images(state, topic, &mut items, &fetched.payload, deadline).await;
     }
     items.retain(|item| {
-        let keep = (topic.id != "p" && !is_gallery && !is_travel) || item.image.is_some();
+        let keep = (!pictured && !is_gallery && !is_travel) || item.image.is_some();
         if !keep {
             dropped += 1;
         }

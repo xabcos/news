@@ -100,8 +100,21 @@ pub(super) async fn read(state: &AppState, value: &str, limit: usize) -> Result<
     Ok(source)
 }
 
+/// A site's logo, often its default social picture, shows no product or look: the file name
+/// has the word "logo".
+pub(crate) fn is_logo(image: &str) -> bool {
+    Url::parse(image).is_ok_and(|url| {
+        url.path_segments()
+            .and_then(|mut segments| segments.next_back())
+            .is_some_and(|name| {
+                name.split(|c: char| !c.is_ascii_alphanumeric())
+                    .any(|word| word.eq_ignore_ascii_case("logo"))
+            })
+    })
+}
+
 /// The pictures a page shares in its metadata, absolute and public.
-pub(super) fn meta_images(html: &Html, base: &Url) -> Vec<String> {
+pub(crate) fn meta_images(html: &Html, base: &Url) -> Vec<String> {
     let select = Selector::parse("meta[property], meta[name]").expect("static selector");
     let mut images: Vec<String> = Vec::new();
     for meta in html.select(&select) {
@@ -212,17 +225,7 @@ pub(super) fn extract(url: &Url, text: &str, limit: usize) -> Source {
             images.push(src.to_string());
         }
     }
-    // A site's logo, often its default social picture, shows no product.
-    images.retain(|image| {
-        !Url::parse(image).is_ok_and(|url| {
-            url.path_segments()
-                .and_then(|mut segments| segments.next_back())
-                .is_some_and(|name| {
-                    name.split(|c: char| !c.is_ascii_alphanumeric())
-                        .any(|word| word.eq_ignore_ascii_case("logo"))
-                })
-        })
-    });
+    images.retain(|image| !is_logo(image));
     Source {
         title,
         url: url.to_string(),

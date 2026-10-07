@@ -723,6 +723,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             "ai-hardware",
             "digital",
             "llm",
+            "fashion",
             "reads",
             "equity"
         ]
@@ -746,7 +747,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             .fetch_all(&state.pool)
             .await
             .unwrap();
-    assert_eq!(migrations, [1]);
+    assert_eq!(migrations, [1, 2]);
     sqlx::query("INSERT INTO topics (id,name,brief,enabled) VALUES ('inactive','Inactive','Inactive',false)")
         .execute(&state.pool).await.unwrap();
     sqlx::query("TRUNCATE items, runs, ai_insights CASCADE")
@@ -1218,6 +1219,23 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             .await
             .unwrap(),
         revision_before
+    );
+    // Fashion stays outside the briefing, even once readers see it.
+    sqlx::query(
+        "UPDATE topics SET enabled = (id = 'fashion'), visible = visible OR id = 'fashion'",
+    )
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    runner::collect_briefing(&state, window, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM runs WHERE topic_id='fashion'")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap(),
+        0
     );
 
     state.shutdown_workers().await;

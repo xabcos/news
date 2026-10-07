@@ -27,6 +27,8 @@ const PHOTO_TOPIC = "w";
 const PHOTO_DWELL = 6000;
 // Travelers' postcards in packed columns, with a map of recent destinations (travel.js).
 const TRAVEL_TOPIC = "travel";
+// Fashion stories are picture cards like 𝑷's, framed upright.
+const FASHION_TOPIC = "fashion";
 const storage = (() => {
   try {
     const store = window.localStorage;
@@ -1103,6 +1105,11 @@ function renderGroupItem(group, item) {
       body.append(link);
     }
     article.append(body);
+    return article;
+  }
+  if (group.id === FASHION_TOPIC) {
+    const article = imageNewsCard(item);
+    article.classList.add("fashion-card");
     return article;
   }
   return group.id === "p" ? imageNewsCard(item) : card(item, group.id === "reads");

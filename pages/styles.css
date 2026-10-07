@@ -412,6 +412,9 @@ p { margin-top: 0; }
 .image-news-card .item-meta { margin-top: .75rem; }
 .image-news-card .item-title { font-size: 1rem; }
 .image-news-card .item-summary { font-size: .88rem; line-height: 1.55; }
+/* Fashion photographs stand upright; a crop keeps the face in frame. */
+.fashion-card .image-news-media { aspect-ratio: 3 / 4; }
+.fashion-card .image-news-media img { object-position: 50% 0; }
 
 @media (hover: hover) {
   .image-news-card { transition: transform .2s ease, box-shadow .2s ease; }

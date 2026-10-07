@@ -285,6 +285,25 @@ pub(crate) async fn read_bounded(
     types: &[&'static str],
     max_bytes: u64,
 ) -> std::result::Result<(Url, &'static str, Vec<u8>), Refused> {
+    read(request, types, max_bytes, false).await
+}
+
+/// Like `read_bounded`, but a longer body is cut at `max_bytes` instead of refused: a page's
+/// head is enough to find the picture it shares.
+pub(crate) async fn read_prefix(
+    request: reqwest::RequestBuilder,
+    types: &[&'static str],
+    max_bytes: u64,
+) -> std::result::Result<(Url, &'static str, Vec<u8>), Refused> {
+    read(request, types, max_bytes, true).await
+}
+
+async fn read(
+    request: reqwest::RequestBuilder,
+    types: &[&'static str],
+    max_bytes: u64,
+    cut: bool,
+) -> std::result::Result<(Url, &'static str, Vec<u8>), Refused> {
     let mut response = request
         .send()
         .await
@@ -307,19 +326,25 @@ pub(crate) async fn read_bounded(
         .copied()
         .find(|kind| *kind == media_type)
         .ok_or(Refused::Type)?;
-    if response
-        .content_length()
-        .is_some_and(|size| size > max_bytes)
+    if !cut
+        && response
+            .content_length()
+            .is_some_and(|size| size > max_bytes)
     {
         return Err(Refused::Size);
     }
     let url = response.url().clone();
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(Refused::Request)? {
-        if (bytes.len() + chunk.len()) as u64 > max_bytes {
+        let room = max_bytes as usize - bytes.len();
+        if chunk.len() > room && !cut {
             return Err(Refused::Size);
         }
-        bytes.extend_from_slice(&chunk);
+        bytes.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        // A full prefix needs nothing more, even from a server that stalls after it.
+        if cut && bytes.len() as u64 == max_bytes {
+            break;
+        }
     }
     Ok((url, matched, bytes))
 }
@@ -753,6 +778,50 @@ mod tests {
         for ip in ["1.1.1.1", "8.8.8.8", "2606:4700:4700::1111"] {
             assert!(public_ip(ip.parse().unwrap()));
         }
+    }
+
+    #[tokio::test]
+    async fn a_prefix_read_keeps_the_head_of_a_page_too_long_to_read_whole() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        // Each answer sends 1 KB of a page, then stalls as if the rest were slow to come.
+        tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let mut head = Vec::new();
+                    while !head.ends_with(b"\r\n\r\n") {
+                        head.push(socket.read_u8().await.unwrap());
+                    }
+                    let mut page = br#"<meta property="og:image" content="/look.jpg">"#.to_vec();
+                    page.resize(1024, b' ');
+                    socket
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nTransfer-Encoding: chunked\r\n\r\n400\r\n")
+                        .await
+                        .unwrap();
+                    socket.write_all(&page).await.unwrap();
+                    socket.write_all(b"\r\n").await.unwrap();
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                });
+            }
+        });
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let html = ["text/html"];
+        let (_, _, head) = tokio::time::timeout(
+            Duration::from_secs(5),
+            read_prefix(client.get(&url), &html, 1024),
+        )
+        .await
+        .expect("a full prefix returns without the rest")
+        .ok()
+        .unwrap();
+        assert_eq!(head.len(), 1024);
+        assert!(head.starts_with(br#"<meta property="og:image""#));
+        assert!(matches!(
+            read_bounded(client.get(&url), &html, 512).await,
+            Err(Refused::Size)
+        ));
     }
 
     #[tokio::test]
