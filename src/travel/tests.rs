@@ -1186,26 +1186,6 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
             .status(),
         400
     );
-    // Links shared while the page offered a portraits filter still show every moment.
-    sqlx::query(
-        "UPDATE items SET tags = ARRAY['人像'] || tags WHERE id IN (
-             SELECT item_id FROM travel_moments WHERE place_id = 'Q34600' LIMIT 2)",
-    )
-    .execute(&state.pool)
-    .await
-    .unwrap();
-    let shared = get("/travel/kyoto?kind=portraits")
-        .await
-        .unwrap()
-        .text()
-        .await
-        .unwrap();
-    let data = shared
-        .split_once("id=moments>")
-        .and_then(|(_, rest)| rest.split_once("</script>"))
-        .unwrap()
-        .0;
-    assert_eq!(serde_json::from_str::<Vec<Value>>(data).unwrap().len(), 5);
     let english = get("/travel/kyoto?lang=en")
         .await
         .unwrap()

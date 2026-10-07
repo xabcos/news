@@ -424,16 +424,18 @@ async fn origin() -> (String, reqwest::Client, tokio::task::JoinHandle<()>) {
     (base, client, server)
 }
 
-/// Waits for a collection run to finish.
-async fn finished(pool: &sqlx::PgPool, run: Uuid) {
+/// Waits until the run is recorded and its worker has let the topic go: the worker records the
+/// run before it refreshes the pages, and a manual run of the topic is refused until then.
+async fn finished(state: &crate::state::AppState, run: Uuid) {
     tokio::time::timeout(Duration::from_secs(90), async {
         loop {
-            let status: String = sqlx::query_scalar("SELECT status FROM runs WHERE id=$1")
-                .bind(run)
-                .fetch_one(pool)
-                .await
-                .unwrap();
-            if status != "running" {
+            let (topic, status): (String, String) =
+                sqlx::query_as("SELECT topic_id, status FROM runs WHERE id=$1")
+                    .bind(run)
+                    .fetch_one(&state.pool)
+                    .await
+                    .unwrap();
+            if status != "running" && !state.in_flight().contains(&topic) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -568,7 +570,7 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
     );
     let topic = topics.iter().find(|t| t.id == "book").unwrap();
     let run = crate::runner::start(&state, topic, "manual").await.unwrap();
-    finished(&pool, run).await;
+    finished(&state, run).await;
     let (new,dup,status):(i32,i32,String)=sqlx::query_as("SELECT new_count,dup_count,status FROM runs WHERE topic_id='book' ORDER BY started_at DESC LIMIT 1").fetch_one(&pool).await.unwrap();
     assert_eq!((new, dup, status.as_str()), (3, 1, "ok"));
     let (id, slug, key): (Uuid, String, String) = sqlx::query_as(
@@ -1003,7 +1005,7 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
     };
     let before = revision().await;
     let run = crate::runner::start(&state, &eink, "manual").await.unwrap();
-    finished(&pool, run).await;
+    finished(&state, run).await;
     let (new, status): (i32, String) =
         sqlx::query_as("SELECT new_count, status FROM runs WHERE id=$1")
             .bind(run)
@@ -1502,7 +1504,7 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
     let run = crate::runner::start(&state, &movie, "manual")
         .await
         .unwrap();
-    finished(&pool, run).await;
+    finished(&state, run).await;
     assert_eq!(runs(run).await, (3, 1));
     let today = state.digest.today();
     sqlx::query("UPDATE items SET day = $1 WHERE topic_id = 'movie'")
@@ -1526,7 +1528,7 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
     let run = crate::runner::start(&state, &movie, "manual")
         .await
         .unwrap();
-    finished(&pool, run).await;
+    finished(&state, run).await;
     assert_eq!(runs(run).await, (0, 4));
     sqlx::query(
         "UPDATE items SET day = $1 WHERE topic_id = 'movie' AND url NOT LIKE 'https://filler.example/%'",
@@ -1542,7 +1544,7 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
     let run = crate::runner::start(&state, &movie, "manual")
         .await
         .unwrap();
-    finished(&pool, run).await;
+    finished(&state, run).await;
     assert_eq!(runs(run).await, (3, 1));
     server.abort();
     ai_server.abort();
