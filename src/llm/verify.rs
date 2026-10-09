@@ -1,11 +1,11 @@
 //! Nothing the model reports is published on its word. A price or a limit must sit in a
 //! verbatim excerpt of the provider's page, in that model's section, under the nearest line
 //! that names it, and in its own column where a table lists models as columns. A price's
-//! unit must be the one the page states, and a model's rows must keep the orderings every
-//! price table follows.
+//! unit must be the one the page states, and a model's token rates must keep the orderings
+//! every price table follows.
 use super::{
-    Band, Links, Model, Period, Price, Tier,
-    extract::{Draft, DraftPrice, Fact},
+    Band, Currency, Links, Model, Period, Price, Tier, Unit,
+    extract::{Draft, DraftPrice, Fact, Stated},
     source::{Kind, Link, Page, collapse},
 };
 use serde::Serialize;
@@ -14,21 +14,23 @@ use std::collections::HashSet;
 
 const MAX_PRICE: f64 = 100_000.0;
 const MAX_QUOTE: usize = 400;
+const MAX_LABEL: usize = 80;
 /// How far above a price row the model's name may appear, as in a section heading.
 const CONTEXT_LINES: usize = 60;
 /// How pages state the token count prices are for; `1M` alone is left out, as it is also
 /// how pages write context windows.
-const PER_MILLION: [&str; 8] = [
+const PER_MILLION: [&str; 9] = [
     "百万",
     "million",
     "mtok",
     "1m tokens",
     "1m token",
+    "m tokens",
+    "1,000,000 tokens",
     "per 1m",
     "/1m",
-    "/ 1m",
 ];
-const PER_THOUSAND: [&str; 9] = [
+const PER_THOUSAND: [&str; 10] = [
     "千tokens",
     "千 tokens",
     "千token",
@@ -36,9 +38,109 @@ const PER_THOUSAND: [&str; 9] = [
     "每千",
     "thousand",
     "1k tokens",
+    "k tokens",
     "per 1k",
     "/1k",
 ];
+/// How pages name each unit, lowercased and without a space after a slash. A Chinese unit
+/// counts only as a rate (`/张`, `每张`, `按张`), never in words like 首次 or 条件.
+fn marks(stated: Stated) -> &'static [&'static str] {
+    match stated {
+        Stated::MillionTokens => &PER_MILLION,
+        Stated::ThousandTokens => &PER_THOUSAND,
+        Stated::MillionCharacters => &[
+            "百万字符",
+            "million characters",
+            "1m characters",
+            "1,000,000 characters",
+            "1m chars",
+        ],
+        Stated::TenThousandCharacters => &["万字符", "10k characters", "10,000 characters"],
+        Stated::ThousandCharacters => &[
+            "千字符",
+            "thousand characters",
+            "1k characters",
+            "1,000 characters",
+            "1k chars",
+            "/k chars",
+        ],
+        Stated::Image => &[
+            "/image",
+            "/img",
+            "per image",
+            "per img",
+            "each image",
+            "/张",
+            "每张",
+            "按张",
+        ],
+        Stated::Second => &["/second", "per second", "/sec", "/s", "/秒", "每秒", "按秒"],
+        Stated::Minute => &["/minute", "/min", "per minute", "/分钟", "每分钟", "按分钟"],
+        Stated::Hour => &[
+            "/hour",
+            "per hour",
+            "/hr",
+            "/h",
+            "/小时",
+            "每小时",
+            "按小时",
+        ],
+        Stated::Request => &[
+            "/request",
+            "per request",
+            "per call",
+            "/call",
+            "per video",
+            "/video",
+            "per generation",
+            "/次",
+            "每次",
+            "按次",
+            "/条",
+            "每条",
+        ],
+        Stated::ThousandRequests => &[
+            "thousand requests",
+            "1k requests",
+            "1,000 requests",
+            "1k searches",
+            "1,000 searches",
+            "千次",
+        ],
+    }
+}
+
+/// The units whose names hold this one's: 百万字符 holds 百万 and 万字符, and 千次, 千字符
+/// and 1K requests hold 每千 and per 1K.
+fn holders(stated: Stated) -> &'static [Stated] {
+    match stated {
+        Stated::MillionTokens | Stated::TenThousandCharacters => &[Stated::MillionCharacters],
+        Stated::ThousandTokens => &[Stated::ThousandCharacters, Stated::ThousandRequests],
+        _ => &[],
+    }
+}
+
+/// Whether a text names this unit whole: not as part of a larger unit, and not as part of
+/// a longer word, as `/s` is of `/speed` and `1k tokens` of `21k tokens`.
+fn states(text: &str, stated: Stated) -> bool {
+    let text = holders(stated)
+        .iter()
+        .flat_map(|holder| marks(*holder))
+        .fold(text.to_owned(), |text, mark| text.replace(mark, " "));
+    let word = |c: char| c.is_ascii_alphanumeric();
+    marks(stated).iter().any(|mark| {
+        text.match_indices(mark).any(|(at, _)| {
+            (!mark.starts_with(word) || !text[..at].ends_with(word))
+                && (!mark.ends_with(word) || !text[at + mark.len()..].starts_with(word))
+        })
+    })
+}
+
+/// Lowercased, with `$0.02 / img` written as `$0.02/img`.
+fn normal(text: &str) -> String {
+    text.to_lowercase().replace("/ ", "/")
+}
+
 const MODALITIES: [&str; 5] = ["text", "image", "audio", "video", "pdf"];
 const FEATURES: [&str; 5] = [
     "reasoning",
@@ -70,6 +172,8 @@ struct Text<'a> {
     /// `flat` lowercased once, for name lookups.
     lower: String,
     starts: Vec<usize>,
+    /// Whether the page prices per million and per thousand tokens.
+    tokens: (bool, bool),
 }
 
 impl<'a> Text<'a> {
@@ -84,11 +188,16 @@ impl<'a> Text<'a> {
             flat.push_str(line);
         }
         let lower = flat.to_lowercase();
+        let page_text = normal(&lower);
         Self {
             page,
             flat,
             lower,
             starts,
+            tokens: (
+                states(&page_text, Stated::MillionTokens),
+                states(&page_text, Stated::ThousandTokens),
+            ),
         }
     }
 
@@ -302,25 +411,143 @@ fn column(line: &str, names: &[String], all: &[String]) -> Option<usize> {
     (index > 0).then(|| cells.len() - 1 - index)
 }
 
-/// Whether a price's unit is the one its table states, or its page when the table does not.
-fn unit_stated(context: &str, page: &str, unit: i64) -> bool {
-    let marked = |text: &str, marks: &[&str]| marks.iter().any(|mark| text.contains(mark));
-    let context = context.to_lowercase();
-    let (mut million, mut thousand) = (
-        marked(&context, &PER_MILLION),
-        marked(&context, &PER_THOUSAND),
-    );
-    if !million && !thousand {
-        million = marked(page, &PER_MILLION);
-        thousand = marked(page, &PER_THOUSAND);
+/// What a row writes at one place an amount appears: the currency beside it, as in `$1` or
+/// `1 元`, and the unit right after it, up to the next separator, as `元/百万字符` after `20`
+/// or `/img` after `$0.04` in `$0.04/img, $5/1m tokens`.
+struct Written {
+    currency: Option<Currency>,
+    unit: String,
+}
+
+/// Every place a lowercased row writes this amount.
+fn written_at(row: &str, amount: f64) -> Vec<Written> {
+    let mut places = Vec::new();
+    let mut rest = row;
+    while let Some(start) = rest.find(|c: char| c.is_ascii_digit()) {
+        let before = row[..row.len() - rest.len() + start].trim_end();
+        let number = &rest[start..];
+        rest = number.trim_start_matches(|c: char| c.is_ascii_digit() || matches!(c, '.' | ','));
+        let digits: String = number[..number.len() - rest.len()]
+            .chars()
+            .filter(|c| *c != ',')
+            .collect();
+        let same = digits
+            .trim_end_matches('.')
+            .parse::<f64>()
+            .is_ok_and(|digits| (digits - amount).abs() <= 1e-9 * amount.abs().max(1.0));
+        if !same {
+            continue;
+        }
+        let after = rest.trim_start();
+        let (mut currency, after) = [
+            ("美元", Currency::Usd),
+            ("usd", Currency::Usd),
+            ("元", Currency::Cny),
+            ("cny", Currency::Cny),
+            ("rmb", Currency::Cny),
+        ]
+        .into_iter()
+        .find_map(|(word, currency)| Some((Some(currency), after.strip_prefix(word)?)))
+        .unwrap_or((None, after));
+        // A code before the amount counts as a whole word: `usd 0.5`, not `abcusd 0.5`.
+        let code = |word: &str| {
+            before
+                .strip_suffix(word)
+                .is_some_and(|rest| !rest.ends_with(|c: char| c.is_ascii_alphanumeric()))
+        };
+        if before.ends_with('$') || code("usd") {
+            currency = Some(Currency::Usd);
+        } else if before.ends_with(['¥', '￥']) || code("cny") || code("rmb") {
+            currency = Some(Currency::Cny);
+        }
+        let after = after.trim_start();
+        let mut unit = String::new();
+        if after.starts_with('/') || after.starts_with("per ") || after.starts_with('每') {
+            // A comma inside a number, as in 1,000 characters, separates nothing.
+            let inside = |at: usize| {
+                after[..at].ends_with(|c: char| c.is_ascii_digit())
+                    && after[at + 1..].starts_with(|c: char| c.is_ascii_digit())
+            };
+            let end = after
+                .char_indices()
+                .find(|&(at, c)| (c == ',' && !inside(at)) || "|，;；、$¥￥()（）".contains(c))
+                .map_or(after.len(), |(at, _)| at);
+            unit = after[..end].to_owned();
+        }
+        places.push(Written { currency, unit });
     }
-    match unit {
-        // Per million is how nearly every page prices; only an explicit per-thousand page
-        // rules it out.
-        1_000_000 => million || !thousand,
-        1000 => thousand,
+    places
+}
+
+/// Whether a price is in the unit stated nearest to it. The units written right after its
+/// amounts decide alone, each place on its own; then the cells of its own rows that only
+/// name a unit, as `| per image |` or `| per 1k characters |` do; then the table and
+/// section, once they name any unit. A token rate stated nowhere around takes its page's
+/// unit.
+fn unit_stated(
+    places: &[Vec<Written>],
+    own: &str,
+    context: &str,
+    page: (bool, bool),
+    stated: Stated,
+) -> bool {
+    let mut open = false;
+    for amount in places {
+        let mut settled = false;
+        for place in amount {
+            if Stated::ALL
+                .into_iter()
+                .any(|unit| unit != stated && states(&place.unit, unit))
+            {
+                return false;
+            }
+            settled |= states(&place.unit, stated);
+        }
+        open |= !settled;
+    }
+    if !open {
+        return true;
+    }
+    for text in [unit_cells(own), normal(context)] {
+        if states(&text, stated) {
+            return true;
+        }
+        if named(&text) {
+            return false;
+        }
+    }
+    // Per million is how nearly every page prices; only an explicit per-thousand page rules
+    // it out.
+    let (million, thousand) = page;
+    match stated {
+        Stated::MillionTokens => million || !thousand,
+        Stated::ThousandTokens => thousand,
         _ => false,
     }
+}
+
+/// The cells of a lowercased row that only name a rate, as `per 1k characters` or `元/张`
+/// do: nothing but words is left once the units' names are taken out. A limit such as
+/// `1m tokens` names no rate.
+fn unit_cells(own: &str) -> String {
+    own.split('|')
+        .filter(|cell| {
+            let rest = Stated::ALL
+                .into_iter()
+                .flat_map(marks)
+                .fold((*cell).to_owned(), |rest, mark| rest.replace(mark, " "));
+            let rate = ["/", "per ", "每", "按"]
+                .iter()
+                .any(|word| cell.contains(word));
+            rate && rest.len() < cell.len() && !rest.contains(|c: char| c.is_ascii_digit())
+        })
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+/// Whether a text names any unit.
+fn named(text: &str) -> bool {
+    Stated::ALL.into_iter().any(|unit| states(text, unit))
 }
 
 /// Whether `ident` occurs in `text` as a whole name: `gpt-6` is not found in `gpt-6-astra`
@@ -561,8 +788,8 @@ type PriceRead = (Vec<Price>, Vec<Evidence>);
 
 /// `Ok(None)` when the draft lists no prices; stored prices then stay.
 /// A model's verified price rows, and the rows set aside. A tier other than the standard
-/// rate that fails is dropped on its own; a failed standard rate, or rows that break the
-/// table's orderings, set every price of the model aside so the stored ones stay.
+/// token rate that fails is dropped on its own; a failed standard token rate, or rows that
+/// break the table's orderings, set every price of the model aside so the stored ones stay.
 struct PriceCheck {
     prices: Option<PriceRead>,
     rejected: Vec<(&'static str, String, bool)>,
@@ -592,7 +819,10 @@ fn verify_prices(
                 evidence.push(found);
             }
             Err(reason) => {
-                let standard = draft.tier == Tier::Standard;
+                // The standard token rate leads a language model's row; another unit's rows
+                // differ by size or resolution, and one that fails is dropped alone.
+                let standard =
+                    draft.tier == Tier::Standard && draft.unit.stored().0 == Unit::Tokens;
                 fatal |= standard;
                 check
                     .rejected
@@ -633,15 +863,8 @@ fn verify_row(
         return Err("价格摘录属于其他模型");
     }
     let place = text.place(&draft.quote, names, all)?;
-    let factor = match draft.unit {
-        1_000_000 => 1.0,
-        1000 => 1000.0,
-        _ => return Err("价格单位无效"),
-    };
-    if !unit_stated(&place.context, &text.lower, draft.unit) {
-        return Err("价格单位与页面不符");
-    }
-    let written = prices_in(&text.own_text(&place), names);
+    let (unit, factor) = draft.unit.stored();
+    let own = normal(&text.own_text(&place));
     let mut values = [
         draft.input,
         draft.cached_input,
@@ -649,33 +872,69 @@ fn verify_row(
         draft.cache_write_1h,
         draft.output,
     ];
+    let written = prices_in(&own, names);
+    for slot in &mut values {
+        let Some(value) = *slot else {
+            continue;
+        };
+        let on_page = written
+            .iter()
+            .any(|found| (found - value).abs() <= 1e-9 * value.abs().max(1.0));
+        // A rate the row does not charge, as input a model bills only on output, is not
+        // listed; only a row that says 免费 makes a rate free.
+        if value == 0.0 && !on_page {
+            *slot = None;
+        } else if !value.is_finite() || value < 0.0 || !on_page {
+            return Err("价格数字不在摘录中");
+        }
+    }
     if values.iter().all(Option::is_none) {
         return Err("价格行没有数值");
     }
+    let places: Vec<Vec<Written>> = values
+        .iter()
+        .flatten()
+        .map(|amount| written_at(&own, *amount))
+        .collect();
+    // A page listing yuan and dollars, as one for China and abroad does, prices each amount
+    // in the currency written beside it; an amount written bare takes its page's.
+    let currencies: HashSet<Currency> = places
+        .iter()
+        .flatten()
+        .filter_map(|place| place.currency)
+        .collect();
+    let currency = match currencies.len() {
+        0 => currency,
+        1 => currencies.into_iter().next().unwrap_or(currency),
+        _ => return Err("价格币种不一致"),
+    };
+    if !unit_stated(&places, &own, &place.context, text.tokens, draft.unit) {
+        return Err("价格单位与页面不符");
+    }
     for value in values.iter_mut().flatten() {
-        if !value.is_finite()
-            || *value < 0.0
-            || !written
-                .iter()
-                .any(|found| (found - *value).abs() <= 1e-9 * value.abs().max(1.0))
-        {
-            return Err("价格数字不在摘录中");
-        }
         *value = (*value * factor * 1e9).round() / 1e9;
         if *value > MAX_PRICE {
             return Err("价格超出合理范围");
         }
     }
-    let label = clip(&draft.label, 40);
-    let label = if label.is_empty() || mentions(&place.context, &label) {
-        label
-    } else {
-        String::new()
+    // A label may join what a table writes apart, as "720p · 输入不含视频"; each part must be
+    // the page's own words.
+    let label = collapse(&draft.label);
+    let stated = label.chars().count() <= MAX_LABEL
+        && label
+            .split(['·', '，', ',', '/', '；', ';'])
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .all(|part| mentions(&place.context, part));
+    let label = match (stated, unit) {
+        (true, _) => label,
+        (false, Unit::Tokens) => String::new(),
+        // A size or resolution tells a media model's rows apart; one the page does not state
+        // cannot.
+        (false, _) => return Err("规格不在页面上"),
     };
     // A table giving input lengths in thousands of tokens writes the 32K tier as 32.
-    let in_thousands = PER_THOUSAND
-        .iter()
-        .any(|mark| place.context.to_lowercase().contains(mark));
+    let in_thousands = states(&normal(&place.context), Stated::ThousandTokens);
     let threshold = draft.context_threshold.filter(|threshold| {
         token_counts(&place.context).contains(threshold)
             || (in_thousands
@@ -687,6 +946,7 @@ fn verify_row(
     Ok((
         Price {
             currency,
+            unit,
             tier: draft.tier,
             label,
             context: draft.context,
@@ -741,26 +1001,35 @@ fn at_most(lower: Option<f64>, upper: Option<f64>) -> bool {
     }
 }
 
-/// Orderings every provider's table follows; a column read in the wrong place breaks one.
+/// Orderings every provider's token table follows; a column read in the wrong place breaks
+/// one. Rows in other units differ by size or resolution, which orders nothing.
 pub(crate) fn consistent(prices: &[Price]) -> Result<(), &'static str> {
     let mut keys = HashSet::new();
     for price in prices {
         if !keys.insert(price.key()) {
             return Err("价格行重复");
         }
+    }
+    let tokens: Vec<&Price> = prices
+        .iter()
+        .filter(|price| price.unit == Unit::Tokens)
+        .collect();
+    for price in &tokens {
         if !at_most(price.cached_input, price.input)
             || !at_most(price.cache_write, price.cache_write_1h)
         {
             return Err("缓存价格与输入价格不一致");
         }
     }
-    for price in prices {
-        for other in prices {
+    for price in &tokens {
+        for other in &tokens {
             let same_currency = price.currency == other.currency;
             // A discounted tier never costs more than the standard one; a faster tier never less.
             if same_currency
                 && other.tier == Tier::Standard
+                && price.label == other.label
                 && price.context == other.context
+                && price.context_threshold == other.context_threshold
                 && price.period == other.period
                 && price.mode == other.mode
             {
@@ -795,6 +1064,7 @@ pub(crate) fn consistent(prices: &[Price]) -> Result<(), &'static str> {
             }
             if same_row
                 && price.context == other.context
+                && price.context_threshold == other.context_threshold
                 && price.period == Period::Peak
                 && other.period == Period::OffPeak
                 && !(at_most(other.input, price.input) && at_most(other.output, price.output))
@@ -902,6 +1172,7 @@ fn model(
             }
         },
         model_id,
+        category: draft.category,
         summary: clip(&draft.summary, 160),
         summary_en: clip(&draft.summary_en, 240),
         status: draft.status,
@@ -914,7 +1185,7 @@ fn model(
             Vec::new()
         },
         output_modalities: if evidenced {
-            listed(&draft.output_modalities, &MODALITIES[..3])
+            listed(&draft.output_modalities, &MODALITIES[..4])
         } else {
             Vec::new()
         },

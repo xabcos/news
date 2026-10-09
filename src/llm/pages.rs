@@ -1,6 +1,6 @@
-//! `/llm`: recent changes first, then each provider's models as one dense price list.
-//! `/llm.json` and `/llm/feed.xml` publish the same catalogue for other readers.
-use super::{Band, Currency, Links, Mode, Period, Price, Status, Tier, headline};
+//! `/llm`: recent changes first, then each provider's models as dense price lists, one per
+//! category. `/llm.json` and `/llm/feed.xml` publish the same catalogue for other readers.
+use super::{Band, Category, Currency, Links, Mode, Period, Price, Status, Tier, Unit, headline};
 use crate::{
     digest::{Rendered, conditional},
     error::{AppError, Result},
@@ -28,8 +28,8 @@ const FEED_SIZE: i64 = 50;
 const CHROME: Chrome<'static> = Chrome {
     current: "llm",
     section: "llm",
-    stylesheet: "/llm.css?v=4",
-    script: "/llm.js?v=4",
+    stylesheet: "/llm.css?v=5",
+    script: "/llm.js?v=5",
     feed: ("𝑳𝑳𝑴", "/llm/feed.xml"),
 };
 
@@ -57,12 +57,14 @@ struct VendorRow {
     region: String,
     verified_at: Option<DateTime<Utc>>,
     pricing: Vec<String>,
+    docs: Option<String>,
 }
 
 #[derive(FromRow)]
 struct ModelRow {
     vendor_id: String,
     model_id: String,
+    category: String,
     name: String,
     summary: String,
     summary_en: String,
@@ -88,6 +90,7 @@ struct ChangeRow {
     /// `None` for a provider joining or leaving the catalogue.
     model_id: Option<String>,
     name: Option<String>,
+    category: Option<String>,
     kind: String,
     before: Option<Json<Value>>,
     after: Option<Json<Value>>,
@@ -119,7 +122,7 @@ impl Catalog {
 
 /// Every kept change (they last a day); changes to models readers no longer see are
 /// dropped after the catalogue has chosen what it lists.
-const RECENT_CHANGES: &str = "SELECT c.id, c.vendor_id, c.model_id, m.name, c.kind, c.before, c.after, c.source_url, c.detected_at
+const RECENT_CHANGES: &str = "SELECT c.id, c.vendor_id, c.model_id, m.name, m.category, c.kind, c.before, c.after, c.source_url, c.detected_at
      FROM llm_changes c JOIN llm_vendors v ON v.id = c.vendor_id
      LEFT JOIN llm_models m ON m.vendor_id = c.vendor_id AND m.model_id = c.model_id
      WHERE v.enabled AND (c.model_id IS NULL OR NOT m.hidden)
@@ -139,34 +142,38 @@ async fn load(state: &AppState, changes: i64, reader: Reader) -> Result<Option<C
             String,
             Option<DateTime<Utc>>,
             Vec<String>,
+            Option<String>,
             String,
         ),
     >(
         "SELECT v.id, v.name, v.name_en, v.region, v.verified_at,
                 COALESCE(array_agg(s.url ORDER BY s.sort_weight, s.id)
-                    FILTER (WHERE s.kind = 'pricing'), '{}') AS pricing, v.state
+                    FILTER (WHERE s.kind = 'pricing'), '{}') AS pricing, v.docs, v.state
          FROM llm_vendors v LEFT JOIN llm_sources s ON s.vendor_id = v.id
          WHERE v.enabled GROUP BY v.id ORDER BY v.sort_weight, v.id",
     )
     .fetch_all(&state.pool)
     .await?
     .into_iter()
-    .map(|(id, name, name_en, region, verified_at, pricing, state)| {
-        (
-            VendorRow {
-                id,
-                name,
-                name_en,
-                region,
-                verified_at,
-                pricing,
-            },
-            state,
-        )
-    })
+    .map(
+        |(id, name, name_en, region, verified_at, pricing, docs, state)| {
+            (
+                VendorRow {
+                    id,
+                    name,
+                    name_en,
+                    region,
+                    verified_at,
+                    pricing,
+                    docs,
+                },
+                state,
+            )
+        },
+    )
     .collect();
     let mut models: Vec<ModelRow> = sqlx::query_as(
-        "SELECT m.vendor_id, m.model_id, m.name, m.summary, m.summary_en, m.status,
+        "SELECT m.vendor_id, m.model_id, m.category, m.name, m.summary, m.summary_en, m.status,
                 m.knowledge_cutoff, m.context_tokens, m.max_output_tokens, m.input_modalities,
                 m.output_modalities, m.features, m.prices, m.links, m.evidence, m.first_seen_at,
                 m.verified_at, m.changed_at
@@ -272,6 +279,84 @@ pub(super) fn money(currency: Currency, value: f64, en: bool) -> String {
 
 fn price_cell(currency: Currency, value: Option<f64>, en: bool) -> String {
     value.map_or_else(|| "—".to_owned(), |value| money(currency, value, en))
+}
+
+/// What a price in this unit is for, as a table caption says it.
+fn per(unit: Unit, en: bool) -> &'static str {
+    match unit {
+        Unit::Tokens => choose(en, "每百万 tokens", "per 1M tokens"),
+        Unit::Characters => choose(en, "每百万字符", "per 1M characters"),
+        Unit::Image => choose(en, "每张", "per image"),
+        Unit::Second => choose(en, "每秒", "per second"),
+        Unit::Minute => choose(en, "每分钟", "per minute"),
+        Unit::Hour => choose(en, "每小时", "per hour"),
+        Unit::Request => choose(en, "每次", "per request"),
+    }
+}
+
+/// A price with its unit.
+fn priced(currency: Currency, value: f64, unit: Unit, en: bool) -> String {
+    let unit = match unit {
+        Unit::Tokens => choose(en, "百万 tokens", "1M tokens"),
+        Unit::Characters => choose(en, "百万字符", "1M chars"),
+        Unit::Image => choose(en, "张", "image"),
+        Unit::Second => choose(en, "秒", "s"),
+        Unit::Minute => choose(en, "分钟", "min"),
+        Unit::Hour => choose(en, "小时", "h"),
+        Unit::Request => choose(en, "次", "request"),
+    };
+    format!("{}/{unit}", money(currency, value, en))
+}
+
+/// A price as the lists show it: a language or embedding model's token rate bare, as the
+/// page says once that those are per 1M tokens, and anything else with its unit.
+fn shown(currency: Currency, value: f64, unit: Unit, category: Category, en: bool) -> String {
+    if unit == Unit::Tokens && !category.media() {
+        money(currency, value, en)
+    } else {
+        priced(currency, value, unit, en)
+    }
+}
+
+/// A model's headline price in its unit, marked as a starting price when it is the cheapest
+/// standard size, resolution or rate and another costs more.
+pub(super) fn starting(
+    prices: &[Price],
+    currency: Currency,
+    category: Category,
+    en: bool,
+) -> String {
+    let Some(row) = headline(prices, currency, category) else {
+        return "—".to_owned();
+    };
+    let price = shown(currency, row.amount(), row.unit, category, en);
+    let others: Vec<f64> = prices
+        .iter()
+        .filter(|other| {
+            other.currency == currency
+                && other.unit == row.unit
+                && other.tier == Tier::Standard
+                && other.output.is_some() == row.output.is_some()
+        })
+        .map(Price::amount)
+        .collect();
+    let more = others.iter().any(|other| *other > row.amount() + 1e-9)
+        && others.iter().all(|other| *other >= row.amount() - 1e-9);
+    match (more, en) {
+        (false, _) => price,
+        (true, false) => format!("{price}起"),
+        (true, true) => format!("from {price}"),
+    }
+}
+
+fn category_label(category: Category, en: bool) -> &'static str {
+    match category {
+        Category::Text => choose(en, "语言模型", "Language"),
+        Category::Image => choose(en, "图像", "Image"),
+        Category::Video => choose(en, "视频", "Video"),
+        Category::Audio => choose(en, "语音", "Audio"),
+        Category::Embedding => choose(en, "嵌入与重排", "Embedding and rerank"),
+    }
 }
 
 pub(super) fn tokens(count: i32) -> String {
@@ -431,23 +516,33 @@ fn count_of(value: Option<&Json<Value>>, key: &str) -> Option<i32> {
         .and_then(|value| i32::try_from(value).ok())
 }
 
-fn summary_line(prices: &[Price], currency: Currency, context: Option<i32>, en: bool) -> String {
+fn summary_line(
+    prices: &[Price],
+    currency: Currency,
+    category: Category,
+    context: Option<i32>,
+    en: bool,
+) -> String {
     let mut parts = Vec::new();
-    if let Some(row) = headline(prices, currency) {
-        if let Some(input) = row.input {
-            parts.push(format!(
-                "{} {}",
-                choose(en, "输入", "Input"),
-                money(currency, input, en)
-            ));
+    match headline(prices, currency, category) {
+        Some(row) if row.unit == Unit::Tokens => {
+            if let Some(input) = row.input {
+                parts.push(format!(
+                    "{} {}",
+                    choose(en, "输入", "Input"),
+                    priced(currency, input, row.unit, en)
+                ));
+            }
+            if let Some(output) = row.output {
+                parts.push(format!(
+                    "{} {}",
+                    choose(en, "输出", "Output"),
+                    priced(currency, output, row.unit, en)
+                ));
+            }
         }
-        if let Some(output) = row.output {
-            parts.push(format!(
-                "{} {}",
-                choose(en, "输出", "Output"),
-                money(currency, output, en)
-            ));
-        }
+        Some(_) => parts.push(starting(prices, currency, category, en)),
+        None => {}
     }
     if let Some(context) = context {
         parts.push(tokens(context));
@@ -455,10 +550,12 @@ fn summary_line(prices: &[Price], currency: Currency, context: Option<i32>, en: 
     parts.join(" · ")
 }
 
-/// A change in one line: what moved, from what, to what.
+/// A change in one line: what moved, from what, to what. Prices carry their unit, as the
+/// feed has no caption to state it.
 fn describe(change: &ChangeRow, region: &str, en: bool) -> (&'static str, String) {
     let before = prices_of(change.before.as_ref());
     let after = prices_of(change.after.as_ref());
+    let category = Category::parse(change.category.as_deref().unwrap_or(""));
     match change.kind.as_str() {
         "added" => {
             let currency = primary(region, &after);
@@ -467,6 +564,7 @@ fn describe(change: &ChangeRow, region: &str, en: bool) -> (&'static str, String
                 summary_line(
                     &after,
                     currency,
+                    category,
                     count_of(change.after.as_ref(), "context_tokens"),
                     en,
                 ),
@@ -475,9 +573,9 @@ fn describe(change: &ChangeRow, region: &str, en: bool) -> (&'static str, String
         "price" => {
             // The rate readers compare first, else the first tier that moved.
             let currency = primary(region, &after);
-            let mut moved: Vec<(&Price, &Price)> = headline(&before, currency)
-                .zip(headline(&after, currency))
-                .filter(|(old, new)| super::row_moved(old, new))
+            let mut moved: Vec<(&Price, &Price)> = headline(&before, currency, category)
+                .zip(headline(&after, currency, category))
+                .filter(|(old, new)| old.key() == new.key() && super::row_moved(old, new))
                 .into_iter()
                 .collect();
             if moved.is_empty() {
@@ -490,7 +588,8 @@ fn describe(change: &ChangeRow, region: &str, en: bool) -> (&'static str, String
             let rows: Vec<&Price> = after.iter().collect();
             let mut parts = Vec::new();
             for (old, new) in moved {
-                let standard = headline(&after, currency).is_some_and(|row| std::ptr::eq(row, new));
+                let standard =
+                    headline(&after, currency, category).is_some_and(|row| std::ptr::eq(row, new));
                 let tier = if standard {
                     String::new()
                 } else {
@@ -511,7 +610,7 @@ fn describe(change: &ChangeRow, region: &str, en: bool) -> (&'static str, String
                         parts.push(format!(
                             "{tier}{label} {} → {}{}",
                             money(new.currency, a, en),
-                            money(new.currency, b, en),
+                            priced(new.currency, b, new.unit, en),
                             if en { String::new() } else { percent(a, b) }
                         ));
                     }
@@ -634,7 +733,14 @@ async fn index(
             moment(at, timezone)
         ));
     }
-    meta.push(choose(en, "价格为每百万 tokens", "Prices per 1M tokens").to_owned());
+    meta.push(
+        choose(
+            en,
+            "语言与嵌入模型的 token 价格为每百万 tokens",
+            "Language and embedding token prices per 1M tokens",
+        )
+        .to_owned(),
+    );
     let _ = write!(content, "<p class=llm-meta>{}</p>", meta.join(" · "));
 
     // Changes are kept for a day; without any the page starts with the catalogue.
@@ -692,13 +798,51 @@ async fn index(
         content.push_str("</ol></section>");
     }
 
+    let button = |kind: &str, value: &str, label: &str, pressed: bool| {
+        format!(
+            "<button type=button class=\"button button-quiet button-small\" data-{kind}={value} aria-pressed={pressed}>{label}</button>"
+        )
+    };
+    let regions = [
+        ("all", choose(en, "全部", "All")),
+        ("global", choose(en, "海外", "Global")),
+        ("cn", choose(en, "国内", "China")),
+    ]
+    .map(|(value, label)| button("region", value, label, value == "all"))
+    .concat();
+    let listed: Vec<Category> = Category::ALL
+        .into_iter()
+        .filter(|category| {
+            catalog
+                .models
+                .iter()
+                .any(|model| model.category == category.as_str())
+        })
+        .collect();
+    // A choice of categories only where there is more than one to choose from.
+    let categories = if listed.len() > 1 {
+        let buttons: String =
+            std::iter::once(button("category", "all", choose(en, "全部", "All"), true))
+                .chain(listed.iter().map(|category| {
+                    button(
+                        "category",
+                        category.as_str(),
+                        category_label(*category, en),
+                        false,
+                    )
+                }))
+                .collect();
+        format!(
+            "<div class=llm-filter role=group aria-label=\"{}\">{buttons}</div>",
+            choose(en, "类别", "Category")
+        )
+    } else {
+        String::new()
+    };
     let _ = write!(
         content,
-        "<div class=llm-toolbar hidden><div class=llm-regions role=group aria-label=\"{}\"><button type=button class=\"button button-quiet button-small\" data-region=all aria-pressed=true>{}</button><button type=button class=\"button button-quiet button-small\" data-region=global aria-pressed=false>{}</button><button type=button class=\"button button-quiet button-small\" data-region=cn aria-pressed=false>{}</button></div><input class=llm-search type=search autocomplete=off spellcheck=false placeholder=\"{}\" aria-label=\"{}\"></div>",
+        "<div class=llm-toolbar hidden><div class=llm-filters><div class=llm-filter role=group aria-label=\"{}\">{regions}</div>{categories}</div><input class=llm-search type=search autocomplete=off spellcheck=false placeholder=\"{}\" aria-label=\"{}\"></div>",
         choose(en, "地区", "Region"),
-        choose(en, "全部", "All"),
-        choose(en, "海外", "Global"),
-        choose(en, "国内", "China"),
         choose(en, "搜索模型", "Search models"),
         choose(en, "搜索模型", "Search models"),
     );
@@ -714,14 +858,6 @@ async fn index(
         );
     }
     content.push_str("<div class=llm-catalog>");
-    let columns = format!(
-        "<div class=llm-columns aria-hidden=true><span>{}</span><span>{}</span><span>{}</span><span>{}</span><span>{}</span></div>",
-        choose(en, "模型", "Model"),
-        choose(en, "上下文", "Context"),
-        choose(en, "输入", "Input"),
-        choose(en, "输出", "Output"),
-        choose(en, "缓存命中", "Cached"),
-    );
     for vendor in &catalog.vendors {
         let models: Vec<&ModelRow> = catalog
             .models
@@ -731,32 +867,52 @@ async fn index(
         if models.is_empty() {
             continue;
         }
-        let pricing = vendor
-            .pricing
-            .iter()
-            .map(|url| {
-                format!(
-                    "<a href=\"{}\" rel=\"noopener noreferrer\">{} ↗</a>",
-                    escape(url),
-                    choose(en, "定价页", "Pricing")
-                )
-            })
-            .next()
-            .unwrap_or_default();
+        let link = |url: &str, label: &str| {
+            format!(
+                " · <a href=\"{}\" rel=\"noopener noreferrer\">{label} ↗</a>",
+                escape(url)
+            )
+        };
+        let mut meta = String::from(if vendor.region == "cn" {
+            choose(en, "国内", "China")
+        } else {
+            choose(en, "海外", "Global")
+        });
+        if let Some(url) = vendor.pricing.first() {
+            meta.push_str(&link(url, choose(en, "定价页", "Pricing")));
+        }
+        if let Some(url) = &vendor.docs {
+            meta.push_str(&link(url, choose(en, "文档", "Docs")));
+        }
         let _ = write!(
             content,
-            "<section class=llm-vendor id=\"{id}\" data-region=\"{region}\"><header class=llm-vendor-heading><h2>{name}</h2><span class=llm-vendor-meta>{region_label} · {pricing}</span></header>{columns}",
+            "<section class=llm-vendor id=\"{id}\" data-region=\"{region}\"><header class=llm-vendor-heading><h2>{name}</h2><span class=llm-vendor-meta>{meta}</span></header>",
             id = escape(&vendor.id),
             region = escape(&vendor.region),
             name = escape(choose(en, &vendor.name, &vendor.name_en)),
-            region_label = if vendor.region == "cn" {
-                choose(en, "国内", "China")
-            } else {
-                choose(en, "海外", "Global")
-            },
         );
-        for model in models {
-            content.push_str(&model_row(model, vendor, timezone, en));
+        for category in Category::ALL {
+            let rows: Vec<&&ModelRow> = models
+                .iter()
+                .filter(|model| model.category == category.as_str())
+                .collect();
+            if rows.is_empty() {
+                continue;
+            }
+            let _ = write!(
+                content,
+                "<div class=\"llm-group llm-group-{kind}\" data-category={kind}><h3 class=llm-group-title>{label}</h3><div class=llm-columns aria-hidden=true>{columns}</div>",
+                kind = category.as_str(),
+                label = category_label(category, en),
+                columns = columns(category, en)
+                    .iter()
+                    .map(|column| format!("<span>{column}</span>"))
+                    .collect::<String>(),
+            );
+            for model in rows {
+                content.push_str(&model_row(model, category, vendor, timezone, en));
+            }
+            content.push_str("</div>");
         }
         content.push_str("</section>");
     }
@@ -796,10 +952,39 @@ async fn index(
     ))
 }
 
-fn model_row(model: &ModelRow, vendor: &VendorRow, timezone: Tz, en: bool) -> String {
+/// The headings of a category's list; a language model's rates are per 1M tokens, the
+/// others carry their unit in the cell.
+fn columns(category: Category, en: bool) -> Vec<&'static str> {
+    let model = choose(en, "模型", "Model");
+    match category {
+        Category::Text => vec![
+            model,
+            choose(en, "上下文", "Context"),
+            choose(en, "输入", "Input"),
+            choose(en, "输出", "Output"),
+            choose(en, "缓存命中", "Cached"),
+        ],
+        Category::Embedding => vec![
+            model,
+            choose(en, "上下文", "Context"),
+            choose(en, "输入", "Input"),
+        ],
+        Category::Image | Category::Video | Category::Audio => {
+            vec![model, choose(en, "价格", "Price")]
+        }
+    }
+}
+
+fn model_row(
+    model: &ModelRow,
+    category: Category,
+    vendor: &VendorRow,
+    timezone: Tz,
+    en: bool,
+) -> String {
     let prices = &model.prices.0;
     let currency = primary(&vendor.region, prices);
-    let row = headline(prices, currency);
+    let row = headline(prices, currency, category);
     let status = Status::parse(&model.status);
     let mut badges = String::new();
     if let Some(label) = status_label(status, en) {
@@ -813,80 +998,75 @@ fn model_row(model: &ModelRow, vendor: &VendorRow, timezone: Tz, en: bool) -> St
         model.model_id, model.name, vendor.name, vendor.name_en
     )
     .to_lowercase();
+    let cell = |label: &str, value: String| {
+        format!("<span class=llm-num data-label=\"{label}\">{value}</span>")
+    };
+    let context = || {
+        cell(
+            choose(en, "上下文", "Context"),
+            model.context_tokens.map_or_else(|| "—".to_owned(), tokens),
+        )
+    };
+    let cells = match category {
+        Category::Text => [
+            context(),
+            cell(
+                choose(en, "输入", "Input"),
+                price_cell(currency, row.and_then(|row| row.input), en),
+            ),
+            cell(
+                choose(en, "输出", "Output"),
+                price_cell(currency, row.and_then(|row| row.output), en),
+            ),
+            cell(
+                choose(en, "缓存命中", "Cached"),
+                price_cell(currency, row.and_then(|row| row.cached_input), en),
+            ),
+        ]
+        .concat(),
+        Category::Embedding => [
+            context(),
+            cell(
+                choose(en, "输入", "Input"),
+                starting(prices, currency, category, en),
+            ),
+        ]
+        .concat(),
+        Category::Image | Category::Video | Category::Audio => cell(
+            choose(en, "价格", "Price"),
+            starting(prices, currency, category, en),
+        ),
+    };
     let mut html = format!(
-        "<details class=llm-model id=\"{id}\" data-search=\"{search}\"><summary><span class=llm-model-name><code>{model_id}</code>{badges}<small>{name}</small></span><span class=llm-num data-label=\"{context_label}\">{context}</span><span class=llm-num data-label=\"{input_label}\">{input}</span><span class=llm-num data-label=\"{output_label}\">{output}</span><span class=llm-num data-label=\"{cached_label}\">{cached}</span></summary><div class=llm-detail>",
+        "<details class=llm-model id=\"{id}\" data-search=\"{search}\"><summary><span class=llm-model-name><code>{model_id}</code>{badges}<small>{name}</small></span>{cells}</summary><div class=llm-detail>",
         id = escape(&anchor(&model.vendor_id, &model.model_id)),
         search = escape(&search),
         model_id = escape(&model.model_id),
         name = escape(&model.name),
-        context_label = choose(en, "上下文", "Context"),
-        context = model.context_tokens.map_or_else(|| "—".to_owned(), tokens),
-        input_label = choose(en, "输入", "Input"),
-        input = price_cell(currency, row.and_then(|row| row.input), en),
-        output_label = choose(en, "输出", "Output"),
-        output = price_cell(currency, row.and_then(|row| row.output), en),
-        cached_label = choose(en, "缓存命中", "Cached"),
-        cached = price_cell(currency, row.and_then(|row| row.cached_input), en),
     );
     let summary = choose(en, &model.summary, &model.summary_en);
     if !summary.is_empty() {
         let _ = write!(html, "<p class=llm-summary>{}</p>", escape(summary));
     }
+    // One table per currency and unit, the category's usual unit first.
+    let mut units: Vec<Unit> = category.units().to_vec();
+    for price in prices {
+        if !units.contains(&price.unit) {
+            units.push(price.unit);
+        }
+    }
     for currency in [Currency::Cny, Currency::Usd] {
-        let mut rows: Vec<&Price> = prices
-            .iter()
-            .filter(|price| price.currency == currency)
-            .collect();
-        if rows.is_empty() {
-            continue;
+        for unit in &units {
+            let mut rows: Vec<&Price> = prices
+                .iter()
+                .filter(|price| price.currency == currency && price.unit == *unit)
+                .collect();
+            if rows.is_empty() {
+                continue;
+            }
+            rows.sort_by_key(|price| price.rank());
+            html.push_str(&price_table(currency, *unit, &rows, en));
         }
-        rows.sort_by_key(|price| price.rank());
-        let cache_1h = rows.iter().any(|price| price.cache_write_1h.is_some());
-        let _ = write!(
-            html,
-            "<div class=llm-prices-wrap><table class=llm-prices><caption>{caption}</caption><thead><tr><th scope=col>{tier}</th><th scope=col>{input}</th><th scope=col>{cached}</th><th scope=col>{write}</th>{write_1h}<th scope=col>{output}</th></tr></thead><tbody>",
-            caption = match currency {
-                Currency::Cny => choose(en, "人民币 · 每百万 tokens", "CNY per 1M tokens"),
-                Currency::Usd => choose(en, "美元 · 每百万 tokens", "USD per 1M tokens"),
-            },
-            tier = choose(en, "计价", "Tier"),
-            input = choose(en, "输入", "Input"),
-            cached = choose(en, "缓存命中", "Cached input"),
-            write = if cache_1h {
-                choose(en, "缓存写入 5 分钟", "Cache write 5m")
-            } else {
-                choose(en, "缓存写入", "Cache write")
-            },
-            write_1h = if cache_1h {
-                format!(
-                    "<th scope=col>{}</th>",
-                    choose(en, "缓存写入 1 小时", "Cache write 1h")
-                )
-            } else {
-                String::new()
-            },
-            output = choose(en, "输出", "Output"),
-        );
-        for price in &rows {
-            let _ = write!(
-                html,
-                "<tr><th scope=row>{}</th><td>{}</td><td>{}</td><td>{}</td>{}<td>{}</td></tr>",
-                escape(&row_label(price, &rows, en)),
-                price_cell(currency, price.input, en),
-                price_cell(currency, price.cached_input, en),
-                price_cell(currency, price.cache_write, en),
-                if cache_1h {
-                    format!(
-                        "<td>{}</td>",
-                        price_cell(currency, price.cache_write_1h, en)
-                    )
-                } else {
-                    String::new()
-                },
-                price_cell(currency, price.output, en),
-            );
-        }
-        html.push_str("</tbody></table></div>");
     }
     let mut specs = Vec::new();
     let mut spec = |label: &str, value: String| {
@@ -963,6 +1143,78 @@ fn model_row(model: &ModelRow, vendor: &VendorRow, timezone: Tz, en: bool) -> St
     html
 }
 
+/// A price table's column: its heading and the rate it shows.
+type Column = (&'static str, fn(&Price) -> Option<f64>);
+
+/// A model's rows in one currency and unit. Token rates keep their cache columns; other
+/// units state one rate a row, or what is sent and what comes back.
+fn price_table(currency: Currency, unit: Unit, rows: &[&Price], en: bool) -> String {
+    let caption = format!(
+        "{} · {}",
+        match currency {
+            Currency::Cny => choose(en, "人民币", "CNY"),
+            Currency::Usd => choose(en, "美元", "USD"),
+        },
+        per(unit, en)
+    );
+    let mut html = format!(
+        "<div class=llm-prices-wrap><table class=llm-prices><caption>{caption}</caption><thead><tr><th scope=col>{}</th>",
+        choose(en, "计价", "Tier")
+    );
+    let columns: Vec<Column> = if unit == Unit::Tokens {
+        let mut columns: Vec<Column> = vec![
+            (choose(en, "输入", "Input"), |price| price.input),
+            (choose(en, "缓存命中", "Cached input"), |price| {
+                price.cached_input
+            }),
+        ];
+        if rows.iter().any(|price| price.cache_write_1h.is_some()) {
+            columns.push((
+                choose(en, "缓存写入 5 分钟", "Cache write 5m"),
+                |price| price.cache_write,
+            ));
+            columns.push((
+                choose(en, "缓存写入 1 小时", "Cache write 1h"),
+                |price| price.cache_write_1h,
+            ));
+        } else {
+            columns.push((choose(en, "缓存写入", "Cache write"), |price| {
+                price.cache_write
+            }));
+        }
+        columns.push((choose(en, "输出", "Output"), |price| price.output));
+        columns
+    } else if rows.iter().any(|price| price.input.is_some())
+        && rows.iter().any(|price| price.output.is_some())
+    {
+        vec![
+            (choose(en, "输入", "Input"), |price| price.input),
+            (choose(en, "输出", "Output"), |price| price.output),
+        ]
+    } else {
+        vec![(choose(en, "价格", "Price"), |price| {
+            price.output.or(price.input)
+        })]
+    };
+    for (label, _) in &columns {
+        let _ = write!(html, "<th scope=col>{label}</th>");
+    }
+    html.push_str("</tr></thead><tbody>");
+    for price in rows {
+        let _ = write!(
+            html,
+            "<tr><th scope=row>{}</th>",
+            escape(&row_label(price, rows, en))
+        );
+        for (_, value) in &columns {
+            let _ = write!(html, "<td>{}</td>", price_cell(currency, value(price), en));
+        }
+        html.push_str("</tr>");
+    }
+    html.push_str("</tbody></table></div>");
+    html
+}
+
 fn change_json(change: &ChangeRow) -> Value {
     json!({
         "id": change.id, "vendor": change.vendor_id, "model_id": change.model_id,
@@ -987,6 +1239,7 @@ async fn data(
             json!({
                 "id": vendor.id, "name": vendor.name, "name_en": vendor.name_en,
                 "region": vendor.region, "verified_at": vendor.verified_at, "pricing_urls": vendor.pricing,
+                "docs_url": vendor.docs,
             })
         })
         .collect();
@@ -995,7 +1248,8 @@ async fn data(
         .iter()
         .map(|model| {
             json!({
-                "vendor": model.vendor_id, "model_id": model.model_id, "name": model.name,
+                "vendor": model.vendor_id, "model_id": model.model_id, "category": model.category,
+                "name": model.name,
                 "summary": model.summary, "summary_en": model.summary_en, "status": model.status,
                 "knowledge_cutoff": model.knowledge_cutoff,
                 "context_tokens": model.context_tokens, "max_output_tokens": model.max_output_tokens,
@@ -1013,7 +1267,7 @@ async fn data(
     let changes: Vec<Value> = catalog.changes.iter().map(change_json).collect();
     let body = json!({
         "name": "𝑳𝑳𝑴", "url": absolute(&state, "/llm"),
-        "description": "Mainstream model prices and specs from each provider's own documentation. Prices are per 1M tokens in the stated currency.",
+        "description": "Mainstream model prices and specs from each provider's own documentation: language, image, video, audio, embedding and rerank models. Each price row states its currency and unit: tokens and characters per 1M, image, second, minute, hour and request per one.",
         "verified_at": catalog.verified_at(), "vendors": vendors, "models": models, "changes": changes,
     });
     Ok(conditional(

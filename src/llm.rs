@@ -1,7 +1,8 @@
-//! 𝑳𝑳𝑴: mainstream model prices and specs, kept from each provider's own documentation.
-//! Official pages are read as text. The model only turns them into rows; a price, a limit
-//! or a date is published only when the page states it verbatim, and a provider whose
-//! pages have not changed is not read again.
+//! 𝑳𝑳𝑴: mainstream model prices and specs, kept from each provider's own documentation:
+//! language models, and the image, video, audio, embedding and rerank models of the same
+//! providers. Official pages are read as text. The model only turns them into rows; a price,
+//! a limit or a date is published only when the page states it verbatim, and a provider
+//! whose pages have not changed is not read again.
 use crate::{error::Result, fetch::Usage, state::AppState, topics::Topic};
 use axum::Router;
 use serde::{Deserialize, Serialize};
@@ -21,8 +22,8 @@ mod verify;
 mod tests;
 
 pub(crate) const TOPIC_ID: &str = "llm";
-/// Providers read at the same time within one run.
-const VENDOR_CONCURRENCY: usize = 3;
+/// Providers read at the same time within one run, each in two requests.
+const VENDOR_CONCURRENCY: usize = 6;
 /// Run time kept back for recording the run.
 const RUN_MARGIN: Duration = Duration::from_secs(90);
 
@@ -68,6 +69,84 @@ impl Currency {
             Self::Cny => "¥",
         }
     }
+}
+
+/// What a model is for. Each is listed apart and priced in its own units.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Category {
+    Text,
+    Image,
+    Video,
+    Audio,
+    /// Embedding and rerank models.
+    Embedding,
+}
+
+impl Category {
+    /// The order the catalogue lists them in.
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Text,
+        Self::Image,
+        Self::Video,
+        Self::Audio,
+        Self::Embedding,
+    ];
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Image => "image",
+            Self::Video => "video",
+            Self::Audio => "audio",
+            Self::Embedding => "embedding",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|category| category.as_str() == value)
+            .unwrap_or(Self::Text)
+    }
+
+    /// Image, video and audio models, priced by size, resolution or duration rather than
+    /// by a standard token rate.
+    pub(crate) fn media(self) -> bool {
+        matches!(self, Self::Image | Self::Video | Self::Audio)
+    }
+
+    /// The units a row of this category is shown by, the usual one first.
+    fn units(self) -> &'static [Unit] {
+        match self {
+            Self::Text => &[Unit::Tokens],
+            Self::Image => &[Unit::Image, Unit::Tokens, Unit::Request],
+            Self::Video => &[Unit::Second, Unit::Request, Unit::Tokens],
+            Self::Audio => &[
+                Unit::Minute,
+                Unit::Hour,
+                Unit::Second,
+                Unit::Characters,
+                Unit::Tokens,
+                Unit::Request,
+            ],
+            Self::Embedding => &[Unit::Tokens, Unit::Request],
+        }
+    }
+}
+
+/// What a price is for: 1M tokens or characters, or one image, second, minute, hour or
+/// request (a call or one generated video).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Unit {
+    Tokens,
+    Characters,
+    Image,
+    Second,
+    Minute,
+    Hour,
+    Request,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -135,10 +214,13 @@ impl Status {
     }
 }
 
-/// One verified row of a provider's price table, per 1M tokens in its own currency.
+/// One verified row of a provider's price table in its own currency and unit. `input` is
+/// what is sent (text, audio, characters to speak, a request) and `output` what comes back
+/// (text, an image, seconds of video).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Price {
     pub(crate) currency: Currency,
+    pub(crate) unit: Unit,
     pub(crate) tier: Tier,
     /// The provider's own name for the tier, such as "Fast" or "Ultrafast".
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -158,12 +240,22 @@ pub(crate) struct Price {
 }
 
 /// What tells two rows of one model apart; several long-context tiers differ by threshold.
-type PriceKey<'a> = (Currency, Tier, &'a str, Band, Option<i64>, Period, Mode);
+type PriceKey<'a> = (
+    Currency,
+    Unit,
+    Tier,
+    &'a str,
+    Band,
+    Option<i64>,
+    Period,
+    Mode,
+);
 
 impl Price {
-    fn key(&self) -> PriceKey<'_> {
+    pub(crate) fn key(&self) -> PriceKey<'_> {
         (
             self.currency,
+            self.unit,
             self.tier,
             self.label.as_str(),
             self.context,
@@ -171,6 +263,11 @@ impl Price {
             self.period,
             self.mode,
         )
+    }
+
+    /// What one unit costs where a row states a single rate, as media prices do.
+    pub(crate) fn amount(&self) -> f64 {
+        self.output.or(self.input).unwrap_or(f64::MAX)
     }
 
     /// The row a table shows first: standard tier, shortest context, full-price hours.
@@ -208,11 +305,10 @@ pub(crate) fn same_value(a: Option<f64>, b: Option<f64>) -> bool {
     }
 }
 
-/// A tier as two reads of the same page can both describe it: a lone mode or period and a
-/// context band without a long tier are what one read writes out and another leaves as `All`.
-type SmoothKey<'a> = (Currency, Tier, &'a str, Band, Option<i64>, Period, Mode);
-
-fn smoothed(prices: &[Price]) -> Vec<(SmoothKey<'_>, &Price)> {
+/// Rows keyed by a tier as two reads of the same page can both describe it: a lone mode or
+/// period and a context band without a long tier are what one read writes out and another
+/// leaves as `All`.
+fn smoothed(prices: &[Price]) -> Vec<(PriceKey<'_>, &Price)> {
     prices
         .iter()
         .map(|price| {
@@ -220,6 +316,7 @@ fn smoothed(prices: &[Price]) -> Vec<(SmoothKey<'_>, &Price)> {
                 .iter()
                 .filter(|other| {
                     other.currency == price.currency
+                        && other.unit == price.unit
                         && other.tier == price.tier
                         && other.label == price.label
                 })
@@ -253,6 +350,7 @@ fn smoothed(prices: &[Price]) -> Vec<(SmoothKey<'_>, &Price)> {
             (
                 (
                     price.currency,
+                    price.unit,
                     price.tier,
                     price.label.as_str(),
                     context,
@@ -270,7 +368,7 @@ fn smoothed(prices: &[Price]) -> Vec<(SmoothKey<'_>, &Price)> {
 /// matches several rows, is left out: reads differ in coverage, and that is not a change.
 pub(crate) fn paired<'a>(old: &'a [Price], new: &'a [Price]) -> Vec<(&'a Price, &'a Price)> {
     let (old, new) = (smoothed(old), smoothed(new));
-    let only = |rows: &[(SmoothKey<'a>, &'a Price)], key: &SmoothKey<'_>| {
+    let only = |rows: &[(PriceKey<'a>, &'a Price)], key: &PriceKey<'_>| {
         let mut found = rows.iter().filter(|(other, _)| other == key);
         match (found.next(), found.next()) {
             (Some((_, price)), None) => Some(*price),
@@ -295,12 +393,30 @@ pub(crate) fn row_moved(old: &Price, new: &Price) -> bool {
     .any(|(a, b)| a.is_some() && b.is_some() && !same_value(a, b))
 }
 
-/// The row shown in the catalogue for one currency.
-pub(crate) fn headline(prices: &[Price], currency: Currency) -> Option<&Price> {
-    prices
+/// The row shown in the catalogue for one currency, in the first of the category's units
+/// the model is priced in: the standard token rate of a language or embedding model, or
+/// else the cheapest standard size, resolution or request by what it makes. A row pricing
+/// only what is sent, such as an image to edit, leads only when no row prices the output.
+pub(crate) fn headline(prices: &[Price], currency: Currency, category: Category) -> Option<&Price> {
+    let unit = category.units().iter().find(|unit| {
+        prices
+            .iter()
+            .any(|price| price.currency == currency && price.unit == **unit)
+    })?;
+    let rows = prices
         .iter()
-        .filter(|price| price.currency == currency)
-        .min_by_key(|price| price.rank())
+        .filter(|price| price.currency == currency && price.unit == *unit);
+    if category.media() || *unit != Unit::Tokens {
+        rows.filter(|price| price.tier == Tier::Standard)
+            .min_by(|a, b| {
+                a.output
+                    .is_none()
+                    .cmp(&b.output.is_none())
+                    .then(a.amount().total_cmp(&b.amount()))
+            })
+    } else {
+        rows.min_by_key(|price| price.rank())
+    }
 }
 
 /// A model's line and version as its API id writes them: `qwen3.8-max` and `qwen3.7-max`
@@ -447,6 +563,7 @@ pub(crate) struct Links {
 #[derive(Debug)]
 pub(crate) struct Model {
     pub(crate) model_id: String,
+    pub(crate) category: Category,
     pub(crate) name: String,
     pub(crate) summary: String,
     pub(crate) summary_en: String,
@@ -505,7 +622,15 @@ pub(crate) async fn execute(state: &AppState, topic: &Topic) -> Result<Outcome> 
         jobs.spawn(async move {
             let _slot = slots.acquire_owned().await;
             let mut usage = Usage::default();
-            let report = match refresh(&state, &topic, &vendor, &mut usage).await {
+            // A provider whose turn comes too late, or whose read outlasts the run, is read
+            // by the next run.
+            let read = tokio::time::timeout_at(
+                deadline,
+                refresh(&state, &topic, &vendor, deadline, &mut usage),
+            )
+            .await
+            .unwrap_or_else(|_| Err(crate::error::AppError::Internal("本轮时间不足".into())));
+            let report = match read {
                 Ok(report) => report,
                 Err(error) => {
                     let message = error.to_string();
@@ -573,6 +698,7 @@ async fn refresh(
     state: &AppState,
     topic: &Topic,
     vendor: &store::Vendor,
+    deadline: Instant,
     usage: &mut Usage,
 ) -> Result<Report> {
     let mut pages = Vec::with_capacity(vendor.sources.len());
@@ -597,7 +723,17 @@ async fn refresh(
     }
     let known = store::listed_ids(state, &vendor.id).await?;
     let links = source::merged_links(&pages);
-    let drafts = extract::read(state, topic, vendor, &pages, &links, &known, usage).await?;
+    let extract::Extraction {
+        docs_link,
+        models: drafts,
+    } = extract::read(
+        state, topic, vendor, &pages, &links, &known, deadline, usage,
+    )
+    .await?;
+    // Links are official pages by construction; the one picked is the provider's API docs.
+    let docs = docs_link
+        .and_then(|index| links.get(index))
+        .map(|link| link.url.as_str());
     // Official pages always list models; none means the read went wrong, not a withdrawal.
     if drafts.is_empty() {
         return Err(crate::error::AppError::Internal(
@@ -613,7 +749,7 @@ async fn refresh(
     // A dropped extra tier is not worth reading the pages again; a set-aside model is.
     let complete = verified.rejected.iter().all(|rejection| !rejection.fatal);
     let models = verified.models.len();
-    let changes = store::apply(state, vendor, &pages, verified.models, complete).await?;
+    let changes = store::apply(state, vendor, &pages, verified.models, complete, docs).await?;
     Ok(Report::Read {
         models,
         changes,

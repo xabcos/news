@@ -123,6 +123,8 @@ pub(crate) struct Page {
     /// The page the registered URL finally resolved to.
     pub(crate) url: String,
     pub(crate) lines: Vec<String>,
+    /// Every official link on the page, navigation included: where the docs begin.
+    pub(crate) site: Vec<Link>,
     pub(crate) links: Vec<Link>,
     pub(crate) hash: Vec<u8>,
 }
@@ -148,7 +150,7 @@ pub(crate) fn official(url: &Url, domains: &[String]) -> bool {
 pub(crate) async fn fetch(state: &AppState, source: &Source, domains: &[String]) -> Result<Page> {
     let english = source.currency != Some(Currency::Cny);
     let limit = source.kind.limit();
-    let (url, lines, links) = match Url::parse(&source.url)
+    let (url, lines, links, site) = match Url::parse(&source.url)
         .ok()
         .and_then(|url| volcengine_doc(&url))
     {
@@ -161,7 +163,7 @@ pub(crate) async fn fetch(state: &AppState, source: &Source, domains: &[String])
                 .map_err(|_| AppError::BadRequest("官方页面地址无效".into()))?;
             let text = format!("# {}\n{}", document.result.title, document.result.content);
             let (lines, links) = markdown::read(&text, &base, domains, limit);
-            (base, lines, links)
+            (base, lines, links, Vec::new())
         }
         None => {
             let (url, html) =
@@ -177,7 +179,8 @@ pub(crate) async fn fetch(state: &AppState, source: &Source, domains: &[String])
             {
                 (lines, links) = markdown::read(&text, &url, domains, limit);
             }
-            (url, lines, links)
+            let site = anchors(&html, &url, domains);
+            (url, lines, links, site)
         }
     };
     if lines.iter().map(|line| line.chars().count()).sum::<usize>() < MIN_CHARS {
@@ -191,6 +194,7 @@ pub(crate) async fn fetch(state: &AppState, source: &Source, domains: &[String])
         url: url.to_string(),
         lines,
         links,
+        site,
         hash,
     })
 }
@@ -596,12 +600,14 @@ pub(crate) fn collapse(text: &str) -> String {
     out
 }
 
-/// Links from all of a provider's pages, numbered once for the model.
+/// Links from all of a provider's pages, numbered once for the model: every page's own
+/// links first, then the rest of each page, navigation included, where the docs begin.
 pub(crate) fn merged_links(pages: &[Page]) -> Vec<Link> {
     let mut seen = HashSet::new();
     pages
         .iter()
         .flat_map(|page| &page.links)
+        .chain(pages.iter().flat_map(|page| &page.site))
         .filter(|link| seen.insert(link.url.clone()))
         .take(MAX_LINKS)
         .cloned()

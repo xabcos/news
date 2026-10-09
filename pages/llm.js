@@ -10,36 +10,46 @@ const english = document.documentElement.lang === "en";
   if (!toolbar || !catalog) return;
   const vendors = [...catalog.querySelectorAll(".llm-vendor")];
   const search = toolbar.querySelector(".llm-search");
-  const regions = [...toolbar.querySelectorAll("[data-region]")];
+  const filters = [...toolbar.querySelectorAll("[data-region], [data-category]")];
   const empty = document.createElement("p");
   empty.className = "llm-empty";
   empty.hidden = true;
   empty.textContent = english ? "No matching models." : "没有匹配的模型。";
   catalog.append(empty);
-  let region = "all";
+  const chosen = { region: "all", category: "all" };
 
   // Filtering hides rows in place; without JavaScript every provider stays listed.
   function apply() {
     const query = search.value.trim().toLowerCase();
     let shown = 0;
     for (const vendor of vendors) {
-      const inRegion = region === "all" || vendor.dataset.region === region;
+      const inRegion = chosen.region === "all" || vendor.dataset.region === chosen.region;
       let visible = 0;
-      for (const model of vendor.querySelectorAll(".llm-model")) {
-        const match = inRegion && (!query || model.dataset.search.includes(query));
-        model.hidden = !match;
-        if (match) visible += 1;
+      for (const group of vendor.querySelectorAll(".llm-group")) {
+        const inCategory = chosen.category === "all" || group.dataset.category === chosen.category;
+        let rows = 0;
+        for (const model of group.querySelectorAll(".llm-model")) {
+          const match = inRegion && inCategory && (!query || model.dataset.search.includes(query));
+          model.hidden = !match;
+          if (match) rows += 1;
+        }
+        group.hidden = rows === 0;
+        visible += rows;
       }
       vendor.hidden = visible === 0;
       shown += visible;
     }
     empty.hidden = shown > 0;
-    for (const button of regions) button.setAttribute("aria-pressed", String(button.dataset.region === region));
+    for (const button of filters) {
+      const [key, value] = Object.entries(button.dataset)[0];
+      button.setAttribute("aria-pressed", String(chosen[key] === value));
+    }
   }
 
-  for (const button of regions) {
+  for (const button of filters) {
     button.addEventListener("click", () => {
-      region = button.dataset.region;
+      const [key, value] = Object.entries(button.dataset)[0];
+      chosen[key] = value;
       apply();
     });
   }
@@ -59,7 +69,7 @@ const english = document.documentElement.lang === "en";
     const row = id ? document.getElementById(id) : null;
     if (!row?.matches(".llm-model")) return;
     if (row.hidden) {
-      region = "all";
+      Object.assign(chosen, { region: "all", category: "all" });
       search.value = "";
       apply();
     }

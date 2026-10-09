@@ -1,7 +1,7 @@
 //! The catalogue in PostgreSQL: providers and their pages, the published models and the
 //! changes of the last day. One provider's read is applied in one transaction.
 use super::{
-    Currency, Links, Model, Price, Status, current, headline,
+    Category, Currency, Links, Model, Price, Status, current, headline,
     pages::tokens,
     paired, row_moved,
     source::{Kind, Page, Source},
@@ -76,6 +76,9 @@ pub(crate) enum Selection {
     /// Candidates and providers that left, not tried for about a week.
     Waiting,
 }
+
+/// The longest page address the tables keep.
+pub(crate) const MAX_URL: usize = 500;
 
 const VENDORS: &str = "SELECT v.id, v.name, v.region, v.homepage, v.note, v.domains, v.state,
         (SELECT COUNT(*) FROM llm_models m WHERE m.vendor_id = v.id AND m.removed_at IS NULL) AS listed
@@ -234,10 +237,14 @@ fn or_kept(new: Vec<String>, old: &[String]) -> Vec<String> {
 /// Two reads of the same page can label the same rows differently, list more or fewer
 /// tiers, or write 1M as 1048576 tokens. A price change is therefore a moved value in a
 /// tier both reads describe, or in the standard rate a currency's table leads with.
-pub(crate) fn price_moved(old: &[Price], new: &[Price]) -> bool {
+pub(crate) fn price_moved(category: Category, old: &[Price], new: &[Price]) -> bool {
     let standard = [Currency::Usd, Currency::Cny].into_iter().any(|currency| {
-        match (headline(old, currency), headline(new, currency)) {
-            (Some(a), Some(b)) => row_moved(a, b),
+        // A headline in another unit or size is a different row, not a new price.
+        match (
+            headline(old, currency, category),
+            headline(new, currency, category),
+        ) {
+            (Some(a), Some(b)) => a.key() == b.key() && row_moved(a, b),
             _ => false,
         }
     });
@@ -255,16 +262,18 @@ pub(crate) fn status_moved(old: &str, new: Status) -> bool {
         || (old == "preview" && new == Status::Active)
 }
 
-/// Publishes one provider's verified read and records what changed.
+/// Publishes one provider's verified read and records what changed. `docs` is the API
+/// documentation the read pointed to; a read that found none keeps the one known.
 pub(crate) async fn apply(
     state: &AppState,
     vendor: &Vendor,
     pages: &[Page],
     models: Vec<Model>,
     complete: bool,
+    docs: Option<&str>,
 ) -> Result<usize> {
     let mut transaction = state.pool.begin().await?;
-    let changes = write(&mut transaction, vendor, pages, &models, complete).await?;
+    let changes = write(&mut transaction, vendor, pages, &models, complete, docs).await?;
     transaction.commit().await?;
     Ok(changes)
 }
@@ -279,6 +288,7 @@ async fn write(
     pages: &[Page],
     models: &[Model],
     complete: bool,
+    docs: Option<&str>,
 ) -> Result<usize> {
     // Whether most of the catalogue has been missing from the pages for a week.
     let hold_expired: bool = sqlx::query_scalar(
@@ -338,7 +348,7 @@ async fn write(
             Some(old) => {
                 let before = changes.len();
                 // A model's first verified prices or limits are not a change.
-                if model.prices.is_some() && price_moved(&old.prices.0, &prices) {
+                if model.prices.is_some() && price_moved(model.category, &old.prices.0, &prices) {
                     changes.push(Change {
                         model_id: model.model_id.clone(),
                         kind: "price",
@@ -391,9 +401,10 @@ async fn write(
         sqlx::query(
             "INSERT INTO llm_models (vendor_id, model_id, name, summary, summary_en, status,
                 knowledge_cutoff, context_tokens, max_output_tokens, input_modalities, output_modalities,
-                features, prices, links, evidence, position)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $17)
+                features, prices, links, evidence, position, category)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $17, $18)
              ON CONFLICT (vendor_id, model_id) DO UPDATE SET
+                category = EXCLUDED.category,
                 name = EXCLUDED.name, summary = EXCLUDED.summary, summary_en = EXCLUDED.summary_en,
                 status = EXCLUDED.status,
                 knowledge_cutoff = EXCLUDED.knowledge_cutoff, context_tokens = EXCLUDED.context_tokens,
@@ -424,6 +435,7 @@ async fn write(
         .bind(Json(&evidence))
         .bind(changed)
         .bind(position as i32)
+        .bind(model.category.as_str())
         .execute(&mut *connection)
         .await?;
     }
@@ -476,18 +488,21 @@ async fn write(
         .execute(&mut *connection)
         .await?;
     }
+    // An import keeps the pages' text even when partial: the models a later read completes
+    // were on them all along, not released.
     for page in pages {
         sqlx::query(
             "UPDATE llm_sources SET checked_at = NOW(), failures = 0, error = NULL,
                 changed_at = CASE WHEN $3 AND content_hash IS DISTINCT FROM $2 THEN NOW() ELSE changed_at END,
                 content_hash = CASE WHEN $3 THEN $2 ELSE content_hash END,
-                content = CASE WHEN $3 THEN $4 ELSE content END
+                content = CASE WHEN $3 OR $5 THEN $4 ELSE content END
              WHERE id = $1",
         )
         .bind(page.source_id)
         .bind(&page.hash)
         .bind(complete && !held)
         .bind(page.text())
+        .bind(import)
         .execute(&mut *connection)
         .await?;
     }
@@ -498,12 +513,14 @@ async fn write(
     };
     sqlx::query(
         "UPDATE llm_vendors SET checked_at = NOW(), verified_at = NOW(), error = $2,
-            held_since = CASE WHEN $3 THEN COALESCE(held_since, NOW()) END
+            held_since = CASE WHEN $3 THEN COALESCE(held_since, NOW()) END,
+            docs = COALESCE($4, docs)
          WHERE id = $1",
     )
     .bind(&vendor.id)
     .bind(error)
     .bind(held)
+    .bind(docs.filter(|url| url.len() <= MAX_URL))
     .execute(&mut *connection)
     .await?;
     Ok(changes.len())
@@ -526,6 +543,7 @@ pub(crate) async fn publish(
     mut pages: Vec<Page>,
     models: Vec<Model>,
     complete: bool,
+    docs: Option<&str>,
 ) -> Result<usize> {
     let mut transaction = state.pool.begin().await?;
     let mut ids = Vec::with_capacity(pages.len());
@@ -548,7 +566,7 @@ pub(crate) async fn publish(
         ids.push(id);
     }
     // The pages being replaced still name the models they listed, so none of those is new.
-    let mut changes = write(&mut transaction, vendor, &pages, &models, complete).await?;
+    let mut changes = write(&mut transaction, vendor, &pages, &models, complete, docs).await?;
     sqlx::query("DELETE FROM llm_sources WHERE vendor_id = $1 AND id <> ALL($2)")
         .bind(&vendor.id)
         .bind(&ids)
