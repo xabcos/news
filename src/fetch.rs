@@ -291,10 +291,8 @@ pub(crate) async fn shared_pictures(
 async fn shared_picture(state: &AppState, page: Url, template: NewsImage) -> Option<NewsImage> {
     // Pages name their shared picture near the top; a runway page runs to 5 MB after it.
     const HEAD_BYTES: u64 = 512 * 1024;
-    let request = state
-        .origin_http
-        .get(page)
-        .timeout(std::time::Duration::from_secs(20));
+    let request =
+        crate::media::get(state, page.as_str()).timeout(std::time::Duration::from_secs(20));
     let (url, _, bytes) =
         crate::media::read_prefix(request, &["text/html", "application/xhtml+xml"], HEAD_BYTES)
             .await

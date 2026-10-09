@@ -66,7 +66,7 @@ pub(crate) async fn download(
             MAX_BYTES,
         ),
     };
-    let request = state.origin_http.get(url).timeout(TIMEOUT);
+    let request = media::get(state, url.as_str()).timeout(TIMEOUT);
     let (url, _, bytes) = media::read_bounded(request, types, max_bytes)
         .await
         .map_err(|refused| refused.error("原文"))?;

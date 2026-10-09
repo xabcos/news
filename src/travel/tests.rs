@@ -421,6 +421,15 @@ async fn world(
                 .map_or(0, |value| value.trim().parse().unwrap());
             let mut body = vec![0; length];
             stream.read_exact(&mut body).await.unwrap();
+            // Wikimedia is told how to reach us, and no other site is.
+            let told = request.lines().any(|line| {
+                line.eq_ignore_ascii_case("user-agent: XABCNEWS/1.0 (+https://xabcnews.com)")
+            });
+            let wikimedia = matches!(
+                host.as_str(),
+                "www.wikidata.org" | "en.wikivoyage.org" | "zh.wikipedia.org" | "en.wikipedia.org"
+            );
+            assert_eq!(told, wikimedia, "{host}");
             let target = request.split_whitespace().nth(1).unwrap().to_owned();
             let query = target
                 .split_once('?')

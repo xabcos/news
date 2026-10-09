@@ -355,7 +355,7 @@ pub(crate) async fn download_image(
     url: &str,
     accept: &str,
 ) -> Option<(Vec<u8>, &'static str)> {
-    let request = state.origin_http.get(url).header(header::ACCEPT, accept);
+    let request = get(state, url).header(header::ACCEPT, accept);
     match read_bounded(request, &IMAGE_TYPES, state.config.image_max_bytes).await {
         Ok((_, content_type, bytes)) => Some((bytes, content_type)),
         Err(refused) => {
@@ -410,10 +410,39 @@ pub(crate) fn is_public_origin(url: &Url) -> bool {
     is_public_https_url(url) && url.port_or_known_default() == Some(443)
 }
 
-/// Who reads other sites, with where to find out more, as Wikimedia asks of automated clients.
-/// The site is named without a scheme: some bot rules (Akamai's, on Xiaomi, HP, AMD and Samsung
-/// pages) turn away a User-Agent that carries a URL or an email address.
+/// Who reads other sites. The site is named without a scheme: some bot rules (Akamai's, on
+/// Xiaomi, HP, AMD and Samsung pages) turn away a User-Agent that carries a URL or an email.
 const USER_AGENT: &str = "XABCNEWS/1.0 (xabcnews.com)";
+/// Wikimedia asks automated clients for a way to reach them and limits the others harder: under
+/// the plain name, Wikidata refused most of a Travel run's lookups.
+const WIKIMEDIA_AGENT: &str = "XABCNEWS/1.0 (+https://xabcnews.com)";
+
+/// A GET on `origin_http`, the way every read of another site starts. Wikimedia's sites are
+/// told how to reach us; the others get the plain name.
+pub(crate) fn get(state: &AppState, url: &str) -> reqwest::RequestBuilder {
+    let request = state.origin_http.get(url);
+    if Url::parse(url).is_ok_and(|url| is_wikimedia(&url)) {
+        request.header(header::USER_AGENT, WIKIMEDIA_AGENT)
+    } else {
+        request
+    }
+}
+
+fn is_wikimedia(url: &Url) -> bool {
+    url.domain().is_some_and(|host| {
+        [
+            "wikipedia.org",
+            "wikimedia.org",
+            "wikidata.org",
+            "wikivoyage.org",
+        ]
+        .iter()
+        .any(|site| {
+            host.strip_suffix(site)
+                .is_some_and(|rest| rest.is_empty() || rest.ends_with('.'))
+        })
+    })
+}
 
 /// The client for untrusted origins: news images and every Reads download. Each host,
 /// redirect hops included, must resolve only to public addresses, and the connection uses
@@ -744,6 +773,26 @@ mod tests {
         let direct = Url::parse("http://media.example.com/files/token").unwrap();
         let base = Url::parse("https://media.example.com").unwrap();
         assert!(same_http_to_https_authority(&direct, &base));
+    }
+
+    #[test]
+    fn only_wikimedia_sites_are_told_how_to_reach_us() {
+        let wikimedia = |url: &str| is_wikimedia(&Url::parse(url).unwrap());
+        for url in [
+            "https://www.wikidata.org/w/api.php",
+            "https://en.wikivoyage.org/w/api.php",
+            "https://ja.wikipedia.org/wiki/京都市",
+            "https://upload.wikimedia.org/wikipedia/commons/a/a1/Kyoto.jpg",
+        ] {
+            assert!(wikimedia(url), "{url}");
+        }
+        for url in [
+            "https://www.mi.com/global/product/redmi-17c-5g/specs",
+            "https://notwikipedia.org/",
+            "https://wikipedia.org.example.com/",
+        ] {
+            assert!(!wikimedia(url), "{url}");
+        }
     }
 
     #[test]

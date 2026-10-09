@@ -327,9 +327,7 @@ async fn official_body(
 
 /// A bounded read on the hardened origin client; it sends no credentials.
 async fn download(state: &AppState, url: Url, english: bool, body: Body) -> Result<(Url, Vec<u8>)> {
-    let request = state
-        .origin_http
-        .get(url)
+    let request = crate::media::get(state, url.as_str())
         .timeout(TIMEOUT)
         .header(ACCEPT, body.accept())
         .header(
