@@ -519,7 +519,11 @@ async fn postgres_equity_visibility_and_note_lifecycle() {
         .await
         .unwrap();
     assert_eq!(historical["note"]["briefing_day"], json!(old_day));
-    assert_eq!(historical["editions"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        listed(&historical),
+        [json!(end), json!(prior.cutoff)],
+        "the latest days are listed, and so is the older edition being read"
+    );
     let original: Value = sqlx::query_scalar("SELECT payload FROM ai_insights WHERE id=$1")
         .bind(prior.id)
         .fetch_one(&state.pool)
@@ -595,6 +599,7 @@ async fn postgres_equity_visibility_and_note_lifecycle() {
         "an edition without a prior baseline keeps that decision on regeneration"
     );
     check_two_editions(&state, &http, &base, &cookies[0]).await;
+    check_retention(&state).await;
     state.shutdown.cancel();
     state.shutdown_workers().await;
     server.abort();
@@ -602,8 +607,22 @@ async fn postgres_equity_visibility_and_note_lifecycle() {
     state.pool.close().await;
 }
 
+/// The cutoffs a page offers as past editions, newest first.
+fn listed(page: &Value) -> Vec<Value> {
+    page["editions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["window_end"].clone())
+        .collect()
+}
+
 async fn check_two_editions(state: &AppState, http: &reqwest::Client, base: &str, cookie: &str) {
     use uuid::Uuid;
+    async fn page(http: &reqwest::Client, url: String) -> Value {
+        let response = http.get(url).send().await.unwrap();
+        response.error_for_status().unwrap().json().await.unwrap()
+    }
     async fn scheduled(state: &AppState, now: DateTime<Utc>) {
         insight::tick_kind(state, Kind::Equity, now).await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(15), async {
@@ -750,4 +769,72 @@ async fn check_two_editions(state: &AppState, http: &reqwest::Client, base: &str
             .id,
         evening_id
     );
+    // Readers are offered the latest edition's day and the two days before it. The days count
+    // from the latest published edition: neither a failed edition nor an XAI 日报 moves them.
+    let newest = morning + Duration::days(1);
+    let (older, oldest) = (newest - Duration::days(3), newest - Duration::days(4));
+    for (kind, status, cutoff) in [
+        ("equity", "ok", older),
+        ("equity", "ok", oldest),
+        ("equity", "failed", newest + Duration::days(5)),
+        ("ai", "ok", newest + Duration::days(5)),
+    ] {
+        sqlx::query("INSERT INTO ai_insights (id,kind,status,briefing_day,window_start,window_end,started_at,finished_at,model,payload) SELECT $1,$2,$3,$4,window_start,$5,NOW(),NOW(),model,payload FROM ai_insights WHERE id=$6")
+            .bind(Uuid::new_v4()).bind(kind).bind(status)
+            .bind(cutoff.with_timezone(&state.config.timezone).date_naive()).bind(cutoff).bind(morning_id)
+            .execute(&state.pool).await.unwrap();
+    }
+    state.equity.invalidate();
+    let recent = [
+        json!(newest),
+        json!(evening),
+        json!(morning),
+        json!(evening - Duration::days(1)),
+    ];
+    assert_eq!(
+        listed(&page(http, format!("{base}/equity-insight")).await),
+        recent
+    );
+    // An older edition opened by a link or by its day is listed with them, once.
+    let mut at_url = url::Url::parse(&format!("{base}/equity-insight")).unwrap();
+    at_url
+        .query_pairs_mut()
+        .append_pair("at", &older.to_rfc3339());
+    let day = older.with_timezone(&state.config.timezone).date_naive();
+    for url in [
+        at_url.to_string(),
+        format!("{base}/equity-insight?day={day}"),
+    ] {
+        let opened = page(http, url).await;
+        assert_eq!(opened["note"]["window_end"], json!(older));
+        assert_eq!(listed(&opened), [&recent[..], &[json!(older)]].concat());
+    }
+}
+
+/// Notes of both kinds leave 32 days after they were started; a generation still running stays.
+async fn check_retention(state: &AppState) {
+    use uuid::Uuid;
+    let mut kept = Vec::new();
+    for (kind, status, days, stays) in [
+        ("equity", "ok", 33, false),
+        ("equity", "ok", 31, true),
+        ("equity", "running", 40, true),
+        ("ai", "ok", 33, false),
+    ] {
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO ai_insights (id,kind,status,briefing_day,window_start,window_end,started_at,finished_at,model,payload) VALUES ($1,$2,$3,CURRENT_DATE,NOW(),NOW(),NOW()-$4*INTERVAL '1 day',CASE WHEN $3='running' THEN NULL ELSE NOW() END,'test','{}')")
+            .bind(id).bind(kind).bind(status).bind(days)
+            .execute(&state.pool).await.unwrap();
+        if stays {
+            kept.push(id);
+        }
+    }
+    crate::runner::cleanup_insights(state).await.unwrap();
+    let left: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM ai_insights WHERE started_at < NOW() - INTERVAL '30 days' ORDER BY started_at DESC",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(left, kept);
 }

@@ -64,7 +64,6 @@ fn names_match_the_post_in_its_own_script() {
 fn destinations_are_addressed_by_their_guide() {
     assert_eq!(slug("Kyoto").as_deref(), Some("kyoto"));
     assert_eq!(slug("São Paulo").as_deref(), Some("sao-paulo"));
-    assert_eq!(slug("Tokyo/Shibuya").as_deref(), Some("tokyo-shibuya"));
     assert_eq!(slug("Santiago (Chile)").as_deref(), Some("santiago-chile"));
     assert_eq!(slug("Łódź").as_deref(), Some("lodz"));
     assert_eq!(slug("北京"), None);
@@ -459,6 +458,18 @@ async fn world(
                         .flatten()
                         .map(|id| json!({ "id": id }))
                         .collect::<Vec<_>>() })),
+                    _ if query.contains_key("titles") => {
+                        assert_eq!(query["sites"], "enwikivoyage");
+                        let title = &query["titles"];
+                        let found = entities
+                            .values()
+                            .find(|entity| entity["sitelinks"]["enwikivoyage"]["title"] == title.as_str())
+                            .map_or_else(
+                                || ("-1".to_owned(), json!({ "site": "enwikivoyage", "title": title, "missing": "" })),
+                                |entity| (entity["id"].as_str().unwrap().to_owned(), entity.clone()),
+                            );
+                        json(json!({ "entities": serde_json::Map::from_iter([found]) }))
+                    }
                     _ => json(json!({ "entities": query["ids"]
                         .split('|')
                         .map(|id| (id.to_owned(), entities.get(id).cloned()
@@ -648,12 +659,22 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
             Some("Q580186"),
             Some("Q17"),
         ),
+        // A district guide, as Wikivoyage writes it, resolves to the city its title names, even
+        // where the administrative chain climbs elsewhere, as London's districts climb to England.
         item(
             "Q580186",
             &[("zh-cn", "右京区"), ("en", "Ukyō-ku")],
-            None,
+            Some("Kyoto/Arashiyama"),
             Some((35.0, 135.7)),
-            Some("Q34600"),
+            Some("Q120730"),
+            Some("Q17"),
+        ),
+        item(
+            "Q120730",
+            &[("zh-cn", "京都府"), ("en", "Kyoto Prefecture")],
+            Some("Kyoto (prefecture)"),
+            Some((35.2, 135.5)),
+            None,
             Some("Q17"),
         ),
         item(

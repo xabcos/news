@@ -23,6 +23,8 @@ use std::{collections::HashSet, sync::Arc};
 mod history;
 
 pub(crate) const US_BRIEFING_TIME: NaiveTime = NaiveTime::from_hms_opt(8, 45, 0).unwrap();
+/// Past editions offered to readers: the latest edition's day and the two days before it.
+const LISTED_DAYS: i32 = 3;
 
 fn edition(cutoff: DateTime<Utc>) -> &'static str {
     if cutoff.with_timezone(&chrono_tz::America::New_York).time() == US_BRIEFING_TIME {
@@ -121,15 +123,22 @@ async fn render(state: &AppState, query: &Query) -> Result<Rendered> {
     if (query.day.is_some() || query.at.is_some()) && note.is_none() {
         return Err(AppError::NotFound("没有这期股市研判笔记".into()));
     }
+    let opened = note.as_ref().map(|(cutoff, _)| *cutoff);
     let note = note.map(|(cutoff, mut note)| {
         note["window_end"] = json!(cutoff);
         note["edition"] = json!(edition(cutoff));
         note
     });
+    // Counted from the latest edition rather than the clock, so a cached page stays right and a
+    // pause in publishing leaves the last days listed. An older edition being read is listed too.
     let editions: Vec<(NaiveDate, DateTime<Utc>)> = sqlx::query_as(
         "SELECT DISTINCT briefing_day,window_end FROM ai_insights WHERE kind='equity' AND status='ok'
-         ORDER BY window_end DESC LIMIT 180",
+         AND (window_end=$1 OR briefing_day>(SELECT MAX(briefing_day) FROM ai_insights
+             WHERE kind='equity' AND status='ok')-$2)
+         ORDER BY window_end DESC",
     )
+    .bind(opened)
+    .bind(LISTED_DAYS)
     .fetch_all(&state.pool)
     .await?;
     let editions: Vec<_> = editions

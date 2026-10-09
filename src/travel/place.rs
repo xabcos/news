@@ -2,7 +2,8 @@
 //! with coordinates is kept only when the post itself names it, either by one of the item's
 //! names in any language or by the name that found it. The destination is the nearest place
 //! up the administrative chain with an English Wikivoyage guide, so a shrine resolves to its
-//! city and a park to its borough; the country, which always has one, is the last resort.
+//! city and a park to its borough; the country, which always has one, is the last resort. A big
+//! city's district, which Wikivoyage writes as "Tokyo/Asakusa", resolves to the city.
 
 use crate::{
     error::{AppError, Result},
@@ -45,6 +46,8 @@ const NAMES: &str = "names";
 pub(super) struct Wikidata {
     searches: Mutex<HashMap<(String, String), Vec<String>>>,
     entities: Mutex<HashMap<(&'static str, String), Arc<Entity>>>,
+    /// Items by the title of their English Wikivoyage guide.
+    articles: Mutex<HashMap<String, Option<Arc<Entity>>>>,
 }
 
 /// A Wikidata item with its Chinese and English names.
@@ -324,7 +327,7 @@ async fn destination(
     for _ in 0..=MAX_DEPTH {
         let place = current.as_deref().unwrap_or(spot);
         if place.sitelink("enwikivoyage").is_some() {
-            return describe(state, wikidata, place, spot).await.map(Some);
+            return guided(state, wikidata, place, spot).await;
         }
         let Some(parent) = place.item("P131") else {
             break;
@@ -345,7 +348,29 @@ async fn destination(
     if country.sitelink("enwikivoyage").is_none() {
         return Ok(None);
     }
-    describe(state, wikidata, &country, spot).await.map(Some)
+    guided(state, wikidata, &country, spot).await
+}
+
+/// The destination a place with an English Wikivoyage guide stands for: the place itself, or,
+/// for a district guide of a big city ("Tokyo/Asakusa", also Vatican City's "Rome/Vatican"),
+/// the city ("Tokyo").
+async fn guided(
+    state: &AppState,
+    wikidata: &Wikidata,
+    place: &Entity,
+    spot: &Entity,
+) -> Result<Option<Destination>> {
+    let title = place.sitelink("enwikivoyage").unwrap_or_default();
+    let Some((city, _)) = title.split_once('/') else {
+        return describe(state, wikidata, place, spot).await.map(Some);
+    };
+    let Some(city) = wikidata.article(state, city).await? else {
+        return Ok(None);
+    };
+    if let Some(known) = stored(state, &city.id).await? {
+        return Ok(Some(known));
+    }
+    describe(state, wikidata, &city, spot).await.map(Some)
 }
 
 async fn stored(state: &AppState, id: &str) -> Result<Option<Destination>> {
@@ -527,6 +552,31 @@ impl Wikidata {
         Ok(found)
     }
 
+    /// The item an English Wikivoyage guide belongs to, read as a place.
+    async fn article(&self, state: &AppState, title: &str) -> Result<Option<Arc<Entity>>> {
+        if let Some(found) = lock(&self.articles).get(title) {
+            return Ok(found.clone());
+        }
+        let response = api(
+            state,
+            &[
+                ("action", "wbgetentities"),
+                ("sites", "enwikivoyage"),
+                ("titles", title),
+                ("props", PLACE),
+            ],
+        )
+        .await?;
+        // A title without an item comes back as a missing entity, which has no id.
+        let found = response
+            .entities
+            .into_values()
+            .find(|entity| is_item(&entity.id))
+            .map(Arc::new);
+        lock(&self.articles).insert(title.to_owned(), found.clone());
+        Ok(found)
+    }
+
     async fn entity(&self, state: &AppState, id: &str, props: &'static str) -> Result<Arc<Entity>> {
         self.entities(state, &[id.to_owned()], props)
             .await?
@@ -627,7 +677,7 @@ pub(super) fn matched(text: &str, name: &str) -> Option<usize> {
 }
 
 /// An address segment from an English Wikivoyage title: "São Paulo" → `sao-paulo`,
-/// "Tokyo/Shibuya" → `tokyo-shibuya`.
+/// "Santiago (Chile)" → `santiago-chile`.
 pub(super) fn slug(title: &str) -> Option<String> {
     let mut slug = String::new();
     for c in fold(title).chars() {

@@ -26,6 +26,7 @@ const KNOWN_LIMIT: i64 = 80;
 /// news leaves with retention.
 const REPEAT_DAYS: i64 = 7;
 const RUN_RETENTION_DAYS: i64 = 3;
+/// XAI 日报 and equity notes alike.
 const INSIGHT_RETENTION_DAYS: i64 = 32;
 pub(crate) const CLEANUP_BATCH_SIZE: i64 = 500;
 const CLEANUP_MAX_BATCHES: usize = 20;
@@ -1246,7 +1247,7 @@ async fn cleanup_runs(state: &AppState) -> Result<u64> {
     .await
 }
 
-async fn cleanup_insights(state: &AppState) -> Result<u64> {
+pub(crate) async fn cleanup_insights(state: &AppState) -> Result<u64> {
     delete_in_batches("ai_insights", || {
         sqlx::query(
             r#"
@@ -1254,7 +1255,7 @@ async fn cleanup_insights(state: &AppState) -> Result<u64> {
                 SELECT id
                 FROM ai_insights
                 WHERE status <> 'running'
-                  AND started_at < NOW() - (CASE WHEN kind = 'equity' THEN 365 ELSE $2 END * INTERVAL '1 day')
+                  AND started_at < NOW() - ($2 * INTERVAL '1 day')
                 ORDER BY started_at
                 LIMIT $1
                 FOR UPDATE SKIP LOCKED

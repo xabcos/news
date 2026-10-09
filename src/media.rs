@@ -411,7 +411,9 @@ pub(crate) fn is_public_origin(url: &Url) -> bool {
 }
 
 /// Who reads other sites, with where to find out more, as Wikimedia asks of automated clients.
-const USER_AGENT: &str = "XABCNEWS/1.0 (+https://xabcnews.com)";
+/// The site is named without a scheme: some bot rules (Akamai's, on Xiaomi, HP, AMD and Samsung
+/// pages) turn away a User-Agent that carries a URL or an email address.
+const USER_AGENT: &str = "XABCNEWS/1.0 (xabcnews.com)";
 
 /// The client for untrusted origins: news images and every Reads download. Each host,
 /// redirect hops included, must resolve only to public addresses, and the connection uses
