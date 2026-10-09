@@ -302,7 +302,6 @@ fn public_stock(stock: &Stock, sources: &[Source], timezone: chrono_tz::Tz) -> V
         "name":stock.name,"name_en":stock.name_en,"symbol":stock.symbol,"market":stock.market,"signal":stock.signal,
         "reason":stock.reason,"reason_en":stock.reason_en,"watch":stock.watch,"watch_en":stock.watch_en,
         "risk":stock.risk,"risk_en":stock.risk_en,"events":public_events(&stock.events,sources,timezone),
-        "change":"new","previous_signal":null,
     })
 }
 

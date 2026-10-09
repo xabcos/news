@@ -662,7 +662,7 @@ p { margin-top: 0; }
   mask: url("/world.svg") center / 100% 100% no-repeat;
 }
 .travel-map figcaption { margin-top: .35rem; color: var(--muted); font-size: .72rem; text-align: center; }
-/* Two of the week's favorites stand beside the map where the screen leaves room for them. */
+/* The week's favorites stand beside the map where the screen leaves room, one or two a side. */
 .travel-atlas { display: grid; grid-template-columns: 1fr minmax(0, 50rem) 1fr; align-items: center; gap: 2rem; margin: .25rem 0 1.1rem; }
 .travel-atlas .travel-map { grid-column: 2; width: 100%; margin: 0; }
 /* A side holds its favorite nearest the map, and an outer one where its own width allows. */

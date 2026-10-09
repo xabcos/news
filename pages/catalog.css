@@ -4,7 +4,6 @@
 .catalog-tabs { display: flex; justify-content: center; gap: clamp(.8rem, 4vw, 3rem); padding: 1.25rem 0 .9rem; border-bottom: 1px solid var(--line); }
 .catalog-tabs a { padding: .3rem .15rem; color: var(--muted); font-size: .95rem; text-decoration: none; border-bottom: 2px solid transparent; }
 .catalog-tabs a[aria-current] { color: var(--primary-strong); border-color: var(--primary); }
-.catalog-tabs + .catalog-grid { margin-top: 1.5rem; }
 .catalog-eyebrow { margin: 0 0 .45rem; color: var(--primary-strong); font-size: .8rem; letter-spacing: .06em; }
 .catalog-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(var(--tile), 100%), 1fr)); gap: 1.5rem; align-items: start; }
 .catalog-music .catalog-grid { --tile: 16rem; }

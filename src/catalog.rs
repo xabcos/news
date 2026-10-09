@@ -523,7 +523,7 @@ pub(crate) async fn prune(state: &AppState) -> Result<u64> {
     .await
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Entry {
     label: String,
     label_en: String,
@@ -532,18 +532,18 @@ struct Entry {
     source: usize,
     quote: String,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Link {
     label: String,
     label_en: String,
     url: String,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Reference {
     title: String,
     url: String,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Guide {
     intro: String,
     intro_en: String,

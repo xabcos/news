@@ -66,53 +66,39 @@ const EN_SECTIONS: &[&str] = &[
     "legend",
 ];
 
-/// A destination's guide. Sections the sources say nothing about stay empty; guides written
-/// before a section existed read it as empty.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// A destination's guide. Sections the sources say nothing about stay empty.
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct Guide {
     pub tagline: String,
     pub tagline_en: String,
     /// Where the name comes from.
-    #[serde(default)]
     pub origin: String,
-    #[serde(default)]
     pub origin_en: String,
     pub history: String,
     pub history_en: String,
     /// People tied to the place, each with the stories the sources tell, at any length.
-    #[serde(default)]
     pub people: Vec<Entry>,
     /// Sights worth the trip, and what to eat and drink.
-    #[serde(default)]
     pub highlights: Vec<Entry>,
-    #[serde(default)]
     pub flavors: Vec<Entry>,
-    #[serde(default)]
     pub culture: String,
-    #[serde(default)]
     pub culture_en: String,
     /// When to go, with the festivals and their months.
-    #[serde(default)]
     pub season: String,
-    #[serde(default)]
     pub season_en: String,
     /// Local customs a visitor should respect.
-    #[serde(default)]
     pub customs: String,
-    #[serde(default)]
     pub customs_en: String,
     /// One fact worth passing on, stated plainly under the tagline.
-    #[serde(default)]
     pub fact: String,
-    #[serde(default)]
     pub fact_en: String,
-    /// The pages the guide was written from.
+    /// The pages the guide was written from, added after the model writes.
     #[serde(default)]
     pub sources: Vec<Reference>,
 }
 
 /// A named person, sight or dish with what the sources tell of it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Entry {
     pub name: String,
     pub name_en: String,
@@ -120,7 +106,7 @@ pub(crate) struct Entry {
     pub text_en: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Reference {
     /// `wikivoyage`, `wikipedia-zh` or `wikipedia-en`.
     pub site: String,

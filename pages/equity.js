@@ -2,8 +2,8 @@
 const EquityNotes = (() => {
   let market = "all";
   const labels = {
-    zh: { title: "股市观察", empty: "股市研判笔记将在生成后显示。", all: "全部", cn: "A 股", us: "美股", hk: "港股", catalyst: "催化增强", watch: "等待验证", risk: "风险升温", next: "继续看", invalid: "风险点", evidence: "研判依据", timeline: "事件时间线", events: "项已引用事件", fresh: "本期新增，开始跟踪", changed: "判断调整", continuing: "持续跟踪", history: "历史笔记", latest: "最新一期", none: "本期没有该市场的关注股票。", source: "原文", coverage: "资料最早披露于", cutoff: "新闻截止", feedback: "历史反馈", against: "对照", previous: "上期判断", previousWatch: "当时观察", previousRisk: "原风险条件", actual: "本期新事实", assessment: "复核", followups: "上期跟踪", omitted: "本期未入选", supported: "得到支持", partial: "部分支持", contradicted: "出现反证", pending: "尚待验证", insufficient: "资料不足", chartNote: "图表展示已引用事件的披露日期，不代表股价走势或全市场热度。关注理由属于基于现有证据的判断，后续随新事实更新。" },
-    en: { title: "Equity notes", empty: "Equity notes will appear after the first edition is generated.", all: "All", cn: "China A", us: "U.S.", hk: "Hong Kong", catalyst: "Catalyst strengthening", watch: "Awaiting confirmation", risk: "Rising risk", next: "Watch next", invalid: "Risk", evidence: "Analysis and evidence", timeline: "Event timeline", events: "cited events", fresh: "New this edition · Tracking begins", changed: "Assessment changed", continuing: "Continuing", history: "Past editions", latest: "Latest edition", none: "No stocks selected in this market this edition.", source: "Source", coverage: "Earliest disclosure", cutoff: "News cutoff", feedback: "Thesis review", against: "Compared with", previous: "Prior thesis", previousWatch: "What we watched", previousRisk: "Original risk", actual: "New evidence", assessment: "Assessment", followups: "Previous watchlist", omitted: "Not selected this edition", supported: "Supported", partial: "Partly supported", contradicted: "Counterevidence", pending: "Awaiting verification", insufficient: "Insufficient evidence", chartNote: "Charts show disclosure dates of cited events, not share prices or market-wide attention. Assessments reflect the available evidence and may change as new facts emerge." },
+    zh: { title: "股市观察", empty: "股市研判笔记将在生成后显示。", all: "全部", cn: "A 股", us: "美股", hk: "港股", catalyst: "催化增强", watch: "等待验证", risk: "风险升温", next: "继续看", invalid: "风险点", evidence: "研判依据", timeline: "事件时间线", events: "项已引用事件", fresh: "本期新增，开始跟踪", history: "历史笔记", latest: "最新一期", none: "本期没有该市场的关注股票。", source: "原文", coverage: "资料最早披露于", cutoff: "新闻截止", feedback: "历史反馈", against: "对照", previous: "上期判断", previousWatch: "当时观察", previousRisk: "原风险条件", actual: "本期新事实", assessment: "复核", followups: "上期跟踪", omitted: "本期未入选", supported: "得到支持", partial: "部分支持", contradicted: "出现反证", pending: "尚待验证", insufficient: "资料不足", chartNote: "图表展示已引用事件的披露日期，不代表股价走势或全市场热度。关注理由属于基于现有证据的判断，后续随新事实更新。" },
+    en: { title: "Equity notes", empty: "Equity notes will appear after the first edition is generated.", all: "All", cn: "China A", us: "U.S.", hk: "Hong Kong", catalyst: "Catalyst strengthening", watch: "Awaiting confirmation", risk: "Rising risk", next: "Watch next", invalid: "Risk", evidence: "Analysis and evidence", timeline: "Event timeline", events: "cited events", fresh: "New this edition · Tracking begins", history: "Past editions", latest: "Latest edition", none: "No stocks selected in this market this edition.", source: "Source", coverage: "Earliest disclosure", cutoff: "News cutoff", feedback: "Thesis review", against: "Compared with", previous: "Prior thesis", previousWatch: "What we watched", previousRisk: "Original risk", actual: "New evidence", assessment: "Assessment", followups: "Previous watchlist", omitted: "Not selected this edition", supported: "Supported", partial: "Partly supported", contradicted: "Counterevidence", pending: "Awaiting verification", insufficient: "Insufficient evidence", chartNote: "Charts show disclosure dates of cited events, not share prices or market-wide attention. Assessments reflect the available evidence and may change as new facts emerge." },
   };
   function node(tag, className, text = "") {
     const element = document.createElement(tag);
@@ -118,12 +118,8 @@ const EquityNotes = (() => {
       } else {
         article.append(facts);
       }
-      if (stock.feedback) {
-        article.append(renderFeedback(stock.feedback));
-      } else {
-        const change = stock.change === "new" ? t.fresh : t[stock.change];
-        article.append(node("p", "equity-change muted small", `${change}${stock.previous_signal && stock.change === "changed" ? ` · ${t[stock.previous_signal]} → ${t[stock.signal]}` : ""}`));
-      }
+      // A stock without feedback from the previous edition is new in this one.
+      article.append(stock.feedback ? renderFeedback(stock.feedback) : node("p", "equity-change muted small", t.fresh));
       const evidence = node("section", "equity-evidence");
       evidence.append(node("h4", "", t.evidence));
       evidence.append(...stock.events.map(eventEntry));

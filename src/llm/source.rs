@@ -99,7 +99,7 @@ impl Kind {
 }
 
 /// A registered official page.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct Source {
     pub(crate) id: i64,
     pub(crate) kind: Kind,
@@ -108,7 +108,7 @@ pub(crate) struct Source {
     pub(crate) content_hash: Option<Vec<u8>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug)]
 pub(crate) struct Link {
     pub(crate) text: String,
     pub(crate) url: String,

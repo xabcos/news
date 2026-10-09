@@ -153,8 +153,6 @@ fn feedback_keeps_original_thesis_and_reports_omitted_stocks() {
         &sources,
         chrono_tz::Asia::Shanghai,
     );
-    assert_eq!(stocks[0]["change"], "changed");
-    assert_eq!(stocks[0]["previous_signal"], "watch");
     assert_eq!(
         stocks[0]["feedback"]["previous"]["reason"],
         baseline.stocks[0]["reason"]
@@ -216,7 +214,6 @@ fn hong_kong_padding_does_not_create_a_new_thesis_or_duplicate_stock() {
         )
         .is_empty()
     );
-    assert_eq!(stocks[0]["change"], "continuing");
     assert_eq!(stocks[0]["feedback"]["previous"]["symbol"], "00700");
     let mut duplicate = draft().stocks.remove(0);
     duplicate.market = "hk".into();

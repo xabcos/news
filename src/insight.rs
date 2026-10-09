@@ -122,7 +122,7 @@ pub(crate) fn is_running(state: &AppState) -> bool {
     running.contains(Kind::Ai.key()) || running.contains(Kind::Equity.key())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct InsightSignal {
     pub title: String,
     pub title_en: String,
@@ -159,7 +159,7 @@ pub(crate) struct InsightSignal {
     pub source_indexes: Vec<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct InsightAnalysis {
     pub hotspots: Vec<Story>,
     pub gossip: Vec<Story>,
@@ -277,7 +277,7 @@ pub(crate) struct InsightResearchSource {
     pub title: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 pub(crate) struct InsightArticleImage {
     index: usize,
     title: String,
@@ -299,7 +299,7 @@ struct StoredInsight {
     stats: Sampling,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 struct InsightArticles {
     title: String,
     wechat: String,

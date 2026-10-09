@@ -40,7 +40,7 @@ impl Standing {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct Vendor {
     pub(crate) id: String,
     pub(crate) name: String,
@@ -630,7 +630,7 @@ pub(crate) async fn retire(state: &AppState, vendor: &Vendor, reason: &str) -> R
 }
 
 /// Every provider the catalogue knows, in any state: what discovery must not add again.
-#[derive(Clone, Debug, FromRow)]
+#[derive(Debug, FromRow)]
 pub(crate) struct Known {
     pub(crate) id: String,
     pub(crate) name: String,
@@ -681,7 +681,7 @@ pub(crate) async fn register(
 }
 
 /// A provider the news reported, to be tried before it is listed.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct Proposal {
     pub(crate) id: String,
     pub(crate) name: String,

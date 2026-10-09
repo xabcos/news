@@ -6,7 +6,7 @@ use crate::{
     topics::Topic,
 };
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use tokio::task::JoinSet;
@@ -84,7 +84,7 @@ const FEEDS: &[(&str, &str, &str)] = &[
     ("Martin Fowler", "en", "https://martinfowler.com/feed.atom"),
 ];
 
-#[derive(Serialize, sqlx::FromRow)]
+#[derive(sqlx::FromRow)]
 struct Seed {
     url: String,
     title: String,

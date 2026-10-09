@@ -51,7 +51,7 @@ pub(super) struct Wikidata {
 }
 
 /// A Wikidata item with its Chinese and English names.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub(crate) struct Named {
     pub id: String,
     pub name: String,
@@ -59,7 +59,7 @@ pub(crate) struct Named {
 }
 
 /// A destination as `travel_places` keeps it.
-#[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
+#[derive(Debug, sqlx::FromRow)]
 pub(crate) struct Destination {
     pub id: String,
     pub slug: String,

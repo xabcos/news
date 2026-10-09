@@ -31,7 +31,7 @@ tower-http = { version = "0.6", default-features = false, features = ["compressi
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-normalization = "0.1"
-url = { version = "2", features = ["serde"] }
+url = "2"
 uuid = { version = "1", features = ["serde", "v4"] }
 zeroize = "1"
 feed-rs = { version = "3", default-features = false }

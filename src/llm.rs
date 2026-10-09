@@ -106,7 +106,7 @@ pub(crate) enum Mode {
     NonThinking,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Status {
     Preview,
@@ -306,7 +306,7 @@ pub(crate) fn headline(prices: &[Price], currency: Currency) -> Option<&Price> {
 /// A model's line and version as its API id writes them: `qwen3.8-max` and `qwen3.7-max`
 /// are versions 3.8 and 3.7 of `qwen#-max`, `claude-opus-5-5` is 5.5 of `claude-opus-#`.
 /// Dated snapshots, context-size variants and preview builds belong to their line.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct Lineage {
     pub(crate) family: String,
     pub(crate) version: Vec<u32>,
@@ -435,7 +435,7 @@ pub(crate) fn current<'a, T>(
         .collect()
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Links {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) docs: Option<String>,
@@ -444,7 +444,7 @@ pub(crate) struct Links {
 }
 
 /// A model as verified from one read of its provider's pages.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct Model {
     pub(crate) model_id: String,
     pub(crate) name: String,

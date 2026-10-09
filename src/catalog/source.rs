@@ -9,7 +9,7 @@ use serde::Serialize;
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Debug, Serialize)]
 pub(super) struct Source {
     pub title: String,
     pub url: String,
@@ -20,7 +20,7 @@ pub(super) struct Source {
     pub images: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Debug, Serialize)]
 pub(super) struct Link {
     pub label: String,
     pub url: String,

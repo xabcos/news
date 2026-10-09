@@ -173,12 +173,6 @@ pub(super) fn attach(
                 previous,
             )
         }) {
-            stock["change"] = json!(if stock["signal"] == previous["signal"] {
-                "continuing"
-            } else {
-                "changed"
-            });
-            stock["previous_signal"] = previous["signal"].clone();
             stock["feedback"] = feedback;
         } else {
             followups.push(json!({

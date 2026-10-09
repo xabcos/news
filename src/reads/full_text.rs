@@ -30,7 +30,6 @@ pub(super) struct Image {
     pub origin: String,
     pub stored: Option<media::UploadResponse>,
     /// Consecutive failed transfers; a success resets it.
-    #[serde(default)]
     pub failures: u8,
     /// Kept per image so another illustration's renewal cannot shorten its backoff.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -454,10 +453,10 @@ mod tests {
     }
 
     #[test]
-    fn successful_transfer_clears_backoff_and_legacy_images_still_load() {
+    fn successful_transfer_clears_backoff() {
         let now = Utc::now();
         let mut image: Image = serde_json::from_value(json!({
-            "origin": "https://example.com/figure.png", "stored": null
+            "origin": "https://example.com/figure.png", "stored": null, "failures": 0
         }))
         .unwrap();
         assert_eq!(image.failures, 0);
