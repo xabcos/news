@@ -930,8 +930,8 @@ async fn index(
         "<p class=llm-footnote>{} <a href=\"/llm.json\">JSON</a> · <a href=\"/llm/feed.xml\">Atom</a></p>",
         choose(
             en,
-            "价格、规格与链接均取自各服务商自己的官方文档。",
-            "Prices, specs and links come from each provider's own documentation."
+            "价格、规格与链接均取自各服务商的官方文档。",
+            "Prices, specs and links come from each provider's official documentation."
         )
     );
     let structured = json!({
