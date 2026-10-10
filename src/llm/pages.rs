@@ -337,6 +337,7 @@ pub(super) fn starting(
                 && other.unit == row.unit
                 && other.tier == Tier::Standard
                 && other.output.is_some() == row.output.is_some()
+                && other.makes(category) == row.makes(category)
         })
         .map(Price::amount)
         .collect();

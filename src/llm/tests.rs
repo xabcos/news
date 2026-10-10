@@ -2856,6 +2856,63 @@ fn a_starting_price_is_the_cheapest_standard_size() {
         pages::starting(&images, Currency::Cny, Category::Image, false),
         "¥0.40/张起"
     );
+    // An image model priced in tokens leads with its images, not the text beside them.
+    let banana = [
+        per(Tier::Standard, Unit::Tokens, "text and thinking", 7.5),
+        per(Tier::Standard, Unit::Tokens, "images", 30.0),
+    ];
+    assert_eq!(
+        pages::starting(&banana, Currency::Cny, Category::Image, false),
+        "¥30.00/百万 tokens"
+    );
+    let described = [
+        per(
+            Tier::Standard,
+            Unit::Tokens,
+            "text output · image input",
+            7.5,
+        ),
+        per(Tier::Standard, Unit::Tokens, "images", 30.0),
+    ];
+    assert_eq!(
+        pages::starting(&described, Currency::Cny, Category::Image, false),
+        "¥30.00/百万 tokens"
+    );
+    let mirrored = [
+        per(Tier::Standard, Unit::Tokens, "text and thinking", 7.5),
+        per(
+            Tier::Standard,
+            Unit::Tokens,
+            "image output · text input",
+            30.0,
+        ),
+    ];
+    assert_eq!(
+        pages::starting(&mirrored, Currency::Cny, Category::Image, false),
+        "¥30.00/百万 tokens"
+    );
+    let listed = [
+        per(
+            Tier::Standard,
+            Unit::Tokens,
+            "text output · input: text, images",
+            7.5,
+        ),
+        per(Tier::Standard, Unit::Tokens, "images", 30.0),
+    ];
+    assert_eq!(
+        pages::starting(&listed, Currency::Cny, Category::Image, false),
+        "¥30.00/百万 tokens"
+    );
+    // Rows per second already price the video made; every size stays.
+    let sizes = [
+        per(Tier::Standard, Unit::Second, "720p", 0.1),
+        per(Tier::Standard, Unit::Second, "1080p video", 0.2),
+    ];
+    assert_eq!(
+        pages::starting(&sizes, Currency::Cny, Category::Video, false),
+        "¥0.10/秒起"
+    );
     // So does a rerank model priced per request.
     let rerank = [
         per(Tier::Standard, Unit::Request, "Pro", 0.004),

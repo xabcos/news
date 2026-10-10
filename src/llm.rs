@@ -116,6 +116,16 @@ impl Category {
         matches!(self, Self::Image | Self::Video | Self::Audio)
     }
 
+    /// How price labels name what a media model makes.
+    fn makes(self) -> &'static [&'static str] {
+        match self {
+            Self::Image => &["image", "图"],
+            Self::Video => &["video", "视频"],
+            Self::Audio => &["audio", "speech", "voice", "音频", "语音"],
+            Self::Text | Self::Embedding => &[],
+        }
+    }
+
     /// The units a row of this category is shown by, the usual one first.
     fn units(self) -> &'static [Unit] {
         match self {
@@ -265,6 +275,21 @@ impl Price {
         )
     }
 
+    /// Whether this token row prices what a media model makes, as Gemini's `images` output
+    /// does beside its `text and thinking`: a condition of its label, as the read joins them
+    /// with `·`, names the category's output and no input, as `image output` in
+    /// `image output · text input` does. Rows in an image, second or minute already price
+    /// what is made.
+    pub(crate) fn makes(&self, category: Category) -> bool {
+        let label = self.label.to_lowercase();
+        self.unit == Unit::Tokens
+            && self.output.is_some()
+            && label.split('·').any(|part| {
+                category.makes().iter().any(|word| part.contains(word))
+                    && !["input", "输入"].iter().any(|word| part.contains(word))
+            })
+    }
+
     /// What one unit costs where a row states a single rate, as media prices do.
     pub(crate) fn amount(&self) -> f64 {
         self.output.or(self.input).unwrap_or(f64::MAX)
@@ -395,8 +420,10 @@ pub(crate) fn row_moved(old: &Price, new: &Price) -> bool {
 
 /// The row shown in the catalogue for one currency, in the first of the category's units
 /// the model is priced in: the standard token rate of a language or embedding model, or
-/// else the cheapest standard size, resolution or request by what it makes. A row pricing
-/// only what is sent, such as an image to edit, leads only when no row prices the output.
+/// else the cheapest standard size, resolution or request by what it makes. A media model
+/// priced in tokens leads with the rows of what it makes, Gemini's images rather than the
+/// text beside them, and a row pricing only what is sent, such as an image to edit, leads
+/// only when no row prices the output.
 pub(crate) fn headline(prices: &[Price], currency: Currency, category: Category) -> Option<&Price> {
     let unit = category.units().iter().find(|unit| {
         prices
@@ -407,7 +434,11 @@ pub(crate) fn headline(prices: &[Price], currency: Currency, category: Category)
         .iter()
         .filter(|price| price.currency == currency && price.unit == *unit);
     if category.media() || *unit != Unit::Tokens {
-        rows.filter(|price| price.tier == Tier::Standard)
+        let standard: Vec<&Price> = rows.filter(|price| price.tier == Tier::Standard).collect();
+        let made = standard.iter().any(|price| price.makes(category));
+        standard
+            .into_iter()
+            .filter(|price| !made || price.makes(category))
             .min_by(|a, b| {
                 a.output
                     .is_none()
