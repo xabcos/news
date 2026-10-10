@@ -52,17 +52,20 @@ fn marks(stated: Stated) -> &'static [&'static str] {
             "百万字符",
             "million characters",
             "1m characters",
+            "m characters",
             "1,000,000 characters",
             "1m chars",
+            "m chars",
         ],
         Stated::TenThousandCharacters => &["万字符", "10k characters", "10,000 characters"],
         Stated::ThousandCharacters => &[
             "千字符",
             "thousand characters",
             "1k characters",
+            "k characters",
             "1,000 characters",
             "1k chars",
-            "/k chars",
+            "k chars",
         ],
         Stated::Image => &[
             "/image",
@@ -224,11 +227,7 @@ impl<'a> Text<'a> {
         if places.is_empty() {
             return Err("摘录不在官方页面中");
         }
-        let names_model = |index: usize| {
-            names
-                .iter()
-                .any(|name| mentions(&self.page.lines[index], name))
-        };
+        let names_model = |index: usize| naming(&self.page.lines[index], names, all).this;
         for (first, last) in places {
             let context = self.context(first, last);
             if !names.iter().any(|name| mentions(&context, name)) {
@@ -272,26 +271,30 @@ impl<'a> Text<'a> {
 
     /// The nearest line at or above `first`, within its section, that names this model, as
     /// long as no line between names another model the way a model owns what follows it: as
-    /// a row label or in running text. Rows that name models across columns, as a version
-    /// row under a column table's header does, are passed over.
+    /// a heading, a row label or a line of its own. Running text that mentions another model
+    /// in passing, as "priced the same as 2.5 Flash" does, and rows that name models across
+    /// columns, as a version row under a column table's header does, are passed over.
     fn named_line(&self, first: usize, names: &[String], all: &[String]) -> Option<usize> {
         let lines = &self.page.lines;
         let floor = first.saturating_sub(CONTEXT_LINES);
         let mut index = first;
         loop {
             let line = &lines[index];
-            if names.iter().any(|name| mentions(line, name)) {
+            let named = naming(line, names, all);
+            if named.this {
                 return Some(index);
             }
-            let lower = line.to_lowercase();
-            if all.iter().any(|name| mentions_lower(&lower, name)) {
-                let across_columns = line.starts_with('|')
-                    && !cells(line)
-                        .first()
-                        .is_some_and(|label| all.iter().any(|name| mentions(label, name)));
-                if !across_columns {
-                    return None;
-                }
+            let owner = if line.starts_with('|') {
+                cells(line)
+                    .first()
+                    .is_some_and(|label| naming(label, names, all).others)
+            } else {
+                // A heading, or a line of nothing but names: `gemini-live-b`, `- gemini-live-b:`.
+                named.others
+                    && (line.starts_with('#') || !named.rest.chars().any(char::is_alphanumeric))
+            };
+            if owner {
+                return None;
             }
             if index == floor || (index < first && section(line)) {
                 return None;
@@ -407,7 +410,7 @@ fn column(line: &str, names: &[String], all: &[String]) -> Option<usize> {
     }
     let index = cells
         .iter()
-        .position(|cell| names.iter().any(|name| mentions(cell, name)))?;
+        .position(|cell| naming(cell, names, all).this)?;
     (index > 0).then(|| cells.len() - 1 - index)
 }
 
@@ -548,6 +551,34 @@ fn unit_cells(own: &str) -> String {
 /// Whether a text names any unit.
 fn named(text: &str) -> bool {
     Stated::ALL.into_iter().any(|unit| states(text, unit))
+}
+
+/// Which models a text names. Longer names are read first, so `Codestral Embed` names that
+/// model and not `Codestral`; `rest` is the lowercased text with every name taken out.
+struct Naming {
+    this: bool,
+    others: bool,
+    rest: String,
+}
+
+/// `all` holds every model's names, longest first; `names` are this model's.
+fn naming(text: &str, names: &[String], all: &[String]) -> Naming {
+    let mut naming = Naming {
+        this: false,
+        others: false,
+        rest: text.to_lowercase(),
+    };
+    for name in all {
+        if mentions_lower(&naming.rest, name) {
+            if names.iter().any(|own| own.eq_ignore_ascii_case(name)) {
+                naming.this = true;
+            } else {
+                naming.others = true;
+            }
+            naming.rest = remove_mentions(&naming.rest, name);
+        }
+    }
+    naming
 }
 
 /// Whether `ident` occurs in `text` as a whole name: `gpt-6` is not found in `gpt-6-astra`
@@ -719,7 +750,8 @@ fn clip(value: &str, max: usize) -> String {
 
 pub(crate) fn models(drafts: Vec<Draft>, pages: &[Page], links: &[Link]) -> Verified {
     let texts: Vec<Text> = pages.iter().map(Text::new).collect();
-    let all_names: Vec<String> = drafts.iter().flat_map(identities).collect();
+    let mut all_names: Vec<String> = drafts.iter().flat_map(identities).collect();
+    all_names.sort_by_key(|name| std::cmp::Reverse(name.chars().count()));
     let mut seen = HashSet::new();
     let mut verified = Verified {
         models: Vec::new(),
@@ -733,10 +765,7 @@ pub(crate) fn models(drafts: Vec<Draft>, pages: &[Page], links: &[Link]) -> Veri
             quote: String::new(),
             fatal: true,
         };
-        if model_id.is_empty()
-            || model_id.chars().count() > 100
-            || model_id.chars().any(char::is_whitespace)
-        {
+        if model_id.is_empty() || model_id.chars().count() > 100 {
             verified.rejected.push(reject("模型 ID 无效"));
             continue;
         }
@@ -751,11 +780,7 @@ pub(crate) fn models(drafts: Vec<Draft>, pages: &[Page], links: &[Link]) -> Veri
             continue;
         }
         let names = identities(&draft);
-        let others: Vec<&String> = all_names
-            .iter()
-            .filter(|other| !names.iter().any(|name| name.eq_ignore_ascii_case(other)))
-            .collect();
-        let check = verify_prices(&draft.prices, &texts, &names, &all_names, &others);
+        let check = verify_prices(&draft.prices, &texts, &names, &all_names);
         verified
             .rejected
             .extend(
@@ -770,7 +795,7 @@ pub(crate) fn models(drafts: Vec<Draft>, pages: &[Page], links: &[Link]) -> Veri
                     }),
             );
         let prices = check.prices;
-        let facts = verified_facts(&draft.facts, &texts, &names, &all_names, &others);
+        let facts = verified_facts(&draft.facts, &texts, &names, &all_names);
         verified
             .models
             .push(model(draft, model_id, prices, facts, links));
@@ -800,7 +825,6 @@ fn verify_prices(
     texts: &[Text],
     names: &[String],
     all: &[String],
-    others: &[&String],
 ) -> PriceCheck {
     let mut check = PriceCheck {
         prices: None,
@@ -813,7 +837,7 @@ fn verify_prices(
     let mut evidence = Vec::with_capacity(drafts.len());
     let mut fatal = false;
     for draft in drafts {
-        match verify_row(draft, texts, names, all, others) {
+        match verify_row(draft, texts, names, all) {
             Ok((price, found)) => {
                 prices.push(price);
                 evidence.push(found);
@@ -848,7 +872,6 @@ fn verify_row(
     texts: &[Text],
     names: &[String],
     all: &[String],
-    others: &[&String],
 ) -> Result<(Price, Evidence), &'static str> {
     let text = texts.get(draft.source).ok_or("价格来源编号无效")?;
     let currency = text
@@ -856,10 +879,8 @@ fn verify_row(
         .currency
         .filter(|_| text.page.kind == Kind::Pricing)
         .ok_or("价格只能取自定价页")?;
-    let quoted = collapse(&draft.quote);
-    if !names.iter().any(|name| mentions(&quoted, name))
-        && others.iter().any(|other| mentions(&quoted, other))
-    {
+    let quoted = naming(&collapse(&draft.quote), names, all);
+    if !quoted.this && quoted.others {
         return Err("价格摘录属于其他模型");
     }
     let place = text.place(&draft.quote, names, all)?;
@@ -1083,16 +1104,13 @@ fn verified_facts(
     texts: &[Text],
     names: &[String],
     all: &[String],
-    others: &[&String],
 ) -> Vec<(Evidence, String)> {
     facts
         .iter()
         .filter_map(|fact| {
             let text = texts.get(fact.source)?;
-            let quoted = collapse(&fact.quote);
-            if !names.iter().any(|name| mentions(&quoted, name))
-                && others.iter().any(|other| mentions(&quoted, other))
-            {
+            let quoted = naming(&collapse(&fact.quote), names, all);
+            if !quoted.this && quoted.others {
                 return None;
             }
             let place = text.place(&fact.quote, names, all).ok()?;

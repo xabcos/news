@@ -488,8 +488,15 @@ fn words(values: &[String], en: bool) -> String {
         .join(choose(en, "、", ", "))
 }
 
-fn anchor(vendor: &str, model: &str) -> String {
-    format!("{vendor}:{model}")
+/// A model's id on the page. An id holds no spaces, so a model listed by its name writes
+/// them percent-encoded, as it does `%` itself; API ids are unchanged.
+pub(super) fn anchor(vendor: &str, model: &str) -> String {
+    format!("{vendor}:{}", model.replace('%', "%25").replace(' ', "%20"))
+}
+
+/// The address fragment that opens a model's row: its id, percent-encoded once more.
+pub(super) fn fragment(vendor: &str, model: &str) -> String {
+    anchor(vendor, model).replace('%', "%25")
 }
 
 fn percent(before: f64, after: f64) -> String {
@@ -767,7 +774,7 @@ async fn index(
             let target = match (listed, model) {
                 (true, Some(model)) => format!(
                     "<a class=llm-change-model href=\"#{}\">",
-                    escape(&anchor(&change.vendor_id, model))
+                    escape(&fragment(&change.vendor_id, model))
                 ),
                 _ => "<span class=llm-change-model>".to_owned(),
             };
@@ -922,8 +929,8 @@ async fn index(
         "<p class=llm-footnote>{} <a href=\"/llm.json\">JSON</a> · <a href=\"/llm/feed.xml\">Atom</a></p>",
         choose(
             en,
-            "价格、规格与链接均取自各服务商自己的官方文档，每个数字都与官方页面原文逐字核对；未写明的项目留空。",
-            "Prices, specs and links come only from each provider's own documentation, and every number is matched word for word against the official page. Values a page does not state are left blank."
+            "价格、规格与链接均取自各服务商自己的官方文档。",
+            "Prices, specs and links come from each provider's own documentation."
         )
     );
     let structured = json!({
@@ -1038,11 +1045,16 @@ fn model_row(
         ),
     };
     let mut html = format!(
-        "<details class=llm-model id=\"{id}\" data-search=\"{search}\"><summary><span class=llm-model-name><code>{model_id}</code>{badges}<small>{name}</small></span>{cells}</summary><div class=llm-detail>",
+        "<details class=llm-model id=\"{id}\" data-search=\"{search}\"><summary><span class=llm-model-name><code>{model_id}</code>{badges}{name}</span>{cells}</summary><div class=llm-detail>",
         id = escape(&anchor(&model.vendor_id, &model.model_id)),
         search = escape(&search),
         model_id = escape(&model.model_id),
-        name = escape(&model.name),
+        // A model listed by its name has nothing more to show under it.
+        name = if model.name.eq_ignore_ascii_case(&model.model_id) {
+            String::new()
+        } else {
+            format!("<small>{}</small>", escape(&model.name))
+        },
     );
     let summary = choose(en, &model.summary, &model.summary_en);
     if !summary.is_empty() {
@@ -1306,7 +1318,7 @@ async fn feed(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
                 None => format!("{} · {kind}", vendor.name),
             }),
             link = escape(&match &change.model_id {
-                Some(model) => format!("{base}llm#{}", anchor(&change.vendor_id, model)),
+                Some(model) => format!("{base}llm#{}", fragment(&change.vendor_id, model)),
                 None => format!("{base}llm"),
             }),
             at = change.detected_at.to_rfc3339(),

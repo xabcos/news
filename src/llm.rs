@@ -419,8 +419,9 @@ pub(crate) fn headline(prices: &[Price], currency: Currency, category: Category)
     }
 }
 
-/// A model's line and version as its API id writes them: `qwen3.8-max` and `qwen3.7-max`
-/// are versions 3.8 and 3.7 of `qwen#-max`, `claude-opus-5-5` is 5.5 of `claude-opus-#`.
+/// A model's line and version as its API id or name writes them: `qwen3.8-max` and
+/// `qwen3.7-max` are versions 3.8 and 3.7 of `qwen#-max`, `claude-opus-5-5` is 5.5 of
+/// `claude-opus-#`, and `Mistral Large 4` is 4 of `mistral-large-#`, as is `mistral-large-4`.
 /// Dated snapshots, context-size variants and preview builds belong to their line.
 #[derive(Debug)]
 pub(crate) struct Lineage {
@@ -433,7 +434,7 @@ pub(crate) struct Lineage {
 pub(crate) fn lineage(model_id: &str) -> Lineage {
     let id = model_id.trim().to_lowercase();
     let mut tokens: Vec<&str> = id
-        .split(['-', '_'])
+        .split(|c: char| c == '-' || c == '_' || c.is_whitespace())
         .filter(|token| !token.is_empty())
         .collect();
     let digits = |token: &str| !token.is_empty() && token.bytes().all(|b| b.is_ascii_digit());

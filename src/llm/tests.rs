@@ -1228,6 +1228,285 @@ fn identical_tables_verify_under_each_models_own_heading() {
     assert!(verified.models.iter().all(|model| model.prices.is_some()));
 }
 
+/// A section's running text may mention another model in passing, as Gemini's TTS models
+/// say "Our 3.8 Flash Text-to-Speech model"; a line of its own naming another model still
+/// ends the part above it.
+#[test]
+fn a_passing_mention_of_another_model_keeps_the_section_its_own() {
+    let lines = [
+        "## Gemini 3.8 Flash",
+        "gemini-3.8-flash",
+        "| | Free Tier | Paid Tier, per 1M tokens in USD |",
+        "| Input price | Free of charge | $0.75 |",
+        "## Gemini 3.8 Flash TTS",
+        "gemini-3.8-flash-tts",
+        "Our 3.8 Flash Text-to-Speech audio model for expressive voices.",
+        "### Standard",
+        "| | Free Tier | Paid Tier, per 1M tokens in USD |",
+        "| Input price | Free of charge | $0.50 (text) |",
+        "| Output price | Free of charge | $9.00 (audio) |",
+        "## Live models",
+        "| | Paid Tier, per 1M tokens in USD |",
+        "gemini-live-a",
+        "| Input price | $1.00 |",
+        "gemini-live-b",
+        "| Input price | $2.00 |",
+        "## More live models",
+        "- gemini-live-c",
+        "| Input price | $3.00 |",
+        "- gemini-live-d:",
+        "| Input price | $4.00 |",
+    ];
+    let pages = [page(Kind::Pricing, Some(Currency::Usd), &lines)];
+    let tokens =
+        |id: &str, name: &str, category: Category, quote: &str, input: f64, output: Option<f64>| {
+            let mut draft = draft(id, vec![]);
+            draft.name = name.into();
+            draft.category = category;
+            draft.facts.clear();
+            draft.prices = vec![DraftPrice {
+                cached_input: None,
+                output,
+                ..price_draft(Period::All, [input, 0.0, 0.0], quote)
+            }];
+            draft
+        };
+    let speech = "| Input price | Free of charge | $0.50 (text) | | Output price | Free of charge | $9.00 (audio) |";
+    let verified = verify::models(
+        vec![
+            tokens(
+                "gemini-3.8-flash",
+                "Gemini 3.8 Flash",
+                Category::Text,
+                lines[3],
+                0.75,
+                None,
+            ),
+            tokens(
+                "gemini-3.8-flash-tts",
+                "Gemini 3.8 Flash TTS",
+                Category::Audio,
+                speech,
+                0.5,
+                Some(9.0),
+            ),
+            tokens(
+                "gemini-live-a",
+                "Gemini Live A",
+                Category::Audio,
+                lines[16],
+                2.0,
+                None,
+            ),
+            tokens(
+                "gemini-live-b",
+                "Gemini Live B",
+                Category::Audio,
+                lines[16],
+                2.0,
+                None,
+            ),
+            // A list item naming another model ends the part above it too.
+            tokens(
+                "gemini-live-c",
+                "Gemini Live C",
+                Category::Audio,
+                lines[21],
+                4.0,
+                None,
+            ),
+            tokens(
+                "gemini-live-d",
+                "Gemini Live D",
+                Category::Audio,
+                lines[21],
+                4.0,
+                None,
+            ),
+        ],
+        &pages,
+        &[],
+    );
+    let priced: Vec<bool> = verified
+        .models
+        .iter()
+        .map(|model| model.prices.is_some())
+        .collect();
+    assert_eq!(priced, [true, true, false, true, false, true]);
+}
+
+/// A name inside a longer one is not its own: `- Gemini 9 Flash TTS` and the row of
+/// `Codestral Embed` belong to those models, not to Gemini 9 Flash or Codestral.
+#[test]
+fn a_longer_name_keeps_its_lines_from_a_shorter_one() {
+    let lines = [
+        "## Speech models",
+        "Call them as gemini-9-flash and gemini-9-flash-tts.",
+        "- Gemini 9 Flash",
+        "| Input price | $5.00 |",
+        "- Gemini 9 Flash TTS",
+        "| Input price | $6.00 |",
+        "## Code models",
+        "Prices /M Tokens",
+        "| Model | Input | Output |",
+        "| Codestral ↗ | $0.3 | $0.9 |",
+        "| Codestral Embed ↗ | $0.15 | — |",
+    ];
+    let pages = [page(Kind::Pricing, Some(Currency::Usd), &lines)];
+    let named = |id: &str, name: &str, quote: &str, input: f64| {
+        let mut draft = draft(id, vec![]);
+        draft.name = name.into();
+        draft.facts.clear();
+        draft.prices = vec![DraftPrice {
+            cached_input: None,
+            output: None,
+            ..price_draft(Period::All, [input, 0.0, 0.0], quote)
+        }];
+        draft
+    };
+    let verified = verify::models(
+        vec![
+            named("gemini-9-flash", "Gemini 9 Flash", lines[5], 6.0),
+            named("gemini-9-flash-tts", "Gemini 9 Flash TTS", lines[5], 6.0),
+            named("Codestral", "Codestral", lines[10], 0.15),
+            named("Codestral Embed", "Codestral Embed", lines[10], 0.15),
+        ],
+        &pages,
+        &[],
+    );
+    let priced: Vec<bool> = verified
+        .models
+        .iter()
+        .map(|model| model.prices.is_some())
+        .collect();
+    assert_eq!(
+        priced,
+        [false, true, false, true],
+        "{:?}",
+        verified.rejected
+    );
+}
+
+/// Nor does a shorter name take a longer one's column of a comparison table, or a sentence
+/// about the longer model under its own heading.
+#[test]
+fn a_shorter_name_takes_neither_column_nor_sentence_of_a_longer_one() {
+    let lines = [
+        "## Code models",
+        "Prices /M Tokens",
+        "| Feature | Codestral Embed | Codestral |",
+        "| Input | $0.15 | $0.30 |",
+        "## Codestral",
+        "Codestral costs $0.30/M tokens.",
+        "Codestral Embed costs $0.15/M tokens.",
+    ];
+    let pages = [page(Kind::Pricing, Some(Currency::Usd), &lines)];
+    let codestral = |quote: &str, input: f64| {
+        let mut draft = draft("Codestral", vec![]);
+        draft.name = "Codestral".into();
+        draft.facts.clear();
+        draft.prices = vec![DraftPrice {
+            cached_input: None,
+            output: None,
+            ..price_draft(Period::All, [input, 0.0, 0.0], quote)
+        }];
+        draft
+    };
+    let embed = || {
+        let mut draft = draft("Codestral Embed", vec![]);
+        draft.name = "Codestral Embed".into();
+        draft.category = Category::Embedding;
+        draft.facts.clear();
+        draft
+    };
+    let table = format!("{} {}", lines[2], lines[3]);
+    let priced = |quote: &str, input: f64| {
+        verify::models(vec![codestral(quote, input), embed()], &pages, &[]).models[0]
+            .prices
+            .clone()
+            .map(|prices| prices[0].input)
+    };
+    assert_eq!(priced(&table, 0.30), Some(Some(0.30)));
+    assert_eq!(priced(&table, 0.15), None);
+    assert_eq!(priced(lines[5], 0.30), Some(Some(0.30)));
+    assert_eq!(priced(lines[6], 0.15), None);
+}
+
+/// A model listed by its name keeps the line of the same model written as an API id, and
+/// its anchor stays apart from every API id's.
+#[test]
+fn names_and_ids_share_a_line_and_keep_their_anchors() {
+    let line = |id: &str| super::lineage(id);
+    assert_eq!(
+        line("Mistral Large 4").family,
+        line("mistral-large-4").family
+    );
+    assert!(line("Gemini 9 Pro Preview").preview);
+    assert!(line("Command R 08-2024").snapshot);
+    let models = [
+        ("mistral", "Mistral Large 4", "active", true),
+        ("mistral", "mistral-large-4", "active", true),
+        ("mistral", "Mistral Large 3", "active", true),
+    ];
+    let shown = super::current(&models, |model| (model.0, model.1, model.2, model.3));
+    assert_eq!(shown.len(), 1);
+    assert!(shown.iter().all(|(_, model)| model.ends_with('4')));
+    assert_eq!(pages::anchor("openai", "gpt-6"), "openai:gpt-6");
+    assert_eq!(
+        pages::anchor("mistral", "Mistral Large 4"),
+        "mistral:Mistral%20Large%204"
+    );
+    assert_ne!(pages::anchor("v", "model x"), pages::anchor("v", "model-x"));
+    assert_eq!(
+        pages::fragment("mistral", "Mistral Large 4"),
+        "mistral:Mistral%2520Large%25204"
+    );
+}
+
+/// A provider whose price list names its models without their API names, as Mistral's
+/// does, is listed by those names.
+#[test]
+fn a_model_named_only_by_its_price_list_is_listed_by_name() {
+    let lines = [
+        "## Flagship models",
+        "Prices /M Tokens",
+        "| Model | Input | Cached input | Output |",
+        "| Mistral Large 4 ↗ Sale price | Sale price: $0.68 | Sale price: $0.07 | Sale price: $2.09 |",
+        "## Specialized models",
+        "Prices as marked",
+        "| Model | Input | Cached input | Output |",
+        "| Voxtral TTS ↗ | $0 /M Chars | $0 /M Chars | $16 /M Chars |",
+    ];
+    let pages = [page(Kind::Pricing, Some(Currency::Usd), &lines)];
+    let mut large = draft(
+        "Mistral Large 4",
+        vec![price_draft(Period::All, [0.68, 0.07, 2.09], lines[3])],
+    );
+    large.name = "Mistral Large 4".into();
+    large.facts.clear();
+    let mut voice = media(
+        "Voxtral TTS",
+        Category::Audio,
+        vec![(Stated::MillionCharacters, "", lines[7], 16.0)],
+    );
+    voice.prices[0].input = Some(0.0);
+    let verified = verify::models(vec![large, voice], &pages, &[]);
+    assert!(verified.rejected.is_empty(), "{:?}", verified.rejected);
+    let large = verified.models[0].prices.clone().unwrap();
+    assert_eq!((large[0].input, large[0].output), (Some(0.68), Some(2.09)));
+    let voice = verified.models[1].prices.clone().unwrap();
+    assert_eq!(
+        (voice[0].unit, voice[0].output),
+        (Unit::Characters, Some(16.0))
+    );
+    // Names keep their line: Mistral Large 4 is the version after Mistral Large 3.
+    let (four, three) = (
+        super::lineage("Mistral Large 4"),
+        super::lineage("Mistral Large 3"),
+    );
+    assert_eq!((four.family, four.version), (three.family, vec![4]));
+}
+
 #[test]
 fn a_models_limits_come_from_its_own_column() {
     // Claude's overview lists models as columns; Haiku's 200K is not Opus's context.
