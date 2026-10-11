@@ -133,11 +133,7 @@ pub(crate) struct InsightSignal {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kind: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub kind_en: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub horizon: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub horizon_en: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub beneficiaries: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -1244,18 +1240,15 @@ fn schema(sources: &[InsightSource], images: &[usize]) -> Value {
     let opportunity = json!({
         "type": "object", "additionalProperties": false,
         "required": [
-            "title", "title_en", "summary", "summary_en", "kind", "kind_en",
-            "horizon", "horizon_en", "beneficiaries", "beneficiaries_en", "entry",
-            "entry_en", "watch", "watch_en", "risk", "risk_en", "confidence",
-            "evidence_grade", "source_indexes"
+            "title", "title_en", "summary", "summary_en", "kind", "horizon", "beneficiaries",
+            "beneficiaries_en", "entry", "entry_en", "watch", "watch_en", "risk", "risk_en",
+            "confidence", "evidence_grade", "source_indexes"
         ],
         "properties": {
             "title": { "type": "string" }, "title_en": { "type": "string" },
             "summary": { "type": "string" }, "summary_en": { "type": "string" },
             "kind": { "type": "string", "enum": ["business", "income", "industry", "asset_watch"] },
-            "kind_en": { "type": "string" },
             "horizon": { "type": "string", "enum": ["0-3m", "3-12m", "12m+"] },
-            "horizon_en": { "type": "string" },
             "beneficiaries": { "type": "string" }, "beneficiaries_en": { "type": "string" },
             "entry": { "type": "string" }, "entry_en": { "type": "string" },
             "watch": { "type": "string" }, "watch_en": { "type": "string" },
