@@ -181,7 +181,7 @@ fn key_data_requires_a_news_reference() {
     draft.data_signals = vec![serde_json::from_value(json!({
         "title":"单次任务成本下降", "title_en":"Lower cost per task",
         "summary":"厂商案例：同一流程单次成本从10元降至5元。", "summary_en":"Vendor case: cost fell from 10 to 5 for the same workflow.",
-        "confidence":3, "source_indexes":[]
+        "confidence":3, "evidence_grade":"B", "source_indexes":[]
     })).unwrap()];
     assert!(validate_selection(&draft, &sources).is_err());
     draft.data_signals[0].source_indexes = vec![0];
@@ -200,7 +200,7 @@ fn optional_signal_citations_must_reference_available_sources() {
     let sources = vec![source(0, "x", true)];
     let signal = json!({
         "title":"观察", "title_en":"Watch", "summary":"后续观察", "summary_en":"Follow-up",
-        "confidence":3, "source_indexes":[]
+        "confidence":3, "evidence_grade":"C", "source_indexes":[]
     });
     for field in ["watch_signals", "wealth", "employment", "risks", "actions"] {
         let mut payload = serde_json::to_value(analysis()).unwrap();

@@ -155,9 +155,7 @@ pub(crate) struct InsightSignal {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub risk_en: String,
     pub confidence: i16,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub evidence_grade: String,
-    #[serde(default)]
     pub source_indexes: Vec<usize>,
 }
 
