@@ -591,6 +591,27 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         .await
         .unwrap();
     assert!(first_page.contains("rel=next href=\"/reads?page=2\""));
+    assert!(first_page.contains("<h1>精读</h1>"));
+    // The heading follows the topic's name, as the navigation does, and stays text.
+    sqlx::query("UPDATE topics SET name = '好文 <β>' WHERE id = 'reads'")
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    state.digest.reload_topics(&state).await.unwrap();
+    let renamed = client
+        .get(format!("{base}/reads"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(renamed.contains("<h1>好文 &lt;β&gt;</h1>"));
+    sqlx::query("UPDATE topics SET name = '精读' WHERE id = 'reads'")
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    state.digest.reload_topics(&state).await.unwrap();
     let last_page = client
         .get(format!("{base}/reads?page=2&lang=en"))
         .send()
@@ -600,6 +621,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         .await
         .unwrap();
     assert!(last_page.contains("rel=prev href=\"/reads?lang=en\""));
+    assert!(last_page.contains("<h1>𝑹𝒆𝒂𝒅𝒔</h1>"));
     assert!(!last_page.contains("rel=next"));
     let feed = client
         .get(format!("{base}/feed.xml?topic=reads"))

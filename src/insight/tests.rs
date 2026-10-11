@@ -1241,6 +1241,23 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         .unwrap(),
         0
     );
+    // Nor does the briefing read their stories.
+    let at = window.end - ChronoDuration::hours(1);
+    insert_story(&state.pool, "biz", "biz-story", Some(at), at).await;
+    let read = sqlx::query_as::<_, SourceRow>(include_str!("sources.sql"))
+        .bind(window.end - ChronoDuration::days(7))
+        .bind(window.start)
+        .bind(window.end)
+        .bind(1000_i64)
+        .bind(super::outside_briefing())
+        .fetch_all(&state.pool)
+        .await
+        .unwrap();
+    assert!(
+        read.is_empty(),
+        "{:?}",
+        read.iter().map(|row| &row.url).collect::<Vec<_>>()
+    );
 
     state.shutdown_workers().await;
     image_server.abort();

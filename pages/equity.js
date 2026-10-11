@@ -94,7 +94,7 @@ const EquityNotes = (() => {
       button.addEventListener("click", () => { market = key; showStocks(); });
       filters.append(button);
     }
-    toolbar.append(filters, node("span", "insight-date", `𝑬 ${t.title} · ${editionText(note)}`));
+    toolbar.append(filters, node("span", "insight-date", `${t.title} · ${editionText(note)}`));
     section.append(toolbar, stocks, followups);
     function stockCard(stock) {
       const article = node("article", `equity-stock equity-${stock.signal}`);

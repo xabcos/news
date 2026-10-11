@@ -1144,6 +1144,7 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
         "入乡随俗",
         "旅人瞬间 <span>5</span>",
         "data-source=\"/travel/kyoto/moments\"",
+        "← 旅行</a></nav>",
         "TouristDestination",
         "<section class=destination-moments>",
         "id=moments>",

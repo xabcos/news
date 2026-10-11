@@ -97,21 +97,30 @@ pub(crate) fn router() -> Router<AppState> {
         .layer(tower_http::compression::CompressionLayer::new())
 }
 
-/// The section's topics the reader may see, as (id, name) in the section's order.
-fn catalogue(state: &AppState, section: Section, reader: Reader) -> Vec<(String, String)> {
+/// The section's topics the reader may see, as (id, name in the page's language) in the
+/// section's order.
+fn catalogue(
+    state: &AppState,
+    section: Section,
+    reader: Reader,
+    en: bool,
+) -> Vec<(String, String)> {
     let topics = state.digest.topics_for(reader);
     section
         .topics()
         .iter()
         .filter_map(|id| topics.iter().find(|topic| topic.id == *id))
-        .map(|topic| (topic.id.clone(), topic.name.clone()))
+        .map(|topic| {
+            let name = choose(en, &topic.name, &topic.name_en);
+            (topic.id.clone(), name.to_owned())
+        })
         .collect()
 }
 /// The sections with a public topic, for the sitemap index.
 pub(crate) fn listed(state: &AppState) -> Vec<Section> {
     Section::ALL
         .into_iter()
-        .filter(|section| !catalogue(state, *section, Reader::Public).is_empty())
+        .filter(|section| !catalogue(state, *section, Reader::Public, false).is_empty())
         .collect()
 }
 fn missing() -> AppError {
@@ -122,8 +131,9 @@ fn check(
     section: Section,
     topic: &str,
     reader: Reader,
+    en: bool,
 ) -> Result<Vec<(String, String)>> {
-    let topics = catalogue(state, section, reader);
+    let topics = catalogue(state, section, reader, en);
     if !topics.iter().any(|(id, _)| id == topic) {
         return Err(missing());
     }
@@ -135,7 +145,7 @@ async fn index(
     reader: Reader,
     Query(params): Query<Params>,
 ) -> Result<Response> {
-    let topics = catalogue(&state, section, reader);
+    let topics = catalogue(&state, section, reader, params.en());
     let (topic, _) = topics.first().ok_or_else(missing)?;
     Ok(Redirect::temporary(&localized(
         &format!("/{}/{topic}", section.path()),
@@ -656,8 +666,8 @@ async fn collection(
     Query(params): Query<Params>,
     headers: HeaderMap,
 ) -> Result<Response> {
-    let topics = check(&state, section, &topic, reader)?;
     let en = params.en();
+    let topics = check(&state, section, &topic, reader, en)?;
     let kind = kind(section, &topic, &params);
     let filter = kind.map_or(Filter::All, Filter::Kind);
     let (rows, next) = items(
@@ -744,8 +754,8 @@ async fn search(
     Query(params): Query<Search>,
     headers: HeaderMap,
 ) -> Result<Response> {
-    let topics = catalogue(&state, section, reader);
     let en = params.lang.as_deref() == Some("en");
+    let topics = catalogue(&state, section, reader, en);
     let words = params
         .q
         .as_deref()
@@ -895,7 +905,7 @@ async fn more(
     Query(params): Query<Params>,
     headers: HeaderMap,
 ) -> Result<Response> {
-    check(&state, section, &topic, reader)?;
+    check(&state, section, &topic, reader, params.en())?;
     let filter = kind(section, &topic, &params).map_or(Filter::All, Filter::Kind);
     let (rows, next) = items(
         &state,
@@ -938,8 +948,8 @@ async fn detail(
     Query(params): Query<Params>,
     headers: HeaderMap,
 ) -> Result<Response> {
-    let topics = check(&state, section, &topic, reader)?;
     let en = params.en();
+    let topics = check(&state, section, &topic, reader, en)?;
     let work: Work = sqlx::QueryBuilder::new(format!(
         "SELECT e.id, e.name, e.name_en, e.creator, e.kind, {} AS image, e.images, e.guide, e.guide_at
          FROM catalog_entries e WHERE (e.guide IS NOT NULL OR {LISTED}) AND e.topic_id = ",

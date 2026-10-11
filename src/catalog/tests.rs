@@ -642,6 +642,9 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
         .unwrap();
     assert!(english.contains("Story and background") && english.contains("hreflang=\"zh-CN\""));
     assert!(english.contains(">𝑪𝒖𝒍𝒕𝒖𝒓𝒆</a>") && english.contains(">𝑬</a>"));
+    // The section's own tabs name its topics in the page's language too.
+    assert!(page.contains("aria-current=\"true\">图书</a>"));
+    assert!(english.contains("aria-current=\"true\">𝑩𝒐𝒐𝒌</a>") && !english.contains(">图书</a>"));
     // Search finds works by name, English name or creator and stories by title across the
     // section, reading its words literally; its pages stay out of search engines. A topic
     // without words lists all of its works, and nothing at all leads back to the section.

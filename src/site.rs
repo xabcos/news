@@ -76,6 +76,20 @@ pub(crate) fn choose<'a>(en: bool, zh: &'a str, english: &'a str) -> &'a str {
     }
 }
 
+/// A topic's name in the page's language, as the navigation shows it. Pages are served only
+/// for topics the reader may see, so the id stands in only if the topic is gone.
+pub(crate) fn topic_name(state: &AppState, reader: Reader, id: &str, en: bool) -> String {
+    state
+        .digest
+        .topics_for(reader)
+        .iter()
+        .find(|topic| topic.id == id)
+        .map_or_else(
+            || id.to_owned(),
+            |topic| choose(en, &topic.name, &topic.name_en).to_owned(),
+        )
+}
+
 pub(crate) fn localized(path: &str, en: bool) -> String {
     format!(
         "{path}{}",

@@ -222,11 +222,12 @@ async fn destination(
         );
     }
     content.push_str(&onward(&state, &place, en).await?);
-    let label = choose(en, "旅行", "𝑻𝒓𝒂𝒗𝒆𝒍");
+    let label = crate::site::topic_name(&state, reader, TOPIC_ID, en);
     let _ = write!(
         content,
-        "<nav class=destination-back><a href=\"{}\">← {label}</a></nav></article>",
-        escape(&localized("/?topic=travel", en))
+        "<nav class=destination-back><a href=\"{}\">← {}</a></nav></article>",
+        escape(&localized("/?topic=travel", en)),
+        escape(&label)
     );
     let title = if country == name {
         format!("{name} · {label}")

@@ -2,7 +2,7 @@ use crate::{
     digest::{Rendered, conditional},
     error::{AppError, Result},
     reading::{self, Reader},
-    site::{Chrome, absolute, choose, escape, localized},
+    site::{Chrome, absolute, choose, escape, localized, topic_name},
     state::AppState,
 };
 use axum::{
@@ -31,11 +31,6 @@ const CHROME: Chrome<'static> = Chrome {
     script: "/reads.js?v=8",
     feed: ("Reads", "/feed.xml?topic=reads"),
 };
-
-/// The collection's name in the page's language, as the navigation shows it.
-fn label(en: bool) -> &'static str {
-    choose(en, "精读", "𝑹𝒆𝒂𝒅𝒔")
-}
 
 pub(crate) fn router() -> Router<AppState> {
     reading::pages(
@@ -113,6 +108,7 @@ async fn index(
     let en = params.english();
     let page = params.page()?;
     reader.check(&state, "reads")?;
+    let label = topic_name(&state, reader, "reads", en);
     let hot = params.view.as_deref() == Some("hot");
     if hot && page != 1 {
         return Err(AppError::NotFound("页面不存在".into()));
@@ -156,7 +152,7 @@ async fn index(
     );
     let mut content = format!(
         "<header class=reads-heading><h1>{}</h1><p>{description}</p>",
-        label(en)
+        escape(&label)
     );
     let _ = write!(
         content,
@@ -212,11 +208,11 @@ async fn index(
         listing(page, false)
     };
     let title = if hot {
-        format!("{} · {}", choose(en, "热读", "Popular"), label(en))
+        format!("{} · {}", choose(en, "热读", "Popular"), label)
     } else if page == 1 {
-        format!("{} · 𝑵𝒆𝒘𝒔", label(en))
+        format!("{} · 𝑵𝒆𝒘𝒔", label)
     } else {
-        format!("{} · {page} · 𝑵𝒆𝒘𝒔", label(en))
+        format!("{} · {page} · 𝑵𝒆𝒘𝒔", label)
     };
     let html = crate::site::layout(
         &state,
@@ -262,6 +258,7 @@ async fn detail(
         .await?
         .ok_or_else(|| AppError::NotFound("文章不存在".into()))?;
     let en = params.english();
+    let label = topic_name(&state, reader, "reads", en);
     let item = &row.card;
     let title = choose(en, &item.title, &item.title_en);
     let summary = choose(en, &item.summary, &item.summary_en);
@@ -374,7 +371,7 @@ async fn detail(
         content,
         "<div class=read-actions><a href=\"{}\">← {}</a></div>",
         localized("/reads", en),
-        label(en)
+        escape(&label)
     );
     let path = format!("/reads/{id}");
     let canonical = absolute(&state, &localized(&path, en));
@@ -391,7 +388,7 @@ async fn detail(
         reader,
         en,
         &path,
-        &format!("{title} · {}", label(en)),
+        &format!("{title} · {}", label),
         summary,
         &content,
         Some(structured),

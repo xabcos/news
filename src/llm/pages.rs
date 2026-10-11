@@ -714,6 +714,7 @@ async fn index(
     headers: HeaderMap,
 ) -> Result<Response> {
     let en = params.lang.as_deref() == Some("en");
+    let label = crate::site::topic_name(&state, reader, super::TOPIC_ID, en);
     let catalog = load(&state, CHANGES_SHOWN, reader)
         .await?
         .ok_or_else(not_found)?;
@@ -725,7 +726,7 @@ async fn index(
     );
     let mut content = format!(
         "<header class=llm-heading><h1>{}</h1><p>{}</p></header>",
-        choose(en, "大模型", "𝑳𝑳𝑴"),
+        escape(&label),
         choose(
             en,
             "全球主流大模型价格与更新",
@@ -950,7 +951,7 @@ async fn index(
         "/llm",
         &format!(
             "{} · {}",
-            choose(en, "大模型", "𝑳𝑳𝑴"),
+            label,
             choose(en, "模型价格与更新", "Model prices")
         ),
         description,
