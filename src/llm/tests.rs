@@ -626,7 +626,11 @@ async fn postgres_llm_catalog_import_changes_and_pages() {
         .await
         .unwrap();
     assert!(html.contains("deepseek-v4-pro") && html.contains("¥9.00") && html.contains("¥27.00"));
-    assert!(html.contains("峰谷计价") && html.contains("aria-current=\"true\">𝑳𝑳𝑴"));
+    assert!(
+        html.contains("峰谷计价")
+            && html.contains("aria-current=\"true\">大模型")
+            && html.contains("<h1>大模型</h1>")
+    );
     let data: Value = http
         .get(format!("{base}/llm.json"))
         .send()

@@ -618,8 +618,13 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
     assert!(page.contains("<section class=catalog-shelf><h2>近期有动态 <a class=catalog-all"));
     assert!(page.contains("<span class=\"badge catalog-role\">评论</span>"));
     assert!(!page.contains("catalog-kinds"));
-    assert_eq!(page.matches(">𝑪𝒖𝒍𝒕𝒖𝒓𝒆</a>").count(), 1);
-    assert!(page.contains("data-last=\"/culture/book\""));
+    // One tab leads into the section, named in the page's language like the equity notes.
+    assert_eq!(
+        page.matches("<a class=tab href=\"/culture\" data-last=\"/culture/book\" aria-current=\"true\">文娱</a>")
+            .count(),
+        1
+    );
+    assert!(page.contains(">股市</a>"));
     let detail = get(format!("/culture/book/{slug}"))
         .await
         .text()
@@ -636,6 +641,7 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
         .await
         .unwrap();
     assert!(english.contains("Story and background") && english.contains("hreflang=\"zh-CN\""));
+    assert!(english.contains(">𝑪𝒖𝒍𝒕𝒖𝒓𝒆</a>") && english.contains(">𝑬</a>"));
     // Search finds works by name, English name or creator and stories by title across the
     // section, reading its words literally; its pages stay out of search engines. A topic
     // without words lists all of its works, and nothing at all leads back to the section.
@@ -1164,8 +1170,11 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
             && page.contains("传闻：新款 Kindle Scribe")
             && page.contains("catalog-role")
     );
-    assert_eq!(page.matches(">𝑮𝒂𝒅𝒈𝒆𝒕𝒔</a>").count(), 1);
-    assert!(page.contains("data-last=\"/gadgets/digital\""));
+    assert_eq!(
+        page.matches("<a class=tab href=\"/gadgets\" data-last=\"/gadgets/digital\" aria-current=\"true\">数码</a>")
+            .count(),
+        1
+    );
     let panels = get("/gadgets/eink?kind=panel".into())
         .await
         .text()

@@ -32,6 +32,11 @@ const CHROME: Chrome<'static> = Chrome {
     feed: ("Reads", "/feed.xml?topic=reads"),
 };
 
+/// The collection's name in the page's language, as the navigation shows it.
+fn label(en: bool) -> &'static str {
+    choose(en, "精读", "𝑹𝒆𝒂𝒅𝒔")
+}
+
 pub(crate) fn router() -> Router<AppState> {
     reading::pages(
         Router::new()
@@ -149,7 +154,10 @@ async fn index(
         "值得读完的文章与观点",
         "Ideas and stories worth your time",
     );
-    let mut content = format!("<header class=reads-heading><h1>𝑹𝒆𝒂𝒅𝒔</h1><p>{description}</p>");
+    let mut content = format!(
+        "<header class=reads-heading><h1>{}</h1><p>{description}</p>",
+        label(en)
+    );
     let _ = write!(
         content,
         "<nav class=reads-views aria-label=\"{}\"><a href=\"{}\"{}>{}</a><a href=\"{}\"{}>{}</a></nav></header><div class=reads-list>",
@@ -204,11 +212,11 @@ async fn index(
         listing(page, false)
     };
     let title = if hot {
-        format!("{} · 𝑹𝒆𝒂𝒅𝒔", choose(en, "热读", "Popular"))
+        format!("{} · {}", choose(en, "热读", "Popular"), label(en))
     } else if page == 1 {
-        "𝑹𝒆𝒂𝒅𝒔 · 𝑵𝒆𝒘𝒔".to_owned()
+        format!("{} · 𝑵𝒆𝒘𝒔", label(en))
     } else {
-        format!("𝑹𝒆𝒂𝒅𝒔 · {page} · 𝑵𝒆𝒘𝒔")
+        format!("{} · {page} · 𝑵𝒆𝒘𝒔", label(en))
     };
     let html = crate::site::layout(
         &state,
@@ -364,8 +372,9 @@ async fn detail(
     // The way back closes the page, after the related reads, as on Culture's pages.
     let _ = write!(
         content,
-        "<div class=read-actions><a href=\"{}\">← 𝑹𝒆𝒂𝒅𝒔</a></div>",
-        localized("/reads", en)
+        "<div class=read-actions><a href=\"{}\">← {}</a></div>",
+        localized("/reads", en),
+        label(en)
     );
     let path = format!("/reads/{id}");
     let canonical = absolute(&state, &localized(&path, en));
@@ -382,7 +391,7 @@ async fn detail(
         reader,
         en,
         &path,
-        &format!("{title} · 𝑹𝒆𝒂𝒅𝒔"),
+        &format!("{title} · {}", label(en)),
         summary,
         &content,
         Some(structured),

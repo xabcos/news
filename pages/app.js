@@ -55,7 +55,7 @@ const storage = (() => {
 
 const TEXT = {
   zh: {
-    locale: "zh-CN", lang: "EN", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", today: "今天", top: "重要",
+    locale: "zh-CN", lang: "EN", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", equity: "股市", today: "今天", top: "重要",
     fresh: "NEW", failed: "加载失败", retry: "重试",
     empty: "这一天还没有内容", latest: "查看最近有内容的一天",
     space: "工作台", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
@@ -69,7 +69,7 @@ const TEXT = {
     publish: "公开", unpublish: "取消公开",
   },
   en: {
-    locale: "en", lang: "中文", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", today: "Today", top: "Top",
+    locale: "en", lang: "中文", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", equity: "𝑬", today: "Today", top: "Top",
     fresh: "NEW", failed: "Failed to load", retry: "Retry",
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
     space: "𝑾𝒐𝒓𝒌𝒔𝒑𝒂𝒄𝒆", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
@@ -127,12 +127,12 @@ document.addEventListener("DOMContentLoaded", init);
 // names its reviews and posts on X in its own words.
 const CATALOG = {
   culture: {
-    label: "𝑪𝒖𝒍𝒕𝒖𝒓𝒆",
+    label: { zh: "文娱", en: "𝑪𝒖𝒍𝒕𝒖𝒓𝒆" },
     topics: ["movie", "music", "game", "book"],
     roles: { zh: { review: "评论", share: "大家说" }, en: { review: "Review", share: "On X" } },
   },
   gadgets: {
-    label: "𝑮𝒂𝒅𝒈𝒆𝒕𝒔",
+    label: { zh: "数码", en: "𝑮𝒂𝒅𝒈𝒆𝒕𝒔" },
     topics: ["eink", "ai-hardware", "digital"],
     roles: { zh: { review: "评测", share: "分享" }, en: { review: "Review", share: "Shared" } },
   },
@@ -670,7 +670,7 @@ function renderTabs() {
     if (!section) return [{ id: topic.id, label: name(topic) }];
     if (shown.has(section)) return [];
     shown.add(section);
-    return [{ id: section, label: CATALOG[section].label }];
+    return [{ id: section, label: CATALOG[section].label[state.lang] }];
   });
   const tabs = [
     { id: "", label: t().all },
@@ -678,7 +678,7 @@ function renderTabs() {
     ...catalogue,
   ];
   const overseas = tabs.findIndex((tab) => tab.id === "overseas-ai");
-  tabs.splice(overseas < 0 ? 2 : overseas + 1, 0, { id: EQUITY_ID, label: "𝑬" });
+  tabs.splice(overseas < 0 ? 2 : overseas + 1, 0, { id: EQUITY_ID, label: t().equity });
   el.tabs.replaceChildren(...tabs.map(({ id, label }) => {
     if (PAGE_TOPICS.includes(id)) {
       const tab = document.createElement("a");

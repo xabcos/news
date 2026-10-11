@@ -152,7 +152,7 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         .fetch_one(&state.pool)
         .await
         .unwrap();
-    assert_eq!(topic.name, "𝑹𝒆𝒂𝒅𝒔");
+    assert_eq!(topic.name, "精读");
     assert!(!topic.brief.contains("转载许可"));
     assert_eq!(
         (

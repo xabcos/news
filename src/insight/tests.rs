@@ -735,7 +735,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             .find(|(id, _)| id == "overseas-ai")
             .unwrap()
             .1,
-        "𝑶"
+        "海外 AI"
     );
     sqlx::migrate::Migrator::new(state.config.migrations_dir.clone())
         .await
@@ -748,7 +748,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             .fetch_all(&state.pool)
             .await
             .unwrap();
-    assert_eq!(migrations, [1, 2, 3, 4]);
+    assert_eq!(migrations, [1, 2, 3, 4, 5]);
     sqlx::query("INSERT INTO topics (id,name,brief,enabled) VALUES ('inactive','Inactive','Inactive',false)")
         .execute(&state.pool).await.unwrap();
     sqlx::query("TRUNCATE items, runs, ai_insights CASCADE")

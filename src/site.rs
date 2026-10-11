@@ -127,8 +127,9 @@ pub(crate) fn layout(
         escape(&localized("/?topic=insight", en))
     );
     let equity_tab = format!(
-        "<a class=tab href=\"{}\">𝑬</a>",
-        escape(&localized("/?topic=equity-insight", en))
+        "<a class=tab href=\"{}\">{}</a>",
+        escape(&localized("/?topic=equity-insight", en)),
+        choose(en, "股市", "𝑬")
     );
     if !topics.iter().any(|topic| topic.id == "overseas-ai") {
         tabs.push_str(&equity_tab);
@@ -162,7 +163,7 @@ pub(crate) fn layout(
                     } else {
                         ""
                     },
-                    section.label()
+                    section.label(en)
                 );
             }
             continue;

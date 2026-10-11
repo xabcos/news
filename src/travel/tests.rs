@@ -859,7 +859,7 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
                     }
                 } else {
                     assert_eq!(request["tools"], json!([{ "type": "x_search", "enable_image_understanding": true }]));
-                    assert!(request["instructions"].as_str().unwrap().contains("「𝑻𝒓𝒂𝒗𝒆𝒍」"));
+                    assert!(request["instructions"].as_str().unwrap().contains("「旅行」"));
                     assert!(input.contains("本轮也留意："));
                     assert!(request["text"]["format"]["schema"].to_string().contains("place_en"));
                     json!({ "items": model, "cover": null })
@@ -899,7 +899,7 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
         .await
         .unwrap();
     assert!(is_travel(&topic) && topic.enabled && topic.visible);
-    assert_eq!(topic.name, "𝑻𝒓𝒂𝒗𝒆𝒍");
+    assert_eq!(topic.name, "旅行");
     assert_eq!(
         (
             topic.interval_minutes,

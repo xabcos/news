@@ -222,15 +222,16 @@ async fn destination(
         );
     }
     content.push_str(&onward(&state, &place, en).await?);
+    let label = choose(en, "旅行", "𝑻𝒓𝒂𝒗𝒆𝒍");
     let _ = write!(
         content,
-        "<nav class=destination-back><a href=\"{}\">← 𝑻𝒓𝒂𝒗𝒆𝒍</a></nav></article>",
+        "<nav class=destination-back><a href=\"{}\">← {label}</a></nav></article>",
         escape(&localized("/?topic=travel", en))
     );
     let title = if country == name {
-        format!("{name} · 𝑻𝒓𝒂𝒗𝒆𝒍")
+        format!("{name} · {label}")
     } else {
-        format!("{name} · {country} · 𝑻𝒓𝒂𝒗𝒆𝒍")
+        format!("{name} · {country} · {label}")
     };
     let description = guide.map_or_else(
         || {

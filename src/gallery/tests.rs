@@ -350,7 +350,7 @@ async fn postgres_gallery_keeps_confirmed_photographs_until_their_copies_expire(
                     request["tools"],
                     json!([{ "type": "x_search", "enable_image_understanding": true }])
                 );
-                assert!(request["instructions"].as_str().unwrap().contains("「𝑾」"));
+                assert!(request["instructions"].as_str().unwrap().contains("「佳人」"));
                 let payload = json!({ "items": items, "cover": null });
                 Json(json!({ "status": "completed", "id": "gallery-fixture",
                     "usage": { "input_tokens": 10, "output_tokens": 20, "cost_in_usd_ticks": 30,
@@ -387,7 +387,7 @@ async fn postgres_gallery_keeps_confirmed_photographs_until_their_copies_expire(
         .await
         .unwrap();
     assert!(is_gallery(&topic) && topic.enabled && topic.visible);
-    assert_eq!(topic.name, "𝑾");
+    assert_eq!(topic.name, "佳人");
     assert_eq!(
         (
             topic.interval_minutes,

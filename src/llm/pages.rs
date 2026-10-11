@@ -724,7 +724,8 @@ async fn index(
         "Prices and updates of mainstream AI models, from each provider's own documentation",
     );
     let mut content = format!(
-        "<header class=llm-heading><h1>𝑳𝑳𝑴</h1><p>{}</p></header>",
+        "<header class=llm-heading><h1>{}</h1><p>{}</p></header>",
+        choose(en, "大模型", "𝑳𝑳𝑴"),
         choose(
             en,
             "全球主流大模型价格与更新",
@@ -947,7 +948,11 @@ async fn index(
         reader,
         en,
         "/llm",
-        &format!("𝑳𝑳𝑴 · {}", choose(en, "模型价格与更新", "Model prices")),
+        &format!(
+            "{} · {}",
+            choose(en, "大模型", "𝑳𝑳𝑴"),
+            choose(en, "模型价格与更新", "Model prices")
+        ),
         description,
         &content,
         Some(structured),

@@ -53,10 +53,11 @@ impl Section {
         }
     }
 
-    pub(crate) fn label(self) -> &'static str {
+    /// The section's tab: Chinese on the Chinese pages, the styled name on the English ones.
+    pub(crate) fn label(self, en: bool) -> &'static str {
         match self {
-            Self::Culture => "𝑪𝒖𝒍𝒕𝒖𝒓𝒆",
-            Self::Gadgets => "𝑮𝒂𝒅𝒈𝒆𝒕𝒔",
+            Self::Culture => crate::site::choose(en, "文娱", "𝑪𝒖𝒍𝒕𝒖𝒓𝒆"),
+            Self::Gadgets => crate::site::choose(en, "数码", "𝑮𝒂𝒅𝒈𝒆𝒕𝒔"),
         }
     }
 

@@ -26,7 +26,7 @@ Rust / Axum 提供 API、页面与后台调度。PostgreSQL 保存业务数据�
 
 ## 栏目与采集
 
-公共栏目默认顺序为 `x`、`p`、`w`、`travel`、`movie`、`music`、`game`、`china-ai`、`book`、`overseas-ai`、`gossip`、`github`、`events`、`cases`、`biz`、`issues`、`eink`、`ai-hardware`、`digital`、`llm`、`fashion`、`reads`，导航把 Culture 四栏与 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 三栏各汇为一个入口。`𝑪` 与 `𝑶` 分别覆盖国内、海外模型生态；综合科技、图片、女性美图、旅行、时尚、文娱、热议、开发者、全球事件、应用案例、商机和使用问题各有明确方向。
+公共栏目默认顺序为 `x`、`p`、`w`、`travel`、`movie`、`music`、`game`、`china-ai`、`book`、`overseas-ai`、`gossip`、`github`、`events`、`cases`、`biz`、`issues`、`eink`、`ai-hardware`、`digital`、`llm`、`fashion`、`reads`，导航把 Culture 四栏与 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 三栏各汇为一个入口。栏目在中文界面用中文名（`topics.name`，如「要闻」），英文界面用花体英文名（`name_en`，如 𝐗）；两个分区入口与股市观察入口的名称写在代码里（`catalog::Section::label`、`site.rs` 与 `app.js`），中文界面为「文娱」「数码」「股市」。`𝑪` 与 `𝑶` 分别覆盖国内、海外模型生态；综合科技、图片、女性美图、旅行、时尚、文娱、热议、开发者、全球事件、应用案例、商机和使用问题各有明确方向。
 
 调度器每 30 秒认领到期任务。数据库锁和进程内任务集合协调运行，采集与日报生成共用信号量。每个栏目独立配置模型、活跃时段、间隔、回看窗口、单次条数和每日运行次数；开始时间精确到分钟，间隔 1440 分钟的栏目成功后固定到下一个开始时间，失败按退避重试。内容通过 URL、时间、长度、标签和去重校验后写入数据库，再刷新缓存。
 
