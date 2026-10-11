@@ -671,6 +671,15 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
             "{words}"
         );
     }
+    // The catalogue matches its words as one phrase.
+    assert!(
+        !get("/culture/search?q=shore%20the".into())
+            .await
+            .text()
+            .await
+            .unwrap()
+            .contains(&format!("href=\"/culture/book/{slug}\""))
+    );
     // A work is found by its stories' titles too, while they are visible.
     let found_works = |page: String| {
         page.split_once("<section class=\"catalog-shelf catalog-found\">")

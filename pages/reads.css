@@ -2,7 +2,11 @@
 .reads-heading { display: flex; align-items: baseline; gap: 1rem; margin-bottom: 1.8rem; }
 .reads-heading h1 { flex-shrink: 0; margin: 0; font-size: 1.75rem; }
 .reads-heading p { min-width: 0; margin: 0; color: var(--muted); font-size: .9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.reads-views { display: flex; flex-shrink: 0; gap: 1.35rem; margin-left: auto; font-size: .85rem; white-space: nowrap; }
+/* The search box stands left of the views; on phones the two take a row of their own under the title. */
+.reads-tools { display: flex; flex-shrink: 0; align-items: baseline; gap: 1.35rem; margin-left: auto; }
+.reads-search input { width: 15rem; padding: .3rem .85rem; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-solid); color: inherit; font: inherit; font-size: 1rem; }
+.reads-search input:focus { border-color: var(--primary); outline: none; }
+.reads-views { display: flex; flex-shrink: 0; gap: 1.35rem; font-size: .85rem; white-space: nowrap; }
 .reads-views a { color: var(--muted); text-decoration: none; padding-bottom: .4rem; }
 .reads-views a[aria-current] { color: var(--text); border-bottom: 1px solid currentColor; }
 /* The list fills the window with the site's cards, as Culture does; an article keeps the reading
@@ -51,7 +55,10 @@
 @media (max-width: 768px) {
   .reads-list, .read-heading, .read-source, .read-actions, .read-related,
   .read-body :is(p, h1, h2, h3, h4, h5, h6) { touch-action: pan-y pinch-zoom; }
-  .reads-heading { gap: .5rem; }
+  .reads-heading { flex-wrap: wrap; gap: .5rem; }
+  .reads-tools { flex: 1 0 100%; gap: .8rem; }
+  .reads-search { flex: 1; min-width: 0; }
+  .reads-search input { width: 100%; }
   .reads-heading h1 { font-size: 1.25rem; }
   .reads-heading p, .reads-views { font-size: .75rem; }
   .reads-views { gap: .8rem; }

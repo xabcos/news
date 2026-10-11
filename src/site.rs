@@ -90,6 +90,45 @@ pub(crate) fn topic_name(state: &AppState, reader: Reader, id: &str, en: bool) -
         )
 }
 
+/// A search reads this many characters of its words.
+pub(crate) const SEARCH_CHARS: usize = 40;
+
+/// The words a search box sent, trimmed and cut to `SEARCH_CHARS`.
+pub(crate) fn search_words(q: Option<&str>) -> String {
+    q.unwrap_or_default()
+        .trim()
+        .chars()
+        .take(SEARCH_CHARS)
+        .collect::<String>()
+        .trim_end()
+        .to_owned()
+}
+
+/// An ILIKE pattern finding `words` anywhere; ILIKE's own wildcards in them match literally.
+pub(crate) fn containing(words: &str) -> String {
+    format!(
+        "%{}%",
+        words
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    )
+}
+
+/// A search box sending its words to `action` as `q`, in the page's language.
+pub(crate) fn search_box(class: &str, action: &str, words: &str, hint: &str, en: bool) -> String {
+    format!(
+        "<form class={class} action=\"{}\" role=search><input type=search name=q value=\"{}\" maxlength={SEARCH_CHARS} placeholder=\"{hint}\" aria-label=\"{hint}\" enterkeyhint=search>{}</form>",
+        escape(action),
+        escape(words),
+        if en {
+            "<input type=hidden name=lang value=en>"
+        } else {
+            ""
+        }
+    )
+}
+
 pub(crate) fn localized(path: &str, en: bool) -> String {
     format!(
         "{path}{}",

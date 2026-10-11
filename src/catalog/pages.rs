@@ -33,8 +33,7 @@ const ONWARD: i64 = 6;
 const TALKED_DAYS: i64 = 30;
 const TALKED_ITEMS: i64 = 2;
 const TALKED_SHELF: usize = 3;
-/// Search reads this many characters of its words and shows this many entries for them.
-const QUERY_CHARS: usize = 40;
+/// A search shows this many entries for its words.
 const FOUND: i64 = 60;
 const CONTENT: &str = "t.enabled AND t.owner_user_id IS NULL";
 /// An entry has a page once a visible item belongs to it; its guide adds facts when written.
@@ -732,15 +731,12 @@ fn search_form(section: Section, words: &str, en: bool) -> String {
             "Search products, brands or stories",
         ),
     };
-    format!(
-        "<form class=catalog-search action=\"{}\" role=search><input type=search name=q value=\"{}\" maxlength={QUERY_CHARS} placeholder=\"{hint}\" aria-label=\"{hint}\" enterkeyhint=search>{}</form>",
-        escape(&format!("/{}/search", section.path())),
-        escape(words),
-        if en {
-            "<input type=hidden name=lang value=en>"
-        } else {
-            ""
-        }
+    crate::site::search_box(
+        "catalog-search",
+        &format!("/{}/search", section.path()),
+        words,
+        hint,
+        en,
     )
 }
 /// Entries whose name, English name, creator or a story's title holds the words, and stories
@@ -756,16 +752,7 @@ async fn search(
 ) -> Result<Response> {
     let en = params.lang.as_deref() == Some("en");
     let topics = catalogue(&state, section, reader, en);
-    let words = params
-        .q
-        .as_deref()
-        .unwrap_or_default()
-        .trim()
-        .chars()
-        .take(QUERY_CHARS)
-        .collect::<String>()
-        .trim_end()
-        .to_owned();
+    let words = crate::site::search_words(params.q.as_deref());
     // A section or topic readers can't see is missing here too, so an administrator is sent to
     // its preview.
     if topics.is_empty() {
@@ -790,16 +777,7 @@ async fn search(
         || topics.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
         |(id, _)| vec![id.clone()],
     );
-    // ILIKE's own wildcards in the words are matched literally.
-    let pattern = (!words.is_empty()).then(|| {
-        format!(
-            "%{}%",
-            words
-                .replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_")
-        )
-    });
+    let pattern = (!words.is_empty()).then(|| crate::site::containing(&words));
     let entries = shelved(
         &state,
         section,

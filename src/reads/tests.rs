@@ -622,6 +622,130 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
         .unwrap();
     assert!(last_page.contains("rel=prev href=\"/reads?lang=en\""));
     assert!(last_page.contains("<h1>𝑹𝒆𝒂𝒅𝒔</h1>"));
+    // A search wants every word somewhere in a title, summary, source, author or tag, never in
+    // the body; reads ILIKE's wildcards literally; puts the titles holding every word first,
+    // ignoring pins and the hot view; keeps its words in its pages; and stays out of search
+    // engines, while the list does not.
+    let mut special: Vec<_> = (140..143).map(item).collect();
+    special[0].title = "斑马线 zebra 100% a_b".into();
+    special[1].summary = "关于 zebra 的长文 axb".into();
+    special[2].tags = vec!["独角兽".into()];
+    special[2].tags_en = vec!["unicorn".into()];
+    let articles = special
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let mut article = article(140 + i);
+            if i == 2 {
+                article.author = "Ada Byline".into();
+                article.body.push_str("\n\nbodyonlyword");
+            }
+            (item.fingerprint.clone(), article)
+        })
+        .collect();
+    crate::runner::persist_items(
+        &state,
+        &topic,
+        run_id,
+        old,
+        special,
+        articles,
+        HashMap::new(),
+        vec![],
+    )
+    .await
+    .unwrap();
+    for statement in [
+        "UPDATE items SET first_seen_at = first_seen_at - INTERVAL '1 day' WHERE url = 'https://example.com/reading/140'",
+        "UPDATE items SET pinned = true WHERE url = 'https://example.com/reading/141'",
+    ] {
+        sqlx::query(statement).execute(&state.pool).await.unwrap();
+    }
+    let search = |q: &str| {
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("q", q)
+            .finish();
+        client.get(format!("{base}/reads?{query}")).send()
+    };
+    let found = search("zebra").await.unwrap();
+    assert_eq!(found.headers()["x-robots-tag"], "noindex");
+    let found = found.text().await.unwrap();
+    assert_eq!(cards(&found, ".reads-list"), 2);
+    assert!(found.find("斑马线 zebra").unwrap() < found.find("关于 zebra 的长文").unwrap());
+    let hot = client
+        .get(format!("{base}/reads?q=zebra&view=hot"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(cards(&hot, ".reads-list"), 2);
+    for (words, count) in [
+        ("zebra 100%", 1),
+        ("a_b", 1),
+        ("a%b", 0),
+        ("Ada unicorn", 1),
+        ("独角兽", 1),
+        ("bodyonlyword", 0),
+        ("zebra nowhere", 0),
+    ] {
+        let page = search(words).await.unwrap().text().await.unwrap();
+        assert_eq!(cards(&page, ".reads-list"), count, "{words}");
+        assert!(
+            page.contains(&format!(
+                "「{}」找到 {count} 篇",
+                crate::site::escape(words)
+            )),
+            "{words}"
+        );
+    }
+    // Words are cut to 40 characters and travel encoded in the page's own address.
+    let long = search(&"z".repeat(45)).await.unwrap().text().await.unwrap();
+    assert!(long.contains(&format!("「{}」找到 0 篇", "z".repeat(40))));
+    let odd = search("a+b & #中文").await.unwrap().text().await.unwrap();
+    assert!(odd.contains("reads?q=a%2Bb+%26+%23%E4%B8%AD%E6%96%87\""));
+    // Its pages keep its words, and only the first one counts.
+    let first = search("Example Author")
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(first.contains("rel=next href=\"/reads?q=Example+Author&amp;page=2\""));
+    let second = client
+        .get(format!("{base}/reads?q=Example+Author&page=2"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(cards(&second, ".reads-list") > 0);
+    assert!(
+        second.contains("rel=prev href=\"/reads?q=Example+Author\"")
+            && second.contains("「Example Author」的搜索结果")
+    );
+    assert_eq!(
+        client
+            .get(format!("{base}/reads?q=Example+Author&page=9"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    sqlx::query("DELETE FROM items WHERE url = ANY($1)")
+        .bind(
+            (140..143)
+                .map(|i| format!("https://example.com/reading/{i}"))
+                .collect::<Vec<_>>(),
+        )
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    let list = client.get(format!("{base}/reads")).send().await.unwrap();
+    assert!(!list.headers().contains_key("x-robots-tag"));
     assert!(!last_page.contains("rel=next"));
     let feed = client
         .get(format!("{base}/feed.xml?topic=reads"))

@@ -2,7 +2,10 @@ use crate::{
     digest::{Rendered, conditional},
     error::{AppError, Result},
     reading::{self, Reader},
-    site::{Chrome, absolute, choose, escape, localized, topic_name},
+    site::{
+        Chrome, absolute, choose, containing, escape, localized, search_box, search_words,
+        topic_name,
+    },
     state::AppState,
 };
 use axum::{
@@ -24,10 +27,13 @@ const PAGE_SIZE: i64 = 24;
 const SITEMAP_SIZE: i64 = 10000;
 const CONTENT: &str = "FROM items i JOIN read_articles a ON a.item_id = i.id JOIN topics t ON t.id = i.topic_id WHERE i.topic_id = 'reads' AND t.enabled AND t.owner_user_id IS NULL AND NOT i.hidden";
 const CARD: &str = "i.id, i.title, i.title_en, i.summary, i.summary_en, i.source, i.url, i.first_seen_at, a.author, a.views";
+/// What a search looks through: titles and summaries in both languages, the source, the author
+/// and the tags. Its words hold no spaces, so a match never spans two of them.
+const SEARCHED: &str = "concat_ws(' ', i.title, i.title_en, i.summary, i.summary_en, i.source, a.author, array_to_string(i.tags || i.tags_en, ' '))";
 const CHROME: Chrome<'static> = Chrome {
     current: "reads",
     section: "reads",
-    stylesheet: "/reads.css?v=7",
+    stylesheet: "/reads.css?v=8",
     script: "/reads.js?v=8",
     feed: ("Reads", "/feed.xml?topic=reads"),
 };
@@ -49,6 +55,7 @@ struct Params {
     lang: Option<String>,
     page: Option<u32>,
     view: Option<String>,
+    q: Option<String>,
 }
 
 impl Params {
@@ -88,12 +95,20 @@ struct Detail {
     full_text: Option<sqlx::types::Json<super::full_text::Document>>,
 }
 
-fn listing(page: u32, en: bool) -> String {
+fn listing(page: u32, en: bool, words: &str) -> String {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    if !words.is_empty() {
+        query.append_pair("q", words);
+    }
+    if page > 1 {
+        query.append_pair("page", &page.to_string());
+    }
+    let query = query.finish();
     localized(
-        &if page == 1 {
+        &if query.is_empty() {
             "/reads".into()
         } else {
-            format!("/reads?page={page}")
+            format!("/reads?{query}")
         },
         en,
     )
@@ -109,7 +124,11 @@ async fn index(
     let page = params.page()?;
     reader.check(&state, "reads")?;
     let label = topic_name(&state, reader, "reads", en);
-    let hot = params.view.as_deref() == Some("hot");
+    let words = search_words(params.q.as_deref());
+    // Every word must appear in what a search looks through; a search covers every article.
+    let patterns = words.split_whitespace().map(containing).collect::<Vec<_>>();
+    let searching = !patterns.is_empty();
+    let hot = !searching && params.view.as_deref() == Some("hot");
     if hot && page != 1 {
         return Err(AppError::NotFound("页面不存在".into()));
     }
@@ -125,11 +144,22 @@ async fn index(
             .await?;
     } else {
         let mut query = sqlx::QueryBuilder::new("SELECT ");
+        query.push(CARD).push(" ").push(CONTENT);
+        if searching {
+            // Articles whose titles hold the words come first.
+            query
+                .push(" AND ")
+                .push(SEARCHED)
+                .push(" ILIKE ALL(")
+                .push_bind(&patterns)
+                .push(") ORDER BY concat_ws(' ', i.title, i.title_en) ILIKE ALL(")
+                .push_bind(&patterns)
+                .push(") DESC, i.first_seen_at DESC, i.id DESC");
+        } else {
+            query.push(" ORDER BY i.pinned DESC, i.first_seen_at DESC, i.id DESC");
+        }
         query
-            .push(CARD)
-            .push(" ")
-            .push(CONTENT)
-            .push(" ORDER BY i.pinned DESC, i.first_seen_at DESC, i.id DESC LIMIT ")
+            .push(" LIMIT ")
             .push_bind(PAGE_SIZE + 1)
             .push(" OFFSET ")
             .push_bind(i64::from(page - 1) * PAGE_SIZE);
@@ -150,16 +180,62 @@ async fn index(
         "值得读完的文章与观点",
         "Ideas and stories worth your time",
     );
+    // A search names its words where the description stands, and on its first page how many
+    // articles hold them; the pages scrolling loads take only their cards.
+    let heading = if !searching {
+        description.to_owned()
+    } else if page > 1 {
+        let words = escape(&words);
+        choose(
+            en,
+            &format!("「{words}」的搜索结果"),
+            &format!("Results for “{words}”"),
+        )
+        .to_owned()
+    } else {
+        let found: i64 = sqlx::QueryBuilder::new("SELECT count(*) ")
+            .push(CONTENT)
+            .push(" AND ")
+            .push(SEARCHED)
+            .push(" ILIKE ALL(")
+            .push_bind(&patterns)
+            .push(")")
+            .build_query_scalar()
+            .fetch_one(&state.pool)
+            .await?;
+        let words = escape(&words);
+        choose(
+            en,
+            &format!("「{words}」找到 {found} 篇"),
+            &format!("Results for “{words}”: {found}"),
+        )
+        .to_owned()
+    };
     let mut content = format!(
-        "<header class=reads-heading><h1>{}</h1><p>{description}</p>",
-        escape(&label)
+        "<header class=reads-heading><h1>{}</h1><p>{heading}</p><div class=reads-tools>{}",
+        escape(&label),
+        search_box(
+            "reads-search",
+            "/reads",
+            &words,
+            choose(
+                en,
+                "搜索文章、作者或来源",
+                "Search titles, authors or sources"
+            ),
+            en
+        )
     );
     let _ = write!(
         content,
-        "<nav class=reads-views aria-label=\"{}\"><a href=\"{}\"{}>{}</a><a href=\"{}\"{}>{}</a></nav></header><div class=reads-list>",
+        "<nav class=reads-views aria-label=\"{}\"><a href=\"{}\"{}>{}</a><a href=\"{}\"{}>{}</a></nav></div></header><div class=reads-list>",
         choose(en, "阅读排序", "Reading order"),
         localized("/reads", en),
-        if !hot { " aria-current=\"page\"" } else { "" },
+        if !hot && !searching {
+            " aria-current=\"page\""
+        } else {
+            ""
+        },
         choose(en, "最新", "Latest"),
         escape(&localized("/reads?view=hot", en)),
         if hot { " aria-current=\"page\"" } else { "" },
@@ -173,7 +249,13 @@ async fn index(
             state.config.timezone,
         ));
     }
-    if rows.is_empty() {
+    if rows.is_empty() && searching {
+        content.push_str(choose(
+            en,
+            "<p class=muted>没有找到相关文章，换个词试试，或看看<a href=\"/reads\">最新文章</a>。</p>",
+            "<p class=muted>No reads match these words. Try others, or explore the <a href=\"/reads?lang=en\">latest articles</a>.</p>",
+        ));
+    } else if rows.is_empty() {
         content.push_str(if hot { choose(
             en,
             "<p class=muted>热读正在积累，先看看<a href=\"/reads\">最新文章</a>。</p>",
@@ -189,7 +271,7 @@ async fn index(
         let _ = write!(
             content,
             "<a rel=prev href=\"{}\">{}</a>",
-            escape(&listing(page - 1, en)),
+            escape(&listing(page - 1, en, &words)),
             choose(en, "上一页", "Newer")
         );
     }
@@ -197,7 +279,7 @@ async fn index(
         let _ = write!(
             content,
             "<a rel=next href=\"{}\">{}</a>",
-            escape(&listing(page + 1, en)),
+            escape(&listing(page + 1, en, &words)),
             choose(en, "继续阅读", "Older reads")
         );
     }
@@ -205,9 +287,11 @@ async fn index(
     let path = if hot {
         "/reads?view=hot".into()
     } else {
-        listing(page, false)
+        listing(page, false, &words)
     };
-    let title = if hot {
+    let title = if searching {
+        format!("{words} · {label}")
+    } else if hot {
         format!("{} · {}", choose(en, "热读", "Popular"), label)
     } else if page == 1 {
         format!("{} · 𝑵𝒆𝒘𝒔", label)
@@ -229,11 +313,15 @@ async fn index(
             ..CHROME
         },
     );
-    Ok(conditional(
-        &headers,
-        &Rendered::new(html),
-        "text/html; charset=utf-8",
-    ))
+    let mut response = conditional(&headers, &Rendered::new(html), "text/html; charset=utf-8");
+    // Pages for words stay out of search engines, as the catalogue's do.
+    if searching {
+        response.headers_mut().insert(
+            axum::http::header::HeaderName::from_static("x-robots-tag"),
+            axum::http::HeaderValue::from_static("noindex"),
+        );
+    }
+    Ok(response)
 }
 
 async fn detail(
