@@ -9,17 +9,8 @@
 .reads-views { display: flex; flex-shrink: 0; gap: 1.35rem; font-size: .85rem; white-space: nowrap; }
 .reads-views a { color: var(--muted); text-decoration: none; padding-bottom: .4rem; }
 .reads-views a[aria-current] { color: var(--text); border-bottom: 1px solid currentColor; }
-/* The list fills the window with the site's cards, as Culture does; an article keeps the reading
-   column, and the reads after it are the same cards. A card opens its article from anywhere on it. */
-.public.reads-index .shell { max-width: none; padding-inline: clamp(1.25rem, 3vw, 3rem); }
-.public.reads-index .back-to-top { right: calc(1rem + env(safe-area-inset-right, 0px)); }
-.reads-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(var(--tile), 100%), 1fr)); gap: clamp(.9rem, 1.6vw, 1.5rem); }
-.reads-list > p { grid-column: 1 / -1; }
-:is(.reads-list, .read-related) .item { display: flex; gap: .9rem; padding: 1.35rem; }
-:is(.reads-list, .read-related) :is(.item-meta, .item-title, .item-summary) { margin-inline: 0; }
-:is(.reads-list, .read-related) .item-meta { margin-top: 0; }
-:is(.reads-list, .read-related) .item-title { font-size: 1.05rem; line-height: 1.5; font-weight: 650; }
-:is(.reads-list, .read-related) .item-title a::after { content: ""; position: absolute; inset: 0; }
+.reads-list .item { display: flex; gap: .9rem; padding: 1.4rem 0; }
+.reads-list .item:first-child { padding-top: 0; }
 .read-card { min-width: 0; flex: 1; }
 .read-card .item-meta { display: block; }
 .read-date { white-space: nowrap; }
@@ -50,8 +41,8 @@
 .read-source { margin-top: 2.5rem; padding-top: 1.25rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .8rem; line-height: 1.8; overflow-wrap: anywhere; }
 .read-source a { text-underline-offset: .2em; }
 .read-source p { margin: .6rem 0 0; }
-.read-related { display: grid; gap: 1rem; margin-top: 3.5rem; padding-top: 1.5rem; border-top: 1px solid var(--line); }
-.read-related > h2 { margin: 0; color: var(--muted); font-size: .85rem; font-weight: 500; }
+.read-related { margin-top: 3.5rem; padding-top: 1.5rem; border-top: 1px solid var(--line); }
+.read-related > h2 { color: var(--muted); font-size: .85rem; font-weight: 500; margin-bottom: .5rem; }
 @media (max-width: 768px) {
   .reads-list, .read-heading, .read-source, .read-actions, .read-related,
   .read-body :is(p, h1, h2, h3, h4, h5, h6) { touch-action: pan-y pinch-zoom; }
@@ -64,7 +55,4 @@
   .reads-views { gap: .8rem; }
   .read-heading { margin-bottom: 1.8rem; }
   .read-body { font-size: 1rem; }
-}
-@media (max-width: 560px) {
-  :is(.reads-list, .read-related) .item { padding: 1rem; }
 }

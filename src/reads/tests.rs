@@ -918,10 +918,10 @@ async fn check_full_text_image_renewal(state: &AppState, id: Uuid) {
     assert_eq!(updated.zh, document.zh);
 }
 
-/// The cards a Reads page lists, in the site's shared card style.
+/// The articles a Reads page lists.
 fn cards(html: &str, selector: &str) -> usize {
     scraper::Html::parse_document(html)
-        .select(&scraper::Selector::parse(&format!("{selector} > .item.image-news-card")).unwrap())
+        .select(&scraper::Selector::parse(&format!("{selector} > .item")).unwrap())
         .count()
 }
 
@@ -987,15 +987,15 @@ async fn check_related_candidates(
         links,
         [200, 2, 1].map(|g| format!("/reads/{}", Uuid::from_u128(g + 1)))
     );
-    // Related reads are the list's cards, the way back closes the page, and only the list
-    // fills the window.
+    // Related reads are listed like the index, with no card frame, and the way back closes
+    // the page.
     assert_eq!(cards(&html, ".read-related"), 3);
+    assert!(!html.contains("image-news-card"));
     let parts: Vec<_> = document
         .select(&scraper::Selector::parse("main > *").unwrap())
         .map(|node| node.value().attr("class").unwrap_or_default())
         .collect();
     assert_eq!(parts, ["read", "read-related", "read-actions"]);
-    assert!(!html.contains("reads-index"));
     let html = client
         .get(format!("{base}/reads"))
         .send()
@@ -1014,7 +1014,9 @@ async fn check_related_candidates(
         .collect();
     assert_eq!(links.len(), 24);
     assert_eq!(cards(&html, ".reads-list"), 24);
-    assert!(html.contains("<body class=\"public reads reads-index\">"));
+    // The list keeps the reading column and its entries no card frame.
+    assert!(html.contains("<body class=\"public reads\">"));
+    assert!(!html.contains("image-news-card"));
     assert_eq!(links[0], format!("/reads/{}", Uuid::from_u128(202)));
     assert_eq!(links[1], format!("/reads/{current}"));
     assert_eq!(links[2], format!("/reads/{}", Uuid::from_u128(3)));

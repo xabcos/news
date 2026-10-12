@@ -33,7 +33,7 @@ const SEARCHED: &str = "concat_ws(' ', i.title, i.title_en, i.summary, i.summary
 const CHROME: Chrome<'static> = Chrome {
     current: "reads",
     section: "reads",
-    stylesheet: "/reads.css?v=8",
+    stylesheet: "/reads.css?v=9",
     script: "/reads.js?v=8",
     feed: ("Reads", "/feed.xml?topic=reads"),
 };
@@ -307,11 +307,7 @@ async fn index(
         description,
         &content,
         None,
-        // The list fills the window with cards; an article keeps the reading column.
-        &Chrome {
-            section: "reads reads-index",
-            ..CHROME
-        },
+        &CHROME,
     );
     let mut response = conditional(&headers, &Rendered::new(html), "text/html; charset=utf-8");
     // Pages for words stay out of search engines, as the catalogue's do.
@@ -506,7 +502,7 @@ fn card(item: &Card, en: bool, rank: Option<usize>, timezone: chrono_tz::Tz) -> 
         })
         .unwrap_or_default();
     format!(
-        "<article class=\"item image-news-card\">{rank}<div class=read-card><div class=item-meta><span>{}</span> · <span class=read-date><time datetime=\"{}\">{}</time>{views}</span></div><h2 class=item-title><a href=\"{}\">{}</a></h2><p class=item-summary>{}</p></div></article>",
+        "<article class=item>{rank}<div class=read-card><div class=item-meta><span>{}</span> · <span class=read-date><time datetime=\"{}\">{}</time>{views}</span></div><h2 class=item-title><a href=\"{}\">{}</a></h2><p class=item-summary>{}</p></div></article>",
         escape(&item.source),
         item.first_seen_at.to_rfc3339(),
         item.first_seen_at

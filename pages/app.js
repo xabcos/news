@@ -653,11 +653,9 @@ function applyLang() {
 }
 
 function renderTabs() {
-  // Feeds fill the window with cards: ALL tiles each topic under its heading, and a topic's
-  // cards flow across its days. The daily briefing and equity notes keep the reading measure.
-  const reading = state.topic === INSIGHT_ID || state.topic === EQUITY_ID;
-  document.body.classList.toggle("all-topic", !state.topic);
-  document.body.classList.toggle("card-topic", Boolean(state.topic) && !reading && state.topic !== PHOTO_TOPIC && state.topic !== TRAVEL_TOPIC);
+  // Picture topics fill the window with cards that flow across their days; text, ALL included,
+  // keeps the reading column, where a list reads best.
+  document.body.classList.toggle("card-topic", state.topic === "p" || state.topic === FASHION_TOPIC);
   document.body.classList.toggle("w-topic", state.topic === PHOTO_TOPIC);
   document.body.classList.toggle("travel-topic", state.topic === TRAVEL_TOPIC);
   renderTravelMap();
@@ -1057,6 +1055,9 @@ function renderGroups(digest) {
   return visible.map((group) => {
     const section = document.createElement("section");
     section.className = "group";
+    // Picture cards tile under their heading; text stays a list.
+    section.classList.toggle("image-news-group", group.id === "p" || group.id === FASHION_TOPIC || Boolean(sectionOf(group.id)));
+    section.classList.toggle("fashion-group", group.id === FASHION_TOPIC);
     section.classList.toggle("photo-group", group.id === PHOTO_TOPIC);
     section.classList.toggle("catalog-book-group", group.id === "book");
     section.classList.toggle("postcard-group", group.id === TRAVEL_TOPIC);
