@@ -177,6 +177,8 @@ pub(crate) async fn feed(state: &AppState) {
         .await
         .unwrap();
     let today = state.digest.today();
+    // Each photograph arrives after the one before but was posted earlier, so pages only line
+    // up when they follow 𝑾's order.
     for n in 0..29 {
         let (topic, day, hidden) = if n == 0 {
             ("preview-shared", today, false)
@@ -191,9 +193,10 @@ pub(crate) async fn feed(state: &AppState) {
                 n == 28,
             )
         };
-        sqlx::query("INSERT INTO items(id,topic_id,day,fingerprint,title,summary,url,hidden) VALUES($1,$2,$3,$4,$5,'Test',$6,$7)")
+        sqlx::query("INSERT INTO items(id,topic_id,day,fingerprint,title,summary,url,hidden,published_at) VALUES($1,$2,$3,$4,$5,'Test',$6,$7,NOW()-make_interval(hours => $8))")
             .bind(Uuid::new_v4()).bind(topic).bind(day).bind(Sha256::digest([n]).to_vec())
             .bind(format!("Preview {n}")).bind(format!("https://example.test/preview/{n}")).bind(hidden)
+            .bind(i32::from(n))
             .execute(&state.pool).await.unwrap();
     }
     state.digest.reload_topics(state).await.unwrap();
@@ -382,6 +385,30 @@ pub(crate) async fn feed(state: &AppState) {
             .status(),
         200
     );
+    // A logged-in reader's pages follow 𝑾's order too.
+    let (mut seen, mut after) = (std::collections::HashSet::new(), String::new());
+    loop {
+        let data = http
+            .get(format!(
+                "{base}/api/me/feed?topic=w&day={today}&limit=12{after}"
+            ))
+            .header("cookie", &user)
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap();
+        let group = &data["digest"]["topics"][0];
+        for item in group["items"].as_array().unwrap() {
+            assert!(seen.insert(item["id"].as_str().unwrap().to_owned()));
+        }
+        let Some(next) = group["next"].as_str() else {
+            break;
+        };
+        after = format!("&after={next}");
+    }
+    assert_eq!(seen.len(), 25);
     // Readers don't see the waiting photograph until an administrator gives it a ❤️.
     let yesterday = today.pred_opt().unwrap();
     let public = |path: String| http.get(format!("{base}{path}")).send();

@@ -122,8 +122,11 @@ fn newest(items: &[PublicItem]) -> Option<DateTime<Utc>> {
 /// The display-order key of one item: `pinned DESC, published_at DESC NULLS LAST,
 /// first_seen_at DESC, id DESC`. Deriving `Ord` over the fields in this order and comparing
 /// descending yields exactly that order; `None` sorting before `Some` is what puts undated
-/// items last. A page starts strictly after a key, so the cursor remains unambiguous while
-/// these sort keys stay stable; callers should refresh and de-duplicate when the feed changes.
+/// items last. 𝑾's key leaves the post time out, so the newest run's photographs lead: an
+/// old story found late shouldn't top a news feed, but a photograph is new to the gallery
+/// when it arrives. A page starts strictly after a key, so the cursor remains unambiguous
+/// while these sort keys stay stable; callers should refresh and de-duplicate when the feed
+/// changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Cursor {
     #[serde(rename = "p")]
@@ -137,10 +140,12 @@ pub struct Cursor {
 }
 
 impl Cursor {
-    pub fn of(item: &PublicItem) -> Self {
+    pub fn of(topic: &str, item: &PublicItem) -> Self {
         Self {
             pinned: item.pinned,
-            published_at: item.published_at,
+            published_at: item
+                .published_at
+                .filter(|_| topic != crate::gallery::TOPIC_ID),
             first_seen_at: item.first_seen_at,
             id: item.id,
         }
@@ -161,18 +166,20 @@ impl Cursor {
     }
 }
 
-/// One page of a snapshot: the first `limit` items strictly after `after` in display order,
-/// and the cursor of the page that follows, if there is one.
-fn page(
-    items: &[PublicItem],
+/// One page of a topic's snapshot: the first `limit` items strictly after `after` in display
+/// order, and the cursor of the page that follows, if there is one.
+fn page<'a>(
+    topic: &str,
+    items: &'a [PublicItem],
     after: Option<Cursor>,
     limit: usize,
-) -> (&[PublicItem], Option<String>) {
+) -> (&'a [PublicItem], Option<String>) {
+    let key = |item: &PublicItem| Cursor::of(topic, item);
     let start = after.map_or(0, |cursor| {
-        items.partition_point(|item| Cursor::of(item) >= cursor)
+        items.partition_point(|item| key(item) >= cursor)
     });
     let end = start.saturating_add(limit).min(items.len());
-    let next = (end > start && end < items.len()).then(|| Cursor::of(&items[end - 1]).encode());
+    let next = (end > start && end < items.len()).then(|| key(&items[end - 1]).encode());
     (&items[start..end], next)
 }
 
@@ -598,7 +605,7 @@ impl DigestCache {
                     let (items, updated_at) = snapshot
                         .as_ref()
                         .map_or((&[][..], None), |s| s.view(reader));
-                    let (page_items, next) = page(items, after, limit);
+                    let (page_items, next) = page(&topic.id, items, after, limit);
                     TopicDigest {
                         id: &topic.id,
                         name: &topic.name,
@@ -675,13 +682,13 @@ async fn load(state: &AppState, topic: &str, day: NaiveDate) -> Result<Snapshot>
         .push(" AND items.day = ")
         .push_bind(day)
         .push(" AND topics.enabled AND topics.owner_user_id IS NULL");
-    // 𝑾's hidden photographs are read for the administrator's preview (`gallery`).
-    if topic != crate::gallery::TOPIC_ID {
-        query.push(" AND NOT items.hidden");
-    }
-    query.push(
-        " ORDER BY items.pinned DESC, items.published_at DESC NULLS LAST, items.first_seen_at DESC, items.id DESC",
-    );
+    // 𝑾's hidden photographs are read for the administrator's preview (`gallery`), and its
+    // order leaves the post time out (`Cursor`).
+    query.push(if topic == crate::gallery::TOPIC_ID {
+        " ORDER BY items.pinned DESC, items.first_seen_at DESC, items.id DESC"
+    } else {
+        " AND NOT items.hidden ORDER BY items.pinned DESC, items.published_at DESC NULLS LAST, items.first_seen_at DESC, items.id DESC"
+    });
     let mut items = query
         .build_query_as::<PublicItem>()
         .fetch_all(&state.pool)
@@ -1001,7 +1008,7 @@ async fn me_feed(
         let ((items, next), total, updated_at) = match selected_day {
             Some(day) if public_ids.contains(&card.id) => {
                 let snapshot = state.digest.snapshot(&state, &card.id, day).await?;
-                let (items, next) = page(&snapshot.items, after, limit);
+                let (items, next) = page(&card.id, &snapshot.items, after, limit);
                 (
                     (items.to_vec(), next),
                     snapshot.items.len() as i64,
@@ -1236,7 +1243,7 @@ async fn personal_items(
         }
         let next = (items.len() > limit).then(|| {
             items.truncate(limit);
-            Cursor::of(&items[limit - 1]).encode()
+            Cursor::of(&row.topic_id, &items[limit - 1]).encode()
         });
         result.insert(row.topic_id, (items, next));
     }
@@ -1385,6 +1392,8 @@ mod tests {
     use chrono::{Duration, TimeZone, Utc};
     use uuid::Uuid;
 
+    const NEWS: &str = "x";
+
     #[test]
     fn rollover_expires_old_snapshots_and_rendered_bodies() {
         let cache = DigestCache::new(chrono_tz::Asia::Shanghai);
@@ -1442,7 +1451,7 @@ mod tests {
 
     #[test]
     fn cursors_round_trip_and_reject_garbage() {
-        let cursor = Cursor::of(&item(3, true));
+        let cursor = Cursor::of(NEWS, &item(3, true));
         assert_eq!(
             Cursor::decode(&cursor.encode()).expect("valid cursor"),
             cursor
@@ -1463,7 +1472,7 @@ mod tests {
         };
         snapshot
             .items
-            .sort_by_key(|item| std::cmp::Reverse(Cursor::of(item)));
+            .sort_by_key(|item| std::cmp::Reverse(Cursor::of(NEWS, item)));
         assert_eq!(marks(&snapshot.items), vec![2, 3, 1, 9]);
     }
 
@@ -1475,18 +1484,18 @@ mod tests {
         };
         snapshot
             .items
-            .sort_by_key(|item| std::cmp::Reverse(Cursor::of(item)));
+            .sort_by_key(|item| std::cmp::Reverse(Cursor::of(NEWS, item)));
         // Pinned 5 and 0 lead; the rest run newest first.
         assert_eq!(marks(&snapshot.items), vec![5, 0, 6, 4, 3, 2, 1]);
 
-        let (first, next) = page(&snapshot.items, None, 3);
+        let (first, next) = page(NEWS, &snapshot.items, None, 3);
         assert_eq!(marks(first), vec![5, 0, 6]);
         let cursor = Cursor::decode(next.as_deref().expect("more pages")).expect("valid");
 
-        let (second, next) = page(&snapshot.items, Some(cursor), 3);
+        let (second, next) = page(NEWS, &snapshot.items, Some(cursor), 3);
         assert_eq!(marks(second), vec![4, 3, 2]);
         let last = Cursor::decode(next.as_deref().expect("one more page")).expect("valid");
-        let (third, next) = page(&snapshot.items, Some(last), 3);
+        let (third, next) = page(NEWS, &snapshot.items, Some(last), 3);
         assert_eq!(marks(third), vec![1]);
         assert!(next.is_none());
 
@@ -1496,13 +1505,43 @@ mod tests {
         snapshot.items.push(item(8, false));
         snapshot
             .items
-            .sort_by_key(|item| std::cmp::Reverse(Cursor::of(item)));
-        let (second_again, _) = page(&snapshot.items, Some(cursor), 3);
+            .sort_by_key(|item| std::cmp::Reverse(Cursor::of(NEWS, item)));
+        let (second_again, _) = page(NEWS, &snapshot.items, Some(cursor), 3);
         assert_eq!(marks(second_again), vec![4, 3, 2]);
 
         // A key past everything yields an empty page and no cursor.
-        let (empty, next) = page(&snapshot.items, Some(Cursor::of(&item(1, false))), 3);
+        let (empty, next) = page(
+            NEWS,
+            &snapshot.items,
+            Some(Cursor::of(NEWS, &item(1, false))),
+            3,
+        );
         assert!(empty.is_empty());
+        assert!(next.is_none());
+    }
+
+    #[test]
+    fn the_gallery_leads_with_its_newest_run_whatever_the_post_times() {
+        // 1 and 2 came in one run, 1 with the newest post; 0, the oldest post, came in the
+        // next run.
+        let mut items = (0..3).map(|n| item(n, false)).collect::<Vec<_>>();
+        items[1].published_at = items[1].published_at.map(|at| at + Duration::minutes(10));
+        items[0].first_seen_at += Duration::minutes(32);
+        let order = |topic: &str| {
+            let mut items = items.clone();
+            items.sort_by_key(|item| std::cmp::Reverse(Cursor::of(topic, item)));
+            items
+        };
+        assert_eq!(marks(&order(NEWS)), vec![1, 2, 0]);
+        // 𝑾 counts no post time, not even within a run, where the id settles it.
+        let gallery = order(crate::gallery::TOPIC_ID);
+        assert_eq!(marks(&gallery), vec![0, 2, 1]);
+
+        let (first, next) = page(crate::gallery::TOPIC_ID, &gallery, None, 2);
+        assert_eq!(marks(first), vec![0, 2]);
+        let cursor = Cursor::decode(next.as_deref().expect("one more page")).expect("valid");
+        let (second, next) = page(crate::gallery::TOPIC_ID, &gallery, Some(cursor), 2);
+        assert_eq!(marks(second), vec![1]);
         assert!(next.is_none());
     }
 

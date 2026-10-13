@@ -449,20 +449,18 @@ async fn postgres_gallery_keeps_confirmed_photographs_until_their_copies_expire(
     // The photographs wait for an administrator's ❤️: readers see none, the preview both.
     assert!(snapshot.items.is_empty());
     assert!(snapshot.preview.iter().all(|item| item.hidden));
-    let urls = snapshot
-        .preview
-        .iter()
-        .map(|item| item.url.as_str())
-        .collect::<Vec<_>>();
+    // One run's photographs come in no particular order.
+    let photo = |url: &str| {
+        snapshot
+            .preview
+            .iter()
+            .find(|item| item.url == url)
+            .unwrap()
+    };
     let alice_url = format!("https://x.com/alice/status/{}", id(1));
-    assert_eq!(
-        urls,
-        [
-            alice_url.as_str(),
-            &format!("https://x.com/erin/status/{}", id(7))
-        ]
-    );
-    let alice = &snapshot.preview[0];
+    let erin_url = format!("https://x.com/erin/status/{}", id(7));
+    assert_eq!(snapshot.preview.len(), 2);
+    let alice = photo(&alice_url);
     assert_eq!(alice.source, "ALICE");
     assert_eq!(
         alice.published_at.unwrap().timestamp(),
@@ -481,7 +479,7 @@ async fn postgres_gallery_keeps_confirmed_photographs_until_their_copies_expire(
     );
     assert_eq!(image["credit"], "ALICE @alice");
     assert!(image.get("origin_url").is_none() && image.get("expires_at").is_none());
-    assert_eq!(snapshot.preview[1].tags, ["AI", "人像"]);
+    assert_eq!(photo(&erin_url).tags, ["AI", "人像"]);
     let origin: String = sqlx::query_scalar(
         "SELECT image->>'origin_url' FROM items WHERE topic_id = 'w' AND url = $1",
     )
@@ -492,6 +490,45 @@ async fn postgres_gallery_keeps_confirmed_photographs_until_their_copies_expire(
     assert_eq!(
         origin,
         "https://pbs.twimg.com/media/AliceTwo?format=jpg&name=medium"
+    );
+
+    // A pinned photograph stays first; then a later run's photograph leads, though its post is
+    // the oldest, and pages agree.
+    sqlx::query("UPDATE items SET pinned = true WHERE url = $1")
+        .bind(&alice_url)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO items (id, topic_id, day, fingerprint, title, summary, url, published_at, hidden) \
+         VALUES ($1, 'w', $2, $3, 'Later', 'Test', 'https://x.com/later/status/1', $4, true)",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .bind(today)
+    .bind(vec![7_u8; 32])
+    .bind(now - Duration::hours(20))
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    state.digest.refresh(&state, TOPIC_ID, today).await.unwrap();
+    let snapshot = state
+        .digest
+        .snapshot(&state, TOPIC_ID, today)
+        .await
+        .unwrap();
+    let urls = snapshot
+        .preview
+        .iter()
+        .map(|item| item.url.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        urls,
+        [&alice_url, "https://x.com/later/status/1", &erin_url]
+    );
+    assert!(
+        snapshot.preview.is_sorted_by_key(|item| {
+            std::cmp::Reverse(crate::digest::Cursor::of(TOPIC_ID, item))
+        })
     );
 
     // The briefing neither collects nor reads the gallery.
