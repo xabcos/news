@@ -33,7 +33,7 @@ const SEARCHED: &str = "concat_ws(' ', i.title, i.title_en, i.summary, i.summary
 const CHROME: Chrome<'static> = Chrome {
     current: "reads",
     section: "reads",
-    stylesheet: "/reads.css?v=10",
+    stylesheet: "/reads.css?v=11",
     script: "/reads.js?v=8",
     feed: ("Reads", "/feed.xml?topic=reads"),
 };
@@ -363,7 +363,7 @@ async fn detail(
         item.first_seen_at
             .with_timezone(&state.config.timezone)
             .format("%Y-%m-%d"),
-        escape(title),
+        crate::site::headline(title),
         escape(summary),
         choose(en, "原文", "Source"),
         escape(&item.url),

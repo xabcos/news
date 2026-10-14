@@ -19,7 +19,6 @@ PublicPage.page();
       if (!Number.isSafeInteger(data?.views)) return;
       try { localStorage.setItem(key, today); } catch { /* Counting works without storage. */ }
       counter.querySelector("span").textContent = new Intl.NumberFormat(document.documentElement.lang).format(data.views);
-      counter.hidden = data.views < 1;
     })
     .catch(() => {});
 })();

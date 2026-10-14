@@ -33,13 +33,13 @@ const FROM: &str = " FROM articles a JOIN authors w ON w.user_id = a.author_id J
 const LIST: Chrome<'static> = Chrome {
     current: "articles",
     section: "reads articles",
-    stylesheet: "/reads.css?v=10",
+    stylesheet: "/reads.css?v=11",
     script: "/reads.js?v=8",
     feed: ("News", "/feed.xml"),
 };
 /// An article counts its reads, and its review takes a ❤️.
 const ARTICLE: Chrome<'static> = Chrome {
-    script: "/articles.js?v=1",
+    script: "/articles.js?v=2",
     ..LIST
 };
 
@@ -403,21 +403,17 @@ async fn render(
         &article.title
     };
     let date = article.published_at.unwrap_or(article.updated_at);
-    let views = if mode == Mode::Public {
-        format!(
-            "<span class=read-views data-article-views=\"{}\" title=\"{}\"{}>{EYE}<span>{}</span></span>",
-            article.id,
-            choose(en, "阅读次数", "Reads"),
-            if article.views > 0 { "" } else { " hidden" },
-            article.views
-        )
-    } else {
-        format!(
-            "<span class=read-views title=\"{}\">{EYE}<span>{}</span></span>",
-            choose(en, "阅读次数", "Reads"),
-            article.views
-        )
-    };
+    // Readers' copy of the page counts their read; previews only show the number.
+    let views = format!(
+        "<span class=read-views{} title=\"{}\">{EYE}<span>{}</span></span>",
+        if mode == Mode::Public {
+            format!(" data-article-views=\"{}\"", article.id)
+        } else {
+            String::new()
+        },
+        choose(en, "阅读次数", "Reads"),
+        article.views
+    );
     let status = match article.status.as_str() {
         "published" => choose(en, "已公开", "Public"),
         "pending" => choose(en, "待审", "In review"),
@@ -447,7 +443,7 @@ async fn render(
     };
     let by = localized(&format!("/articles?by={}", article.author_id), en);
     let mut content = format!(
-        "{notice}<article class=\"read article\">{}<header class=read-heading><div class=item-meta><a href=\"{}\">{}</a> · <time datetime=\"{}\">{}</time></div><div class=read-title><h1>{}</h1>{views}</div></header><div class=read-body>{body}</div></article>",
+        "{notice}<article class=\"read article\">{}<header class=read-heading><div class=read-title><h1>{}</h1></div><div class=item-meta><a href=\"{}\">{}</a> · <time datetime=\"{}\">{}</time> · {views}</div></header><div class=read-body>{body}</div></article>",
         cover
             .as_ref()
             .map(|cover| {
@@ -458,11 +454,11 @@ async fn render(
                 )
             })
             .unwrap_or_default(),
+        crate::site::headline(title),
         escape(&by),
         escape(&article.author),
         date.to_rfc3339(),
         date.with_timezone(&state.config.timezone).format("%Y-%m-%d"),
-        escape(title),
     );
     let _ = write!(
         content,

@@ -159,7 +159,7 @@ Reads 默认按收录时间连续展示，不按天分组，每页 24 篇。列�
 
 图片原样上传到 tmpfile，不重新编码，只收 JPEG、PNG、WebP 和 GIF，单张不超过 10 MB（Nginx 的 `client_max_body_size` 为此放宽到 10m），类型和尺寸从文件内容读出。tmpfile 不能删除文件，地址谁拿到都能打开，所以文章公开前作者经本站中转看图（`private, no-cache` 加 ETag），公开页面才直接引用 tmpfile 地址；正文用 `![…](image:<id>)` 引用本篇上传的图片，别处的地址不显示，图片过期后显示文字说明。每人每天最多新建 10 篇、上传 64 张图片，删除不返还；每篇正文和封面合计最多 32 张图。
 
-阅读数在站内统计：文章页向 `POST /api/articles/{id}/views` 上报，同一浏览器每篇每天计一次，作者本人登录时不计，不执行脚本的爬虫不计，数字是近似值；列表和工作台直接读库。列表与精读同样式、同脚本，每页 24 篇、往下滚自动加载，`?by=<作者>` 列出一位作者的文章；文章页带 Article 结构化数据，封面同时是分享图。公开页面沿用现有缓存。数据在 `authors`、`articles`、`article_images` 三张表，代码在 `src/articles.rs` 与 `src/articles/`，页面脚本是 `pages/articles.js`、`pages/me/articles.js` 和 `pages/me/write.*`。
+阅读数在站内统计：文章页向 `POST /api/articles/{id}/views` 上报，同一浏览器每篇每天计一次，作者本人登录时不计，不执行脚本的爬虫不计，数字是近似值；列表和工作台直接读库。列表与精读同样式、同脚本，每页 24 篇、往下滚自动加载，`?by=<作者>` 列出一位作者的文章；文章页依次是封面、标题、「笔名 · 日期 · 阅读数」和正文，带 Article 结构化数据，封面同时是分享图。精读和分享的文章标题在「：」「，」等标点处换行，放得下下一段时不把一段拆开（`site::headline`）。公开页面沿用现有缓存。数据在 `authors`、`articles`、`article_images` 三张表，代码在 `src/articles.rs` 与 `src/articles/`，页面脚本是 `pages/articles.js`、`pages/me/articles.js` 和 `pages/me/write.*`。
 
 ## XAI 日报
 

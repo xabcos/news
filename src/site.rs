@@ -162,6 +162,31 @@ pub(crate) fn escape(value: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+/// A page's headline, escaped. A Chinese or Japanese headline is cut after its punctuation into
+/// phrases that wrap as wholes (`.phrase` in reads.css), so a line ends at "：" or "，" whenever
+/// the next phrase fits instead of splitting a phrase; one without such punctuation stays as it is.
+pub(crate) fn headline(title: &str) -> String {
+    let pause = |c: char| matches!(c, '，' | '：' | '；' | '、' | '！' | '？' | '。');
+    let mut phrases = Vec::new();
+    let mut start = 0;
+    let mut chars = title.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        if pause(c) && !chars.peek().is_some_and(|&(_, next)| pause(next)) {
+            phrases.push(&title[start..at + c.len_utf8()]);
+            start = at + c.len_utf8();
+        }
+    }
+    phrases.push(&title[start..]);
+    phrases.retain(|phrase| !phrase.trim().is_empty());
+    if phrases.len() < 2 {
+        return escape(title);
+    }
+    phrases
+        .iter()
+        .map(|phrase| format!("<span class=phrase>{}</span>", escape(phrase)))
+        .collect()
+}
+
 /// The eye before a read count.
 pub(crate) const EYE: &str = r#"<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>"#;
 
@@ -394,4 +419,29 @@ pub(crate) fn layout(
         back_to_top = choose(en, "回到顶部", "Back to top"),
         track_url = crate::reads::TRACK_URL,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::headline;
+
+    #[test]
+    fn headlines_break_after_their_punctuation_and_stay_escaped() {
+        assert_eq!(
+            headline("认识 xabcnews.com：让 AI 替你读全网，你只读值得读的"),
+            "<span class=phrase>认识 xabcnews.com：</span><span class=phrase>让 AI 替你读全网，</span><span class=phrase>你只读值得读的</span>"
+        );
+        // Punctuation that runs together stays with the phrase before it.
+        assert_eq!(
+            headline("真的吗？！<b>不</b>"),
+            "<span class=phrase>真的吗？！</span><span class=phrase>&lt;b&gt;不&lt;/b&gt;</span>"
+        );
+        // One phrase, or none to cut, is left as it is.
+        assert_eq!(
+            headline("廉价模型正在动摇 <AI> 基建"),
+            "廉价模型正在动摇 &lt;AI&gt; 基建"
+        );
+        assert_eq!(headline("Why it matters: a test"), "Why it matters: a test");
+        assert_eq!(headline("结尾的问号？"), "结尾的问号？");
+    }
 }

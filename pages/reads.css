@@ -20,7 +20,9 @@
 .reads-pagination a, .read-actions a { color: var(--muted); text-decoration: none; }
 .read-heading { margin-bottom: 2.5rem; }
 .read-title { display: flex; align-items: baseline; gap: 1rem; margin: .8rem 0 1rem; }
-.read-title h1 { flex: 1; min-width: 0; margin: 0; font-size: clamp(1.65rem, 4vw, 2.2rem); line-height: 1.4; letter-spacing: -.025em; text-wrap: balance; overflow-wrap: anywhere; }
+.read-title h1 { flex: 1; min-width: 0; margin: 0; font-size: clamp(1.55rem, 3.2vw, 1.95rem); line-height: 1.5; text-wrap: balance; overflow-wrap: anywhere; }
+/* A headline breaks after its punctuation whenever the next phrase fits (site::headline). */
+.read-title h1 .phrase { display: inline-block; }
 .read-title .read-views { flex-shrink: 0; }
 .read-deck { color: var(--muted); font-size: 1rem; line-height: 1.8; }
 .read-heading .item-meta a { text-decoration: none; }
@@ -45,6 +47,7 @@
 .read-related > h2 { color: var(--muted); font-size: .85rem; font-weight: 500; margin-bottom: .5rem; }
 /* 分享 reads like Reads: articles readers write, with an optional cover cut like X's. */
 .article-write { flex-shrink: 0; font-size: .85rem; color: var(--primary-strong); text-decoration: none; padding-bottom: .4rem; }
+.article .read-title { margin: 0 0 .7rem; }
 .article-cover { display: block; width: 100%; height: auto; aspect-ratio: 5 / 2; object-fit: cover; margin-bottom: 1.8rem; border-radius: var(--radius-l); background: var(--surface-soft); }
 .article-notice { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.5rem; padding: .6rem .9rem; border: 1px solid var(--line); border-radius: var(--radius-m); color: var(--muted); font-size: .85rem; }
 .article-notice a { color: var(--primary-strong); }
