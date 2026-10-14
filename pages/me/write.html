@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f6f4">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1115">
+  <meta name="referrer" content="no-referrer">
+  <title>𝑵𝒆𝒘𝒔 · 写文章</title>
+  <link rel="icon" type="image/svg+xml" href="/icon.svg">
+  <link rel="stylesheet" href="/styles.css?v=sides">
+  <link rel="stylesheet" href="/me/styles.css?v=articles">
+</head>
+<body>
+  <main class="workspace-shell writer">
+    <header class="workspace-topbar">
+      <a class="brand" href="/me/" aria-label="返回工作台"><img class="brand-logo" src="/icon.svg" alt=""><span>𝑵𝒆𝒘𝒔</span></a>
+      <div class="account-tools">
+        <span id="saveState" class="muted small" role="status"></span>
+        <button id="previewButton" class="button button-quiet button-small" type="button" disabled>预览</button>
+        <button id="publishButton" class="button button-primary button-small" type="button" disabled>提交审核</button>
+      </div>
+    </header>
+    <div id="writer" class="hidden">
+      <p id="notice" class="writer-notice hidden" role="status"></p>
+      <div class="writer-cover">
+        <img id="coverImage" class="hidden" alt="封面">
+        <div class="inline">
+          <button id="coverButton" class="button button-quiet button-small" type="button">添加封面</button>
+          <button id="removeCover" class="button button-quiet button-small hidden" type="button">移除封面</button>
+        </div>
+      </div>
+      <input id="title" class="writer-title" maxlength="100" placeholder="标题" aria-label="标题" autocomplete="off">
+      <div id="toolbar" class="writer-toolbar" role="toolbar" aria-label="格式">
+        <button type="button" data-line="## " title="小标题">H</button>
+        <button type="button" data-before="**" data-after="**" title="粗体"><b>B</b></button>
+        <button type="button" data-before="*" data-after="*" title="斜体"><i>I</i></button>
+        <button type="button" data-before="~~" data-after="~~" title="删除线"><s>S</s></button>
+        <button type="button" data-line="> " title="引用">“</button>
+        <button type="button" data-line="- " title="列表">•</button>
+        <button type="button" data-before="[" data-after="](https://)" title="链接">🔗</button>
+        <button type="button" data-action="image" title="图片">🖼</button>
+        <button type="button" data-text="&#10;&#10;---&#10;&#10;" title="分割线">—</button>
+        <button type="button" data-before="`" data-after="`" title="代码">&lt;/&gt;</button>
+      </div>
+      <textarea id="body" class="writer-body" placeholder="写点有趣好玩的东西……" aria-label="正文"></textarea>
+      <p class="field-hint muted">正文用 Markdown。粘贴、拖入或点 🖼 上传图片：原图上传，每张不超过 10 MB，每篇最多 32 张（含封面），每天最多 64 张。</p>
+      <input id="fileInput" type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden>
+    </div>
+  </main>
+  <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+  <script src="/me/write.js?v=1" type="module"></script>
+</body>
+</html>

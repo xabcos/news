@@ -3,7 +3,7 @@ use crate::{
     error::{AppError, Result},
     reading::{self, Reader},
     site::{
-        Chrome, absolute, choose, containing, escape, localized, search_box, search_words,
+        Chrome, EYE, absolute, choose, containing, escape, localized, search_box, search_words,
         topic_name,
     },
     state::AppState,
@@ -16,7 +16,7 @@ use axum::{
     routing::get,
 };
 use chrono::{DateTime, Utc};
-use pulldown_cmark::{Event, Parser, Tag, TagEnd, html};
+use pulldown_cmark::{Event, Parser};
 use serde::Deserialize;
 use serde_json::json;
 use sqlx::FromRow;
@@ -33,7 +33,7 @@ const SEARCHED: &str = "concat_ws(' ', i.title, i.title_en, i.summary, i.summary
 const CHROME: Chrome<'static> = Chrome {
     current: "reads",
     section: "reads",
-    stylesheet: "/reads.css?v=9",
+    stylesheet: "/reads.css?v=10",
     script: "/reads.js?v=8",
     feed: ("Reads", "/feed.xml?topic=reads"),
 };
@@ -485,8 +485,6 @@ async fn detail(
     ))
 }
 
-const EYE: &str = r#"<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>"#;
-
 fn card(item: &Card, en: bool, rank: Option<usize>, timezone: chrono_tz::Tz) -> String {
     let rank = rank
         .map(|rank| format!("<span class=read-rank aria-hidden=true>{rank:02}</span>"))
@@ -523,51 +521,23 @@ fn render_events<'a>(
     images: &[super::full_text::Image],
     storage: Option<&url::Url>,
 ) -> String {
-    let mut image = None;
-    let mut alt = String::new();
-    let parser = events.into_iter().filter_map(|event| match event {
-        Event::Html(_)
-        | Event::InlineHtml(_) => None,
-        Event::Start(Tag::Image { dest_url, .. }) => {
-            alt.clear();
-            image = Some(dest_url.strip_prefix("reads-image:")
-                .and_then(|id| id.parse::<usize>().ok()).and_then(|index| images.get(index))
-                .and_then(|image| image.stored.as_ref()).filter(|stored| stored.expires_at > Utc::now())
-                .and_then(|stored| url::Url::parse(&stored.direct_link).ok())
-                .filter(|url| crate::media::is_public_https_url(url) && storage.is_some_and(|base| base.origin() == url.origin())));
-            None
-        }
-        Event::End(TagEnd::Image) => {
-            let url = image.take().flatten();
-            Some(if let Some(url) = url {
-                Event::Html(format!("<img src=\"{}\" alt=\"{}\" loading=lazy decoding=async referrerpolicy=no-referrer>", escape(url.as_str()), escape(&alt)).into())
-            } else { Event::Text(std::mem::take(&mut alt).into()) })
-        }
-        Event::Text(text) | Event::Code(text) if image.is_some() => { alt.push_str(&text); None }
-        _ if image.is_some() => None,
-        Event::Start(Tag::Link {
-            link_type,
-            dest_url,
-            title,
-            id,
-        }) => {
-            let safe = url::Url::parse(&dest_url).is_ok_and(|url| {
-                matches!(url.scheme(), "https" | "http")
-                    && url.username().is_empty()
-                    && url.password().is_none()
-            });
-            Some(Event::Start(Tag::Link {
-                link_type,
-                dest_url: if safe { dest_url } else { "".into() },
-                title,
-                id,
-            }))
-        }
-        other => Some(other),
-    });
-    let mut html = String::new();
-    html::push_html(&mut html, parser);
-    html
+    crate::site::markdown(events, |destination| {
+        destination
+            .strip_prefix("reads-image:")
+            .and_then(|id| id.parse::<usize>().ok())
+            .and_then(|index| images.get(index))
+            .and_then(|image| image.stored.as_ref())
+            .filter(|stored| stored.expires_at > Utc::now())
+            .and_then(|stored| url::Url::parse(&stored.direct_link).ok())
+            .filter(|url| {
+                crate::media::is_public_https_url(url)
+                    && storage.is_some_and(|base| base.origin() == url.origin())
+            })
+            .map(|url| crate::site::Picture {
+                src: url.into(),
+                size: None,
+            })
+    })
 }
 
 async fn robots(State(state): State<AppState>, headers: HeaderMap) -> Response {

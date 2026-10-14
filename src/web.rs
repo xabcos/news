@@ -52,6 +52,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .merge(topics::router())
         .merge(digest::router())
         .merge(crate::reads::router())
+        .merge(crate::articles::router())
         .merge(crate::llm::router())
         .merge(crate::travel::router())
         .merge(crate::catalog::router())

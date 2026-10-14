@@ -14,7 +14,7 @@ Rust / Axum 提供 API、页面与后台调度。PostgreSQL 保存业务数据�
 
 ## 数据模型
 
-`users`、`sessions`、`email_login_tokens` 管理账户和登录；`topics`、`runs`、`items` 管理栏目、采集和新闻；`read_articles` 保存 Reads 精读、全文和热度，`read_candidates` 保存临时候选；`ai_insights` 保存日报；`llm_vendors`、`llm_sources` 登记模型服务商（在线、候选或已下线）与其官方页面，`llm_models` 保存当前核验的模型、价格与原文证据，`llm_changes` 追加记录变化并只保留 1 天；`travel_places` 保存旅行目的地（Wikidata 编号、路径、中英文名、国家、坐标、导读资料页与导读），`travel_moments` 保存旅行条目的地点、封面以外的照片和原文；`catalog_entries` 保存 Culture 作品与 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 产品的标识、资料链接、已核验导读、官方图片与来源指纹，`catalog_items` 以角色（动态、评测、分享）关联条目与新闻；`plans`、`orders`、`payment_events` 管理套餐和支付。`user_metrics` 维护注册数量，`maintenance_state` 记录清理进度。表、约束、索引与公共主题默认配置由 `migrations/` 中的顺序迁移定义。
+`users`、`sessions`、`email_login_tokens` 管理账户和登录；`topics`、`runs`、`items` 管理栏目、采集和新闻；`read_articles` 保存 Reads 精读、全文和热度，`read_candidates` 保存临时候选；`ai_insights` 保存日报；`llm_vendors`、`llm_sources` 登记模型服务商（在线、候选或已下线）与其官方页面，`llm_models` 保存当前核验的模型、价格与原文证据，`llm_changes` 追加记录变化并只保留 1 天；`travel_places` 保存旅行目的地（Wikidata 编号、路径、中英文名、国家、坐标、导读资料页与导读），`travel_moments` 保存旅行条目的地点、封面以外的照片和原文；`catalog_entries` 保存 Culture 作品与 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 产品的标识、资料链接、已核验导读、官方图片与来源指纹，`catalog_items` 以角色（动态、评测、分享）关联条目与新闻；`authors`、`articles`、`article_images` 保存读者写的文章（分享）：笔名与当天的新建和上传计数、Markdown 正文与审核状态、tmpfile 中的图片；`plans`、`orders`、`payment_events` 管理套餐和支付。`user_metrics` 维护注册数量，`maintenance_state` 记录清理进度。表、约束、索引与公共主题默认配置由 `migrations/` 中的顺序迁移定义。
 
 主题通过 `owner_user_id` 区分公共和个人数据。新闻按栏目和原文 URL 指纹去重：栏目最近 7 天收过的链接不再收录，即使模型给同一页面标了新的发布时间（`runner::REPEAT_DAYS`；更早的新闻随保存期清理，Reads 另有永久的唯一索引）；每轮只查这次返回的链接，走唯一索引（PostgreSQL 18 可跳过 `day` 列），给模型看的「已收录」只列窗口第一天（最晚昨天）以来最新的 80 条（𝑾 为 512 条）；普通新闻允许发布时间为空，Culture 与 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 只收录发布时间明确的消息。日报日期和时间窗口必填，成功结果必须有完成时间及内容。订单保存成交时的价格与权益期限，支付事件按事件键幂等处理。
 
@@ -50,6 +50,14 @@ Culture 的四个公共主题与 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 的三个公共主
 
 `/culture/{topic}`、`/gadgets/{topic}` 与对应的 `/{section}/{topic}/{slug}` 由服务端渲染，每个分区的路由带有其 `Section`，共用站点导航、语言切换、缓存及 ETag；`more.json` 按 `(first_seen_at, id)` 游标分页。导航把四栏汇为一个 Culture 入口，栏目内仍独立切换，ALL 保留各自栏目；入口的 `data-last` 指向最后一个子栏目，触屏从后一个栏目滑回时进入。两个分区的列表都有品类筛选（`?kind=`，只有一类的栏目不显示；用鼠标的宽屏上换行，因为隐藏了滚动条的横排无法用鼠标拖动）与两行陈列：最受关注（最近 30 天评论、评测与分享至少 2 条，按数量再按最新内容排序，满 3 个才显示）与近期活跃；有内容（未隐藏的条目）或导读的条目就有页面，导读只决定页面上的简介、参数与资料，站点地图只收有导读的；`/{section}/search?q=` 在分区的可见栏目中查找：条目的名称、英文名、创作者（品牌）或其某条内容的标题含有关键词即算找到（中文报道能找到英文名的产品），按关注度排序、最多 60 个，内容按标题匹配、每栏各取最新 18 条再合并取 18 条；关键词取前 40 个字，ILIKE 通配符按字面匹配，带关键词的页面返回 `X-Robots-Tag: noindex`；只有 `topic=` 时列出该栏全部条目，供陈列的「全部」链接使用，允许收录；条目页按评论或测评、分享与最新动态分组，页尾是同一创作者（品牌）在分区可见栏目中的其他条目与本栏同类近期条目，三处共用同一个陈列查询，按条目最新内容的发布时间排序（即卡片显示的日期，缺失时用收录时间），同一轮收录的条目不会因此并列，晚收录的旧闻也不会把条目顶到前面。公共查询的 `catalog` 字段带条目关联的角色及条目的名称、类型和路径，不暴露官方资料页等内部资料。隐藏／停用主题同时关闭列表、详情与站点地图。AI 日报的采集和素材查询明确排除这七栏，现有统计范围不变。
 
+## 分享
+
+分享不是 `topics` 中的栏目：启用的栏目行会被调度、日报补采、ALL 与订阅当作新闻栏目，所以它单独建表，入口写在导航代码里。文章有草稿、待审、已公开三种状态，每次保存修订号加一；保存、提交与审核都带修订号并在同一条 `UPDATE` 中核对，管理员的 ❤️ 只能公开他看到的那一版。作者修改已公开的文章回到待审（管理员除外），待审中修改退回草稿；`published_at` 只在第一次公开时写入。公开查询都要求作者账户未停用。
+
+图片原样存进 tmpfile，类型与尺寸只读文件头，tmpfile 按扩展名的类型和 `nosniff` 输出。tmpfile 不能删除文件，所以链接只出现在已公开的页面上：作者的预览和写作页经本站读取（作者本人，`private, no-cache` 与按图片编号的 ETag），管理员的预览直接引用。每日限额记在 `authors` 的 `day`、`articles`、`images` 上，一条带条件的 `UPDATE` 同时判断与计数，删除不返还；上传失败退回这一张。正文只显示本篇上传的图片，封面由外键限定为本篇图片。
+
+阅读数由文章页脚本上报，服务端只在文章公开、作者未停用且读者不是作者时加一；浏览器每天只报一次。页面沿用公开页面的缓存：隐藏或改回待审后，Nginx 后台更新拿到的 404 不会替换已缓存的旧页，旧页仍可能继续给出，这是保持缓存方案简单的取舍。
+
 ## 日报
 
 每日截止点由时区和 `NEWS_BRIEFING_TIME` 定义。协调任务补采日报读取的栏目（启用且前台展示的新闻栏目，Reads、LLM、𝑾、𝑻𝒓𝒂𝒗𝒆𝒍、𝑭𝒂𝒔𝒉𝒊𝒐𝒏、商机、Culture 四栏与 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 三栏除外），再生成固定 24 小时新闻和 7 天趋势；补采成功记录绑定窗口截止点，失败重试与手动生成复用已完成的采集。协调任务不占用执行额度，单并发也能完成。
@@ -64,7 +72,7 @@ Culture 的四个公共主题与 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 的三个公共主
 
 ## HTTP 与账户
 
-公共路由为 `/digest`、`/topics`、`/days`、`/insight`、`/feed.xml`、`/llm`、`/llm.json`、`/llm/feed.xml`、`/reads`、`/reads/{uuid}`、`/travel/{slug}`、`/travel/{slug}/moments`、`/travel/map.json`、`/culture/{topic}`、`/gadgets/{topic}`、`/sitemap.xml`。今天和昨天的新闻在内存中，其余日期直接读 PostgreSQL；内容更新、日切和清理触发缓存失效。公共响应支持 ETag，工作台和账户响应使用 `no-store`。Nginx 只缓存公共响应。
+公共路由为 `/digest`、`/topics`、`/days`、`/insight`、`/feed.xml`、`/llm`、`/llm.json`、`/llm/feed.xml`、`/reads`、`/reads/{uuid}`、`/articles`、`/articles/{uuid}`、`/travel/{slug}`、`/travel/{slug}/moments`、`/travel/map.json`、`/culture/{topic}`、`/gadgets/{topic}`、`/sitemap.xml`。今天和昨天的新闻在内存中，其余日期直接读 PostgreSQL；内容更新、日切和清理触发缓存失效。公共响应支持 ETag，工作台和账户响应使用 `no-store`。Nginx 只缓存公共响应。
 
 页面对所有人只有一个地址，公开页面管理员也直接阅读。访客看不到的内容由管理员在 `/api/admin/preview` 下预览，复用信息流、Reads、Travel、Culture、𝑮𝒂𝒅𝒈𝒆𝒕𝒔 和 LLM 的原有处理函数、页面与分页。页面里只写公开地址，首页和页面脚本经 `PublicPage.readPath` 按角色选择读取地址；管理员打开访客看不到的页面（404）时，HTML 请求跳转到对应预览，脚本请求不跳转，错误响应不缓存，这一跳总能到达应用。`news_role` 仅用于选路，不能授予权限。预览 HTTP 响应统一为 `private, no-store` 且不启用公共 CORS；沿用 Nginx 的 `/api` 缓存隔离，不新增代理规则。
 

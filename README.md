@@ -151,6 +151,16 @@ Reads 默认按收录时间连续展示，不按天分组，每页 24 篇。列�
 
 采集、正文、页面与热读逻辑集中在 `src/reads/`；交互复用 `pages/public.js`。临时下线只需禁用 `reads` 主题，调度和统计刷新会停止；彻底移除时再删除 Reads 模块及接线、资源、`read_candidates` / `read_articles` 表和专属索引，使用新的迁移清理，不修改已执行的迁移。
 
+## 分享
+
+`/articles` 是读者自己写的文章，像 X Articles 一样分享有趣好玩的东西；导航入口和站点地图在试用后再加，地址可以直接打开。登录后在工作台设置笔名（2–24 个字，全站唯一；读者只看到笔名，看不到邮箱），再从「写文章」进入写作页 `/me/write.html`：标题、可选封面和 Markdown 正文，工具栏插入小标题、粗体、斜体、删除线、引用、列表、链接、图片、分割线和代码，粘贴、拖入或点图片按钮即可上传。草稿边写边自动保存，保存带修订号，别的标签页已经保存过时提示刷新；预览在新标签页打开，和读者看到的一样。
+
+作者提交后文章待审。管理员在工作台的待审列表打开预览、点 ❤️ 才公开，取消 ❤️ 回到待审；❤️ 只公开管理员看到的那一版，审核期间作者又改过时提示刷新。作者修改已公开的文章要点「更新」，之后重新待审，通过前暂不公开，第一次公开的时间和列表位置不变；待审中的文章一改就退回草稿，需要重新提交。管理员自己写的直接公开。账户停用后，它的文章、图片和阅读计数都从公开页面消失。
+
+图片原样上传到 tmpfile，不重新编码，只收 JPEG、PNG、WebP 和 GIF，单张不超过 10 MB（Nginx 的 `client_max_body_size` 为此放宽到 10m），类型和尺寸从文件内容读出。tmpfile 不能删除文件，地址谁拿到都能打开，所以文章公开前作者经本站中转看图（`private, no-cache` 加 ETag），公开页面才直接引用 tmpfile 地址；正文用 `![…](image:<id>)` 引用本篇上传的图片，别处的地址不显示，图片过期后显示文字说明。每人每天最多新建 10 篇、上传 64 张图片，删除不返还；每篇正文和封面合计最多 32 张图。
+
+阅读数在站内统计：文章页向 `POST /api/articles/{id}/views` 上报，同一浏览器每篇每天计一次，作者本人登录时不计，不执行脚本的爬虫不计，数字是近似值；列表和工作台直接读库。列表与精读同样式、同脚本，每页 24 篇、往下滚自动加载，`?by=<作者>` 列出一位作者的文章；文章页带 Article 结构化数据，封面同时是分享图。公开页面沿用现有缓存。数据在 `authors`、`articles`、`article_images` 三张表，代码在 `src/articles.rs` 与 `src/articles/`，页面脚本是 `pages/articles.js`、`pages/me/articles.js` 和 `pages/me/write.*`。
+
 ## XAI 日报
 
 首页的 `AI` 入口展示 XAI 日报。默认每天北京时间 06:00 补采启用且前台展示的新闻栏目（Reads、LLM、𝑾、𝑻𝒓𝒂𝒗𝒆𝒍、𝑭𝒂𝒔𝒉𝒊𝒐𝒏、商机、Culture 四栏与 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 三栏除外），然后生成前 24 小时的新闻与最近 7 天的趋势。新闻窗口固定为 `[昨日06:00, 今日06:00)`，手动生成与自动重试共用这一窗口。
@@ -222,6 +232,8 @@ GET /llm/feed.xml
 GET /reads?page=1&lang=en
 GET /reads?view=hot&lang=en
 GET /reads/{uuid}
+GET /articles?page=1&by=<作者>&lang=en
+GET /articles/{uuid}
 GET /travel/{slug}?lang=en
 GET /travel/{slug}/moments?before=<next>
 GET /travel/map.json
@@ -232,14 +244,14 @@ GET /sitemap.xml
 
 管理员登录后，前台也能阅读启用但不公开的站点主题。页面对所有人只有一个地址，公开页面管理员也直接阅读；信息流、主题目录、日期列表和页面脚本读取的数据使用 `/api/admin/preview` 前缀复用原接口，打开访客看不到的 Reads、Travel、Culture、𝑮𝒂𝒅𝒈𝒆𝒕𝒔 或 LLM 页面时自动跳到预览。真实会话逐次鉴权，响应为 `private, no-store`。管理员和普通信息流共用主题内容缓存：管理员访问可回填，采集与编辑统一刷新；公开目录、订阅和站点地图仍只含公开内容。
 
-账户与个人主题使用 `/api/auth/*`、`/api/me/*`；公共主题管理使用 `/api/admin/topics`；日报状态和生成使用 `GET /api/admin/insight`、`POST /api/admin/insight`；股市笔记使用 `GET /api/admin/equity-insight`、`POST /api/admin/equity-insight`；𝑳𝑳𝑴 状态使用 `GET /api/admin/llm`，暂停服务商和隐藏模型分别使用 `PATCH /api/admin/llm/vendors/{id}`、`PATCH /api/admin/llm/models/{vendor}/{model}`。股市公开接口返回 `note` 与 `editions`，不带参数时读取最新成功笔记，`day` 读取当日最新一期，`at` 按历史列表中的 `window_end` 读取指定一期；网页链接也支持 `/?topic=equity-insight&at=...`。套餐、订单和支付回调分别位于 `/api/plans`、`/api/orders`、`/api/webhooks/payment`。Free 用户阅读公共内容，Pro 用户可创建最多 4 个个人主题。
+账户与个人主题使用 `/api/auth/*`、`/api/me/*`；公共主题管理使用 `/api/admin/topics`；日报状态和生成使用 `GET /api/admin/insight`、`POST /api/admin/insight`；股市笔记使用 `GET /api/admin/equity-insight`、`POST /api/admin/equity-insight`；𝑳𝑳𝑴 状态使用 `GET /api/admin/llm`，暂停服务商和隐藏模型分别使用 `PATCH /api/admin/llm/vendors/{id}`、`PATCH /api/admin/llm/models/{vendor}/{model}`。股市公开接口返回 `note` 与 `editions`，不带参数时读取最新成功笔记，`day` 读取当日最新一期，`at` 按历史列表中的 `window_end` 读取指定一期；网页链接也支持 `/?topic=equity-insight&at=...`。分享的写作使用 `PUT /api/author` 和 `/api/articles*`，审核使用 `GET /api/admin/articles`、`PATCH /api/admin/articles/{id}`，阅读计数是 `POST /api/articles/{id}/views`。套餐、订单和支付回调分别位于 `/api/plans`、`/api/orders`、`/api/webhooks/payment`。Free 用户阅读公共内容，Pro 用户可创建最多 4 个个人主题。
 
 ## 验证
 
 ```bash
 make release-check
 NEWS_DAILY_TEST_DATABASE_URL=postgres://.../news_daily_test_check cargo test --locked postgres_daily_pipeline -- --ignored
-NEWS_DAILY_TEST_DATABASE_URL=postgres://.../news_daily_test_check NEWS_PAYMENT_TEST_DATABASE_URL=postgres://.../news_payment_audit_check NEWS_READS_TEST_DATABASE_URL=postgres://.../news_reads_test_check NEWS_EQUITY_TEST_DATABASE_URL=postgres://.../news_equity_test_check NEWS_LLM_TEST_DATABASE_URL=postgres://.../news_llm_test_check NEWS_GALLERY_TEST_DATABASE_URL=postgres://.../news_gallery_test_check NEWS_TRAVEL_TEST_DATABASE_URL=postgres://.../news_travel_test_check make integration-test
+NEWS_DAILY_TEST_DATABASE_URL=postgres://.../news_daily_test_check NEWS_PAYMENT_TEST_DATABASE_URL=postgres://.../news_payment_audit_check NEWS_READS_TEST_DATABASE_URL=postgres://.../news_reads_test_check NEWS_EQUITY_TEST_DATABASE_URL=postgres://.../news_equity_test_check NEWS_LLM_TEST_DATABASE_URL=postgres://.../news_llm_test_check NEWS_GALLERY_TEST_DATABASE_URL=postgres://.../news_gallery_test_check NEWS_TRAVEL_TEST_DATABASE_URL=postgres://.../news_travel_test_check NEWS_ARTICLES_TEST_DATABASE_URL=postgres://.../news_articles_test_check make integration-test
 ```
 
-`release-check` 执行格式检查、单元测试、Clippy、前端语法和 Compose 配置检查。`integration-test` 使用八个独立空库，名称分别以 `news_daily_test`、`news_payment_audit_`、`news_reads_test`、`news_equity_test`、`news_llm_test`、`news_gallery_test`、`news_travel_test` 和 `news_culture_test` 开头，并需要本地测试配置。模拟接口覆盖日报与支付流程，Reads 的全文、发布与归档，以及主题开关四种组合、各角色阅读可见性、股市研判生成、引用隐私、采集复用、同日版本、缓存和历史读取；𝑳𝑳𝑴 覆盖首次导入、调价与下线记录、暂缓与确认下线、服务商下线与恢复收录、一天清理与候选清理、隐藏模型和公开页面、JSON 与订阅；𝑾 覆盖 X 核验、敏感与时间窗口过滤、同账号去重、照片转存与续期、待公开照片只在管理员预览中出现、点 ❤️ 后公开、日报排除；𝑻𝒓𝒂𝒗𝒆𝒍 覆盖 X 与 Wikidata 核验、地点简称、国家限额、导读的人物景点吃食名称核验、数字核验与重试、目的地页面与分页、附近与同国目的地、地图与站点地图、深挖目的地的挑选、日报排除；Culture 与 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 覆盖新闻先发布、按英文名归并作品、评论角色与作品页分组、作品陈列与同创作者作品、深挖作品的挑选、来源读取与引用校验、作品导读、中英文页面、隐藏与站点地图、来源不变时跳过生成、日报排除，Culture 评论随新闻删除与无内容作品的清理，以及产品只认官方资料、品牌与型号标识、评测与分享的角色和长期保留、参数核验、官方图片与产品陈列。CI 自动执行。
+`release-check` 执行格式检查、单元测试、Clippy、前端语法和 Compose 配置检查。`integration-test` 使用九个独立空库，名称分别以 `news_daily_test`、`news_payment_audit_`、`news_reads_test`、`news_equity_test`、`news_llm_test`、`news_gallery_test`、`news_travel_test`、`news_culture_test` 和 `news_articles_test` 开头，并需要本地测试配置。模拟接口覆盖日报与支付流程，Reads 的全文、发布与归档，以及主题开关四种组合、各角色阅读可见性、股市研判生成、引用隐私、采集复用、同日版本、缓存和历史读取；𝑳𝑳𝑴 覆盖首次导入、调价与下线记录、暂缓与确认下线、服务商下线与恢复收录、一天清理与候选清理、隐藏模型和公开页面、JSON 与订阅；𝑾 覆盖 X 核验、敏感与时间窗口过滤、同账号去重、照片转存与续期、待公开照片只在管理员预览中出现、点 ❤️ 后公开、日报排除；𝑻𝒓𝒂𝒗𝒆𝒍 覆盖 X 与 Wikidata 核验、地点简称、国家限额、导读的人物景点吃食名称核验、数字核验与重试、目的地页面与分页、附近与同国目的地、地图与站点地图、深挖目的地的挑选、日报排除；Culture 与 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 覆盖新闻先发布、按英文名归并作品、评论角色与作品页分组、作品陈列与同创作者作品、深挖作品的挑选、来源读取与引用校验、作品导读、中英文页面、隐藏与站点地图、来源不变时跳过生成、日报排除，Culture 评论随新闻删除与无内容作品的清理，以及产品只认官方资料、品牌与型号标识、评测与分享的角色和长期保留、参数核验、官方图片与产品陈列；分享覆盖笔名、新建与上传、修订号冲突、他人越权、作者预览经本站中转图片、待审与 ❤️ 锁定版本、公开页面与阅读计数、修改后重新审核、停用账户、每日配额与删除。CI 自动执行。

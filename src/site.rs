@@ -6,6 +6,7 @@ use crate::{
     state::AppState,
 };
 use chrono::{DateTime, Utc};
+use pulldown_cmark::{Event, Tag, TagEnd, html};
 use sqlx::{Postgres, QueryBuilder};
 use std::fmt::Write;
 use uuid::Uuid;
@@ -161,6 +162,77 @@ pub(crate) fn escape(value: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+/// The eye before a read count.
+pub(crate) const EYE: &str = r#"<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>"#;
+
+/// Where a Markdown picture loads from, and its size when known.
+pub(crate) struct Picture {
+    pub(crate) src: String,
+    pub(crate) size: Option<(i32, i32)>,
+}
+
+/// Markdown as HTML that can't run anything: raw HTML is dropped, links keep only http(s)
+/// addresses without credentials, and a picture shows only where `picture` gives it an
+/// address; otherwise its description stays as text.
+pub(crate) fn markdown<'a>(
+    events: impl IntoIterator<Item = Event<'a>>,
+    picture: impl Fn(&str) -> Option<Picture>,
+) -> String {
+    let mut image = None;
+    let mut alt = String::new();
+    let parser = events.into_iter().filter_map(|event| match event {
+        Event::Html(_) | Event::InlineHtml(_) => None,
+        Event::Start(Tag::Image { dest_url, .. }) => {
+            alt.clear();
+            image = Some(picture(&dest_url));
+            None
+        }
+        Event::End(TagEnd::Image) => Some(match image.take().flatten() {
+            Some(Picture { src, size }) => {
+                let size = size
+                    .map(|(width, height)| format!(" width={width} height={height}"))
+                    .unwrap_or_default();
+                Event::Html(
+                    format!(
+                        "<img src=\"{}\" alt=\"{}\"{size} loading=lazy decoding=async referrerpolicy=no-referrer>",
+                        escape(&src),
+                        escape(&alt)
+                    )
+                    .into(),
+                )
+            }
+            None => Event::Text(std::mem::take(&mut alt).into()),
+        }),
+        Event::Text(text) | Event::Code(text) if image.is_some() => {
+            alt.push_str(&text);
+            None
+        }
+        _ if image.is_some() => None,
+        Event::Start(Tag::Link {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => {
+            let safe = url::Url::parse(&dest_url).is_ok_and(|url| {
+                matches!(url.scheme(), "https" | "http")
+                    && url.username().is_empty()
+                    && url.password().is_none()
+            });
+            Some(Event::Start(Tag::Link {
+                link_type,
+                dest_url: if safe { dest_url } else { "".into() },
+                title,
+                id,
+            }))
+        }
+        other => Some(other),
+    });
+    let mut html = String::new();
+    html::push_html(&mut html, parser);
+    html
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn layout(
     state: &AppState,
@@ -246,6 +318,17 @@ pub(crate) fn layout(
             tabs.push_str(&equity_tab);
         }
     }
+    // An article's picture in its structured data also stands for it where the page is shared.
+    let card = structured
+        .as_ref()
+        .and_then(|value| value["image"].as_str())
+        .map(|image| {
+            format!(
+                "<meta property=\"og:image\" content=\"{}\"><meta name=\"twitter:card\" content=\"summary_large_image\">",
+                escape(image)
+            )
+        })
+        .unwrap_or_else(|| "<meta name=\"twitter:card\" content=\"summary\">".into());
     let schema = structured
         .map(|value| {
             format!(
@@ -263,7 +346,7 @@ pub(crate) fn layout(
 <html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title><meta name="description" content="{description}"><meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f6f4"><meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1115">
 <link rel="canonical" href="{canonical}"><link rel="alternate" hreflang="zh-CN" href="{zh}"><link rel="alternate" hreflang="en" href="{english}"><link rel="alternate" hreflang="x-default" href="{zh}">
-<meta property="og:type" content="{og_type}"><meta property="og:title" content="{title}"><meta property="og:description" content="{description}"><meta property="og:url" content="{canonical}"><meta property="og:site_name" content="News"><meta name="twitter:card" content="summary">
+<meta property="og:type" content="{og_type}"><meta property="og:title" content="{title}"><meta property="og:description" content="{description}"><meta property="og:url" content="{canonical}"><meta property="og:site_name" content="News">{card}
 <link rel="icon" type="image/svg+xml" href="/icon.svg"><link rel="alternate" type="application/atom+xml" title="{feed_title}" href="{feed_href}"><link rel="stylesheet" href="/styles.css?v=lists"><link rel="stylesheet" href="{stylesheet}">{schema}</head>
 <body class="public {section}"><header class="topbar"><a class="brand" href="{home}" aria-label="News"><img class="brand-logo" src="/icon.svg" alt=""><span>𝑵𝒆𝒘𝒔</span></a><nav class="tabs" aria-label="{topics_label}">{tabs}</nav><div class="tools"><a class="space-link button button-quiet button-small" href="/me/">{workspace}</a><a class="space-link button button-quiet button-small" href="{other_lang}" hreflang="{other_code}">{language_label}</a></div></header>
 <main class="shell">{content}</main>

@@ -10,7 +10,7 @@
   <title>𝑵𝒆𝒘𝒔 · 工作台</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
   <link rel="stylesheet" href="/styles.css?v=sides">
-  <link rel="stylesheet" href="/me/styles.css?v=llm-v3">
+  <link rel="stylesheet" href="/me/styles.css?v=articles">
 </head>
 <body>
   <main class="workspace-shell">
@@ -72,6 +72,22 @@
           <button id="runEquityButton" class="button button-primary button-small" type="button">生成研判</button>
         </div>
         <p id="equityMessage" class="empty-state hidden" role="status"></p>
+      </section>
+      <section id="articlesPanel" class="panel articles-panel" aria-labelledby="articlesTitle">
+        <div class="panel-heading">
+          <div><h2 id="articlesTitle">分享</h2><p id="authorLine" class="muted small"></p></div>
+          <div class="inline">
+            <button id="penNameButton" class="button button-quiet button-small" type="button">设置笔名</button>
+            <a id="writeButton" class="button button-primary button-small" href="/me/write.html">写文章</a>
+          </div>
+        </div>
+        <form id="penNameForm" class="pen-name-form hidden">
+          <label for="penName">笔名</label>
+          <div class="inline"><input id="penName" name="name" minlength="2" maxlength="24" placeholder="2–24 个字，读者看到的名字" required><button class="button button-primary button-small" type="submit">保存</button></div>
+          <p class="field-hint muted">读者只看到笔名，看不到邮箱。</p>
+        </form>
+        <div id="reviewLists" class="review-lists hidden"></div>
+        <p id="articlesMessage" class="empty-state hidden" role="status"></p><ul id="articleList" class="item-list"></ul>
       </section>
       <section class="panel topics-panel" aria-label="主题列表">
         <div class="panel-heading"><h2>主题</h2><button id="refreshButton" class="button button-quiet button-small" type="button">刷新</button></div>
@@ -151,6 +167,6 @@
     <div class="dialog-actions"><button class="button button-quiet" type="button" data-close-dialog>取消</button><button id="confirmActionButton" class="button button-danger" type="button">确认删除</button></div>
   </dialog>
   <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
-  <script src="/me/app.js?v=15" type="module"></script>
+  <script src="/me/app.js?v=16" type="module"></script>
 </body>
 </html>

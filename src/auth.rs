@@ -295,6 +295,16 @@ fn public_user(user: &User) -> PublicUser<'_> {
     }
 }
 
+/// Who is reading, if anyone signed in: no session, an expired one or a disabled account reads
+/// as anonymous, but a database error is still an error.
+pub(crate) async fn viewer(state: &AppState, headers: &HeaderMap) -> Result<Option<User>> {
+    match authenticate(state, headers).await {
+        Ok(user) => Ok(Some(user)),
+        Err(AppError::Unauthorized(_) | AppError::Forbidden(_)) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 pub(crate) fn require_admin(user: &User) -> Result<()> {
     user.is_admin()
         .then_some(())

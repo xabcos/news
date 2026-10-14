@@ -34,6 +34,7 @@ jobs:
       NEWS_GALLERY_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:5432/news_gallery_test_ci
       NEWS_CULTURE_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:5432/news_culture_test_ci
       NEWS_TRAVEL_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:5432/news_travel_test_ci
+      NEWS_ARTICLES_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:5432/news_articles_test_ci
       PUBLIC_BASE_URL: http://127.0.0.1:8788
       NEWS_ADMIN_EMAILS: admin@example.test
       NEWS_SCHEDULER_ENABLED: "false"
@@ -53,4 +54,5 @@ jobs:
       - run: docker exec ${{ job.services.postgres.id }} createdb -U postgres news_gallery_test_ci
       - run: docker exec ${{ job.services.postgres.id }} createdb -U postgres news_travel_test_ci
       - run: docker exec ${{ job.services.postgres.id }} createdb -U postgres news_culture_test_ci
+      - run: docker exec ${{ job.services.postgres.id }} createdb -U postgres news_articles_test_ci
       - run: make integration-test

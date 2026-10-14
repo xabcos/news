@@ -43,6 +43,11 @@
 .read-source p { margin: .6rem 0 0; }
 .read-related { margin-top: 3.5rem; padding-top: 1.5rem; border-top: 1px solid var(--line); }
 .read-related > h2 { color: var(--muted); font-size: .85rem; font-weight: 500; margin-bottom: .5rem; }
+/* 分享 reads like Reads: articles readers write, with an optional cover cut like X's. */
+.article-write { flex-shrink: 0; font-size: .85rem; color: var(--primary-strong); text-decoration: none; padding-bottom: .4rem; }
+.article-cover { display: block; width: 100%; height: auto; aspect-ratio: 5 / 2; object-fit: cover; margin-bottom: 1.8rem; border-radius: var(--radius-l); background: var(--surface-soft); }
+.article-notice { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.5rem; padding: .6rem .9rem; border: 1px solid var(--line); border-radius: var(--radius-m); color: var(--muted); font-size: .85rem; }
+.article-notice a { color: var(--primary-strong); }
 @media (max-width: 768px) {
   .reads-list, .read-heading, .read-source, .read-actions, .read-related,
   .read-body :is(p, h1, h2, h3, h4, h5, h6) { touch-action: pan-y pinch-zoom; }
