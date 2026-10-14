@@ -46,6 +46,11 @@ const IMAGE: &str = "image:";
 /// The Markdown readers write, the dialect Reads renders.
 const MARKDOWN: Options = Options::ENABLE_STRIKETHROUGH.union(Options::ENABLE_TABLES);
 
+/// The section's name, in the page's language.
+pub(crate) fn label(en: bool) -> &'static str {
+    crate::site::choose(en, "分享", "𝑨𝒓𝒕𝒊𝒄𝒍𝒆𝒔")
+}
+
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route("/api/author", put(name))

@@ -562,6 +562,36 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
         .unwrap();
     assert!(list.contains("第一篇") && list.contains("小明") && list.contains("Hello world"));
     assert!(!list.contains("articles.example.test"));
+    // Its tab follows 精读's on every page, and the sitemap lists it.
+    assert!(list.contains("<a class=tab href=\"/articles\" aria-current=\"true\">分享</a>"));
+    let reads = anonymous("/reads")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(reads.contains(
+        "<a class=tab href=\"/reads\" aria-current=\"true\">精读</a><a class=tab href=\"/articles\">分享</a>"
+    ));
+    let sitemaps = anonymous("/sitemap.xml")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(sitemaps.contains("/articles/sitemap.xml</loc>"));
+    let listed = || async {
+        anonymous("/articles/sitemap.xml")
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap()
+    };
+    assert!(listed().await.contains(&format!("/articles/{id}</loc>")));
     let page = anonymous(&format!("/articles/{id}"))
         .send()
         .await
@@ -632,6 +662,7 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
         status(anonymous(&format!("/articles/{id}")).send().await.unwrap()),
         404
     );
+    assert!(!listed().await.contains(&format!("/articles/{id}</loc>")));
     assert_eq!(status(views(None).send().await.unwrap()), 404);
     assert_eq!(status(heart(&admin, true, 3).send().await.unwrap()), 200);
     let again: DateTime<Utc> =

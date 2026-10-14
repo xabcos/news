@@ -259,6 +259,17 @@ pub(crate) fn layout(
     if !topics.iter().any(|topic| topic.id == "overseas-ai") {
         tabs.push_str(&equity_tab);
     }
+    // 分享 is not a topic: readers write it. Its tab follows 精读.
+    let articles_tab = format!(
+        "<a class=tab href=\"{}\"{}>{}</a>",
+        localized("/articles", en),
+        if chrome.current == "articles" {
+            " aria-current=\"true\""
+        } else {
+            ""
+        },
+        crate::articles::label(en)
+    );
     // A catalogue section's topics share one tab; swiping back into it enters the last
     // (public.js).
     let mut sections = crate::catalog::Section::ALL.map(|section| {
@@ -317,6 +328,12 @@ pub(crate) fn layout(
         if id == "overseas-ai" {
             tabs.push_str(&equity_tab);
         }
+        if id == "reads" {
+            tabs.push_str(&articles_tab);
+        }
+    }
+    if !topics.iter().any(|topic| topic.id == "reads") {
+        tabs.push_str(&articles_tab);
     }
     // An article's picture in its structured data also stands for it where the page is shared.
     let card = structured

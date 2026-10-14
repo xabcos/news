@@ -1,6 +1,6 @@
 //! The 分享 pages: public articles newest first, one author's articles, an article, and the
 //! previews its author and an administrator read before readers do.
-use super::{MARKDOWN, image_id, missing, parse};
+use super::{MARKDOWN, image_id, label, missing, parse};
 use crate::{
     auth::User,
     digest::{Rendered, conditional},
@@ -25,6 +25,8 @@ use std::{collections::HashMap, fmt::Write};
 use uuid::Uuid;
 
 const PAGE_SIZE: i64 = 24;
+/// The most addresses one sitemap may list.
+const SITEMAP_SIZE: i64 = 50_000;
 /// Articles of authors whose accounts are open; the caller names which of them.
 const FROM: &str = " FROM articles a JOIN authors w ON w.user_id = a.author_id JOIN users u ON u.id = a.author_id WHERE u.status";
 /// Articles read like Reads: the same list, endless scrolling and article layout.
@@ -47,8 +49,40 @@ pub(super) fn router() -> Router<AppState> {
             .route("/articles", get(index))
             .route("/articles/{id}", get(detail)),
     )
+    .route("/articles/sitemap.xml", get(sitemap))
     .route("/api/articles/{id}/preview", get(preview))
     .layer(tower_http::compression::CompressionLayer::new())
+}
+
+/// The list and the public articles, at their Chinese addresses: an article is written in one
+/// language, and its English page only translates the site around it.
+async fn sitemap(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
+    let rows: Vec<(Uuid, DateTime<Utc>)> =
+        QueryBuilder::<Postgres>::new("SELECT a.id, a.updated_at")
+            .push(FROM)
+            .push(" AND a.status = 'published' ORDER BY a.published_at, a.id LIMIT ")
+            .push_bind(SITEMAP_SIZE)
+            .build_query_as()
+            .fetch_all(&state.pool)
+            .await?;
+    let mut xml = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\"><url><loc>{}</loc></url>",
+        escape(&absolute(&state, "/articles"))
+    );
+    for (id, updated_at) in rows {
+        let _ = write!(
+            xml,
+            "<url><loc>{}</loc><lastmod>{}</lastmod></url>",
+            escape(&absolute(&state, &format!("/articles/{id}"))),
+            updated_at.to_rfc3339()
+        );
+    }
+    xml.push_str("</urlset>");
+    Ok(conditional(
+        &headers,
+        &Rendered::new(xml),
+        "application/xml; charset=utf-8",
+    ))
 }
 
 #[derive(Deserialize)]
@@ -110,10 +144,6 @@ enum Mode {
     /// The author's own preview, whatever the status; pictures come through this server, so
     /// their tmpfile links stay private until the article is public.
     Author(i64),
-}
-
-fn label(en: bool) -> &'static str {
-    choose(en, "分享", "𝑨𝒓𝒕𝒊𝒄𝒍𝒆𝒔")
 }
 
 fn listing(page: u32, en: bool, by: Option<i64>) -> String {

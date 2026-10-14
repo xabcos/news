@@ -583,6 +583,11 @@ async fn sitemap(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
             ))
         );
     }
+    let _ = write!(
+        xml,
+        "<sitemap><loc>{}</loc></sitemap>",
+        escape(&absolute(&state, "/articles/sitemap.xml"))
+    );
     xml.push_str("</sitemapindex>");
     Ok(conditional(
         &headers,
