@@ -12,6 +12,7 @@
 .equity-identity .item-title { margin: 0; }
 .equity-identity > span { font-size: .73rem; }
 .equity-signal { padding: .15rem .4rem; border-radius: .25rem; color: var(--signal); background: color-mix(in srgb, var(--signal) 8%, transparent); font-size: .73rem; white-space: nowrap; }
+.equity-figure { margin: .5rem 0 0; color: var(--signal); font-size: 1.02rem; font-weight: 650; font-variant-numeric: tabular-nums; }
 .equity-reason { margin: .65rem 0 1rem; font-size: .88rem; }
 .equity-stock-body { display: grid; grid-template-columns: minmax(0, 1fr) 16rem; gap: 1.4rem; align-items: center; }
 .equity-event-count { margin: 0 0 .65rem; font-size: .9rem; font-weight: 600; }

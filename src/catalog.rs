@@ -615,10 +615,10 @@ impl Guide {
 }
 
 /// Whether every number a field shows stands whole in its quote, so 8.6 never cites 6.8.
-fn numbers_cited(text: &str, quote: &str) -> bool {
+pub(crate) fn numbers_cited(text: &str, quote: &str) -> bool {
     let numbers = |s: &str| {
         s.split(|c: char| !(c.is_ascii_digit() || c == '.' || c == ','))
-            .map(|n| n.trim_matches(['.', ',']))
+            .map(|n| n.trim_start_matches(',').trim_end_matches(['.', ',']))
             .filter(|n| !n.is_empty())
             .map(str::to_owned)
             .collect::<Vec<_>>()

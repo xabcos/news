@@ -1571,3 +1571,11 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
     ai_server.abort();
     origin_server.abort();
 }
+
+#[test]
+fn numbers_keep_a_leading_decimal_point() {
+    assert!(numbers_cited(".5 元", "每次 .5 元"));
+    assert!(!numbers_cited("5 元", "每次 .5 元"));
+    assert!(!numbers_cited(".5 元", "每次 5 元"));
+    assert!(numbers_cited("5 元", "It costs 5."));
+}

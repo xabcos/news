@@ -8,8 +8,7 @@ fn analysis() -> InsightAnalysis {
     serde_json::from_value(json!({
         "hotspots": [], "headline": "新闻", "headline_en": "News",
         "gossip": [], "picture_source_indexes": [], "changes": "", "changes_en": "",
-        "data_signals": [], "watch_signals": [], "changes_source_indexes": [],
-        "wealth": [], "employment": [], "risks": [], "actions": []
+        "figures": [], "watch_signals": [], "changes_source_indexes": [], "outlook": []
     }))
     .unwrap()
 }
@@ -31,6 +30,8 @@ fn story(index: usize, status: StoryStatus) -> Story {
         summary: "完整事实\n\n及适用范围。".into(),
         summary_en: "Summary".into(),
         short_summary: "紧凑事实及限制。".into(),
+        angle: String::new(),
+        angle_en: String::new(),
         status,
         source_indexes: vec![index],
     }
@@ -175,24 +176,42 @@ fn rejects_historical_or_unconfirmed_stories_as_todays_headlines() {
 }
 
 #[test]
-fn key_data_requires_a_news_reference() {
-    let sources = vec![source(0, "cases", true)];
+fn figures_require_a_news_reference_that_states_their_numbers() {
+    let mut sources = vec![source(0, "cases", true), source(1, "biz", true)];
+    sources[0].summary = "厂商案例：同一流程单次成本从10元降至5.5元，覆盖1,000多名用户。".into();
+    let figure = |value: &str, label: &str, source_indexes: &[usize]| -> InsightFigure {
+        serde_json::from_value(json!({ "value": value, "value_en": value, "label": label,
+            "label_en": label, "source_indexes": source_indexes }))
+        .unwrap()
+    };
     let mut draft = analysis();
-    draft.data_signals = vec![serde_json::from_value(json!({
-        "title":"单次任务成本下降", "title_en":"Lower cost per task",
-        "summary":"厂商案例：同一流程单次成本从10元降至5元。", "summary_en":"Vendor case: cost fell from 10 to 5 for the same workflow.",
-        "confidence":3, "evidence_grade":"B", "source_indexes":[]
-    })).unwrap()];
-    assert!(validate_selection(&draft, &sources).is_err());
-    draft.data_signals[0].source_indexes = vec![0];
-    assert!(validate_selection(&draft, &sources).is_ok());
-    draft.data_signals[0].source_indexes = vec![99];
+    draft.figures = vec![figure("5.5 元", "同一流程的单次成本，原为10元", &[])];
     let error = validate_selection(&draft, &sources)
         .unwrap_err()
         .to_string();
-    assert!(error.contains("data_signals[0].source_indexes"));
-    assert!(error.contains("99"));
-    assert!(error.contains("来源数=1"));
+    assert!(error.contains("figures[0].source_indexes"));
+    assert!(error.contains("来源数=2"));
+    draft.figures = vec![
+        figure("5.5 元", "同一流程的单次成本，原为10元", &[0]),
+        // Numbers stand whole: 5 is not 5.5, and the other source does not state it.
+        figure("5 元", "同一流程的单次成本", &[0]),
+        figure("5.5 元", "同一流程的单次成本", &[1]),
+        figure("1,000 多名", "用户", &[0]),
+        // A label's numbers are checked too, and a figure must state one.
+        figure("5.5 元", "比去年的20元低", &[0]),
+        figure("约一半", "成本降幅", &[0]),
+        figure("1,000 多名", "用户", &[99]),
+    ];
+    normalize_figures(&mut draft, &sources);
+    assert_eq!(
+        draft
+            .figures
+            .iter()
+            .map(|figure| figure.value.as_str())
+            .collect::<Vec<_>>(),
+        ["5.5 元", "1,000 多名"]
+    );
+    assert!(validate_selection(&draft, &sources).is_ok());
 }
 
 #[test]
@@ -200,9 +219,9 @@ fn optional_signal_citations_must_reference_available_sources() {
     let sources = vec![source(0, "x", true)];
     let signal = json!({
         "title":"观察", "title_en":"Watch", "summary":"后续观察", "summary_en":"Follow-up",
-        "confidence":3, "evidence_grade":"C", "source_indexes":[]
+        "kind":"risk", "source_indexes":[]
     });
-    for field in ["watch_signals", "wealth", "employment", "risks", "actions"] {
+    for field in ["watch_signals", "outlook"] {
         let mut payload = serde_json::to_value(analysis()).unwrap();
         payload[field] = json!([signal]);
         let draft = serde_json::from_value(payload.clone()).unwrap();
@@ -215,9 +234,12 @@ fn optional_signal_citations_must_reference_available_sources() {
         assert!(error.contains(&format!("{field}[0].source_indexes")));
     }
     let schema = schema(&sources, &[]);
+    let outlook = &schema["properties"]["outlook"]["items"];
+    assert_eq!(outlook["properties"]["kind"]["enum"], json!(OUTLOOK_KINDS));
+    assert_eq!(outlook["properties"]["source_indexes"]["minItems"], 1);
     assert!(
-        schema["properties"]["wealth"]["items"]["properties"]["source_indexes"]
-            .get("minItems")
+        schema["properties"]["watch_signals"]["items"]["properties"]
+            .get("kind")
             .is_none()
     );
 }
@@ -279,6 +301,42 @@ fn schema_limits_citations_to_original_indexes_and_available_images() {
         properties["picture_source_indexes"]["items"]["enum"],
         json!([9])
     );
+    assert_eq!(schema["additionalProperties"], false);
+    assert!(
+        schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("outlook"))
+    );
+    let required = |list: &str| properties[list]["items"]["required"].clone();
+    assert!(
+        required("hotspots")
+            .as_array()
+            .unwrap()
+            .contains(&json!("angle_en"))
+    );
+    assert!(
+        !required("gossip")
+            .as_array()
+            .unwrap()
+            .contains(&json!("angle"))
+    );
+    assert!(
+        required("outlook")
+            .as_array()
+            .unwrap()
+            .contains(&json!("kind"))
+    );
+    assert!(
+        !required("watch_signals")
+            .as_array()
+            .unwrap()
+            .contains(&json!("kind"))
+    );
+    assert_eq!(
+        properties["figures"]["items"]["additionalProperties"],
+        false
+    );
 }
 
 #[test]
@@ -293,12 +351,9 @@ fn schema_allows_quiet_days_without_inventing_sources_or_images() {
         assert!(!schema.to_string().contains("\"enum\":[]"));
         if sources.is_empty() {
             for field in [
-                "data_signals",
+                "figures",
                 "watch_signals",
-                "wealth",
-                "employment",
-                "risks",
-                "actions",
+                "outlook",
                 "changes_source_indexes",
             ] {
                 assert_eq!(properties[field]["maxItems"], 0, "{field}");
@@ -310,16 +365,33 @@ fn schema_allows_quiet_days_without_inventing_sources_or_images() {
 
 #[test]
 fn formats_consistent_articles_without_empty_html_paragraphs() {
-    let sources = vec![source(0, "x", true), source(1, "gossip", true)];
+    let sources = vec![
+        source(0, "x", true),
+        source(1, "gossip", true),
+        source(2, "cases", true),
+        source(3, "biz", true),
+    ];
     let mut draft = analysis();
     draft.hotspots = vec![
         story(0, StoryStatus::Confirmed),
         story(0, StoryStatus::Confirmed),
     ];
     draft.gossip = vec![story(1, StoryStatus::Unconfirmed)];
+    draft.hotspots[0].angle = "调用门槛随之下降。".into();
     draft.headline = "模型降价与工具开放，AI 应用的成本门槛下降".into();
     draft.changes = "第一条趋势。\n\n第二条趋势。".into();
     draft.changes_source_indexes = vec![0];
+    draft.figures = vec![
+        serde_json::from_value(json!({ "value": "5.5 元", "value_en": "5.5 yuan",
+            "label": "同一流程的单次成本", "label_en": "Cost per run", "source_indexes": [3] }))
+        .unwrap(),
+    ];
+    draft.outlook = vec![
+        serde_json::from_value(json!({ "kind": "risk", "title": "旧接口下线",
+            "title_en": "Old API retires", "summary": "依赖旧接口的应用需要迁移。",
+            "summary_en": "Apps on the old API must migrate.", "source_indexes": [2] }))
+        .unwrap(),
+    ];
     let edition_label = "XAI 日报 · 2026-09-21";
     let articles = articles::render(edition_label, &draft, &sources, &[], vec![]);
     assert_eq!(articles.title, draft.headline);
@@ -335,8 +407,15 @@ fn formats_consistent_articles_without_empty_html_paragraphs() {
             .starts_with(&format!("<h1>{}</h1>", draft.headline))
     );
     for text in [&articles.wechat, &articles.x, &articles.x_html] {
-        let sections = ["今日热点", "AI 圈热议", "趋势分析", "参考来源"]
-            .map(|label| text.find(label).unwrap());
+        let sections = [
+            "趋势分析",
+            "今日热点",
+            "今日数字",
+            "AI 圈热议",
+            "机会与风险",
+            "参考来源",
+        ]
+        .map(|label| text.find(label).unwrap());
         assert!(sections.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(!text.contains("图片新闻"));
         assert!(!text.contains("\n\n\n"));
@@ -347,9 +426,24 @@ fn formats_consistent_articles_without_empty_html_paragraphs() {
         assert!(!text.contains("新闻："));
         assert!(!text.contains("最近 7 天"));
     }
-    assert!(articles.wechat.contains("完整事实 及适用范围。"));
-    assert!(articles.x.contains("紧凑事实及限制。\n2."));
+    assert!(
+        articles
+            .wechat
+            .contains("完整事实 及适用范围。 看点：调用门槛随之下降。")
+    );
+    assert!(
+        articles
+            .x
+            .contains("紧凑事实及限制。 看点：调用门槛随之下降。\n2.")
+    );
+    assert!(articles.x.contains("紧凑事实及限制。\n\n今日数字"));
     assert!(articles.x.contains("【未证实】"));
+    assert!(articles.x.contains("1. 5.5 元 — 同一流程的单次成本"));
+    assert!(
+        articles
+            .x
+            .contains("1. 【风险】旧接口下线 — 依赖旧接口的应用需要迁移。")
+    );
     assert!(articles.x_html.contains("A &lt; B &amp; C"));
     assert!(!articles.x_html.contains("<p></p>"));
     assert!(!articles.x_html.contains("<br"));
@@ -360,7 +454,11 @@ fn formats_consistent_articles_without_empty_html_paragraphs() {
             .count(),
         1
     );
-    assert_eq!(cited_sources(&draft, sources, &[]).len(), 2);
+    // References follow reading order: trend and headlines, figures, buzz, then the outlook.
+    let references = &articles.x[articles.x.find("参考来源").unwrap()..];
+    let order = [0, 3, 1, 2].map(|index| references.find(&format!("新闻{index}：")).unwrap());
+    assert!(order.windows(2).all(|pair| pair[0] < pair[1]));
+    assert_eq!(cited_sources(&draft, sources, &[]).len(), 4);
 }
 
 #[test]
@@ -603,6 +701,8 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
                 assert_eq!(image::load_from_memory(&bytes).unwrap().width(), 640);
                 let mut draft = analysis();
                 draft.hotspots = vec![story(current["index"].as_u64().unwrap() as usize, StoryStatus::Confirmed)];
+                draft.hotspots[0].angle = "看点".into();
+                draft.hotspots[0].angle_en = "Why it matters".into();
                 draft.gossip = vec![story(gossip["index"].as_u64().unwrap() as usize, StoryStatus::Unconfirmed)];
                 draft.changes = "七天内的变化。".into();
                 draft.changes_source_indexes = vec![old["index"].as_u64().unwrap() as usize];
@@ -621,6 +721,9 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
                         draft.cover_source_index = Some(9999);
                         // An existing news source is still not an image candidate.
                         draft.picture_source_indexes = vec![current["index"].as_u64().unwrap() as usize];
+                        // Nor does a figure stand that its source does not state.
+                        draft.figures = vec![serde_json::from_value(json!({ "value": "99 款", "value_en": "99 apps",
+                            "label": "未经资料证实", "label_en": "Unsupported", "source_indexes": [current["index"]] })).unwrap()];
                         false
                     }
                     CitationReply::InvalidThenCorrected => !correcting,
@@ -1024,7 +1127,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             .unwrap();
     assert_eq!(recovered_end, end);
 
-    // Bad optional images must publish valid prose without an extra AI request.
+    // Bad optional images and figures must publish valid prose without an extra AI request.
     let before = call_count();
     *citation_mode.lock().unwrap() = CitationReply::InvalidImages;
     let without_images = execute(&state, window.start, window.end).await.unwrap();
@@ -1032,6 +1135,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     assert_eq!(stored.analysis.hotspots.len(), 1);
     assert!(stored.analysis.cover_source_index.is_none());
     assert!(stored.analysis.picture_source_indexes.is_empty());
+    assert!(stored.analysis.figures.is_empty());
     assert!(selected_article_images(&stored.analysis, &stored.sources).is_empty());
     assert_eq!(call_count() - before, 1);
 
@@ -1221,7 +1325,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             .unwrap(),
         revision_before
     );
-    // Fashion and business stay outside the briefing, even once readers see them.
+    // Fashion stays outside the briefing even once readers see it; business is collected.
     sqlx::query(
         "UPDATE topics SET enabled = (id IN ('fashion', 'biz')),
          visible = visible OR id IN ('fashion', 'biz')",
@@ -1232,18 +1336,16 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     runner::collect_briefing(&state, window, None)
         .await
         .unwrap();
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM runs WHERE topic_id IN ('fashion', 'biz')"
-        )
-        .fetch_one(&state.pool)
-        .await
-        .unwrap(),
-        0
-    );
-    // Nor does the briefing read their stories.
+    let collected: Vec<String> =
+        sqlx::query_scalar("SELECT topic_id FROM runs WHERE topic_id IN ('fashion', 'biz')")
+            .fetch_all(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(collected, ["biz"]);
+    // And read, while fashion stories are not.
     let at = window.end - ChronoDuration::hours(1);
     insert_story(&state.pool, "biz", "biz-story", Some(at), at).await;
+    insert_story(&state.pool, "fashion", "fashion-story", Some(at), at).await;
     let read = sqlx::query_as::<_, SourceRow>(include_str!("sources.sql"))
         .bind(window.end - ChronoDuration::days(7))
         .bind(window.start)
@@ -1253,10 +1355,11 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         .fetch_all(&state.pool)
         .await
         .unwrap();
-    assert!(
-        read.is_empty(),
-        "{:?}",
-        read.iter().map(|row| &row.url).collect::<Vec<_>>()
+    assert_eq!(
+        read.iter()
+            .map(|row| row.title.as_str())
+            .collect::<Vec<_>>(),
+        ["biz-story"]
     );
 
     state.shutdown_workers().await;

@@ -102,7 +102,9 @@ const EquityNotes = (() => {
       const identity = node("div", "equity-identity");
       identity.append(node("h3", "item-title", pick(stock, "name")), node("span", "muted small", `${stock.symbol} · ${t[stock.market]}`));
       heading.append(identity, node("span", "equity-signal", t[stock.signal]));
-      article.append(heading, node("p", "item-summary equity-reason", pick(stock, "reason")));
+      article.append(heading);
+      if (pick(stock, "figure")) article.append(node("p", "equity-figure", pick(stock, "figure")));
+      article.append(node("p", "item-summary equity-reason", pick(stock, "reason")));
       const facts = node("div", "equity-facts");
       facts.append(node("p", "equity-event-count", `${stock.events.length} ${t.events}`));
       for (const [label, key] of [[t.next, "watch"], [t.invalid, "risk"]]) {
@@ -137,19 +139,20 @@ const EquityNotes = (() => {
       return entry;
     }
     function renderFeedback(feedback) {
+      const previousEdition = feedback.previous_edition ? ` · ${editions[feedback.previous_edition]}` : "";
+      const against = `${t.against} ${feedback.previous_day}${previousEdition}`;
+      // Without new evidence nothing was checked, so one line says so.
+      if (!feedback.events.length) return node("p", "equity-change muted small", `${t.feedback} · ${against} · ${t[feedback.status]}`);
       const block = node("section", `equity-feedback equity-feedback-${feedback.status}`);
       const heading = node("div", "equity-feedback-heading");
-      const previousEdition = feedback.previous_edition ? ` · ${editions[feedback.previous_edition]}` : "";
-      heading.append(node("h4", "", t.feedback), node("span", "muted small", `${t.against} ${feedback.previous_day}${previousEdition}`), node("span", "equity-feedback-status", t[feedback.status]));
+      heading.append(node("h4", "", t.feedback), node("span", "muted small", against), node("span", "equity-feedback-status", t[feedback.status]));
       block.append(heading);
       for (const [label, key] of [[t.previous, "reason"], [t.previousWatch, "watch"], [t.previousRisk, "risk"]]) {
         const row = node("p", "equity-feedback-prior");
         row.append(node("span", "equity-condition-label", label), document.createTextNode(pick(feedback.previous, key)));
         block.append(row);
       }
-      if (feedback.events.length) {
-        block.append(node("p", "equity-feedback-label", t.actual), ...feedback.events.map(eventEntry));
-      }
+      block.append(node("p", "equity-feedback-label", t.actual), ...feedback.events.map(eventEntry));
       const assessment = node("p", "equity-feedback-assessment");
       assessment.append(node("span", "equity-condition-label", t.assessment), document.createTextNode(pick(feedback, "assessment")));
       block.append(assessment);

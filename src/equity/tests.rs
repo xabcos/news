@@ -5,7 +5,7 @@ fn draft() -> Analysis {
         "headline":"跟踪订单交付进度","headline_en":"Watching order delivery",
         "summary":"订单进入交付阶段，观察回款。","summary_en":"Orders are entering delivery; watch cash collection.","reviews":[],
         "stocks":[{"name":"英伟达","name_en":"NVIDIA","symbol":"NVDA","market":"us","signal":"catalyst",
-            "reason":"订单开始交付，可能带来收入增长。","reason_en":"Delivery may support revenue growth.",
+            "figure":"","figure_en":"","reason":"订单开始交付，可能带来收入增长。","reason_en":"Delivery may support revenue growth.",
             "watch":"下一次财报是否确认收入。","watch_en":"Look for revenue confirmation in the next earnings report.",
             "risk":"交付延迟可能推翻判断。","risk_en":"Delivery delays may invalidate the assessment.",
             "events":[{"fact":"公司公告订单开始交付。","fact_en":"The company announced the start of delivery.",
@@ -90,6 +90,44 @@ fn published_cards_keep_verified_dates_without_raw_material() {
     );
     assert!(!stock.to_string().contains("SECRET INTERNAL"));
     assert!(stock.get("quote").is_none());
+}
+
+#[test]
+fn key_figures_keep_only_numbers_their_sources_state() {
+    let mut sources = [source(), source()];
+    sources[0].summary =
+        "英伟达（NVDA）公告订单开始交付，第三季度营收4.45亿元、同比增长40.16%。".into();
+    sources[1].summary = "英伟达（NVDA）全年营收增长55.2%。".into();
+    let mut analysis = draft();
+    // The quote stays short: the figure is checked against the cited source, not the quote.
+    assert!(validate(&analysis, &sources, window()).is_ok());
+    let stock = &mut analysis.stocks[0];
+    stock.figure = "三季度营收同比增40.16%".into();
+    stock.figure_en = "Q3 revenue up 40.16%".into();
+    stock.drop_uncited_figure(&sources);
+    assert_eq!(stock.figure, "三季度营收同比增40.16%");
+    let public = public_stock(stock, &sources, chrono_tz::Asia::Shanghai);
+    assert_eq!(public["figure_en"], "Q3 revenue up 40.16%");
+    // A rounded number, a quarter written as a digit, a number only an uncited source states,
+    // or no number at all is dropped.
+    for figure in [
+        "营收同比增40%",
+        "Q3营收同比增40.16%",
+        "全年营收增长55.2%",
+        "营收大增",
+    ] {
+        stock.figure = figure.into();
+        stock.figure_en = "Revenue".into();
+        stock.drop_uncited_figure(&sources);
+        assert!(
+            stock.figure.is_empty() && stock.figure_en.is_empty(),
+            "{figure}"
+        );
+    }
+    // An English figure never stands without the Chinese one it translates.
+    stock.figure_en = "Revenue up 40.16%".into();
+    stock.drop_uncited_figure(&sources);
+    assert!(stock.figure_en.is_empty());
 }
 
 #[test]

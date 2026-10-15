@@ -259,12 +259,10 @@ p { margin-top: 0; }
   gap: .65rem;
   margin-bottom: .25rem;
 }
-.insight-item-heading { display: flex; align-items: baseline; justify-content: space-between; gap: .75rem; }
-.insight-item-heading .item-title { margin: 0; }
-.insight-opportunity-details { display: grid; gap: .4rem; margin-top: .7rem; padding-top: .65rem; border-top: 1px solid var(--line); }
-.insight-opportunity-detail { display: grid; grid-template-columns: 5.5rem 1fr; gap: .65rem; font-size: .8rem; line-height: 1.5; }
-.insight-opportunity-label { color: var(--muted); }
-.insight-opportunity-value { color: color-mix(in srgb, var(--text) 86%, var(--muted)); }
+.insight-angle { margin: .4rem 0 0; font-size: .92rem; line-height: 1.6; }
+.insight-angle-label { margin-right: .5rem; color: var(--primary-strong); font-weight: 600; }
+.insight-figure { display: grid; grid-template-columns: 10rem minmax(0, 1fr); gap: .25rem 1rem; align-items: baseline; }
+.insight-figure-value { color: var(--primary-strong); font-size: 1.4rem; font-weight: 700; line-height: 1.25; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .insight-sources { display: flex; flex-wrap: wrap; align-items: center; gap: .55rem; margin-top: .55rem; font-size: .75rem; }
 .insight-sources a { color: var(--primary-strong); text-decoration: none; }
 .insight-sources a:hover { text-decoration: underline; text-underline-offset: .15em; }
@@ -423,6 +421,7 @@ p { margin-top: 0; }
 @media (max-width: 560px) {
   .insight-gallery { grid-template-columns: 1fr; }
   .insight-hotspots-date { white-space: normal; text-align: right; }
+  .insight-figure { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* ---------- photographs (𝑾) ---------- */

@@ -36,46 +36,43 @@ pub(crate) struct Story {
     pub summary: String,
     pub summary_en: String,
     pub short_summary: String,
+    /// Why a hotspot matters; gossip has none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub angle: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub angle_en: String,
     pub status: StoryStatus,
     pub source_indexes: Vec<usize>,
 }
 
-pub(super) fn story_schema(source_indexes: Value) -> Value {
+/// A story's schema properties; hotspots narrow the status and add the angle.
+pub(super) fn story_properties(source_indexes: Value) -> Value {
+    let text = json!({ "type": "string" });
     json!({
-        "type": "object", "additionalProperties": false,
-        "required": ["title", "title_en", "summary", "summary_en", "short_summary", "status", "source_indexes"],
-        "properties": {
-            "title": { "type": "string" }, "title_en": { "type": "string" },
-            "summary": { "type": "string" }, "summary_en": { "type": "string" },
-            "short_summary": { "type": "string" },
-            "status": { "type": "string", "enum": ["confirmed", "reported", "unconfirmed", "response", "feedback", "denied"] },
-            "source_indexes": source_indexes
-        }
+        "title": text, "title_en": text, "summary": text, "summary_en": text,
+        "short_summary": text,
+        "status": { "type": "string", "enum": ["confirmed", "reported", "unconfirmed", "response", "feedback", "denied"] },
+        "source_indexes": source_indexes
     })
 }
 
 /// Citation order follows reading order and is shared by both article formats.
 pub(super) fn citation_indexes(analysis: &InsightAnalysis) -> Vec<usize> {
-    let mut indexes = analysis
-        .hotspots
-        .iter()
-        .chain(&analysis.gossip)
-        .flat_map(|story| story.source_indexes.iter().copied())
-        .collect::<Vec<_>>();
+    let mut indexes = analysis.changes_source_indexes.clone();
+    for story in &analysis.hotspots {
+        indexes.extend(&story.source_indexes);
+    }
+    for figure in &analysis.figures {
+        indexes.extend(&figure.source_indexes);
+    }
+    for story in &analysis.gossip {
+        indexes.extend(&story.source_indexes);
+    }
     indexes.extend(analysis.cover_source_index);
     indexes.extend(&analysis.picture_source_indexes);
-    indexes.extend(&analysis.changes_source_indexes);
-    indexes.extend(
-        analysis
-            .data_signals
-            .iter()
-            .chain(&analysis.watch_signals)
-            .chain(&analysis.wealth)
-            .chain(&analysis.employment)
-            .chain(&analysis.risks)
-            .chain(&analysis.actions)
-            .flat_map(|signal| signal.source_indexes.iter().copied()),
-    );
+    for signal in analysis.outlook.iter().chain(&analysis.watch_signals) {
+        indexes.extend(&signal.source_indexes);
+    }
     let mut seen = HashSet::new();
     indexes.retain(|index| seen.insert(*index));
     indexes
@@ -92,7 +89,31 @@ pub(super) fn render(
     let mut article = Article::default();
     article.heading(1, &title);
     article.paragraph(edition_label);
+    if !analysis.changes.trim().is_empty() {
+        article.heading(2, "趋势分析");
+        for point in analysis
+            .changes
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+        {
+            article.paragraph(point);
+        }
+    }
     article.stories("今日热点", &analysis.hotspots, false);
+    article.section(
+        "今日数字",
+        analysis
+            .figures
+            .iter()
+            .map(|figure| {
+                (
+                    figure.value.clone(),
+                    figure.label.clone(),
+                    figure.label.clone(),
+                )
+            })
+            .collect(),
+    );
     article.stories("AI 圈热议", &analysis.gossip, true);
     if !images.is_empty() {
         article.heading(2, "图片新闻");
@@ -117,38 +138,20 @@ pub(super) fn render(
             ));
         }
     }
-    if !analysis.changes.trim().is_empty() {
-        article.heading(2, "趋势分析");
-        for point in analysis
-            .changes
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-        {
-            article.paragraph(point);
-        }
-    }
     for (label, signals) in [
-        ("关键数据", &analysis.data_signals),
+        ("机会与风险", &analysis.outlook),
         ("后续观察", &analysis.watch_signals),
-        ("商业与机遇", &analysis.wealth),
-        ("岗位与技能", &analysis.employment),
-        ("风险与边界", &analysis.risks),
-        ("可做的事", &analysis.actions),
     ] {
-        if signals.is_empty() {
-            continue;
-        }
-        article.heading(2, label);
-        article.items(
+        article.section(
+            label,
             signals
                 .iter()
-                .map(|item| {
-                    let mut summary = compact(&item.summary);
-                    // Preserve an opportunity's limiting condition in either copy.
-                    if !item.risk.is_empty() && !summary.contains(&item.risk) {
-                        summary.push_str(&format!(" 边界：{}", compact(&item.risk)));
-                    }
-                    (item.title.clone(), summary.clone(), summary)
+                .map(|signal| {
+                    let title = match outlook_label(&signal.kind) {
+                        Some(kind) => format!("【{kind}】{}", signal.title),
+                        None => signal.title.clone(),
+                    };
+                    (title, signal.summary.clone(), signal.summary.clone())
                 })
                 .collect(),
         );
@@ -218,11 +221,8 @@ impl Article {
     }
 
     fn stories(&mut self, label: &str, stories: &[Story], gossip: bool) {
-        if stories.is_empty() {
-            return;
-        }
-        self.heading(2, label);
-        self.items(
+        self.section(
+            label,
             stories
                 .iter()
                 .map(|story| {
@@ -231,10 +231,28 @@ impl Article {
                     } else {
                         story.title.clone()
                     };
-                    (title, story.summary.clone(), story.short_summary.clone())
+                    let short = if story.short_summary.trim().is_empty() {
+                        &story.summary
+                    } else {
+                        &story.short_summary
+                    };
+                    let angle = |text: &str| match story.angle.trim() {
+                        "" => text.to_owned(),
+                        angle => format!("{text} 看点：{angle}"),
+                    };
+                    (title, angle(&story.summary), angle(short))
                 })
                 .collect(),
         );
+    }
+
+    /// A numbered list under its heading; an empty one is left out.
+    fn section(&mut self, label: &str, items: Vec<(String, String, String)>) {
+        if items.is_empty() {
+            return;
+        }
+        self.heading(2, label);
+        self.items(items);
     }
 
     fn items(&mut self, items: Vec<(String, String, String)>) {
@@ -268,6 +286,17 @@ impl Article {
         self.wechat.push(md.join("\n"));
         self.plain.push(plain.join("\n"));
         self.html.push(format!("<ol>{}</ol>", html_items.join("")));
+    }
+}
+
+/// The Chinese tag of an outlook item's kind.
+fn outlook_label(kind: &str) -> Option<&'static str> {
+    match kind {
+        "opportunity" => Some("机会"),
+        "employment" => Some("就业"),
+        "risk" => Some("风险"),
+        "action" => Some("行动"),
+        _ => None,
     }
 }
 

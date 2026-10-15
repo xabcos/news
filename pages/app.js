@@ -60,10 +60,8 @@ const TEXT = {
     empty: "这一天还没有内容", latest: "查看最近有内容的一天",
     space: "工作台", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
     backToTop: "回到顶部", insightEmpty: "XAI 日报将在今日生成后显示。", insightLabel: "XAI 日报",
-    hotspots: "今日热点", gossip: "AI 圈热议", references: "参考来源", archive: "资料图", changes: "趋势分析", dataSignals: "关键数据", watchSignals: "后续观察", coverSource: "原文", wealth: "商业与机遇", employment: "就业与技能",
-    risks: "风险预警", actions: "观察方向",
-    kind: "类型", horizon: "时间", beneficiaries: "受益者", entry: "切入方式", watch: "观察信号", risk: "主要风险",
-    confidence: (n, grade) => `证据强度 ${n}/5${grade ? ` · 证据 ${grade}` : ""}`, sources: "来源",
+    hotspots: "今日热点", gossip: "AI 圈热议", references: "参考来源", archive: "资料图", changes: "趋势分析", figures: "今日数字", watchSignals: "后续观察", coverSource: "原文",
+    outlook: "机会与风险", angle: "看点", outlookKinds: { opportunity: "机会", employment: "就业", risk: "风险", action: "行动" }, sources: "来源",
     items: (n) => `${n} 条`, photos: (n) => `${n} 张`,
     close: "关闭", previous: "上一张", next: "下一张", play: "播放", pause: "暂停",
     publish: "公开", unpublish: "取消公开",
@@ -74,10 +72,8 @@ const TEXT = {
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
     space: "𝑾𝒐𝒓𝒌𝒔𝒑𝒂𝒄𝒆", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
     backToTop: "Back to top", insightEmpty: "XAI Daily will appear after today's edition is generated.", insightLabel: "XAI Daily",
-    hotspots: "Today’s headlines", gossip: "AI buzz", references: "References", archive: "Archive photo", changes: "Trend analysis", dataSignals: "Key data", watchSignals: "Signals ahead", coverSource: "Source", wealth: "Business & opportunities", employment: "Employment & skills",
-    risks: "Risk alerts", actions: "What to watch",
-    kind: "Type", horizon: "Horizon", beneficiaries: "Who may benefit", entry: "Entry path", watch: "Signals to watch", risk: "Main risk",
-    confidence: (n, grade) => `Evidence ${n}/5${grade ? ` · Grade ${grade}` : ""}`, sources: "Sources",
+    hotspots: "Today’s headlines", gossip: "AI buzz", references: "References", archive: "Archive photo", changes: "Trend analysis", figures: "By the numbers", watchSignals: "Signals ahead", coverSource: "Source",
+    outlook: "Opportunities & risks", angle: "Why it matters", outlookKinds: { opportunity: "Opportunity", employment: "Jobs", risk: "Risk", action: "Action" }, sources: "Sources",
     items: (n) => `${n} ${n === 1 ? "item" : "items"}`, photos: (n) => `${n} ${n === 1 ? "photo" : "photos"}`,
     close: "Close", previous: "Previous", next: "Next", play: "Play", pause: "Pause",
     publish: "Publish", unpublish: "Unpublish",
@@ -792,10 +788,7 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
   }
   heading.append(title);
   section.append(heading);
-  if (insight.images.length) section.append(renderInsightGallery(insight.images));
   const sources = new Map(insight.sources.map((source) => [source.index, source]));
-  section.append(...renderInsightStories(t().hotspots, insight.hotspots, sources, { dateText: briefingDate }));
-  section.append(...renderInsightStories(t().gossip, insight.gossip, sources, { gossip: true }));
   const trend = pick(insight, "changes");
   if (trend.trim()) {
     const changes = insightChange(trend, relativeTime(insight.generated_at));
@@ -803,16 +796,12 @@ function renderInsight(insight, preserveScroll = false, scrollTop = window.scrol
     if (changeSources) changes.append(changeSources);
     section.append(changes);
   }
-  section.append(...renderInsightGroup(t().dataSignals, insight.data_signals, sources));
+  if (insight.images.length) section.append(renderInsightGallery(insight.images));
+  section.append(...renderInsightStories(t().hotspots, insight.hotspots, sources, { dateText: briefingDate }));
+  section.append(...renderInsightFigures(insight.figures, sources));
+  section.append(...renderInsightStories(t().gossip, insight.gossip, sources, { gossip: true }));
+  section.append(...renderInsightGroup(t().outlook, insight.outlook, sources));
   section.append(...renderInsightGroup(t().watchSignals, insight.watch_signals, sources));
-  for (const [label, items, opportunities] of [
-    [t().wealth, insight.wealth, true],
-    [t().employment, insight.employment, false],
-    [t().risks, insight.risks, false],
-    [t().actions, insight.actions, false],
-  ]) {
-    section.append(...renderInsightGroup(label, items, sources, opportunities));
-  }
   const references = insightSection(t().references);
   const referenceList = document.createElement("ol");
   referenceList.className = "insight-references";
@@ -871,6 +860,12 @@ function renderInsightStories(label, stories, sources, { gossip = false, dateTex
     summary.className = "item-summary";
     summary.textContent = pick(story, "summary");
     article.append(title, summary);
+    if (pick(story, "angle")) {
+      const angle = document.createElement("p");
+      angle.className = "insight-angle";
+      angle.append(span(t().angle, "insight-angle-label"), pick(story, "angle"));
+      article.append(angle);
+    }
     const links = sourceList((story.source_indexes || []).map((index) => sources.get(index)).filter(Boolean));
     if (links) article.append(links);
     return article;
@@ -925,53 +920,47 @@ function insightChange(text, meta) {
   return block;
 }
 
-function renderInsightGroup(label, items, sources, opportunities = false) {
-  if (!items.length) return [];
-  const section = insightSection(label);
-  section.append(...items.map((item) => insightCard(item, sources, opportunities)));
+// Cached responses from before the figures and outlook may lack them for a few minutes.
+function renderInsightFigures(figures, sources) {
+  if (!figures?.length) return [];
+  const section = insightSection(t().figures);
+  section.append(...figures.map((figure) => {
+    const article = document.createElement("article");
+    article.className = "item insight-figure";
+    const body = document.createElement("div");
+    const label = document.createElement("p");
+    label.className = "item-summary";
+    label.textContent = pick(figure, "label");
+    body.append(label);
+    const links = sourceList(figure.source_indexes.map((index) => sources.get(index)).filter(Boolean));
+    if (links) body.append(links);
+    article.append(span(pick(figure, "value"), "insight-figure-value"), body);
+    return article;
+  }));
   return [section];
 }
 
-function insightCard(item, sources, opportunity = false) {
+function renderInsightGroup(label, items, sources) {
+  if (!items?.length) return [];
+  const section = insightSection(label);
+  section.append(...items.map((item) => insightCard(item, sources)));
+  return [section];
+}
+
+function insightCard(item, sources) {
   const article = document.createElement("article");
   article.className = "item insight-item";
-  const itemHeading = document.createElement("div");
-  itemHeading.className = "insight-item-heading";
   const title = document.createElement("h3");
   title.className = "item-title";
-  title.textContent = pick(item, "title");
-  itemHeading.append(title, span(t().confidence(item.confidence, item.evidence_grade), "muted small"));
+  if (item.kind) title.append(span(t().outlookKinds[item.kind] || item.kind, "insight-story-status"));
+  title.append(pick(item, "title"));
   const summary = document.createElement("p");
   summary.className = "item-summary";
   summary.append(insightText(pick(item, "summary")));
-  article.append(itemHeading, summary);
-  if (opportunity) article.append(opportunityDetails(item));
-  const links = (item.source_indexes || [])
-    .map((index) => sources.get(index))
-    .filter(Boolean);
-  const sourceLinks = sourceList(links);
+  article.append(title, summary);
+  const sourceLinks = sourceList((item.source_indexes || []).map((index) => sources.get(index)).filter(Boolean));
   if (sourceLinks) article.append(sourceLinks);
   return article;
-}
-
-function opportunityDetails(item) {
-  const fields = [
-    [t().kind, opportunityKind(item.kind)],
-    [t().horizon, opportunityHorizon(item.horizon)],
-    [t().beneficiaries, pick(item, "beneficiaries")],
-    [t().entry, pick(item, "entry")],
-    [t().watch, pick(item, "watch")],
-    [t().risk, pick(item, "risk")],
-  ].filter(([, value]) => value);
-  const details = document.createElement("div");
-  details.className = "insight-opportunity-details";
-  details.append(...fields.map(([label, value]) => {
-    const row = document.createElement("div");
-    row.className = "insight-opportunity-detail";
-    row.append(span(label, "insight-opportunity-label"), span(value, "insight-opportunity-value"));
-    return row;
-  }));
-  return details;
 }
 
 // Some Responses providers put citations in the JSON text as Markdown, including
@@ -1011,25 +1000,6 @@ function sourceList(sources) {
   list.className = "insight-sources";
   list.append(span(t().sources, "muted small"), ...anchors);
   return list;
-}
-
-function opportunityKind(value) {
-  const labels = {
-    business: { zh: "商业机会", en: "Business" },
-    income: { zh: "收入机会", en: "Income" },
-    industry: { zh: "产业观察", en: "Industry" },
-    asset_watch: { zh: "资产观察", en: "Asset watch" },
-  };
-  return labels[value]?.[state.lang] || value || "";
-}
-
-function opportunityHorizon(value) {
-  const labels = {
-    "0-3m": { zh: "0–3个月", en: "0–3 months" },
-    "3-12m": { zh: "3–12个月", en: "3–12 months" },
-    "12m+": { zh: "12个月以上", en: "12+ months" },
-  };
-  return labels[value]?.[state.lang] || value || "";
 }
 
 function renderDayBlock(digest, showDayHeading = true) {
