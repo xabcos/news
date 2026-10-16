@@ -82,6 +82,8 @@ const FEEDS: &[(&str, &str, &str)] = &[
         "https://shopify.engineering/blog.atom",
     ),
     ("Martin Fowler", "en", "https://martinfowler.com/feed.atom"),
+    // Interviews published with their full transcripts; the longest exceed what Reads keeps.
+    ("Dwarkesh", "en", "https://www.dwarkesh.com/feed"),
 ];
 
 #[derive(sqlx::FromRow)]

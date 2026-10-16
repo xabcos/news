@@ -55,7 +55,7 @@ const storage = (() => {
 
 const TEXT = {
   zh: {
-    locale: "zh-CN", lang: "EN", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", equity: "股市", articles: "分享", today: "今天", top: "重要",
+    locale: "zh-CN", lang: "EN", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", equity: "股市", articles: "分享", commentary: "解说", worth: "值得读", today: "今天", top: "重要",
     fresh: "NEW", failed: "加载失败", retry: "重试",
     empty: "这一天还没有内容", latest: "查看最近有内容的一天",
     space: "工作台", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
@@ -67,7 +67,7 @@ const TEXT = {
     publish: "公开", unpublish: "取消公开",
   },
   en: {
-    locale: "en", lang: "中文", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", equity: "𝑬", articles: "𝑨𝒓𝒕𝒊𝒄𝒍𝒆𝒔", today: "Today", top: "Top",
+    locale: "en", lang: "中文", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", equity: "𝑬", articles: "𝑨𝒓𝒕𝒊𝒄𝒍𝒆𝒔", commentary: "𝑬𝒙𝒑𝒍𝒂𝒊𝒏𝒆𝒅", worth: "Worth reading", today: "Today", top: "Top",
     fresh: "NEW", failed: "Failed to load", retry: "Retry",
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
     space: "𝑾𝒐𝒓𝒌𝒔𝒑𝒂𝒄𝒆", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
@@ -92,6 +92,8 @@ const state = {
   timeline: [],
   insight: null,
   insightEtag: null,
+  // 值得读's articles, kept to lay them out again in the other language.
+  worth: [],
   personal: false,
   historyLoading: false,
   historyError: false,
@@ -104,7 +106,7 @@ storage.setItem("news.lastVisit", String(Date.now()));
 
 const el = {
   tabs: $("#tabs"), lang: $("#langToggle"), me: $("#meLink"),
-  shell: $(".shell"), status: $("#status"), digest: $("#digest"), loadMore: $("#loadMore"),
+  shell: $(".shell"), status: $("#status"), worth: $("#worth"), digest: $("#digest"), loadMore: $("#loadMore"),
   backToTop: $("#backToTop"),
 };
 const t = () => TEXT[state.lang];
@@ -152,6 +154,7 @@ async function init() {
     storage.setItem("news.lang", state.lang);
     applyLang();
     renderTabs();
+    renderWorth();
     if (state.topic === INSIGHT_ID) renderInsight(state.insight, true, scrollTop);
     else if (state.topic === EQUITY_ID) renderEquity(true, scrollTop);
     else render(true, scrollTop);
@@ -335,6 +338,7 @@ function clearDigest() {
 }
 
 async function load(silent = false) {
+  loadWorth();
   if ([INSIGHT_ID, EQUITY_ID].includes(state.topic)) return loadInsight(silent);
   const controller = startLoad();
   const { signal } = controller;
@@ -1001,6 +1005,72 @@ function sourceList(sources) {
   list.append(span(t().sources, "muted small"), ...anchors);
   return list;
 }
+
+// 值得读 opens ALL's latest day: the hottest 分享 and 解说, which the server ranks as 热读.
+async function loadWorth() {
+  if (!worthShown()) {
+    el.worth.hidden = true;
+    return;
+  }
+  try {
+    const { articles } = await fetchJson("/articles/worth.json");
+    // A refresh that brings the same articles leaves the cards, and a phone's swipe, as they are.
+    const same = el.worth.childElementCount && JSON.stringify(articles) === JSON.stringify(state.worth);
+    state.worth = articles;
+    if (same) el.worth.hidden = !worthShown() || !articles.length;
+    else renderWorth();
+  } catch { /* The feed reads the same without it. */ }
+}
+
+const worthShown = () => !state.topic && !state.day;
+
+function renderWorth() {
+  el.worth.hidden = !worthShown() || !state.worth.length;
+  if (el.worth.hidden) return;
+  const lang = state.lang === "en" ? "?lang=en" : "";
+  const link = (text, path) => Object.assign(document.createElement("a"), { textContent: text, href: `${path}${lang}` });
+  const heading = document.createElement("div");
+  heading.className = "group-title";
+  const title = document.createElement("h2");
+  title.textContent = t().worth;
+  const lists = document.createElement("p");
+  lists.className = "muted small";
+  lists.append(link(t().articles, "/articles"), " · ", link(t().commentary, "/culture/commentary"));
+  heading.append(title, lists);
+  const cards = document.createElement("div");
+  cards.className = "worth-cards";
+  cards.append(...state.worth.map((article) => {
+    const href = `/articles/${article.id}${lang}`;
+    const card = document.createElement("article");
+    card.className = "image-news-card worth-card";
+    const media = Object.assign(document.createElement("a"), { className: "image-news-media", href, tabIndex: -1 });
+    media.setAttribute("aria-hidden", "true");
+    if (article.cover) {
+      media.append(Object.assign(new Image(article.width || undefined, article.height || undefined), {
+        src: article.cover, alt: "", loading: "lazy", decoding: "async", referrerPolicy: "no-referrer",
+      }));
+    }
+    const meta = document.createElement("p");
+    meta.className = "item-meta";
+    meta.textContent = article.film ? t().commentary : t().articles;
+    if (article.views > 0) {
+      const views = document.createElement("span");
+      views.className = "read-views";
+      views.innerHTML = EYE;
+      views.append(String(article.views));
+      meta.append(" · ", views);
+    }
+    const name = document.createElement("h3");
+    name.className = "item-title";
+    name.append(link(article.title, `/articles/${article.id}`));
+    card.append(media, meta, name);
+    return card;
+  }));
+  el.worth.replaceChildren(heading, cards);
+}
+
+// The read counter's eye, as the server-rendered lists draw it.
+const EYE = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>';
 
 function renderDayBlock(digest, showDayHeading = true) {
   const block = document.createElement("section");

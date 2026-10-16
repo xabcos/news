@@ -1407,4 +1407,25 @@ async fn postgres_xabc_shares_and_explains_films() {
     assert!(article.contains(
         "<a class=tab href=\"/culture\" data-last=\"/culture/book\" aria-current=\"true\">文娱</a>"
     ));
+
+    // 值得读 ranks 分享 and 解说 together as 热读 does; unread ones follow, newest first.
+    let worth: Value =
+        serde_json::from_str(&page(format!("{base}/articles/worth.json")).await).unwrap();
+    let ranked: Vec<(String, bool)> = worth["articles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|article| {
+            (
+                article["id"].as_str().unwrap().to_owned(),
+                article["film"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(ranked.len(), 4);
+    assert_eq!(ranked[0], (id.to_string(), false));
+    assert_eq!(
+        ranked[2..],
+        [(classic.to_string(), true), (explained.to_string(), true)]
+    );
 }

@@ -295,6 +295,16 @@ p { margin-top: 0; }
 .day-divider h2 { margin: 0; font-size: 1rem; font-weight: 750; letter-spacing: .01em; }
 .day-block.day-heading-hidden > .group:first-of-type .group-title { margin-top: .5rem; }
 .day-block:not(:first-child) > .group:first-of-type .group-title { margin-top: .8rem; }
+/* 值得读 opens ALL: picture cards four to a row, and on phones one row to swipe through. */
+.worth-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .9rem; margin: 1rem 0 1.6rem; }
+.worth .group-title a { color: inherit; text-decoration: none; }
+.worth-card .item-meta { margin-top: .6rem; font-size: .75rem; }
+.worth-card .item-title { margin-top: .3rem; font-size: .95rem; line-height: 1.5; }
+.worth-card .item-title a { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+@media (max-width: 768px) {
+  .worth-cards { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; margin-right: -1.25rem; padding-right: 1.25rem; }
+  .worth-card { flex: 0 0 62%; scroll-snap-align: start; }
+}
 /* Read counts and list pages, shared by Reads, 分享 and 解说. */
 .read-views { display: inline-flex; align-items: center; vertical-align: middle; gap: .3rem; white-space: nowrap; color: var(--muted); font-size: .75rem; font-variant-numeric: tabular-nums; }
 .reads-pagination, .read-actions { display: flex; align-items: center; gap: 1.5rem; margin-top: 2rem; font-size: .85rem; }

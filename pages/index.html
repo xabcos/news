@@ -7,10 +7,20 @@
   <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f6f4">
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1115">
   <meta name="referrer" content="no-referrer">
+  <!-- How a link to the home page looks where it is shared, X first. -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="𝑵𝒆𝒘𝒔">
+  <meta property="og:title" content="𝑵𝒆𝒘𝒔 · 每日 XAI 日报与 AI 热点资讯">
+  <meta property="og:description" content="AI 与科技要闻、XAI 日报、精读长文、分享与影视解说，每天更新。">
+  <meta property="og:url" content="https://xabcnews.com/">
+  <meta property="og:image" content="https://xabcnews.com/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
   <title>𝑵𝒆𝒘𝒔</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
   <link rel="alternate" type="application/atom+xml" title="𝑵𝒆𝒘𝒔" href="/feed.xml">
-  <link rel="stylesheet" href="/styles.css?v=explained">
+  <link rel="stylesheet" href="/styles.css?v=worth">
   <link rel="stylesheet" href="/equity.css?v=5">
   <link rel="stylesheet" href="/catalog.css?v=8">
   <!-- The first screen's data leaves with the HTML instead of after app.js has run. The URLs
@@ -38,6 +48,7 @@
       <a class="broadcast-strip__value"></a>
     </div>
     <div id="status" class="status" role="status" aria-live="polite"></div>
+    <section id="worth" class="worth" hidden></section>
     <div id="digest" class="digest"></div>
     <div id="loadMore" class="load-more" role="status" aria-live="polite"></div>
   </main>
@@ -52,7 +63,7 @@
   <script src="/public.js?v=10" defer></script>
   <script src="/equity.js?v=10" defer></script>
   <script src="/travel.js?v=12" defer></script>
-  <script src="/app.js?v=33" defer></script>
+  <script src="/app.js?v=34" defer></script>
   <!-- async: a slow third-party banner must not hold back DOMContentLoaded, which starts app.js. -->
   <script src="https://broadcast.xairouter.com/embed.js" async></script>
 </body>

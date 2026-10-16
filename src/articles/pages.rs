@@ -18,13 +18,15 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use pulldown_cmark::Parser;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::{FromRow, Postgres, QueryBuilder};
 use std::{collections::HashMap, fmt::Write};
 use uuid::Uuid;
 
 const PAGE_SIZE: i64 = 24;
+/// How 热读 and 值得读 rank articles: by reads, halving with each week since publication.
+const HOT: &str = "ln(1 + a.views::float8) * power(2, -extract(epoch FROM NOW() - a.published_at)::float8 / 604800)";
 /// The most addresses one sitemap may list.
 const SITEMAP_SIZE: i64 = 50_000;
 /// Articles of authors whose accounts are open; the caller names which of them.
@@ -63,6 +65,7 @@ pub(super) fn router() -> Router<AppState> {
             .route(COMMENTARY, get(commentary)),
     )
     .route("/articles/sitemap.xml", get(sitemap))
+    .route("/articles/worth.json", get(worth))
     .route("/api/articles/{id}/preview", get(preview))
     .layer(tower_http::compression::CompressionLayer::new())
 }
@@ -248,12 +251,10 @@ async fn index(
         .push(FROM)
         .push(" AND a.status = 'published' AND a.film IS NULL");
     if hot {
-        query.push(
-            " AND a.views > 0 AND a.published_at >= NOW() - INTERVAL '30 days'
-             ORDER BY ln(1 + a.views::float8)
-                 * power(2, -extract(epoch FROM NOW() - a.published_at)::float8 / 604800) DESC,
-             a.published_at DESC, a.id DESC LIMIT 24",
-        );
+        query
+            .push(" AND a.views > 0 AND a.published_at >= NOW() - INTERVAL '30 days' ORDER BY ")
+            .push(HOT)
+            .push(" DESC, a.published_at DESC, a.id DESC LIMIT 24");
     } else {
         if let Some(by) = params.by {
             query.push(" AND a.author_id = ").push_bind(by);
@@ -360,6 +361,41 @@ async fn index(
         &headers,
         &Rendered::new(html),
         "text/html; charset=utf-8",
+    ))
+}
+
+/// One of 值得读's articles, as the home page script lays it out.
+#[derive(FromRow, Serialize)]
+struct Worth {
+    id: Uuid,
+    title: String,
+    views: i64,
+    film: bool,
+    cover: Option<String>,
+    width: Option<i32>,
+    height: Option<i32>,
+}
+
+/// 值得读, which opens ALL: the eight hottest of the last 30 days of 分享 and 解说 together,
+/// ranked as 热读 is; while few are read, the newest fill the places.
+async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
+    let articles: Vec<Worth> = QueryBuilder::<Postgres>::new(
+        "SELECT a.id, a.title, a.views, a.film IS NOT NULL AS film,
+                CASE WHEN i.expires_at > now() THEN i.url END AS cover, i.width, i.height
+         FROM articles a JOIN users u ON u.id = a.author_id
+         LEFT JOIN article_images i ON i.id = a.cover
+         WHERE u.status AND a.status = 'published' AND a.published_at >= NOW() - INTERVAL '30 days'
+         ORDER BY ",
+    )
+    .push(HOT)
+    .push(" DESC, a.published_at DESC, a.id DESC LIMIT 8")
+    .build_query_as()
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(conditional(
+        &headers,
+        &Rendered::new(json!({ "articles": articles }).to_string()),
+        "application/json",
     ))
 }
 
