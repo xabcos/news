@@ -29,7 +29,9 @@ use uuid::Uuid;
 pub(crate) const RENEW_BEFORE: TimeDelta = TimeDelta::hours(6);
 /// News images of this many recent days are renewed, even after a copy has lapsed.
 const RENEW_DAYS: i64 = 7;
-const IMAGE_BATCH_TIMEOUT: Duration = Duration::from_secs(90);
+/// How long one batch of image jobs may take: an image model draws a picture in half a minute,
+/// and a slow origin still gets room.
+const IMAGE_BATCH_TIMEOUT: Duration = Duration::from_secs(300);
 /// Image transfers under way at once, across every job. Each holds at most
 /// `NEWS_IMAGE_MAX_BYTES` (8 MB by default), so even a full burst stays near half a gigabyte,
 /// and a batch of slow drawings leaves the news pictures room.

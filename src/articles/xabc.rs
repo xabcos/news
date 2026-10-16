@@ -39,8 +39,9 @@ const INTERVAL: chrono::Duration = chrono::Duration::minutes(30);
 /// hours at most: a lasting fault costs a few tries a day, not one every half hour.
 const RETRY_SECONDS: i64 = 30 * 60;
 const LONGEST_WAIT_SECONDS: i64 = 8 * 60 * 60;
-/// GPT Image 2.5 Flare draws quickly: a 1536×1024 picture at medium quality costs about $0.04.
-const IMAGE_MODEL: &str = "gpt-image-2.5-flare";
+/// GPT Image 2.5 Sunburst, the more precise of the two: a 1536×1024 picture at medium quality
+/// took 21–34 s with four drawn at once.
+const IMAGE_MODEL: &str = "gpt-image-2.5-sunburst";
 /// The image model's answer may weigh this much: a drawn 1536×1024 PNG is about 3 MB, and
 /// base64 adds a third.
 const DRAWN_BYTES: u64 = 16 * 1024 * 1024;
