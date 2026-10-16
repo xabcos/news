@@ -130,7 +130,7 @@ struct ModelDigest {
 }
 
 /// One sourced photograph from a collected story, carried in the existing run payload.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct NewsImage {
     pub url: String,
     pub source_url: String,

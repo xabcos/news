@@ -901,7 +901,7 @@ async fn postgres_xabc_writes_one_illustrated_article_a_day() {
         })
     };
     let body = format!(
-        "{}\n\n可以去试试[这个工具](https://www.known.example/tool/)，看看[别处](https://elsewhere.example/x)和[引用](https://cited.example/writer)。([known.example](https://known.example/tool))\n\n![](img:1)\n\n![](img:2)\n\n最后一段。",
+        "{}\n\n可以去试试[这个工具](https://www.known.example/tool/)，看看[别处](https://elsewhere.example/x)和[引用](https://cited.example/writer)。([known.example](https://known.example/tool))\n\n![](img:1)\n\n![](img:2)\n\n![](img:3)\n\n最后一段。",
         "有趣的东西，".repeat(80)
     );
     let ai = axum::Router::new()
@@ -939,6 +939,9 @@ async fn postgres_xabc_writes_one_illustrated_article_a_day() {
                                     "pictures": [
                                         { "page": "", "prompt": "一只猫", "caption": "一只猫" },
                                         { "page": "", "prompt": "", "caption": "不会来" },
+                                        // A page whose picture can't be had leaves none, though
+                                        // a prompt is there: the caption was written for it.
+                                        { "page": "https://unreachable.invalid/post", "prompt": "一只狗", "caption": "出自那个页面的图" },
                                     ],
                                     "cover": "封面插画",
                                 }),
@@ -1030,7 +1033,7 @@ async fn postgres_xabc_writes_one_illustrated_article_a_day() {
         .unwrap()
         .0;
     assert!(body.contains(&format!("![一只猫](image:{shown})\n*一只猫（AI 生成）*")));
-    assert!(!body.contains("img:"));
+    assert!(!body.contains("img:") && !body.contains("出自那个页面的图"));
 
     // Grok's search failed, so the briefing model wrote from its own finds alone.
     let asked = asked.lock().unwrap().clone();

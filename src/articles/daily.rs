@@ -374,7 +374,8 @@ async fn search(
     })
 }
 
-/// A picture the article asks for: the one a page shows, or else one drawn to the prompt.
+/// A picture the article asks for: the one a page shows, or with no page one drawn to the
+/// prompt. A page whose picture can't be had leaves none: its caption was written for it.
 #[derive(Clone, Debug, Deserialize)]
 struct Wanted {
     page: String,
@@ -573,13 +574,17 @@ async fn prepare(state: &AppState, wanted: Vec<Wanted>) -> Vec<Option<Picture>> 
 
 /// A picture fetched or drawn and kept, its slot held until it is kept.
 async fn picture(state: &AppState, wanted: &Wanted, slot: OwnedSemaphorePermit) -> Option<Picture> {
-    let (bytes, credit, _slot) = match found(state, &wanted.page).await {
-        Some((bytes, credit)) => (bytes, Some(credit), slot),
-        None if !wanted.prompt.trim().is_empty() => {
-            let (bytes, slot) = draw(state, &wanted.prompt, slot).await?;
-            (bytes, None, slot)
-        }
-        None => return None,
+    let (bytes, credit, _slot) = if !wanted.page.trim().is_empty() {
+        let (bytes, credit) = found(state, &wanted.page).await?;
+        (bytes, Some(credit), slot)
+    } else if !wanted.prompt.trim().is_empty() {
+        let (bytes, slot) = draw(state, &wanted.prompt, slot)
+            .await
+            .inspect_err(|error| tracing::warn!(%error, "XABC's illustration was not drawn"))
+            .ok()?;
+        (bytes, None, slot)
+    } else {
+        return None;
     };
     let (content_type, (width, height)) = kind(&bytes).ok()?;
     let stored = media::upload_image(state, bytes, content_type).await?;
@@ -600,16 +605,8 @@ async fn found(state: &AppState, page: &str) -> Option<(Vec<u8>, (String, String
         .ok()
         .filter(media::is_public_origin)?;
     let template = NewsImage {
-        url: String::new(),
         source_url: url.to_string(),
-        caption: String::new(),
-        caption_en: String::new(),
-        credit: String::new(),
-        origin_url: None,
-        expires_at: None,
-        content_hash: None,
-        width: None,
-        height: None,
+        ..NewsImage::default()
     };
     let post = crate::reads::x_status(&url).is_some();
     let images = match crate::catalog::page_pictures(state, url.as_str(), &template, false).await {
@@ -639,23 +636,9 @@ async fn found(state: &AppState, page: &str) -> Option<(Vec<u8>, (String, String
     None
 }
 
-async fn draw(
-    state: &AppState,
-    prompt: &str,
-    slot: OwnedSemaphorePermit,
-) -> Option<(Vec<u8>, OwnedSemaphorePermit)> {
-    match drawing(state, prompt, slot).await {
-        Ok(drawn) => Some(drawn),
-        Err(error) => {
-            tracing::warn!(%error, "XABC's illustration was not drawn");
-            None
-        }
-    }
-}
-
 /// An illustration from the image model, as JPEG: it answers with a PNG several times the size.
 /// The slot stays taken while the picture is decoded and encoded, and comes back with it.
-async fn drawing(
+async fn draw(
     state: &AppState,
     prompt: &str,
     slot: OwnedSemaphorePermit,
@@ -976,7 +959,7 @@ const WRITING: &str = "你是 XABC，在 xabcnews.com 的「分享」栏目写�
 - 正文用中文，专有名词保留原文写法；正文不重复标题，不用一级标题。
 - 标题自然、具体、让人想点开，不夸张，不超过 40 个字。
 配图：
-- 正文里需要图的地方，单独成段写 ![](img:1)、![](img:2)……（前后各空一行，不放进列表、表格或链接里），图注由程序加在图下，正文不用再写。pictures 按序号给出每张图：page 填线索里或你检索到的带图页面（X 帖子或文章页），程序会取出页面上的图；prompt 是一段画面描述，page 取不到图或没有合适的页面时，由图像模型照着画一张插图；caption 是一句图注：page 上的图你写作时看不到，图注只说它出自哪里、和正文什么关系（比如「LinPad 官网的介绍图」），不描述画面细节；画的插图照 prompt 写。
+- 正文里需要图的地方，单独成段写 ![](img:1)、![](img:2)……（前后各空一行，不放进列表、表格或链接里），图注由程序加在图下，正文不用再写。pictures 按序号给出每张图，二选一：用页面上的图时，page 填线索里或你检索到的带图页面（X 帖子或文章页），prompt 留空，程序取出页面上的图，取不到这张就不用了；要插图时 page 留空，prompt 写一段画面描述，由图像模型照着画。caption 是一句图注，只说这张图和正文的关系（比如「LinPad 的桌面」「白矮星颜色示意」），不写出处，出处由程序按实际取到的图注明；页面上的图你写作时看不到，不描述画面细节。
 - 图不在多，能帮读者看懂或者添点乐趣就好，一般一到五张；真实的图优先。
 - cover 是文章顶部封面插图的画面描述；封面会裁成宽幅横图，主体放在画面中间。
 - 插图用插画、信息图或概念图的风格，不画成以假乱真的照片，不画真实人物、品牌标志和文字。
