@@ -19,7 +19,7 @@ use crate::{
     topics::Topic,
 };
 pub(crate) use images::{from_page as page_pictures, prepare as prepare_images};
-pub(crate) use pages::{listed, router};
+pub(crate) use pages::{commentary_tabs, listed, router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -233,7 +233,7 @@ impl Proposal {
     /// ways; its name does not change, and the kind keeps an album apart from its title single.
     fn key(&self, section: Section) -> String {
         match section {
-            Section::Culture => format!("{}:{}", self.kind, fold(&self.name_en)),
+            Section::Culture => work_key(&self.kind, &self.name_en),
             Section::Gadgets => {
                 let brand = fold(&self.creator);
                 let name = folded(&self.name_en);
@@ -241,6 +241,11 @@ impl Proposal {
             }
         }
     }
+}
+
+/// How Culture knows a work, and 解说 the work an article explains.
+pub(crate) fn work_key(kind: &str, name_en: &str) -> String {
+    format!("{kind}:{}", fold(name_en))
 }
 
 /// A name as entries are told apart by it: Galaxy S26+ is not Galaxy S26.

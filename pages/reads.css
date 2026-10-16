@@ -2,7 +2,7 @@
 .reads-heading { display: flex; align-items: baseline; gap: 1rem; margin-bottom: 1.8rem; }
 .reads-heading h1 { flex-shrink: 0; margin: 0; font-size: 1.75rem; }
 .reads-heading p { min-width: 0; margin: 0; color: var(--muted); font-size: .9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* The search box stands left of the views; on phones the two take a row of their own under the title. */
+/* The search box stands left of the views; on phones the views stay beside the title and the search box takes the row below. */
 .reads-tools { display: flex; flex-shrink: 0; align-items: baseline; gap: 1.35rem; margin-left: auto; }
 .reads-search input { width: 15rem; padding: .3rem .85rem; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-solid); color: inherit; font: inherit; font-size: 1rem; }
 .reads-search input:focus { border-color: var(--primary); outline: none; }
@@ -15,9 +15,6 @@
 .read-card .item-meta { display: block; }
 .read-date { white-space: nowrap; }
 .read-rank { width: 1.3rem; flex-shrink: 0; padding-top: .15rem; color: var(--muted); font-size: .72rem; font-variant-numeric: tabular-nums; }
-.read-views { display: inline-flex; align-items: center; vertical-align: middle; gap: .3rem; white-space: nowrap; color: var(--muted); font-size: .75rem; font-variant-numeric: tabular-nums; }
-.reads-pagination, .read-actions { display: flex; align-items: center; gap: 1.5rem; margin-top: 2rem; font-size: .85rem; }
-.reads-pagination a, .read-actions a { color: var(--muted); text-decoration: none; }
 .read-heading { margin-bottom: 2.5rem; }
 .read-title { display: flex; align-items: baseline; gap: 1rem; margin: .8rem 0 1rem; }
 .read-title h1 { flex: 1; min-width: 0; margin: 0; font-size: clamp(1.55rem, 3.2vw, 1.95rem); line-height: 1.5; text-wrap: balance; overflow-wrap: anywhere; }
@@ -59,9 +56,10 @@
 @media (max-width: 768px) {
   .reads-list, .read-heading, .read-source, .read-actions, .read-related,
   .read-body :is(p, h1, h2, h3, h4, h5, h6) { touch-action: pan-y pinch-zoom; }
-  .reads-heading { flex-wrap: wrap; gap: .5rem; }
-  .reads-tools { flex: 1 0 100%; gap: .8rem; }
-  .reads-search { flex: 1; min-width: 0; }
+  .reads-heading { flex-wrap: wrap; gap: .6rem .8rem; }
+  .reads-heading p { flex: 1 1 0; }
+  .reads-tools { display: contents; }
+  .reads-search { order: 1; flex: 1 0 100%; }
   .reads-search input { width: 100%; }
   .reads-heading h1 { font-size: 1.25rem; }
   .reads-heading p, .reads-views { font-size: .75rem; }

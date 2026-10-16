@@ -24,6 +24,8 @@
 .catalog-card.catalog-book :is(.item-meta,.item-title,.item-summary,.item-tags,.catalog-work-link) { margin-right: 0; margin-left: 0; }
 .catalog-card.catalog-book .item-meta { margin-top: 0; }
 .catalog-card.catalog-book:not(:has(.image-news-media)) { grid-template-columns: 1fr; }
+/* 解说: XABC's articles tile like the works, each with three lines of its opening. */
+.catalog-commentary .catalog-card .item-summary { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 .catalog-more { display: flex; width: fit-content; margin: 2rem auto 0; text-decoration: none; }
 .catalog-more[aria-busy=true] { opacity: .55; pointer-events: none; }
 .catalog-work { max-width: 66rem; margin: 2.5rem auto 0; }

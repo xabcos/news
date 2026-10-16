@@ -160,7 +160,7 @@ fn tabs(section: Section, topics: &[(String, String)], current: &str, en: bool) 
             Section::Gadgets => choose(en, "数码栏目", "Gadgets collections"),
         }
     );
-    for (id, name) in topics {
+    let mut tab = |id: &str, name: &str| {
         let _ = write!(
             html,
             "<a href=\"{}\"{}>{}</a>",
@@ -172,9 +172,25 @@ fn tabs(section: Section, topics: &[(String, String)], current: &str, en: bool) 
             },
             escape(name)
         );
+    };
+    for (id, name) in topics {
+        tab(id, name);
+        // 解说 explains 影视's films and series in XABC's articles.
+        if id == "movie" {
+            tab(COMMENTARY, crate::articles::commentary_label(en));
+        }
     }
     html.push_str("</nav>");
     html
+}
+
+/// Where 文娱 · 解说 lists its articles, under Culture's path.
+const COMMENTARY: &str = "commentary";
+
+/// Culture's tabs over 解说, whose page `articles` renders.
+pub(crate) fn commentary_tabs(state: &AppState, reader: Reader, en: bool) -> String {
+    let topics = catalogue(state, Section::Culture, reader, en);
+    tabs(Section::Culture, &topics, COMMENTARY, en)
 }
 fn description(section: Section, topic: &str, en: bool) -> &'static str {
     match section {
@@ -207,7 +223,7 @@ fn layout(
         &Chrome {
             current: topic,
             section: &format!("catalog {} catalog-{topic}", section.path()),
-            stylesheet: "/catalog.css?v=7",
+            stylesheet: "/catalog.css?v=8",
             script: "/catalog.js?v=4",
             feed: (section.label(en), &format!("/feed.xml?topic={topic}")),
         },

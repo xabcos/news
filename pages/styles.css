@@ -295,6 +295,10 @@ p { margin-top: 0; }
 .day-divider h2 { margin: 0; font-size: 1rem; font-weight: 750; letter-spacing: .01em; }
 .day-block.day-heading-hidden > .group:first-of-type .group-title { margin-top: .5rem; }
 .day-block:not(:first-child) > .group:first-of-type .group-title { margin-top: .8rem; }
+/* Read counts and list pages, shared by Reads, 分享 and 解说. */
+.read-views { display: inline-flex; align-items: center; vertical-align: middle; gap: .3rem; white-space: nowrap; color: var(--muted); font-size: .75rem; font-variant-numeric: tabular-nums; }
+.reads-pagination, .read-actions { display: flex; align-items: center; gap: 1.5rem; margin-top: 2rem; font-size: .85rem; }
+.reads-pagination a, .read-actions a { color: var(--muted); text-decoration: none; }
 .load-more {
   display: flex;
   min-height: 1px;

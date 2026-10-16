@@ -33,7 +33,7 @@ const SEARCHED: &str = "concat_ws(' ', i.title, i.title_en, i.summary, i.summary
 const CHROME: Chrome<'static> = Chrome {
     current: "reads",
     section: "reads",
-    stylesheet: "/reads.css?v=14",
+    stylesheet: "/reads.css?v=15",
     script: "/reads.js?v=9",
     feed: ("Reads", "/feed.xml?topic=reads"),
 };

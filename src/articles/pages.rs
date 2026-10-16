@@ -1,6 +1,6 @@
 //! The 分享 pages: public articles newest first, one author's articles, an article, and the
 //! previews its author and an administrator read before readers do.
-use super::{MARKDOWN, image_id, label, missing, parse};
+use super::{COMMENTARY, MARKDOWN, commentary_label, image_id, label, missing, parse};
 use crate::{
     auth::User,
     digest::{Rendered, conditional},
@@ -33,7 +33,7 @@ const FROM: &str = " FROM articles a JOIN authors w ON w.user_id = a.author_id J
 const LIST: Chrome<'static> = Chrome {
     current: "articles",
     section: "reads articles",
-    stylesheet: "/reads.css?v=14",
+    stylesheet: "/reads.css?v=15",
     script: "/reads.js?v=9",
     feed: ("News", "/feed.xml"),
 };
@@ -42,12 +42,25 @@ const ARTICLE: Chrome<'static> = Chrome {
     script: "/articles.js?v=5",
     ..LIST
 };
+/// 文娱 · 解说 belongs to Culture, whose tab it marks, and its cards tile like Culture's while
+/// they load and count like the lists here.
+const EXPLAINED: Chrome<'static> = Chrome {
+    current: "movie",
+    section: "catalog culture catalog-commentary",
+    stylesheet: "/catalog.css?v=8",
+    ..LIST
+};
+const EXPLANATION: Chrome<'static> = Chrome {
+    current: "movie",
+    ..ARTICLE
+};
 
 pub(super) fn router() -> Router<AppState> {
     reading::pages(
         Router::new()
             .route("/articles", get(index))
-            .route("/articles/{id}", get(detail)),
+            .route("/articles/{id}", get(detail))
+            .route(COMMENTARY, get(commentary)),
     )
     .route("/articles/sitemap.xml", get(sitemap))
     .route("/api/articles/{id}/preview", get(preview))
@@ -66,8 +79,9 @@ async fn sitemap(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
             .fetch_all(&state.pool)
             .await?;
     let mut xml = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\"><url><loc>{}</loc></url>",
-        escape(&absolute(&state, "/articles"))
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\"><url><loc>{}</loc></url><url><loc>{}</loc></url>",
+        escape(&absolute(&state, "/articles")),
+        escape(&absolute(&state, COMMENTARY))
     );
     for (id, updated_at) in rows {
         let _ = write!(
@@ -124,6 +138,8 @@ struct Article {
     views: i64,
     updated_at: DateTime<Utc>,
     published_at: Option<DateTime<Utc>>,
+    /// Whether it is a 解说, which belongs to Culture.
+    film: bool,
 }
 
 #[derive(FromRow)]
@@ -148,7 +164,8 @@ enum Mode {
     Author(Option<i64>),
 }
 
-fn listing(page: u32, en: bool, by: Option<i64>) -> String {
+/// The address of a list's page, one author's with `by`.
+fn listing(path: &str, page: u32, en: bool, by: Option<i64>) -> String {
     let mut query = url::form_urlencoded::Serializer::new(String::new());
     if let Some(by) = by {
         query.append_pair("by", &by.to_string());
@@ -159,12 +176,43 @@ fn listing(page: u32, en: bool, by: Option<i64>) -> String {
     let query = query.finish();
     localized(
         &if query.is_empty() {
-            "/articles".into()
+            path.into()
         } else {
-            format!("/articles?{query}")
+            format!("{path}?{query}")
         },
         en,
     )
+}
+
+/// Links to a list's neighbouring pages; the page script follows the next one as readers scroll.
+fn pagination(path: &str, page: u32, more: bool, en: bool, by: Option<i64>) -> String {
+    let mut nav = "<nav class=reads-pagination aria-label=Pagination>".to_owned();
+    if page > 1 {
+        let _ = write!(
+            nav,
+            "<a rel=prev href=\"{}\">{}</a>",
+            escape(&listing(path, page - 1, en, by)),
+            choose(en, "上一页", "Newer")
+        );
+    }
+    if more {
+        let _ = write!(
+            nav,
+            "<a rel=next href=\"{}\">{}</a>",
+            escape(&listing(path, page + 1, en, by)),
+            choose(en, "继续阅读", "Older articles")
+        );
+    }
+    nav.push_str("</nav>");
+    nav
+}
+
+/// The page of a list asked for.
+fn page(params: &Params) -> Result<u32> {
+    match params.page.unwrap_or(1) {
+        page @ 1..=100000 => Ok(page),
+        _ => Err(AppError::NotFound("页面不存在".into())),
+    }
 }
 
 async fn index(
@@ -174,10 +222,7 @@ async fn index(
     headers: HeaderMap,
 ) -> Result<Response> {
     let en = params.english();
-    let page = match params.page.unwrap_or(1) {
-        page @ 1..=100000 => page,
-        _ => return Err(AppError::NotFound("页面不存在".into())),
-    };
+    let page = page(&params)?;
     // 热读 ranks the section's last 30 days as Reads ranks its own: reads, fading by half a week.
     let hot = params.view.as_deref() == Some("hot") && params.by.is_none();
     if hot && page != 1 {
@@ -198,7 +243,10 @@ async fn index(
     let mut query = QueryBuilder::<Postgres>::new(
         "SELECT a.id, a.author_id, w.name AS author, a.title, a.excerpt, a.views, a.published_at",
     );
-    query.push(FROM).push(" AND a.status = 'published'");
+    // 解说 has a list of its own.
+    query
+        .push(FROM)
+        .push(" AND a.status = 'published' AND a.film IS NULL");
     if hot {
         query.push(
             " AND a.views > 0 AND a.published_at >= NOW() - INTERVAL '30 days'
@@ -284,24 +332,8 @@ async fn index(
             "<p class=muted>No articles yet. <a href=\"/me/\">Write the first one</a>.</p>",
         ));
     }
-    content.push_str("</div><nav class=reads-pagination aria-label=Pagination>");
-    if page > 1 {
-        let _ = write!(
-            content,
-            "<a rel=prev href=\"{}\">{}</a>",
-            escape(&listing(page - 1, en, params.by)),
-            choose(en, "上一页", "Newer")
-        );
-    }
-    if more {
-        let _ = write!(
-            content,
-            "<a rel=next href=\"{}\">{}</a>",
-            escape(&listing(page + 1, en, params.by)),
-            choose(en, "继续阅读", "Older articles")
-        );
-    }
-    content.push_str("</nav>");
+    content.push_str("</div>");
+    content.push_str(&pagination("/articles", page, more, en, params.by));
     let title = match (&author, page) {
         (Some(name), _) => format!("{name} · {}", label(en)),
         (None, _) if hot => format!("{} · {}", choose(en, "热读", "Popular"), label(en)),
@@ -311,7 +343,7 @@ async fn index(
     let path = if hot {
         "/articles?view=hot".to_owned()
     } else {
-        listing(page, false, params.by)
+        listing("/articles", page, false, params.by)
     };
     let html = crate::site::layout(
         &state,
@@ -331,19 +363,131 @@ async fn index(
     ))
 }
 
+/// A 解说 on its list: the cover while tmpfile keeps it, and its title, date, reads and opening.
+#[derive(FromRow)]
+struct Explained {
+    id: Uuid,
+    title: String,
+    excerpt: String,
+    views: i64,
+    published_at: DateTime<Utc>,
+    cover: Option<String>,
+    width: Option<i32>,
+    height: Option<i32>,
+}
+
+/// 文娱 · 解说: XABC's articles on films and series, newest first, as picture cards under
+/// Culture's tabs.
+async fn commentary(
+    State(state): State<AppState>,
+    reader: Reader,
+    Query(params): Query<Params>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    let en = params.english();
+    let page = page(&params)?;
+    let mut rows: Vec<Explained> = sqlx::query_as(
+        "SELECT a.id, a.title, a.excerpt, a.views, a.published_at,
+                CASE WHEN i.expires_at > now() THEN i.url END AS cover, i.width, i.height
+         FROM articles a JOIN users u ON u.id = a.author_id
+         LEFT JOIN article_images i ON i.id = a.cover
+         WHERE u.status AND a.status = 'published' AND a.film IS NOT NULL
+         ORDER BY a.published_at DESC, a.id DESC LIMIT $1 OFFSET $2",
+    )
+    .bind(PAGE_SIZE + 1)
+    .bind(i64::from(page - 1) * PAGE_SIZE)
+    .fetch_all(&state.pool)
+    .await?;
+    if page > 1 && rows.is_empty() {
+        return Err(AppError::NotFound("页面不存在".into()));
+    }
+    let more = rows.len() > PAGE_SIZE as usize;
+    rows.truncate(PAGE_SIZE as usize);
+    let mut content = crate::catalog::commentary_tabs(&state, reader, en);
+    content.push_str("<div class=\"reads-list catalog-grid\">");
+    for row in &rows {
+        content.push_str(&explained(row, en, state.config.timezone));
+    }
+    content.push_str("</div>");
+    if rows.is_empty() {
+        let _ = write!(
+            content,
+            "<p class=empty>{}</p>",
+            choose(en, "第一篇解说正在写。", "The first one is being written.")
+        );
+    }
+    content.push_str(&pagination(COMMENTARY, page, more, en, None));
+    let label = commentary_label(en);
+    let title = match page {
+        1 => format!("{label} · {}", crate::catalog::Section::Culture.label(en)),
+        page => format!(
+            "{label} · {page} · {}",
+            crate::catalog::Section::Culture.label(en)
+        ),
+    };
+    let html = crate::site::layout(
+        &state,
+        reader,
+        en,
+        &listing(COMMENTARY, page, false, None),
+        &title,
+        choose(
+            en,
+            "好电影、好剧的完整解说：剧情、结局与幕后",
+            "Good films and series explained: story, ending and the making",
+        ),
+        &content,
+        None,
+        &EXPLAINED,
+    );
+    Ok(conditional(
+        &headers,
+        &Rendered::new(html),
+        "text/html; charset=utf-8",
+    ))
+}
+
+fn explained(item: &Explained, en: bool, timezone: chrono_tz::Tz) -> String {
+    let href = localized(&format!("/articles/{}", item.id), en);
+    let cover = item
+        .cover
+        .as_ref()
+        .map(|cover| {
+            format!(
+                "<a class=image-news-media href=\"{href}\" tabindex=-1 aria-hidden=true><img src=\"{}\" width={} height={} alt=\"\" loading=lazy decoding=async referrerpolicy=no-referrer></a>",
+                escape(cover),
+                item.width.unwrap_or_default(),
+                item.height.unwrap_or_default()
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "<article class=\"item image-news-card catalog-card\">{cover}<div class=catalog-card-body><p class=item-meta><time datetime=\"{}\">{}</time>{}</p><h2 class=item-title><a href=\"{href}\">{}</a></h2><p class=item-summary>{}</p></div></article>",
+        item.published_at.to_rfc3339(),
+        item.published_at
+            .with_timezone(&timezone)
+            .format("%Y-%m-%d"),
+        reads(item.id, item.views, en),
+        escape(&item.title),
+        escape(&item.excerpt)
+    )
+}
+
+/// A card's reads, whose place stays hidden while nobody has read it: the page script brings
+/// the count up to date, so a cached list still shows what is read now.
+fn reads(id: Uuid, views: i64, en: bool) -> String {
+    format!(
+        "<span data-views=\"{id}\"{}> · <span class=read-views title=\"{}\">{EYE}<span>{views}</span></span></span>",
+        if views > 0 { "" } else { " hidden" },
+        choose(en, "阅读次数", "Reads"),
+    )
+}
+
 fn card(item: &Card, en: bool, rank: Option<usize>, timezone: chrono_tz::Tz) -> String {
     let rank = rank
         .map(|rank| format!("<span class=read-rank aria-hidden=true>{rank:02}</span>"))
         .unwrap_or_default();
-    // The page script brings the count up to date, so a cached list still shows what is read
-    // now; an article nobody has read yet keeps its place hidden.
-    let views = format!(
-        "<span data-views=\"{}\"{}> · <span class=read-views title=\"{}\">{EYE}<span>{}</span></span></span>",
-        item.id,
-        if item.views > 0 { "" } else { " hidden" },
-        choose(en, "阅读次数", "Reads"),
-        item.views
-    );
+    let views = reads(item.id, item.views, en);
     format!(
         "<article class=item>{rank}<div class=read-card><div class=item-meta><a href=\"{}\">{}</a> · <span class=read-date><time datetime=\"{}\">{}</time>{views}</span></div><h2 class=item-title><a href=\"{}\">{}</a></h2><p class=item-summary>{}</p></div></article>",
         escape(&localized(&format!("/articles?by={}", item.author_id), en)),
@@ -410,7 +554,7 @@ async fn render(
     mode: Mode,
 ) -> Result<String> {
     let mut query = QueryBuilder::<Postgres>::new(
-        "SELECT a.id, a.author_id, w.name AS author, a.title, a.body, a.excerpt, a.cover, a.status, a.revision, a.views, a.updated_at, a.published_at",
+        "SELECT a.id, a.author_id, w.name AS author, a.title, a.body, a.excerpt, a.cover, a.status, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film",
     );
     query.push(FROM).push(" AND a.id = ").push_bind(id);
     match mode {
@@ -511,7 +655,16 @@ async fn render(
             },
         ),
     };
-    let by = localized(&format!("/articles?by={}", article.author_id), en);
+    // A 解说 leads back to its list, whose articles are all XABC's.
+    let (list, name, by) = if article.film {
+        (COMMENTARY, commentary_label(en), localized(COMMENTARY, en))
+    } else {
+        (
+            "/articles",
+            label(en),
+            localized(&format!("/articles?by={}", article.author_id), en),
+        )
+    };
     let mut content = format!(
         "{notice}<article class=\"read article\">{}<header class=read-heading><div class=read-title><h1>{}</h1></div><div class=item-meta><a href=\"{}\">{}</a> · <time datetime=\"{}\">{}</time> · {views}</div></header><div class=read-body>{body}</div></article>",
         cover
@@ -532,9 +685,8 @@ async fn render(
     );
     let _ = write!(
         content,
-        "<div class=read-actions><a href=\"{}\">← {}</a></div>",
-        localized("/articles", en),
-        label(en)
+        "<div class=read-actions><a href=\"{}\">← {name}</a></div>",
+        localized(list, en),
     );
     let path = match mode {
         Mode::Author(_) => format!("/api/articles/{}/preview", article.id),
@@ -559,10 +711,10 @@ async fn render(
         reader,
         en,
         &path,
-        &format!("{title} · {}", label(en)),
+        &format!("{title} · {name}"),
         &article.excerpt,
         &content,
         Some(structured),
-        &ARTICLE,
+        if article.film { &EXPLANATION } else { &ARTICLE },
     ))
 }

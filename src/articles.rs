@@ -47,6 +47,14 @@ const IMAGE: &str = "image:";
 /// The Markdown readers write, the dialect Reads renders.
 const MARKDOWN: Options = Options::ENABLE_STRIKETHROUGH.union(Options::ENABLE_TABLES);
 
+/// Where 文娱 · 解说 lists XABC's articles on films and series, under Culture.
+const COMMENTARY: &str = "/culture/commentary";
+
+/// 文娱 · 解说's name, in the page's language.
+pub(crate) fn commentary_label(en: bool) -> &'static str {
+    crate::site::choose(en, "解说", "𝑬𝒙𝒑𝒍𝒂𝒊𝒏𝒆𝒅")
+}
+
 /// The section's name, in the page's language.
 pub(crate) fn label(en: bool) -> &'static str {
     crate::site::choose(en, "分享", "𝑨𝒓𝒕𝒊𝒄𝒍𝒆𝒔")

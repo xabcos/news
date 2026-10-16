@@ -888,11 +888,12 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
     assert_eq!(counts().await, (tomorrow, 0, 1));
 }
 
-/// XABC's morning article from start to finish against stand-ins for the AI service and
-/// tmpfile: the searches, the writing, the drawn pictures, publication and the public page.
+/// XABC's two lines from start to finish against stand-ins for the AI service and tmpfile: a 分享
+/// article's searches, writing, drawn pictures, publication and pages; then 解说 explaining a
+/// work 影视 discusses and a classic, revising the first, and listing them under Culture.
 #[tokio::test]
 #[ignore = "requires NEWS_XABC_TEST_DATABASE_URL and local test configuration"]
-async fn postgres_xabc_writes_one_illustrated_article_a_day() {
+async fn postgres_xabc_shares_and_explains_films() {
     use crate::config::Config;
     use axum::{http::StatusCode, routing::post};
     use base64::Engine;
@@ -939,6 +940,53 @@ async fn postgres_xabc_writes_one_illustrated_article_a_day() {
                     let (asked, failing, body) = (asked.clone(), failing.clone(), body.clone());
                     async move {
                         asked.lock().unwrap().push(request.clone());
+                        let instructions = request["instructions"].as_str().unwrap_or_default();
+                        let film = instructions.contains("文娱 · 解说");
+                        if request["text"]["format"]["name"] == "classics" {
+                            // The first is written about already.
+                            return (
+                                StatusCode::OK,
+                                Json(reply(
+                                    json!({ "works": [
+                                        { "kind": "movie", "name": "测试片", "name_en": "Test Film", "year": 2026 },
+                                        { "kind": "movie", "name": "经典片", "name_en": "A Classic", "year": 1972 },
+                                    ] }),
+                                    "https://cited.example/classics",
+                                )),
+                            );
+                        }
+                        if request["text"]["format"]["name"] == "finds" && film {
+                            return (
+                                StatusCode::OK,
+                                Json(reply(
+                                    json!({ "finds": [{
+                                        "title": "结局解析", "why": "讲透了", "points": "结局是这样的",
+                                        "sources": ["https://film.example/review"], "pictures": [],
+                                    }] }),
+                                    "https://cited.example/film",
+                                )),
+                            );
+                        }
+                        if request["text"]["format"]["name"] == "article" && film {
+                            let revising = instructions.contains("这次是修订");
+                            let body = if revising {
+                                format!("{}\n\n![](keep:1)\n\n![](img:1)\n\n结局终于清楚了。", "修订后的解说，".repeat(80))
+                            } else {
+                                format!("{}\n\n![](img:1)\n\n看[影评](https://film.example/review)。", "完整的剧情，".repeat(80))
+                            };
+                            return (
+                                StatusCode::OK,
+                                Json(reply(
+                                    json!({
+                                        "title": if revising { "修订后的解说" } else { "一部片的解说" },
+                                        "body": body,
+                                        "pictures": [{ "page": "", "prompt": "一幅插图", "caption": if revising { "新图" } else { "旧图" } }],
+                                        "cover": "封面插画",
+                                    }),
+                                    "https://cited.example/film",
+                                )),
+                            );
+                        }
                         if request["text"]["format"]["name"] == "finds" {
                             let grok = request["tools"].as_array().unwrap().len() == 2;
                             match failing.load(Ordering::SeqCst) {
@@ -1017,7 +1065,7 @@ async fn postgres_xabc_writes_one_illustrated_article_a_day() {
     // The migration made XABC's account, which takes the pen name before any reader can.
     let author = xabc::author(&state).await.unwrap();
     let since = Utc::now() - chrono::Duration::minutes(1);
-    let id = xabc::write(&state, since).await.unwrap();
+    let id = xabc::write(&state, xabc::Line::Share, since).await.unwrap();
 
     let (title, body, cover, status, name): (String, String, Option<Uuid>, String, String) =
         sqlx::query_as(
@@ -1062,6 +1110,7 @@ async fn postgres_xabc_writes_one_illustrated_article_a_day() {
     assert!(!body.contains("img:") && !body.contains("出自那个页面的图"));
 
     // Grok's search failed, so the briefing model wrote from its own finds alone.
+    let asked_log = asked.clone();
     let asked = asked.lock().unwrap().clone();
     assert_eq!(asked.len(), 3);
     let searched = |model: &str| {
@@ -1084,6 +1133,7 @@ async fn postgres_xabc_writes_one_illustrated_article_a_day() {
     let material = writing["input"][0]["content"].as_str().unwrap();
     assert!(material.contains("1.【全网】一个好玩的工具"));
     assert!(!material.contains("【X 与全网】"));
+    let drawings_log = drawings.clone();
     let drawings = drawings.lock().unwrap().clone();
     assert_eq!(drawings.len(), 2);
     assert!(
@@ -1095,27 +1145,34 @@ async fn postgres_xabc_writes_one_illustrated_article_a_day() {
     // The last article tells when the next is due. Without finds nothing is written, and finds
     // about a page an article of the last week linked to are left out.
     assert!(
-        xabc::last(&state)
+        xabc::last(&state, xabc::Line::Share)
             .await
             .unwrap()
             .is_some_and(|at| at >= since)
     );
     failing.store(2, Ordering::SeqCst);
     assert!(matches!(
-        xabc::write(&state, since).await,
+        xabc::write(&state, xabc::Line::Share, since).await,
         Err(AppError::Internal(message)) if message.contains("没有找到线索")
     ));
     failing.store(0, Ordering::SeqCst);
     assert!(matches!(
-        xabc::write(&state, since).await,
+        xabc::write(&state, xabc::Line::Share, since).await,
         Err(AppError::Internal(message)) if message.contains("最近写过")
     ));
     // Two writers finishing together publish once.
     let later = Utc::now();
     let body = "字".repeat(500);
+    let article = |title: &str| xabc::Finished {
+        title: title.into(),
+        body: body.clone(),
+        pictures: Vec::new(),
+        cover: None,
+    };
+    let (one, other) = (article("甲"), article("乙"));
     let (first, second) = tokio::join!(
-        xabc::publish(&state, author, later, "甲", &body, &[], None),
-        xabc::publish(&state, author, later, "乙", &body, &[], None),
+        xabc::publish(&state, author, later, None, &one),
+        xabc::publish(&state, author, later, None, &other),
     );
     assert_eq!(
         [first.is_ok(), second.is_ok()]
@@ -1197,4 +1254,157 @@ async fn postgres_xabc_writes_one_illustrated_article_a_day() {
             .status(),
         404
     );
+
+    // 文娱 · 解说: a work 影视 has reviews of comes first, with what 影视's guide checked.
+    sqlx::query("TRUNCATE catalog_entries, catalog_items")
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    let entry = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO catalog_entries (id, topic_id, slug, name, name_en, creator, kind, key, source_urls, guide)
+         VALUES ($1, 'movie', 'test-film', '测试片', 'Test Film', '导演甲', 'movie', 'movie:testfilm', '[]',
+                 '{\"intro\": \"一部讲时间的片子。\", \"facts\": [{\"label\": \"片长\", \"text\": \"112 分钟\"}]}')",
+    )
+    .bind(entry)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    let story = |role: &'static str, age: &'static str| {
+        let state = state.clone();
+        async move {
+            let item = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO items (id, topic_id, day, fingerprint, title, summary, url, first_seen_at)
+                 VALUES ($1, 'movie', CURRENT_DATE, sha256(convert_to($1::text, 'UTF8')), '一篇影评', '说结局', $2,
+                         now() - $3::interval)",
+            )
+            .bind(item)
+            .bind(format!("https://film.example/story/{item}"))
+            .bind(age)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO catalog_items (item_id, entry_id, role) VALUES ($1, $2, $3)")
+                .bind(item)
+                .bind(entry)
+                .bind(role)
+                .execute(&state.pool)
+                .await
+                .unwrap();
+        }
+    };
+    story("review", "2 days").await;
+    let explained = xabc::write(&state, xabc::Line::Film, Utc::now())
+        .await
+        .unwrap();
+    let (film, title, body, cover, revision): (Option<String>, String, String, Option<Uuid>, i32) =
+        sqlx::query_as("SELECT film, title, body, cover, revision FROM articles WHERE id = $1")
+            .bind(explained)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (film.as_deref(), title.as_str()),
+        (Some("movie:testfilm"), "一部片的解说")
+    );
+    let figure = body
+        .lines()
+        .skip_while(|line| !line.starts_with("![旧图](image:"))
+        .take(2)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(figure.ends_with("*旧图（AI 生成）*"), "{body}");
+    assert!(body.contains("[影评](https://film.example/review)"));
+    let writing = |asked: &[Value]| {
+        asked
+            .iter()
+            .rev()
+            .find(|request| request["text"]["format"]["name"] == "article")
+            .unwrap()["input"][0]["content"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let material = writing(&asked_log.lock().unwrap());
+    assert!(material.contains("作品：《测试片》（Test Film，电影，主创 导演甲）"));
+    assert!(material.contains("影视栏目核实过的资料：一部讲时间的片子。\n- 片长：112 分钟"));
+    assert!(
+        xabc::last(&state, xabc::Line::Film)
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    // The next is a classic the model suggests, the first it names that has no article.
+    let classic = xabc::write(&state, xabc::Line::Film, Utc::now())
+        .await
+        .unwrap();
+    let film: Option<String> = sqlx::query_scalar("SELECT film FROM articles WHERE id = $1")
+        .bind(classic)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(film.as_deref(), Some("movie:aclassic"));
+
+    // Five new stories about the work, three days after its article, have the article revised:
+    // its figure and cover stay, and a new picture joins them.
+    sqlx::query("UPDATE articles SET updated_at = now() - INTERVAL '4 days' WHERE id = $1")
+        .bind(explained)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    for _ in 0..5 {
+        story("news", "1 day").await;
+    }
+    let drawn_before = drawings_log.lock().unwrap().len();
+    assert_eq!(
+        xabc::write(&state, xabc::Line::Film, Utc::now())
+            .await
+            .unwrap(),
+        explained
+    );
+    let material = writing(&asked_log.lock().unwrap());
+    assert!(material.contains("\n\n![](keep:1)\n\n") && !material.contains("image:"));
+    assert!(material.contains(
+        "影视栏目在上次修订之后收到的内容：\n- 一篇影评：说结局（https://film.example/story/"
+    ));
+    let (title, revised, kept_cover, revised_at): (String, String, Option<Uuid>, i32) =
+        sqlx::query_as("SELECT title, body, cover, revision FROM articles WHERE id = $1")
+            .bind(explained)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (title.as_str(), kept_cover, revised_at),
+        ("修订后的解说", cover, revision + 1)
+    );
+    assert!(
+        revised.contains(&format!("{figure}\n\n![新图](image:")),
+        "{revised}"
+    );
+    // No cover is drawn again.
+    assert_eq!(drawings_log.lock().unwrap().len(), drawn_before + 1);
+
+    // 解说 lists its articles as picture cards under Culture's tabs, and 分享 doesn't.
+    let page = |path: String| {
+        let http = http.clone();
+        async move { http.get(path).send().await.unwrap().text().await.unwrap() }
+    };
+    let list = page(format!("{base}/culture/commentary")).await;
+    assert!(list.contains("<a href=\"/culture/movie\">影视</a><a href=\"/culture/commentary\" aria-current=\"true\">解说</a>"));
+    assert!(
+        list.contains("class=\"item image-news-card catalog-card\"")
+            && list.contains("修订后的解说")
+    );
+    assert!(
+        !page(format!("{base}/articles"))
+            .await
+            .contains("修订后的解说")
+    );
+    let article = page(format!("{base}/articles/{explained}")).await;
+    assert!(article.contains("<a href=\"/culture/commentary\">← 解说</a>"));
+    assert!(article.contains(
+        "<a class=tab href=\"/culture\" data-last=\"/culture/book\" aria-current=\"true\">文娱</a>"
+    ));
 }
