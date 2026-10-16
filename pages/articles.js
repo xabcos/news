@@ -3,24 +3,37 @@
 PublicPage.page();
 
 // A read counts once a day in this browser, and the server leaves out the author's own. The
-// page may come from a cache, so the count it shows is brought up to date here.
+// page may come from a cache or back from the browser's back/forward cache, so the count it
+// shows is brought up to date each time it is shown.
 (() => {
   const counter = document.querySelector("[data-article-views]");
   const id = counter?.dataset.articleViews;
   if (!id) return;
   const key = `news.read.${id}`;
-  const today = new Date().toDateString();
-  try {
-    if (localStorage.getItem(key) === today) return;
-  } catch { /* Counting works without storage. */ }
-  fetch(`/api/articles/${encodeURIComponent(id)}/views`, { method: "POST", credentials: "same-origin" })
-    .then((response) => (response.ok ? response.json() : null))
-    .then((data) => {
-      if (!Number.isSafeInteger(data?.views)) return;
-      try { localStorage.setItem(key, today); } catch { /* Counting works without storage. */ }
-      counter.querySelector("span").textContent = new Intl.NumberFormat(document.documentElement.lang).format(data.views);
-    })
-    .catch(() => {});
+  const count = () => {
+    const today = new Date().toDateString();
+    let counted = false;
+    try { counted = localStorage.getItem(key) === today; } catch { /* Counting works without storage. */ }
+    // A read counted already today only brings the number up to date.
+    const request = counted
+      ? fetch(`/api/articles/views?ids=${encodeURIComponent(id)}`)
+      : fetch(`/api/articles/${encodeURIComponent(id)}/views`, { method: "POST", credentials: "same-origin" });
+    request
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        const views = counted ? data?.views?.[id] : data?.views;
+        if (!Number.isSafeInteger(views)) return;
+        if (!counted) {
+          try { localStorage.setItem(key, today); } catch { /* Counting works without storage. */ }
+        }
+        counter.querySelector("span").textContent = new Intl.NumberFormat(document.documentElement.lang).format(views);
+      })
+      .catch(() => {});
+  };
+  count();
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) count();
+  });
 })();
 
 // An administrator's preview: the ❤️ publishes the revision on screen, and taking it back

@@ -34,12 +34,12 @@ const LIST: Chrome<'static> = Chrome {
     current: "articles",
     section: "reads articles",
     stylesheet: "/reads.css?v=14",
-    script: "/reads.js?v=8",
+    script: "/reads.js?v=9",
     feed: ("News", "/feed.xml"),
 };
 /// An article counts its reads, and its review takes a ❤️.
 const ARTICLE: Chrome<'static> = Chrome {
-    script: "/articles.js?v=4",
+    script: "/articles.js?v=5",
     ..LIST
 };
 
@@ -335,15 +335,15 @@ fn card(item: &Card, en: bool, rank: Option<usize>, timezone: chrono_tz::Tz) -> 
     let rank = rank
         .map(|rank| format!("<span class=read-rank aria-hidden=true>{rank:02}</span>"))
         .unwrap_or_default();
-    let views = if item.views > 0 {
-        format!(
-            " · <span class=read-views title=\"{}\">{EYE}<span>{}</span></span>",
-            choose(en, "阅读次数", "Reads"),
-            item.views
-        )
-    } else {
-        String::new()
-    };
+    // The page script brings the count up to date, so a cached list still shows what is read
+    // now; an article nobody has read yet keeps its place hidden.
+    let views = format!(
+        "<span data-views=\"{}\"{}> · <span class=read-views title=\"{}\">{EYE}<span>{}</span></span></span>",
+        item.id,
+        if item.views > 0 { "" } else { " hidden" },
+        choose(en, "阅读次数", "Reads"),
+        item.views
+    );
     format!(
         "<article class=item>{rank}<div class=read-card><div class=item-meta><a href=\"{}\">{}</a> · <span class=read-date><time datetime=\"{}\">{}</time>{views}</span></div><h2 class=item-title><a href=\"{}\">{}</a></h2><p class=item-summary>{}</p></div></article>",
         escape(&localized(&format!("/articles?by={}", item.author_id), en)),

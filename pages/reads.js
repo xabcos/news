@@ -4,6 +4,27 @@ PublicPage.page();
 
 const english = document.documentElement.lang === "en";
 
+// 分享 counts its reads on this site, so cards that came from a cache ask for the counts as they
+// are now. Reads' counts come from Stats every half hour and stay as the page has them.
+function freshen(cards) {
+  const holders = cards.flatMap((card) => [...card.querySelectorAll("[data-views]")]);
+  for (let start = 0; start < holders.length; start += 50) {
+    const batch = holders.slice(start, start + 50);
+    const ids = batch.map((holder) => holder.dataset.views).join(",");
+    fetch(`/api/articles/views?ids=${ids}`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        for (const holder of batch) {
+          const views = data?.views?.[holder.dataset.views];
+          if (!Number.isSafeInteger(views)) continue;
+          holder.querySelector(".read-views > span").textContent = views;
+          holder.hidden = views < 1;
+        }
+      })
+      .catch(() => {});
+  }
+}
+
 (() => {
   const list = document.querySelector(".reads-list");
   const pagination = document.querySelector(".reads-pagination");
@@ -78,12 +99,14 @@ const english = document.documentElement.lang === "en";
       if (controller !== request) return;
       const cards = [...page.querySelectorAll(".reads-list > .item")];
       if (!cards.length) throw new Error("Missing Reads list");
-      list.append(...cards.filter((card) => {
+      const added = cards.filter((card) => {
         const href = card.querySelector(".item-title a")?.getAttribute("href");
         if (!href || seen.has(href)) return false;
         seen.add(href);
         return true;
-      }));
+      });
+      list.append(...added);
+      freshen(added);
       next = page.querySelector('.reads-pagination [rel="next"]')?.getAttribute("href") || "";
     } catch {
       if (controller === request) failed = true;
@@ -129,3 +152,9 @@ const english = document.documentElement.lang === "en";
   status();
   window.requestAnimationFrame(observe);
 })();
+
+// Lists shown again from the back/forward cache ask too.
+freshen([...document.querySelectorAll(".reads-list")]);
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) freshen([...document.querySelectorAll(".reads-list")]);
+});

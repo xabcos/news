@@ -11,11 +11,19 @@ use uuid::Uuid;
 pub(crate) const TRACK_URL: &str =
     "https://stats.xairouter.com/track/pk-c994c1ce749548c8b45c55d21fdfc4cf";
 
+/// Between full refreshes Stats is asked only about the week's articles and 热读's; once a day
+/// about every article of the last 30 days, so an older one can still climb into 热读.
+const REFRESH: Duration = Duration::from_secs(32 * 60);
+const FULL_REFRESH: Duration = Duration::from_secs(24 * 60 * 60);
+
 #[derive(sqlx::FromRow)]
 struct Reading {
     id: Uuid,
     url: String,
     first_seen_at: DateTime<Utc>,
+    /// The count the last refresh stored, none before the first.
+    views: Option<i64>,
+    hot: bool,
 }
 
 #[derive(Deserialize)]
@@ -31,27 +39,31 @@ struct PageBatch {
 
 pub(crate) async fn refresh_loop(state: AppState) {
     let endpoint = format!("{}/pages", TRACK_URL.replace("/track/", "/stats/"));
-    let mut interval = tokio::time::interval(Duration::from_secs(64 * 60));
+    let mut interval = tokio::time::interval(REFRESH);
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    // When the last full refresh was due: ticks keep their schedule, so a refresh's own time
+    // doesn't hold the next full one back by a tick.
+    let mut full_at = None;
     loop {
+        let tick = tokio::select! {
+            _ = state.shutdown.cancelled() => break,
+            tick = interval.tick() => tick,
+        };
+        let full = full_at.is_none_or(|at| tick.duration_since(at) >= FULL_REFRESH);
         tokio::select! {
             _ = state.shutdown.cancelled() => break,
-            _ = interval.tick() => {}
-        }
-        tokio::select! {
-            _ = state.shutdown.cancelled() => break,
-            result = refresh(&state, &endpoint) => {
-                if let Err(error) = result {
-                    tracing::warn!(%error, "Reads statistics refresh failed; retaining cached counts and ranks");
-                }
+            result = refresh(&state, &endpoint, full) => match result {
+                Ok(()) if full => full_at = Some(tick),
+                Ok(()) => {}
+                Err(error) => tracing::warn!(%error, "Reads statistics refresh failed; retaining cached counts and ranks"),
             }
         }
     }
 }
 
-pub(super) async fn refresh(state: &AppState, endpoint: &str) -> Result<()> {
+pub(super) async fn refresh(state: &AppState, endpoint: &str, full: bool) -> Result<()> {
     let rows: Vec<Reading> = sqlx::query_as(
-        "SELECT i.id, i.url, i.first_seen_at FROM items i
+        "SELECT i.id, i.url, i.first_seen_at, a.views, a.hot_rank IS NOT NULL AS hot FROM items i
          JOIN topics t ON t.id = i.topic_id JOIN read_articles a ON a.item_id = i.id
          WHERE i.topic_id = 'reads' AND t.enabled AND t.owner_user_id IS NULL
            AND NOT i.hidden AND i.first_seen_at >= NOW() - INTERVAL '30 days'
@@ -63,8 +75,14 @@ pub(super) async fn refresh(state: &AppState, endpoint: &str) -> Result<()> {
         return Ok(());
     }
     let base = state.config.public_base_url.as_str().trim_end_matches('/');
-    let mut counts = HashMap::new();
-    for chunk in rows.chunks(100) {
+    let now = Utc::now();
+    let asked = asked(&rows, full, now);
+    // The others keep the counts they have, which 热读 still ranks.
+    let mut counts: HashMap<_, _> = rows
+        .iter()
+        .filter_map(|row| Some((row.id, row.views?)))
+        .collect();
+    for chunk in asked.chunks(100) {
         let urls: Vec<_> = chunk
             .iter()
             .map(|row| format!("{base}/reads/{}", row.id))
@@ -93,15 +111,16 @@ pub(super) async fn refresh(state: &AppState, endpoint: &str) -> Result<()> {
             counts.insert(row.id, visits);
         }
         // Stay below the public endpoint's ten requests/second limit.
-        if rows.len() > 100 {
+        if asked.len() > 100 {
             tokio::time::sleep(Duration::from_millis(150)).await;
         }
     }
-    let ranks = rank(&rows, &counts, Utc::now());
-    let ids: Vec<_> = rows.iter().map(|row| row.id).collect();
+    let ranks = rank(&rows, &counts, now);
+    let ids: Vec<_> = asked.iter().map(|row| row.id).collect();
     let views: Vec<_> = ids.iter().map(|id| counts[id]).collect();
     let mut tx = state.pool.begin().await?;
-    sqlx::query("UPDATE read_articles a SET views = v.views FROM unnest($1::uuid[], $2::bigint[]) AS v(id, views) WHERE a.item_id = v.id")
+    // Only counts that moved are written.
+    sqlx::query("UPDATE read_articles a SET views = v.views FROM unnest($1::uuid[], $2::bigint[]) AS v(id, views) WHERE a.item_id = v.id AND a.views IS DISTINCT FROM v.views")
         .bind(ids).bind(views).execute(&mut *tx).await?;
     sqlx::query("UPDATE read_articles SET hot_rank = NULL WHERE hot_rank IS NOT NULL")
         .execute(&mut *tx)
@@ -110,6 +129,15 @@ pub(super) async fn refresh(state: &AppState, endpoint: &str) -> Result<()> {
         .bind(ranks).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
+}
+
+/// The articles a refresh asks Stats about: all of them in a full one, otherwise the week's,
+/// 热读's and any never counted.
+fn asked(rows: &[Reading], full: bool, now: DateTime<Utc>) -> Vec<&Reading> {
+    let week = now - chrono::Duration::days(7);
+    rows.iter()
+        .filter(|row| full || row.hot || row.views.is_none() || row.first_seen_at >= week)
+        .collect()
 }
 
 // Cumulative PV with a seven-day freshness half-life; this is not a weekly PV chart.
@@ -153,6 +181,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_refresh_between_full_ones_asks_about_the_week_hot_reads_and_uncounted_articles() {
+        let now = Utc::now();
+        let reading = |id: u128, days: i64, views: Option<i64>, hot: bool| Reading {
+            id: Uuid::from_u128(id),
+            url: format!("https://example.com/{id}"),
+            first_seen_at: now - chrono::Duration::days(days),
+            views,
+            hot,
+        };
+        let rows = [
+            reading(1, 1, Some(5), false),
+            reading(2, 10, Some(5), false),
+            reading(3, 20, Some(9), true),
+            reading(4, 25, None, false),
+        ];
+        let ids = |full| {
+            asked(&rows, full, now)
+                .iter()
+                .map(|row| row.id.as_u128())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(false), [1, 3, 4]);
+        assert_eq!(ids(true), [1, 2, 3, 4]);
+    }
+
+    #[test]
     fn popularity_balances_freshness_diversity_and_real_views() {
         let now = Utc::now();
         let rows: Vec<_> = (0..60)
@@ -160,6 +214,8 @@ mod tests {
                 id: Uuid::from_u128(i + 1),
                 url: format!("https://source{}.example/essay/{i}", i / 3),
                 first_seen_at: now - chrono::Duration::days(if i == 0 { 29 } else { 1 }),
+                views: None,
+                hot: false,
             })
             .collect();
         let mut counts: HashMap<_, _> = rows.iter().map(|row| (row.id, 10)).collect();

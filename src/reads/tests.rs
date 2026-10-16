@@ -1077,7 +1077,7 @@ async fn check_cached_reads_stats(state: &AppState, client: &reqwest::Client, ba
     assert!(sparse.contains("href=\"/reads?view=hot\" aria-current=\"page\">热读</a>"));
     assert!(sparse.contains("</time> · <span class=read-views"));
     assert!(!sparse.contains("热读 24"));
-    stats::refresh(state, &endpoint).await.unwrap();
+    stats::refresh(state, &endpoint, true).await.unwrap();
     let snapshot: Vec<(Uuid, i64, Option<i16>)> = sqlx::query_as("SELECT item_id, views, hot_rank FROM read_articles WHERE views IS NOT NULL ORDER BY item_id")
         .fetch_all(&state.pool).await.unwrap();
     assert_eq!(snapshot.iter().filter(|row| row.2.is_some()).count(), 24);
@@ -1104,7 +1104,7 @@ async fn check_cached_reads_stats(state: &AppState, client: &reqwest::Client, ba
     );
     // A later batch failing must not publish the earlier batch's changed counts.
     fail_at.store(before + 1, Ordering::SeqCst);
-    assert!(stats::refresh(state, &endpoint).await.is_err());
+    assert!(stats::refresh(state, &endpoint, true).await.is_err());
     let unchanged: Vec<(Uuid, i64, Option<i16>)> = sqlx::query_as("SELECT item_id, views, hot_rank FROM read_articles WHERE views IS NOT NULL ORDER BY item_id")
         .fetch_all(&state.pool).await.unwrap();
     assert_eq!(unchanged, snapshot);
@@ -1145,7 +1145,7 @@ async fn check_cached_reads_stats(state: &AppState, client: &reqwest::Client, ba
         .unwrap();
     state.digest.reload_topics(state).await.unwrap();
     let before = calls.load(Ordering::SeqCst);
-    stats::refresh(state, &endpoint).await.unwrap();
+    stats::refresh(state, &endpoint, true).await.unwrap();
     assert_eq!(before, calls.load(Ordering::SeqCst));
     sqlx::query("UPDATE topics SET enabled=true WHERE id='reads'")
         .execute(&state.pool)

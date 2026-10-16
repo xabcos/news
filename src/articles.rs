@@ -2,7 +2,7 @@
 //! public once an administrator gives it a ❤️, and an author's edit takes it back to review.
 //! Pictures go to tmpfile as they were uploaded; their links appear only on public pages, and
 //! until then the author sees them through this server. A read counts once a day per browser,
-//! never the author's own. XABC, the site's own pen name, publishes one every hour (`xabc`).
+//! never the author's own. XABC, the site's own pen name, publishes one every half hour (`xabc`).
 mod pages;
 pub(crate) mod xabc;
 
@@ -17,7 +17,7 @@ use crate::{
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, Path, State, rejection::BytesRejection},
+    extract::{DefaultBodyLimit, Path, Query, State, rejection::BytesRejection},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, patch, post, put},
@@ -75,6 +75,7 @@ pub(crate) fn router() -> Router<AppState> {
         )
         .route("/api/articles/{id}/images/{image}", get(picture))
         .route("/api/articles/{id}/views", post(view))
+        .route("/api/articles/views", get(views))
         .route("/api/admin/articles", get(queue))
         .route("/api/admin/articles/{id}", patch(review))
         .merge(pages::router())
@@ -477,6 +478,37 @@ async fn view(
     Ok(Json(json!({ "views": views })))
 }
 
+/// Articles a list shows at once, at most: a page holds 24.
+const COUNTED: usize = 50;
+
+#[derive(Deserialize)]
+struct Ids {
+    ids: String,
+}
+
+/// The reads public articles have now, for pages that came from a cache: `?ids=` names them,
+/// comma-separated. Like every `/api` answer it is never cached.
+async fn views(State(state): State<AppState>, Query(request): Query<Ids>) -> Result<Json<Value>> {
+    let ids: Vec<Uuid> = request
+        .ids
+        .split(',')
+        .filter_map(|id| Uuid::parse_str(id.trim()).ok())
+        .take(COUNTED)
+        .collect();
+    let counts: Vec<(Uuid, i64)> = sqlx::query_as(
+        "SELECT a.id, a.views FROM articles a JOIN users u ON u.id = a.author_id
+         WHERE a.id = ANY($1) AND a.status = 'published' AND u.status",
+    )
+    .bind(&ids)
+    .fetch_all(&state.pool)
+    .await?;
+    let views: serde_json::Map<String, Value> = counts
+        .into_iter()
+        .map(|(id, views)| (id.to_string(), json!(views)))
+        .collect();
+    Ok(Json(json!({ "views": views })))
+}
+
 /// What waits for a ❤️, oldest first, and the latest public articles.
 async fn queue(State(state): State<AppState>, user: User) -> Result<Json<Value>> {
     auth::require_admin(&user)?;
@@ -683,7 +715,7 @@ fn image_id(destination: &str) -> Option<Uuid> {
 fn words(body: &str) -> String {
     let mut text = String::new();
     let mut picture = false;
-    for event in Parser::new_ext(body, MARKDOWN) {
+    for event in crate::site::bolded(Parser::new_ext(body, MARKDOWN)) {
         match event {
             Event::Start(Tag::Image { .. }) => picture = true,
             Event::End(TagEnd::Image) => picture = false,

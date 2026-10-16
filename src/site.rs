@@ -6,7 +6,7 @@ use crate::{
     state::AppState,
 };
 use chrono::{DateTime, Utc};
-use pulldown_cmark::{Event, Tag, TagEnd, html};
+use pulldown_cmark::{CowStr, Event, Tag, TagEnd, TextMergeStream, html};
 use sqlx::{Postgres, QueryBuilder};
 use std::fmt::Write;
 use uuid::Uuid;
@@ -205,7 +205,7 @@ pub(crate) fn markdown<'a>(
 ) -> String {
     let mut image = None;
     let mut alt = String::new();
-    let parser = events.into_iter().filter_map(|event| match event {
+    let parser = bolded(events).into_iter().filter_map(|event| match event {
         Event::Html(_) | Event::InlineHtml(_) => None,
         Event::Start(Tag::Image { dest_url, .. }) => {
             alt.clear();
@@ -256,6 +256,180 @@ pub(crate) fn markdown<'a>(
     let mut html = String::new();
     html::push_html(&mut html, parser);
     html
+}
+
+/// CommonMark wants a space beside `**` that touches punctuation, which Chinese and Japanese
+/// never write: `一起玩。**把` can't close a bold and `看**“引号”` can't open one, so the
+/// stars show or pair with the wrong partner. In text with such writing they are paired again
+/// within each container, nearest first: leftover stars open before a word and close after
+/// one, a bold CommonMark began right after punctuation may close the one before it instead,
+/// and a bold it ended may open the next. A container whose new pairs would leave one of
+/// CommonMark's bolds without its partner keeps CommonMark's reading. Text without such writing
+/// is left as it is.
+pub(crate) fn bolded<'a>(input: impl IntoIterator<Item = Event<'a>>) -> Vec<Event<'a>> {
+    let input: Vec<_> = input.into_iter().collect();
+    if !input
+        .iter()
+        .any(|event| matches!(event, Event::Text(text) if text.chars().any(cjk)))
+    {
+        return input;
+    }
+    let mut events = Vec::with_capacity(input.len());
+    let mut code = false;
+    for event in TextMergeStream::new(input.into_iter()) {
+        match &event {
+            Event::Start(Tag::CodeBlock(_)) => code = true,
+            Event::End(TagEnd::CodeBlock) => code = false,
+            _ => {}
+        }
+        match event {
+            Event::Text(text) if !code => stars(text, &mut events),
+            event => events.push(event),
+        }
+    }
+    // The open containers, innermost last.
+    let mut open = vec![Container::default()];
+    for index in 0..events.len() {
+        let before = touch(index.checked_sub(1).map(|before| &events[before]), false);
+        let after = touch(events.get(index + 1), true);
+        let (closes, opens) = match &events[index] {
+            Event::Start(Tag::Strong) => (before == Touch::Mark, true),
+            Event::End(TagEnd::Strong) => (true, after != Touch::Space),
+            Event::Text(text) if text.as_ref() == "**" => {
+                (before != Touch::Space, after != Touch::Space)
+            }
+            Event::Start(tag) => {
+                // Bold never spans a block.
+                if !markup(tag.to_end())
+                    && let Some(outer) = open.last_mut()
+                {
+                    settle(&mut events, std::mem::take(outer));
+                }
+                open.push(Container::default());
+                continue;
+            }
+            Event::End(_) => {
+                if let Some(container) = open.pop() {
+                    settle(&mut events, container);
+                }
+                continue;
+            }
+            _ => continue,
+        };
+        let Some(container) = open.last_mut() else {
+            continue;
+        };
+        // Stars stay text until they find a partner.
+        let star = std::mem::replace(&mut events[index], Event::Text("**".into()));
+        container.stars.push((index, star));
+        if closes && let Some(start) = container.waiting.pop() {
+            events[start] = Event::Start(Tag::Strong);
+            events[index] = Event::End(TagEnd::Strong);
+        } else if opens {
+            container.waiting.push(index);
+        }
+    }
+    for container in open {
+        settle(&mut events, container);
+    }
+    events
+}
+
+/// The stars of one container: each with the event CommonMark made of it, and those still
+/// waiting for a partner.
+#[derive(Default)]
+struct Container<'a> {
+    stars: Vec<(usize, Event<'a>)>,
+    waiting: Vec<usize>,
+}
+
+/// Restores CommonMark's reading of a container where one of its bolds was left without a
+/// partner, which would show as stars.
+fn settle<'a>(events: &mut [Event<'a>], container: Container<'a>) {
+    if container.stars.iter().any(|(index, star)| {
+        !matches!(star, Event::Text(_)) && matches!(events[*index], Event::Text(_))
+    }) {
+        for (index, star) in container.stars {
+            events[index] = star;
+        }
+    }
+}
+
+/// Appends `text` with every `**` on its own, unless it is part of a longer run of stars.
+fn stars<'a>(text: CowStr<'a>, events: &mut Vec<Event<'a>>) {
+    let (mut start, mut index) = (0, 0);
+    while let Some(found) = text[index..].find("**") {
+        let at = index + found;
+        let run = text[at..].bytes().take_while(|&byte| byte == b'*').count();
+        if run == 2 {
+            if start < at {
+                events.push(Event::Text(text[start..at].to_owned().into()));
+            }
+            events.push(Event::Text("**".into()));
+            start = at + 2;
+        }
+        index = at + run;
+    }
+    if start == 0 {
+        events.push(Event::Text(text));
+    } else if start < text.len() {
+        events.push(Event::Text(text[start..].to_owned().into()));
+    }
+}
+
+/// What touches stars on one side.
+#[derive(PartialEq)]
+enum Touch {
+    /// A space, the edge of the container, or more stars.
+    Space,
+    /// Punctuation, or the edge of inline code, a link or other inline markup.
+    Mark,
+    Letter,
+}
+
+fn touch(event: Option<&Event<'_>>, after: bool) -> Touch {
+    match event {
+        Some(Event::Text(text)) if text.as_ref() != "**" => {
+            match if after {
+                text.chars().next()
+            } else {
+                text.chars().next_back()
+            } {
+                Some(character) if character.is_alphanumeric() => Touch::Letter,
+                Some(character) if !character.is_whitespace() => Touch::Mark,
+                _ => Touch::Space,
+            }
+        }
+        Some(Event::Code(_)) => Touch::Mark,
+        Some(Event::Start(tag)) if after && markup(tag.to_end()) => Touch::Mark,
+        Some(Event::End(tag)) if !after && markup(*tag) => Touch::Mark,
+        _ => Touch::Space,
+    }
+}
+
+/// Inline markup other than bold.
+fn markup(tag: TagEnd) -> bool {
+    matches!(
+        tag,
+        TagEnd::Emphasis
+            | TagEnd::Strikethrough
+            | TagEnd::Superscript
+            | TagEnd::Subscript
+            | TagEnd::Link
+            | TagEnd::Image
+    )
+}
+
+/// Chinese, Japanese or Korean, written without spaces around bold.
+fn cjk(character: char) -> bool {
+    matches!(
+        character,
+        '\u{3040}'..='\u{30ff}'
+            | '\u{3400}'..='\u{9fff}'
+            | '\u{ac00}'..='\u{d7af}'
+            | '\u{f900}'..='\u{faff}'
+            | '\u{20000}'..='\u{3ffff}'
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -423,7 +597,8 @@ pub(crate) fn layout(
 
 #[cfg(test)]
 mod tests {
-    use super::headline;
+    use super::{headline, markdown};
+    use pulldown_cmark::{Options, Parser};
 
     #[test]
     fn headlines_break_after_their_punctuation_and_stay_escaped() {
@@ -443,5 +618,72 @@ mod tests {
         );
         assert_eq!(headline("Why it matters: a test"), "Why it matters: a test");
         assert_eq!(headline("结尾的问号？"), "结尾的问号？");
+    }
+
+    #[test]
+    fn bold_next_to_chinese_punctuation_is_bold() {
+        let render = |source: &str| {
+            markdown(
+                Parser::new_ext(
+                    source,
+                    Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES,
+                ),
+                |_| None,
+            )
+        };
+        for (source, html) in [
+            (
+                "- **孩子年龄越接近，孩子也更常一起玩。**把亲缘关系纳入统计后仍然存在。",
+                "<ul>\n<li><strong>孩子年龄越接近，孩子也更常一起玩。</strong>把亲缘关系纳入统计后仍然存在。</li>\n</ul>\n",
+            ),
+            // CommonMark pairs these wrongly instead of leaving stars over.
+            (
+                "约 **80 厘米（31 英寸）**的长度，看**“引号”**里的话",
+                "<p>约 <strong>80 厘米（31 英寸）</strong>的长度，看<strong>“引号”</strong>里的话</p>\n",
+            ),
+            (
+                "**第一点。**这是**关键**的，**「返信機能」**を実装する",
+                "<p><strong>第一点。</strong>这是<strong>关键</strong>的，<strong>「返信機能」</strong>を実装する</p>\n",
+            ),
+            (
+                "**用 `rg` 搜索。**然后**看[这里](https://a.example/)**的",
+                "<p><strong>用 <code>rg</code> 搜索。</strong>然后<strong>看<a href=\"https://a.example/\">这里</a></strong>的</p>\n",
+            ),
+            (
+                "| **甲。**乙 |\n|---|\n| [**丙。**丁](https://a.example/) |",
+                "<table><thead><tr><th><strong>甲。</strong>乙</th></tr></thead><tbody>\n<tr><td><a href=\"https://a.example/\"><strong>丙。</strong>丁</a></td></tr>\n</tbody></table>\n",
+            ),
+            // A repair that would leave one of CommonMark's bolds without its partner is not made.
+            (
+                "**甲，**乙** 丙**",
+                "<p><strong>甲，<strong>乙</strong> 丙</strong></p>\n",
+            ),
+            (
+                "中文 **甲。__乙__",
+                "<p>中文 **甲。<strong>乙</strong></p>\n",
+            ),
+            // What CommonMark already reads stays as it is, nested bold included.
+            (
+                "他说：**重要**，正常 **加粗** 文字，****双重****，**外 **内** 外**",
+                "<p>他说：<strong>重要</strong>，正常 <strong>加粗</strong> 文字，<strong><strong>双重</strong></strong>，<strong>外 <strong>内</strong> 外</strong></p>\n",
+            ),
+            // Stars with spaces around them, longer runs, code and pairs across blocks stay.
+            (
+                "2 ** 3，***粗斜。***的，`**kwargs` 和 **开头。",
+                "<p>2 ** 3，***粗斜。***的，<code>**kwargs</code> 和 **开头。</p>\n",
+            ),
+            (
+                "```\n**甲。**乙\n```",
+                "<pre><code>**甲。**乙\n</code></pre>\n",
+            ),
+            ("**甲。\n\n乙。**丙", "<p>**甲。</p>\n<p>乙。**丙</p>\n"),
+            // Text without such writing is read as CommonMark reads it.
+            (
+                "x\\*\\*2 + y\\*\\*2, a **b c \"**d**\"",
+                "<p>x**2 + y**2, a **b c \"<strong>d</strong>\"</p>\n",
+            ),
+        ] {
+            assert_eq!(render(source), html, "{source}");
+        }
     }
 }

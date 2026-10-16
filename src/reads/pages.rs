@@ -34,7 +34,7 @@ const CHROME: Chrome<'static> = Chrome {
     current: "reads",
     section: "reads",
     stylesheet: "/reads.css?v=14",
-    script: "/reads.js?v=8",
+    script: "/reads.js?v=9",
     feed: ("Reads", "/feed.xml?topic=reads"),
 };
 

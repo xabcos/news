@@ -27,9 +27,9 @@ fn excerpts_are_one_line_of_the_body_without_markup_or_picture_descriptions() {
     let id = Uuid::from_u128(7);
     assert_eq!(
         excerpt(&format!(
-            "## 开头\n\nHello **world**, `code` and [a link](https://example.com).\n\n![一只猫](image:{id})\n\n- one\n- two"
+            "## 开头\n\nHello **world**, `code` and [a link](https://example.com).\n\n![一只猫](image:{id})\n\n- **一起玩。**把\n- two"
         )),
-        "开头 Hello world, code and a link. one two"
+        "开头 Hello world, code and a link. 一起玩。把 two"
     );
     let long = "字".repeat(EXCERPT_CHARS + 30);
     let cut = excerpt(&long);
@@ -561,6 +561,8 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
         .await
         .unwrap();
     assert!(list.contains("第一篇") && list.contains("小明") && list.contains("Hello world"));
+    // Its count has a place on the card even before anyone reads it, for the script to fill.
+    assert!(list.contains(&format!("<span data-views=\"{id}\" hidden> · ")));
     assert!(!list.contains("articles.example.test"));
     // Its tab follows 精读's on every page, and the sitemap lists it.
     assert!(list.contains("<a class=tab href=\"/articles\" aria-current=\"true\">分享</a>"));
@@ -643,6 +645,18 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
         counted(views(Some(&reader)).send().await.unwrap()).await,
         Some(2)
     );
+    // Pages that came from a cache read the counts as they are now: public articles only.
+    let response = anonymous(&format!(
+        "/api/articles/views?ids={id},nonsense,{}",
+        Uuid::new_v4()
+    ))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let fresh: Value = response.json().await.unwrap();
+    assert_eq!(fresh["views"][id.as_str()], 2);
+    assert_eq!(fresh["views"].as_object().unwrap().len(), 1);
 
     // An edit takes it back to review; a new ❤️ keeps its first publication time. A long body is
     // well past the 64 KiB other requests may carry.
