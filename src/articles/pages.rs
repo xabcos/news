@@ -376,7 +376,7 @@ struct Worth {
     height: Option<i32>,
 }
 
-/// 值得读, which opens ALL: the eight hottest of the last 30 days of 分享 and 解说 together,
+/// 值得读, which opens ALL: the twelve hottest of the last 30 days of 分享 and 解说 together,
 /// ranked as 热读 is; while few are read, the newest fill the places.
 async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
     let articles: Vec<Worth> = QueryBuilder::<Postgres>::new(
@@ -388,7 +388,7 @@ async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Resp
          ORDER BY ",
     )
     .push(HOT)
-    .push(" DESC, a.published_at DESC, a.id DESC LIMIT 8")
+    .push(" DESC, a.published_at DESC, a.id DESC LIMIT 12")
     .build_query_as()
     .fetch_all(&state.pool)
     .await?;
