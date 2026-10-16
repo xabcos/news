@@ -68,7 +68,21 @@ where
     F: Future<Output = T> + Send + 'static,
     T: Send + 'static,
 {
-    let deadline = Instant::now() + IMAGE_BATCH_TIMEOUT;
+    batch_within(state, jobs, IMAGE_BATCH_TIMEOUT).await
+}
+
+/// `batch` with its own time budget, for jobs as slow as drawing a picture.
+pub(crate) async fn batch_within<J, F, T>(
+    state: &AppState,
+    jobs: impl IntoIterator<Item = J>,
+    budget: Duration,
+) -> Vec<T>
+where
+    J: FnOnce(OwnedSemaphorePermit) -> F + Send + 'static,
+    F: Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    let deadline = Instant::now() + budget;
     let mut tasks = JoinSet::new();
     for job in jobs {
         let slots = Arc::clone(&state.image_slots);
@@ -370,7 +384,7 @@ pub(crate) async fn download_image(
     }
 }
 
-fn image_is_usable(bytes: &[u8]) -> bool {
+pub(crate) fn image_is_usable(bytes: &[u8]) -> bool {
     usable(bytes.len(), image_dimensions(bytes))
 }
 
@@ -396,6 +410,58 @@ pub(crate) fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     limits.max_alloc = Some(4 * 1024 * 1024);
     reader.limits(limits);
     reader.into_dimensions().ok()
+}
+
+/// What decoding one picture may allocate.
+const MAX_DECODE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// The picture as a static JPEG at most `max_side` pixels on its longer side, transparency laid
+/// on white. The whole file is decoded under size and memory limits, so a picture that can't be
+/// verified, or is too small to be one, gives `None`.
+pub(crate) fn static_jpeg(bytes: &[u8], max_side: u32) -> Option<Vec<u8>> {
+    use image::ImageDecoder;
+    if bytes.len() < MIN_IMAGE_BYTES {
+        return None;
+    }
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    limits.max_alloc = Some(MAX_DECODE_BYTES);
+    reader.limits(limits);
+    let mut decoder = reader.into_decoder().ok()?;
+    let (width, height) = decoder.dimensions();
+    if width < MIN_IMAGE_DIMENSION
+        || height < MIN_IMAGE_DIMENSION
+        || decoder.total_bytes() > MAX_DECODE_BYTES
+    {
+        return None;
+    }
+    let orientation = decoder.orientation().ok()?;
+    let mut decoded = image::DynamicImage::from_decoder(decoder).ok()?;
+    decoded.apply_orientation(orientation);
+    if decoded.width() > max_side || decoded.height() > max_side {
+        decoded = decoded.thumbnail(max_side, max_side);
+    }
+    let decoded = if decoded.color().has_alpha() {
+        let rgba = decoded.into_rgba8();
+        image::RgbImage::from_fn(rgba.width(), rgba.height(), |x, y| {
+            let pixel = rgba.get_pixel(x, y);
+            let alpha = u16::from(pixel[3]);
+            image::Rgb(std::array::from_fn(|channel| {
+                ((u16::from(pixel[channel]) * alpha + 255 * (255 - alpha)) / 255) as u8
+            }))
+        })
+    } else {
+        decoded.into_rgb8()
+    };
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 90)
+        .encode_image(&decoded)
+        .ok()?;
+    Some(jpeg)
 }
 
 pub(crate) fn is_public_https_url(url: &Url) -> bool {

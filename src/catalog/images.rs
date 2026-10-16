@@ -132,7 +132,7 @@ async fn resolve(
     None
 }
 
-async fn from_page(
+pub(crate) async fn from_page(
     state: &AppState,
     page: &str,
     template: &NewsImage,

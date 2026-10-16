@@ -49,6 +49,8 @@
 .article-write { flex-shrink: 0; font-size: .85rem; color: var(--primary-strong); text-decoration: none; padding-bottom: .4rem; }
 .article .read-title { margin: 0 0 .7rem; }
 .article-cover { display: block; width: 100%; height: auto; aspect-ratio: 5 / 2; object-fit: cover; margin-bottom: 1.8rem; border-radius: var(--radius-l); background: var(--surface-soft); }
+/* A line in italics right after a picture is its caption: XABC credits each picture so. */
+.article .read-body img + em { display: block; margin: -.9rem 0 0; color: var(--muted); font-size: .8rem; font-style: normal; line-height: 1.7; text-align: center; }
 .article-notice { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.5rem; padding: .6rem .9rem; border: 1px solid var(--line); border-radius: var(--radius-m); color: var(--muted); font-size: .85rem; }
 .article-notice a { color: var(--primary-strong); }
 @media (max-width: 768px) {

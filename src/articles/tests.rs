@@ -801,3 +801,266 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
     refuse.store(false, Ordering::SeqCst);
     assert_eq!(counts().await, (tomorrow, 0, 1));
 }
+
+/// XABC's morning article from start to finish against stand-ins for the AI service and
+/// tmpfile: the searches, the writing, the drawn pictures, publication and the public page.
+#[tokio::test]
+#[ignore = "requires NEWS_XABC_TEST_DATABASE_URL and local test configuration"]
+async fn postgres_xabc_writes_one_illustrated_article_a_day() {
+    use crate::config::Config;
+    use axum::{http::StatusCode, routing::post};
+    use base64::Engine;
+    use std::sync::{Mutex, atomic::AtomicU8};
+    let database_url =
+        std::env::var("NEWS_XABC_TEST_DATABASE_URL").expect("disposable database URL");
+    let asked: Arc<Mutex<Vec<Value>>> = Arc::default();
+    let drawings: Arc<Mutex<Vec<Value>>> = Arc::default();
+    // 0: both searches answer; 1: grok's fails; 2: both fail.
+    let failing = Arc::new(AtomicU8::new(1));
+    let mut seed = 0x9e37_79b9_u32;
+    let noise = image::RgbImage::from_fn(640, 400, |_, _| {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        let [r, g, b, _] = seed.to_le_bytes();
+        image::Rgb([r, g, b])
+    });
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(noise)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let drawn = base64::engine::general_purpose::STANDARD.encode(png.into_inner());
+    let reply = |text: Value, cited: &str| {
+        json!({
+            "id": "resp_test", "status": "completed",
+            "output": [{ "type": "message", "content": [{
+                "type": "output_text", "text": text.to_string(),
+                "annotations": [{ "type": "url_citation", "url": cited }],
+            }] }],
+            "usage": { "input_tokens": 100, "output_tokens": 50 },
+        })
+    };
+    let body = format!(
+        "{}\n\n可以去试试[这个工具](https://www.known.example/tool/)，看看[别处](https://elsewhere.example/x)和[引用](https://cited.example/writer)。([known.example](https://known.example/tool))\n\n![](img:1)\n\n![](img:2)\n\n最后一段。",
+        "有趣的东西，".repeat(80)
+    );
+    let ai = axum::Router::new()
+        .route(
+            "/v1/responses",
+            post({
+                let (asked, failing) = (asked.clone(), failing.clone());
+                move |Json(request): Json<Value>| {
+                    let (asked, failing, body) = (asked.clone(), failing.clone(), body.clone());
+                    async move {
+                        asked.lock().unwrap().push(request.clone());
+                        if request["text"]["format"]["name"] == "finds" {
+                            let grok = request["tools"].as_array().unwrap().len() == 2;
+                            match failing.load(Ordering::SeqCst) {
+                                2 => return (StatusCode::BAD_REQUEST, Json(json!({}))),
+                                1 if grok => return (StatusCode::BAD_REQUEST, Json(json!({}))),
+                                _ => {}
+                            }
+                            return (
+                                StatusCode::OK,
+                                Json(reply(
+                                    json!({ "finds": [{
+                                        "title": "一个好玩的工具", "why": "好玩", "points": "能做很多事",
+                                        "sources": ["https://known.example/tool"], "pictures": [],
+                                    }] }),
+                                    "https://cited.example/search",
+                                )),
+                            );
+                        }
+                        (
+                            StatusCode::OK,
+                            Json(reply(
+                                json!({
+                                    "title": "今天分享一个好玩的工具", "body": body,
+                                    "pictures": [
+                                        { "page": "", "prompt": "一只猫", "caption": "一只猫" },
+                                        { "page": "", "prompt": "", "caption": "不会来" },
+                                    ],
+                                    "cover": "封面插画",
+                                }),
+                                "https://cited.example/writer",
+                            )),
+                        )
+                    }
+                }
+            }),
+        )
+        .route(
+            "/v1/images/generations",
+            post({
+                let drawings = drawings.clone();
+                move |Json(request): Json<Value>| {
+                    let (drawings, drawn) = (drawings.clone(), drawn.clone());
+                    async move {
+                        drawings.lock().unwrap().push(request);
+                        Json(json!({ "data": [{ "b64_json": drawn }] }))
+                    }
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ai_base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, ai).await.unwrap() });
+    let mut config = Config::from_env().unwrap();
+    config.database_url = database_url;
+    config.redis_addr = None;
+    config.scheduler_enabled = false;
+    config.ai_base_url = ai_base.parse().unwrap();
+    config.ai_api_key = "fixture".into();
+    let (media, client, _) = tmpfile(jpeg(400, 300)).await;
+    config.tmpfile_base_url = media.parse().unwrap();
+    config.tmpfile_api_key = "fixture".into();
+    let mut state = AppState::new(config).await.unwrap();
+    state.http = client;
+    let database: String = sqlx::query_scalar("SELECT current_database()")
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert!(database.starts_with("news_xabc_test"));
+    sqlx::query("TRUNCATE articles, article_images CASCADE")
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    // The migration made XABC's account, which takes the pen name before any reader can.
+    let author = daily::author(&state).await.unwrap();
+    let since = Utc::now() - chrono::Duration::minutes(1);
+    let id = daily::write(&state, since).await.unwrap();
+
+    let (title, body, cover, status, name): (String, String, Option<Uuid>, String, String) =
+        sqlx::query_as(
+            "SELECT a.title, a.body, a.cover, a.status, w.name FROM articles a
+             JOIN authors w ON w.user_id = a.author_id WHERE a.id = $1 AND a.author_id = $2",
+        )
+        .bind(id)
+        .bind(author)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        (title.as_str(), status.as_str(), name.as_str()),
+        ("今天分享一个好玩的工具", "published", "XABC")
+    );
+    // A link keeps its address when a model found it, by any of its forms; the others keep
+    // their words, and the source mark after the sentence goes.
+    assert!(body.contains(
+        "试试[这个工具](https://www.known.example/tool/)，看看别处和[引用](https://cited.example/writer)。\n"
+    ));
+    let pictures: Vec<(Uuid, String, i32)> =
+        sqlx::query_as("SELECT id, content_type, width FROM article_images WHERE article_id = $1")
+            .bind(id)
+            .fetch_all(&state.pool)
+            .await
+            .unwrap();
+    // The drawn picture and the cover, both kept as JPEG at their size; the picture that never
+    // came is gone.
+    assert_eq!(pictures.len(), 2);
+    assert!(
+        pictures
+            .iter()
+            .all(|(_, kind, width)| kind == "image/jpeg" && *width == 640)
+    );
+    let cover = cover.expect("a cover");
+    let shown = pictures
+        .iter()
+        .find(|(picture, ..)| *picture != cover)
+        .unwrap()
+        .0;
+    assert!(body.contains(&format!("![一只猫](image:{shown})\n*一只猫（AI 生成）*")));
+    assert!(!body.contains("img:"));
+
+    // Grok's search failed, so the briefing model wrote from its own finds alone.
+    let asked = asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 3);
+    let searched = |model: &str| {
+        asked.iter().find(|request| {
+            request["model"] == model && request["text"]["format"]["name"] == "finds"
+        })
+    };
+    let x = searched(&state.config.ai_default_model).expect("grok searched");
+    assert_eq!(
+        x["tools"],
+        json!([{ "type": "web_search" }, { "type": "x_search" }])
+    );
+    let web = searched(&state.config.ai_insight_model).expect("the briefing model searched");
+    assert_eq!(web["tools"], json!([{ "type": "web_search" }]));
+    let writing = asked
+        .iter()
+        .find(|request| request["text"]["format"]["name"] == "article")
+        .unwrap();
+    assert_eq!(writing["model"], state.config.ai_insight_model.as_str());
+    let material = writing["input"][0]["content"].as_str().unwrap();
+    assert!(material.contains("1.【全网】一个好玩的工具"));
+    assert!(!material.contains("【X 与全网】"));
+    let drawings = drawings.lock().unwrap().clone();
+    assert_eq!(drawings.len(), 2);
+    assert!(
+        drawings
+            .iter()
+            .all(|drawing| drawing["model"] == "gpt-image-2.5-flare")
+    );
+
+    // One article a day: the day is written, and without finds nothing is.
+    assert!(daily::written(&state, since).await.unwrap());
+    failing.store(2, Ordering::SeqCst);
+    assert!(matches!(
+        daily::write(&state, since).await,
+        Err(AppError::Internal(_))
+    ));
+    failing.store(0, Ordering::SeqCst);
+    assert!(matches!(
+        daily::write(&state, since).await,
+        Err(AppError::Conflict(_))
+    ));
+    // Two writers finishing together publish once.
+    let later = Utc::now();
+    let body = "字".repeat(500);
+    let (first, second) = tokio::join!(
+        daily::publish(&state, author, later, "甲", &body, &[], None),
+        daily::publish(&state, author, later, "乙", &body, &[], None),
+    );
+    assert_eq!(
+        [first.is_ok(), second.is_ok()]
+            .iter()
+            .filter(|ok| **ok)
+            .count(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM articles")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap(),
+        2
+    );
+
+    // Readers find it under XABC, with its cover and the picture's caption line.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let router = crate::web::router(state.clone());
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let page = http
+        .get(format!("{base}/articles/{id}"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(page.contains("class=article-cover"));
+    assert!(page.contains("<em>一只猫（AI 生成）</em>"));
+    assert!(page.contains(&format!("/articles?by={author}\">XABC</a>")));
+    let list = http
+        .get(format!("{base}/articles?by={author}"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(list.contains("今天分享一个好玩的工具"));
+}

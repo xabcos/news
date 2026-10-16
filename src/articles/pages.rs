@@ -33,7 +33,7 @@ const FROM: &str = " FROM articles a JOIN authors w ON w.user_id = a.author_id J
 const LIST: Chrome<'static> = Chrome {
     current: "articles",
     section: "reads articles",
-    stylesheet: "/reads.css?v=11",
+    stylesheet: "/reads.css?v=12",
     script: "/reads.js?v=8",
     feed: ("News", "/feed.xml"),
 };
