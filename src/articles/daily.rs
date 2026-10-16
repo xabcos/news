@@ -12,7 +12,7 @@ use crate::{
     state::AppState,
 };
 use base64::Engine;
-use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -28,11 +28,12 @@ use uuid::Uuid;
 
 /// XABC's account, which migration 0007 makes.
 const EMAIL: &str = "xabc@xabcnews.invalid";
-/// XABC starts writing at this time each morning, an hour before the briefing.
-const START: NaiveTime = NaiveTime::from_hms_opt(5, 0, 0).unwrap();
-/// A day that failed is tried again half an hour later, three times in all.
-const TRIES: u8 = 3;
-const RETRY: Duration = Duration::from_secs(30 * 60);
+/// XABC writes its next article once the last one is two hours old.
+const INTERVAL_SECONDS: i64 = 2 * 60 * 60;
+/// After a failure XABC waits half an hour, twice as long after each failure in a row, eight
+/// hours at most: a lasting fault costs a few tries a day, not one every half hour.
+const RETRY_SECONDS: i64 = 30 * 60;
+const LONGEST_WAIT_SECONDS: i64 = 8 * 60 * 60;
 const IN_FLIGHT: &str = "__xabc_article__";
 /// GPT Image 2.5 Flare draws quickly: a 1536×1024 picture at medium quality costs about $0.04.
 const IMAGE_MODEL: &str = "gpt-image-2.5-flare";
@@ -56,69 +57,59 @@ const MIN_TEXT: usize = 400;
 /// Rounds of link checks before an article whose rewriting keeps forming new links is given up.
 const LINK_ROUNDS: usize = 8;
 
-/// Today's state, kept in the process: a restart may try once more.
+/// When XABC may write next, kept in the process; after a restart the last article tells.
 struct Progress {
-    day: NaiveDate,
-    done: bool,
-    failures: u8,
-    failed_at: Option<std::time::Instant>,
+    next: DateTime<Utc>,
+    failures: u32,
 }
 
 impl Progress {
-    const fn new(day: NaiveDate) -> Self {
-        Self {
-            day,
-            done: false,
-            failures: 0,
-            failed_at: None,
-        }
+    fn wrote(&mut self, now: DateTime<Utc>) {
+        self.failures = 0;
+        self.next = now + chrono::Duration::seconds(INTERVAL_SECONDS);
     }
 
-    /// A new day starts afresh.
-    fn on(&mut self, day: NaiveDate) {
-        if self.day != day {
-            *self = Self::new(day);
-        }
-    }
-
-    /// Whether another try may start at `now`.
-    fn ready(&self, now: std::time::Instant) -> bool {
-        !self.done
-            && self.failures < TRIES
-            && self
-                .failed_at
-                .is_none_or(|at| now.saturating_duration_since(at) >= RETRY)
+    fn failed(&mut self, now: DateTime<Utc>) {
+        self.failures += 1;
+        let wait = RETRY_SECONDS
+            .saturating_mul(1 << (self.failures - 1).min(16))
+            .min(LONGEST_WAIT_SECONDS);
+        self.next = now + chrono::Duration::seconds(wait);
     }
 }
 
-static PROGRESS: Mutex<Progress> = Mutex::new(Progress::new(NaiveDate::MIN));
+static PROGRESS: Mutex<Progress> = Mutex::new(Progress {
+    next: DateTime::<Utc>::MIN_UTC,
+    failures: 0,
+});
 
-fn progress<T>(day: NaiveDate, change: impl FnOnce(&mut Progress) -> T) -> T {
-    let mut progress = PROGRESS.lock().unwrap_or_else(PoisonError::into_inner);
-    progress.on(day);
-    change(&mut progress)
+fn progress<T>(change: impl FnOnce(&mut Progress) -> T) -> T {
+    change(&mut PROGRESS.lock().unwrap_or_else(PoisonError::into_inner))
 }
 
-/// Starts today's article once it is due, unless XABC has written it, is writing it, or has
-/// failed at it too often today. The scheduler calls this on every tick.
+/// Starts the next article once the last is two hours old, unless XABC is writing one or is
+/// waiting after a failure. The scheduler calls this on every tick.
 pub(crate) async fn tick(state: &AppState) {
-    let Some((day, since)) = due(Utc::now(), state.config.timezone) else {
-        return;
-    };
-    if !progress(day, |progress| progress.ready(std::time::Instant::now())) {
+    let now = Utc::now();
+    if progress(|progress| progress.next > now) {
         return;
     }
-    match written(state, since).await {
-        Ok(false) => {}
-        Ok(true) => return progress(day, |progress| progress.done = true),
+    match last(state).await {
+        Ok(Some(at)) if at + chrono::Duration::seconds(INTERVAL_SECONDS) > now => {
+            return progress(|progress| {
+                progress.next = at + chrono::Duration::seconds(INTERVAL_SECONDS);
+            });
+        }
+        Ok(_) => {}
         Err(error) => {
-            tracing::warn!(%error, "could not tell whether XABC has written today");
+            tracing::warn!(%error, "could not tell when XABC last wrote");
             return;
         }
     }
     if !state.in_flight().insert(IN_FLIGHT.to_owned()) {
         return;
     }
+    let since = now - chrono::Duration::seconds(INTERVAL_SECONDS);
     let worker = state.clone();
     state.spawn_worker(async move {
         let outcome = tokio::select! {
@@ -127,37 +118,26 @@ pub(crate) async fn tick(state: &AppState) {
         };
         match outcome {
             Ok(id) => {
-                tracing::info!(%id, "XABC published today's article");
-                progress(day, |progress| progress.done = true);
+                tracing::info!(%id, "XABC published an article");
+                progress(|progress| progress.wrote(Utc::now()));
             }
             Err(error) => {
                 tracing::warn!(%error, "XABC's article failed");
-                progress(day, |progress| {
-                    progress.failures += 1;
-                    progress.failed_at = Some(std::time::Instant::now());
-                });
+                progress(|progress| progress.failed(Utc::now()));
             }
         }
         worker.in_flight().remove(IN_FLIGHT);
     });
 }
 
-/// The site's date and the moment today's writing starts, once it has come.
-fn due(now: DateTime<Utc>, timezone: chrono_tz::Tz) -> Option<(NaiveDate, DateTime<Utc>)> {
-    let local = now.with_timezone(&timezone);
-    let day = local.date_naive();
-    (local.time() >= START).then(|| (day, crate::topics::to_utc(timezone, day.and_time(START))))
-}
-
-/// Whether XABC has published an article since `since`. An article an administrator takes back
-/// keeps its publication time, so it is not written again.
-pub(super) async fn written(state: &AppState, since: DateTime<Utc>) -> Result<bool> {
+/// When XABC last published an article. An article an administrator takes back keeps its
+/// publication time.
+pub(super) async fn last(state: &AppState) -> Result<Option<DateTime<Utc>>> {
     Ok(sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM articles a JOIN users u ON u.id = a.author_id
-         WHERE u.email = $1 AND a.published_at >= $2)",
+        "SELECT max(a.published_at) FROM articles a JOIN users u ON u.id = a.author_id
+         WHERE u.email = $1",
     )
     .bind(EMAIL)
-    .bind(since)
     .fetch_one(&state.pool)
     .await?)
 }
@@ -183,12 +163,17 @@ pub(super) async fn write(state: &AppState, since: DateTime<Utc>) -> Result<Uuid
         .await
         .map_err(|_| AppError::Internal("调度器已关闭".into()))?;
     let author = author(state).await?;
-    let recent: Vec<String> = sqlx::query_scalar(
-        "SELECT title FROM articles WHERE author_id = $1 ORDER BY created_at DESC LIMIT 30",
+    // What XABC wrote in the last week: the models are told the titles, and a find about a
+    // page those articles linked to is left out.
+    let lately: Vec<(String, String)> = sqlx::query_as(
+        "SELECT title, body FROM articles
+         WHERE author_id = $1 AND created_at >= NOW() - INTERVAL '7 days' ORDER BY created_at DESC",
     )
     .bind(author)
     .fetch_all(&state.pool)
     .await?;
+    let recent: Vec<String> = lately.iter().map(|(title, _)| title.clone()).collect();
+    let covered: HashSet<String> = lately.iter().flat_map(|(_, body)| linked(body)).collect();
     let today = Utc::now()
         .with_timezone(&state.config.timezone)
         .date_naive();
@@ -199,12 +184,22 @@ pub(super) async fn write(state: &AppState, since: DateTime<Utc>) -> Result<Uuid
     let mut usage = Usage::default();
     let mut known = HashSet::new();
     let mut finds = Vec::new();
+    let mut repeated = 0;
     for (scout, searched) in [(Scout::X, x), (Scout::Web, web)] {
         match searched {
             Ok(searched) => {
                 usage += searched.usage;
                 known.extend(searched.cited);
                 for find in searched.finds {
+                    if find
+                        .sources
+                        .iter()
+                        .filter_map(|url| identity(url))
+                        .any(|page| covered.contains(&page))
+                    {
+                        repeated += 1;
+                        continue;
+                    }
                     known.extend(
                         find.sources
                             .iter()
@@ -218,7 +213,14 @@ pub(super) async fn write(state: &AppState, since: DateTime<Utc>) -> Result<Uuid
         }
     }
     if finds.is_empty() {
-        return Err(AppError::Internal("两路检索都没有找到线索".into()));
+        return Err(AppError::Internal(
+            if repeated > 0 {
+                "线索都是最近写过的"
+            } else {
+                "两路检索都没有找到线索"
+            }
+            .into(),
+        ));
     }
     let drafted = draft(state, today, &finds, &recent).await?;
     usage += drafted.usage;
@@ -262,7 +264,7 @@ pub(super) async fn write(state: &AppState, since: DateTime<Utc>) -> Result<Uuid
     let shown: Vec<&Picture> = pictures.values().collect();
     let id = publish(state, author, since, title, &body, &shown, cover.as_ref()).await?;
     tracing::info!(
-        %id, title, finds = finds.len(), pictures = shown.len(), cover = cover.is_some(),
+        %id, title, finds = finds.len(), repeated, pictures = shown.len(), cover = cover.is_some(),
         input_tokens = usage.input_tokens, output_tokens = usage.output_tokens,
         web_searches = usage.server_side_tool_usage_details.web_search_calls,
         x_searches = usage.server_side_tool_usage_details.x_search_calls,
@@ -514,6 +516,16 @@ fn images(body: &str) -> Vec<(Range<usize>, Option<usize>)> {
         }
     }
     images
+}
+
+/// The pages a body links to, told apart as `identity` does.
+fn linked(body: &str) -> Vec<String> {
+    Parser::new_ext(body, MARKDOWN)
+        .filter_map(|event| match event {
+            Event::Start(Tag::Link { dest_url, .. }) => identity(&dest_url),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The pictures the body places, by number, each once and in order.
@@ -940,7 +952,7 @@ pub(super) async fn publish(
     Ok(id)
 }
 
-const SEARCHING: &str = "你是 XABC 的选题编辑。XABC 每天在 xabcnews.com 的「分享」栏目写一篇文章，分享真正有趣、好玩、有价值的东西，读者是对科技、AI、生活和世界充满好奇的中文读者。
+const SEARCHING: &str = "你是 XABC 的选题编辑。XABC 每两小时在 xabcnews.com 的「分享」栏目写一篇文章，分享真正有趣、好玩、有价值的东西，读者是对科技、AI、生活和世界充满好奇的中文读者。
 今天请你{scope}，找出 8 到 12 条值得写成一篇分享的线索。好线索让人眼前一亮、忍不住转给朋友，或者读完马上就能用上，比如：
 - 好用的工具、App、网站和开源项目，值得收藏的资料、教程和资源合集；
 - AI 的新玩法、实用技巧和真实的使用经验；
@@ -1017,37 +1029,40 @@ mod tests {
     }
 
     #[test]
-    fn the_article_is_due_from_five_in_the_morning_site_time() {
-        let shanghai = chrono_tz::Asia::Shanghai;
-        let at = |text: &str| DateTime::parse_from_rfc3339(text).unwrap().to_utc();
-        assert_eq!(due(at("2026-10-16T04:59:59+08:00"), shanghai), None);
-        let (day, since) = due(at("2026-10-16T05:00:00+08:00"), shanghai).unwrap();
-        assert_eq!(day, NaiveDate::from_ymd_opt(2026, 10, 16).unwrap());
-        assert_eq!(since, at("2026-10-16T05:00:00+08:00"));
+    fn an_article_follows_two_hours_after_the_last_and_failures_wait_longer_each_time() {
+        let now = DateTime::parse_from_rfc3339("2026-10-16T05:00:00+08:00")
+            .unwrap()
+            .to_utc();
+        let mut progress = Progress {
+            next: DateTime::<Utc>::MIN_UTC,
+            failures: 0,
+        };
+        let mut waits = Vec::new();
+        for _ in 0..6 {
+            progress.failed(now);
+            waits.push((progress.next - now).num_minutes());
+        }
+        assert_eq!(waits, [30, 60, 120, 240, 480, 480]);
+        progress.wrote(now);
         assert_eq!(
-            due(at("2026-10-16T23:30:00+08:00"), shanghai).unwrap().1,
-            since
+            (progress.failures, progress.next - now),
+            (0, chrono::Duration::hours(2))
         );
+        progress.failed(now);
+        assert_eq!(progress.next - now, chrono::Duration::minutes(30));
     }
 
     #[test]
-    fn a_day_is_tried_three_times_half_an_hour_apart_and_the_next_day_starts_afresh() {
-        let day = NaiveDate::from_ymd_opt(2026, 10, 16).unwrap();
-        let now = std::time::Instant::now();
-        let mut progress = Progress::new(day);
-        assert!(progress.ready(now));
-        progress.failures = 1;
-        progress.failed_at = Some(now);
-        assert!(!progress.ready(now + Duration::from_secs(29 * 60)));
-        assert!(progress.ready(now + RETRY));
-        progress.failures = TRIES;
-        assert!(!progress.ready(now + RETRY));
-        progress.on(day);
-        assert!(!progress.ready(now + RETRY));
-        progress.on(day.succ_opt().unwrap());
-        assert!(progress.ready(now));
-        progress.done = true;
-        assert!(!progress.ready(now));
+    fn the_pages_an_article_linked_to_are_told_apart_like_any_address() {
+        let body = "看 [工具](https://www.known.example/tool/#readme)、<https://x.com/maker/status/1> \
+            和 [明文](http://plain.example/a)。\n\n![](image:abc)";
+        assert_eq!(
+            linked(body),
+            [
+                identity("https://known.example/tool").unwrap(),
+                identity("https://x.com/maker/status/1").unwrap()
+            ]
+        );
     }
 
     #[test]

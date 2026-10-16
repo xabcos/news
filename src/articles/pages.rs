@@ -33,13 +33,13 @@ const FROM: &str = " FROM articles a JOIN authors w ON w.user_id = a.author_id J
 const LIST: Chrome<'static> = Chrome {
     current: "articles",
     section: "reads articles",
-    stylesheet: "/reads.css?v=12",
+    stylesheet: "/reads.css?v=13",
     script: "/reads.js?v=8",
     feed: ("News", "/feed.xml"),
 };
 /// An article counts its reads, and its review takes a ❤️.
 const ARTICLE: Chrome<'static> = Chrome {
-    script: "/articles.js?v=2",
+    script: "/articles.js?v=3",
     ..LIST
 };
 
@@ -90,6 +90,7 @@ struct Params {
     lang: Option<String>,
     page: Option<u32>,
     by: Option<i64>,
+    view: Option<String>,
 }
 
 impl Params {
@@ -142,8 +143,9 @@ enum Mode {
     /// An administrator's preview, with the ❤️.
     Review,
     /// The author's own preview, whatever the status; pictures come through this server, so
-    /// their tmpfile links stay private until the article is public.
-    Author(i64),
+    /// their tmpfile links stay private until the article is public. An administrator, who
+    /// edits anyone's article, previews anyone's (`None`).
+    Author(Option<i64>),
 }
 
 fn listing(page: u32, en: bool, by: Option<i64>) -> String {
@@ -176,6 +178,11 @@ async fn index(
         page @ 1..=100000 => page,
         _ => return Err(AppError::NotFound("页面不存在".into())),
     };
+    // 热读 ranks the section's last 30 days as Reads ranks its own: reads, fading by half a week.
+    let hot = params.view.as_deref() == Some("hot") && params.by.is_none();
+    if hot && page != 1 {
+        return Err(AppError::NotFound("页面不存在".into()));
+    }
     let author = match params.by {
         Some(id) => Some(
             sqlx::query_scalar::<_, String>(
@@ -192,19 +199,28 @@ async fn index(
         "SELECT a.id, a.author_id, w.name AS author, a.title, a.excerpt, a.views, a.published_at",
     );
     query.push(FROM).push(" AND a.status = 'published'");
-    if let Some(by) = params.by {
-        query.push(" AND a.author_id = ").push_bind(by);
+    if hot {
+        query.push(
+            " AND a.views > 0 AND a.published_at >= NOW() - INTERVAL '30 days'
+             ORDER BY ln(1 + a.views::float8)
+                 * power(2, -extract(epoch FROM NOW() - a.published_at)::float8 / 604800) DESC,
+             a.published_at DESC, a.id DESC LIMIT 24",
+        );
+    } else {
+        if let Some(by) = params.by {
+            query.push(" AND a.author_id = ").push_bind(by);
+        }
+        query
+            .push(" ORDER BY a.published_at DESC, a.id DESC LIMIT ")
+            .push_bind(PAGE_SIZE + 1)
+            .push(" OFFSET ")
+            .push_bind(i64::from(page - 1) * PAGE_SIZE);
     }
-    query
-        .push(" ORDER BY a.published_at DESC, a.id DESC LIMIT ")
-        .push_bind(PAGE_SIZE + 1)
-        .push(" OFFSET ")
-        .push_bind(i64::from(page - 1) * PAGE_SIZE);
     let mut rows: Vec<Card> = query.build_query_as().fetch_all(&state.pool).await?;
     if page > 1 && rows.is_empty() {
         return Err(AppError::NotFound("页面不存在".into()));
     }
-    let more = rows.len() > PAGE_SIZE as usize;
+    let more = !hot && rows.len() > PAGE_SIZE as usize;
     rows.truncate(PAGE_SIZE as usize);
     let description = match &author {
         Some(name) => choose(
@@ -220,16 +236,42 @@ async fn index(
         )
         .to_owned(),
     };
+    // One author's page keeps to their articles in order.
+    let views = if author.is_none() {
+        format!(
+            "<nav class=reads-views aria-label=\"{}\"><a href=\"{}\"{}>{}</a><a href=\"{}\"{}>{}</a></nav>",
+            choose(en, "阅读排序", "Reading order"),
+            localized("/articles", en),
+            if hot { "" } else { " aria-current=\"page\"" },
+            choose(en, "最新", "Latest"),
+            escape(&localized("/articles?view=hot", en)),
+            if hot { " aria-current=\"page\"" } else { "" },
+            choose(en, "热读", "Popular"),
+        )
+    } else {
+        String::new()
+    };
     let mut content = format!(
-        "<header class=reads-heading><h1>{}</h1><p>{}</p><div class=reads-tools><a class=article-write href=\"/me/\">{}</a></div></header><div class=reads-list>",
+        "<header class=reads-heading><h1>{}</h1><p>{}</p><div class=reads-tools><a class=article-write href=\"/me/\">{}</a>{views}</div></header><div class=reads-list>",
         label(en),
         escape(&description),
         choose(en, "写文章", "Write")
     );
-    for row in &rows {
-        content.push_str(&card(row, en, state.config.timezone));
+    for (index, row) in rows.iter().enumerate() {
+        content.push_str(&card(
+            row,
+            en,
+            hot.then_some(index + 1),
+            state.config.timezone,
+        ));
     }
-    if rows.is_empty() && author.is_some() {
+    if rows.is_empty() && hot {
+        content.push_str(choose(
+            en,
+            "<p class=muted>热读正在积累，先看看<a href=\"/articles\">最新文章</a>。</p>",
+            "<p class=muted>Popular articles are taking shape. Explore the <a href=\"/articles?lang=en\">latest ones</a>.</p>",
+        ));
+    } else if rows.is_empty() && author.is_some() {
         content.push_str(choose(
             en,
             "<p class=muted>还没有公开的文章。</p>",
@@ -262,14 +304,20 @@ async fn index(
     content.push_str("</nav>");
     let title = match (&author, page) {
         (Some(name), _) => format!("{name} · {}", label(en)),
+        (None, _) if hot => format!("{} · {}", choose(en, "热读", "Popular"), label(en)),
         (None, 1) => format!("{} · 𝑵𝒆𝒘𝒔", label(en)),
         (None, page) => format!("{} · {page} · 𝑵𝒆𝒘𝒔", label(en)),
+    };
+    let path = if hot {
+        "/articles?view=hot".to_owned()
+    } else {
+        listing(page, false, params.by)
     };
     let html = crate::site::layout(
         &state,
         reader,
         en,
-        &listing(page, false, params.by),
+        &path,
         &title,
         &description,
         &content,
@@ -283,7 +331,10 @@ async fn index(
     ))
 }
 
-fn card(item: &Card, en: bool, timezone: chrono_tz::Tz) -> String {
+fn card(item: &Card, en: bool, rank: Option<usize>, timezone: chrono_tz::Tz) -> String {
+    let rank = rank
+        .map(|rank| format!("<span class=read-rank aria-hidden=true>{rank:02}</span>"))
+        .unwrap_or_default();
     let views = if item.views > 0 {
         format!(
             " · <span class=read-views title=\"{}\">{EYE}<span>{}</span></span>",
@@ -294,7 +345,7 @@ fn card(item: &Card, en: bool, timezone: chrono_tz::Tz) -> String {
         String::new()
     };
     format!(
-        "<article class=item><div class=read-card><div class=item-meta><a href=\"{}\">{}</a> · <span class=read-date><time datetime=\"{}\">{}</time>{views}</span></div><h2 class=item-title><a href=\"{}\">{}</a></h2><p class=item-summary>{}</p></div></article>",
+        "<article class=item>{rank}<div class=read-card><div class=item-meta><a href=\"{}\">{}</a> · <span class=read-date><time datetime=\"{}\">{}</time>{views}</span></div><h2 class=item-title><a href=\"{}\">{}</a></h2><p class=item-summary>{}</p></div></article>",
         escape(&localized(&format!("/articles?by={}", item.author_id), en)),
         escape(&item.author),
         item.published_at.to_rfc3339(),
@@ -328,7 +379,7 @@ async fn detail(
     ))
 }
 
-/// The author's preview of their own article, as it would read.
+/// The author's preview of their own article, or an administrator's of any, as it would read.
 async fn preview(
     State(state): State<AppState>,
     user: User,
@@ -340,7 +391,7 @@ async fn preview(
         Reader::Public,
         parse(&id)?,
         params.english(),
-        Mode::Author(user.id),
+        Mode::Author((!user.is_admin()).then_some(user.id)),
     )
     .await?;
     let mut response = ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response();
@@ -365,7 +416,8 @@ async fn render(
     match mode {
         Mode::Public => query.push(" AND a.status = 'published'"),
         Mode::Review => query.push(" AND a.status IN ('pending', 'published')"),
-        Mode::Author(author) => query.push(" AND a.author_id = ").push_bind(author),
+        Mode::Author(Some(author)) => query.push(" AND a.author_id = ").push_bind(author),
+        Mode::Author(None) => &mut query,
     };
     let article: Article = query
         .build_query_as()
@@ -421,17 +473,21 @@ async fn render(
     };
     let notice = match mode {
         Mode::Public => String::new(),
+        // An administrator also edits it, and copies its title and body to post on X Articles.
         Mode::Review => {
             let published = article.status == "published";
             format!(
-                "<div class=article-notice><span>{status}</span><button class=\"button button-small\" type=button data-article-review=\"{}\" data-revision=\"{}\" data-published=\"{published}\">{}</button></div>",
-                article.id,
+                "<div class=article-notice><span>{status}</span><span class=article-actions><a href=\"/me/write.html?id={id}\">{}</a><button class=\"button button-small button-secondary\" type=button data-article-copy=title>{}</button><button class=\"button button-small button-secondary\" type=button data-article-copy=body>{}</button><button class=\"button button-small\" type=button data-article-review=\"{id}\" data-revision=\"{}\" data-published=\"{published}\">{}</button></span></div>",
+                choose(en, "编辑", "Edit"),
+                choose(en, "复制标题", "Copy title"),
+                choose(en, "复制正文", "Copy body"),
                 article.revision,
                 if published {
                     choose(en, "取消 ❤️", "Take back ❤️")
                 } else {
                     choose(en, "❤️ 公开", "❤️ Publish")
-                }
+                },
+                id = article.id,
             )
         }
         Mode::Author(_) => format!(

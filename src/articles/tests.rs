@@ -673,6 +673,66 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
             .unwrap();
     assert_eq!(again, published_at);
 
+    // An administrator edits anyone's article, XABC's above all, and it stays public; a reader
+    // opens no one else's. The administrator's preview leads to the editor and copies the
+    // article for X Articles.
+    assert_eq!(
+        status(
+            get(&format!("/api/articles/{id}"), &reader)
+                .send()
+                .await
+                .unwrap()
+        ),
+        404
+    );
+    let opened: Value = get(&format!("/api/articles/{id}"), &admin)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(opened["revision"], 3);
+    let edited: Value = send(
+        reqwest::Method::PATCH,
+        &format!("/api/articles/{id}"),
+        &admin,
+    )
+    .json(&json!({
+        "revision": 3, "title": "第一篇（改）", "body": opened["body"], "cover": opened["cover"],
+    }))
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(
+        (edited["status"].as_str(), edited["revision"].as_i64()),
+        (Some("published"), Some(4))
+    );
+    assert_eq!(
+        status(
+            get(&format!("/api/articles/{id}/preview"), &admin)
+                .send()
+                .await
+                .unwrap()
+        ),
+        200
+    );
+    let reviewed = get(&format!("/api/admin/preview/articles/{id}"), &admin)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(reviewed.contains(&format!("href=\"/me/write.html?id={id}\"")));
+    assert!(
+        reviewed.contains("data-article-copy=title") && reviewed.contains("data-article-copy=body")
+    );
+    assert!(reviewed.contains("第一篇（改）"));
+
     // A disabled account's articles leave every public page.
     sqlx::query("UPDATE users SET status = false WHERE id = $1")
         .bind(writer)
@@ -1003,17 +1063,23 @@ async fn postgres_xabc_writes_one_illustrated_article_a_day() {
             .all(|drawing| drawing["model"] == "gpt-image-2.5-flare")
     );
 
-    // One article a day: the day is written, and without finds nothing is.
-    assert!(daily::written(&state, since).await.unwrap());
+    // The last article tells when the next is due. Without finds nothing is written, and finds
+    // about a page an article of the last week linked to are left out.
+    assert!(
+        daily::last(&state)
+            .await
+            .unwrap()
+            .is_some_and(|at| at >= since)
+    );
     failing.store(2, Ordering::SeqCst);
     assert!(matches!(
         daily::write(&state, since).await,
-        Err(AppError::Internal(_))
+        Err(AppError::Internal(message)) if message.contains("没有找到线索")
     ));
     failing.store(0, Ordering::SeqCst);
     assert!(matches!(
         daily::write(&state, since).await,
-        Err(AppError::Conflict(_))
+        Err(AppError::Internal(message)) if message.contains("最近写过")
     ));
     // Two writers finishing together publish once.
     let later = Utc::now();
@@ -1036,6 +1102,19 @@ async fn postgres_xabc_writes_one_illustrated_article_a_day() {
             .unwrap(),
         2
     );
+
+    // 热读 ranks reads fading with age; articles nobody read stay out, and it has one page.
+    let race = if first.is_ok() { "甲" } else { "乙" };
+    sqlx::query("UPDATE articles SET views = CASE WHEN id = $1 THEN 3 ELSE 9 END")
+        .bind(id)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE articles SET published_at = NOW() - INTERVAL '10 days' WHERE title = $1")
+        .bind(race)
+        .execute(&state.pool)
+        .await
+        .unwrap();
 
     // Readers find it under XABC, with its cover and the picture's caption line.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1063,4 +1142,30 @@ async fn postgres_xabc_writes_one_illustrated_article_a_day() {
         .await
         .unwrap();
     assert!(list.contains("今天分享一个好玩的工具"));
+    // ln(1 + 3) beats ln(1 + 9) halved by ten days of age.
+    let hot = http
+        .get(format!("{base}/articles?view=hot"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let first_place = hot
+        .find("<span class=read-rank aria-hidden=true>01</span>")
+        .unwrap();
+    let second_place = hot
+        .find("<span class=read-rank aria-hidden=true>02</span>")
+        .unwrap();
+    let mine = hot.find("今天分享一个好玩的工具").unwrap();
+    assert!(first_place < mine && mine < second_place && hot.contains(race));
+    assert!(hot.contains("<a href=\"/articles?view=hot\" aria-current=\"page\">热读</a>"));
+    assert_eq!(
+        http.get(format!("{base}/articles?view=hot&page=2"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
 }

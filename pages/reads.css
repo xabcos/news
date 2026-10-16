@@ -53,6 +53,7 @@
 .article .read-body img + em { display: block; margin: -.9rem 0 0; color: var(--muted); font-size: .8rem; font-style: normal; line-height: 1.7; text-align: center; }
 .article-notice { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.5rem; padding: .6rem .9rem; border: 1px solid var(--line); border-radius: var(--radius-m); color: var(--muted); font-size: .85rem; }
 .article-notice a { color: var(--primary-strong); }
+.article-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: .5rem .9rem; }
 @media (max-width: 768px) {
   .reads-list, .read-heading, .read-source, .read-actions, .read-related,
   .read-body :is(p, h1, h2, h3, h4, h5, h6) { touch-action: pan-y pinch-zoom; }

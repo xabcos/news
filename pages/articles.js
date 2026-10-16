@@ -48,3 +48,67 @@ PublicPage.page();
     }
   });
 })();
+
+// An administrator copies an article to post it on X Articles: the title on its own, and the
+// body as formatted text with plain text beside it. X takes pictures only as uploads, so each
+// picture leaves a note of where it goes and what its caption says.
+(() => {
+  const article = document.querySelector(".article");
+  const controls = document.querySelectorAll("[data-article-copy]");
+  if (!article || !controls.length) return;
+  const write = async (text, html) => {
+    if (html && typeof ClipboardItem !== "undefined" && navigator.clipboard.write) {
+      try {
+        await navigator.clipboard.write([new ClipboardItem({
+          "text/plain": new Blob([text], { type: "text/plain" }),
+          "text/html": new Blob([html], { type: "text/html" }),
+        })]);
+        return;
+      } catch { /* Some browsers only allow plain-text clipboard writes. */ }
+    }
+    await navigator.clipboard.writeText(text);
+  };
+  const body = () => {
+    const copy = article.querySelector(".read-body").cloneNode(true);
+    copy.querySelectorAll("img").forEach((image, index) => {
+      const caption = image.nextElementSibling?.matches("em") ? image.nextElementSibling : null;
+      const words = caption?.textContent.trim() || image.alt.trim();
+      const text = `〔配图 ${index + 1}${words ? `：${words}` : ""}〕`;
+      const paragraph = image.parentElement;
+      // A picture with its caption line fills its paragraph; one inside a sentence stays inline.
+      const alone = paragraph?.matches("p") && paragraph.textContent.trim() === (caption?.textContent.trim() || "");
+      const note = document.createElement(alone ? "p" : "span");
+      note.textContent = text;
+      if (alone) {
+        paragraph.replaceWith(note);
+      } else {
+        caption?.remove();
+        image.replaceWith(note);
+      }
+    });
+    const text = [...copy.children]
+      .map((block) => (block.matches("ul, ol")
+        ? [...block.children].map((item, index) => `${block.matches("ol") ? `${index + 1}.` : "•"} ${item.textContent.trim()}`).join("\n")
+        : block.textContent.trim()))
+      .filter(Boolean)
+      .join("\n\n");
+    return { text, html: copy.innerHTML };
+  };
+  for (const control of controls) {
+    const label = control.textContent;
+    control.addEventListener("click", async () => {
+      try {
+        if (control.dataset.articleCopy === "title") {
+          await write(article.querySelector(".read-title h1").textContent.trim());
+        } else {
+          const { text, html } = body();
+          await write(text, html);
+        }
+        control.textContent = document.documentElement.lang === "en" ? "Copied" : "已复制";
+        setTimeout(() => { control.textContent = label; }, 1500);
+      } catch (error) {
+        window.alert(error.message);
+      }
+    });
+  }
+})();

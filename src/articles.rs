@@ -256,7 +256,7 @@ async fn save(
              revision = revision + 1, updated_at = now(),
              status = CASE WHEN status = 'pending' THEN 'draft'
                            WHEN status = 'published' AND NOT $8 THEN 'pending' ELSE status END
-         WHERE id = $1 AND author_id = $2 AND revision = $3
+         WHERE id = $1 AND (author_id = $2 OR $8) AND revision = $3
          RETURNING status, revision, updated_at",
     )
     .bind(id)
@@ -327,9 +327,10 @@ async fn remove(
     user: User,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    let deleted = sqlx::query("DELETE FROM articles WHERE id = $1 AND author_id = $2")
+    let deleted = sqlx::query("DELETE FROM articles WHERE id = $1 AND (author_id = $2 OR $3)")
         .bind(parse(&id)?)
         .bind(user.id)
+        .bind(user.is_admin())
         .execute(&state.pool)
         .await?;
     if deleted.rows_affected() == 0 {
@@ -355,10 +356,11 @@ async fn upload(
     })?;
     let (content_type, (width, height)) = kind(&bytes)?;
     if !sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS (SELECT 1 FROM articles WHERE id = $1 AND author_id = $2)",
+        "SELECT EXISTS (SELECT 1 FROM articles WHERE id = $1 AND (author_id = $2 OR $3))",
     )
     .bind(article)
     .bind(user.id)
+    .bind(user.is_admin())
     .fetch_one(&state.pool)
     .await?
     {
@@ -398,11 +400,12 @@ async fn picture(
     let (article, image) = (parse(&id)?, parse(&image)?);
     let (url, content_type): (String, String) = sqlx::query_as(
         "SELECT i.url, i.content_type FROM article_images i JOIN articles a ON a.id = i.article_id
-         WHERE i.id = $1 AND i.article_id = $2 AND a.author_id = $3",
+         WHERE i.id = $1 AND i.article_id = $2 AND (a.author_id = $3 OR $4)",
     )
     .bind(image)
     .bind(article)
     .bind(user.id)
+    .bind(user.is_admin())
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(|| AppError::NotFound("图片不存在".into()))?;
@@ -565,14 +568,15 @@ async fn give_back(pool: &PgPool, author: i64, day: NaiveDate) {
     }
 }
 
-/// The signed-in author's article.
+/// The signed-in author's article; an administrator edits anyone's, XABC's above all.
 async fn owned(state: &AppState, user: &User, id: &str) -> Result<Draft> {
     sqlx::query_as(
         "SELECT id, title, body, cover, status, revision, views, updated_at, published_at
-         FROM articles WHERE id = $1 AND author_id = $2",
+         FROM articles WHERE id = $1 AND (author_id = $2 OR $3)",
     )
     .bind(parse(id)?)
     .bind(user.id)
+    .bind(user.is_admin())
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(missing)
@@ -581,10 +585,11 @@ async fn owned(state: &AppState, user: &User, id: &str) -> Result<Draft> {
 /// Why a save matched nothing: someone else's article, or a revision saved since.
 async fn stale(state: &AppState, user: &User, id: Uuid) -> AppError {
     match sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS (SELECT 1 FROM articles WHERE id = $1 AND author_id = $2)",
+        "SELECT EXISTS (SELECT 1 FROM articles WHERE id = $1 AND (author_id = $2 OR $3))",
     )
     .bind(id)
     .bind(user.id)
+    .bind(user.is_admin())
     .fetch_one(&state.pool)
     .await
     {

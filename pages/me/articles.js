@@ -73,7 +73,8 @@ export function createArticles(session) {
     }));
   }
 
-  // The administrator reads each article in its preview, where the ❤️ is.
+  // The administrator reads each article in its preview, where the ❤️ and the copies for X
+  // Articles are, and edits anyone's, XABC's above all.
   function renderReview({ pending, published }) {
     const lists = $("#reviewLists");
     lists.classList.remove("hidden");
@@ -88,7 +89,9 @@ export function createArticles(session) {
         title.href = `/api/admin/preview/articles/${encodeURIComponent(article.id)}`;
         title.target = "_blank";
         title.rel = "noopener";
-        row.append(title, node("p", "item-meta muted", `${article.author} · ${extra(article)}`));
+        const actions = node("div", "item-actions");
+        actions.append(link("编辑", `/me/write.html?id=${encodeURIComponent(article.id)}`));
+        row.append(title, node("p", "item-meta muted", `${article.author} · ${extra(article)}`), actions);
         return row;
       }));
       box.append(list);
