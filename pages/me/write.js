@@ -24,13 +24,14 @@ void start();
 async function start() {
   try {
     const mine = await api("/api/articles");
-    if (!mine.author) {
+    const id = new URLSearchParams(location.search).get("id");
+    // A new article needs a pen name; an administrator edits anyone's without one.
+    if (!mine.author && !id) {
       location.replace("/me/");
       return;
     }
-    author = mine.author.id;
+    author = mine.author?.id;
     admin = mine.admin;
-    const id = new URLSearchParams(location.search).get("id");
     if (id) {
       article = await api(`/api/articles/${encodeURIComponent(id)}`);
       title.value = article.title;

@@ -673,9 +673,9 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
             .unwrap();
     assert_eq!(again, published_at);
 
-    // An administrator edits anyone's article, XABC's above all, and it stays public; a reader
-    // opens no one else's. The administrator's preview leads to the editor and copies the
-    // article for X Articles.
+    // An administrator edits anyone's article, XABC's above all, and its status stays: a pending
+    // one still waits for the ❤️, a public one stays public. A reader opens no one else's. The
+    // administrator's previews lead to the editor and copy the article for X Articles.
     assert_eq!(
         status(
             get(&format!("/api/articles/{id}"), &reader)
@@ -685,6 +685,7 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
         ),
         404
     );
+    assert_eq!(status(heart(&admin, false, 3).send().await.unwrap()), 200);
     let opened: Value = get(&format!("/api/articles/{id}"), &admin)
         .send()
         .await
@@ -693,23 +694,34 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
         .await
         .unwrap();
     assert_eq!(opened["revision"], 3);
-    let edited: Value = send(
-        reqwest::Method::PATCH,
-        &format!("/api/articles/{id}"),
-        &admin,
-    )
-    .json(&json!({
-        "revision": 3, "title": "第一篇（改）", "body": opened["body"], "cover": opened["cover"],
-    }))
-    .send()
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
+    let edit =
+        |revision: i64, title: &str| {
+            send(reqwest::Method::PATCH, &format!("/api/articles/{id}"), &admin).json(&json!({
+            "revision": revision, "title": title, "body": opened["body"], "cover": opened["cover"],
+        }))
+        };
+    let edited: Value = edit(3, "第一篇（改）")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(
         (edited["status"].as_str(), edited["revision"].as_i64()),
-        (Some("published"), Some(4))
+        (Some("pending"), Some(4))
+    );
+    assert_eq!(status(heart(&admin, true, 4).send().await.unwrap()), 200);
+    let edited: Value = edit(4, "第一篇（再改）")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        (edited["status"].as_str(), edited["revision"].as_i64()),
+        (Some("published"), Some(5))
     );
     assert_eq!(
         status(
@@ -731,7 +743,7 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
     assert!(
         reviewed.contains("data-article-copy=title") && reviewed.contains("data-article-copy=body")
     );
-    assert!(reviewed.contains("第一篇（改）"));
+    assert!(reviewed.contains("第一篇（再改）"));
 
     // A disabled account's articles leave every public page.
     sqlx::query("UPDATE users SET status = false WHERE id = $1")
@@ -989,9 +1001,9 @@ async fn postgres_xabc_writes_one_illustrated_article_a_day() {
         .await
         .unwrap();
     // The migration made XABC's account, which takes the pen name before any reader can.
-    let author = daily::author(&state).await.unwrap();
+    let author = xabc::author(&state).await.unwrap();
     let since = Utc::now() - chrono::Duration::minutes(1);
-    let id = daily::write(&state, since).await.unwrap();
+    let id = xabc::write(&state, since).await.unwrap();
 
     let (title, body, cover, status, name): (String, String, Option<Uuid>, String, String) =
         sqlx::query_as(
@@ -1069,27 +1081,27 @@ async fn postgres_xabc_writes_one_illustrated_article_a_day() {
     // The last article tells when the next is due. Without finds nothing is written, and finds
     // about a page an article of the last week linked to are left out.
     assert!(
-        daily::last(&state)
+        xabc::last(&state)
             .await
             .unwrap()
             .is_some_and(|at| at >= since)
     );
     failing.store(2, Ordering::SeqCst);
     assert!(matches!(
-        daily::write(&state, since).await,
+        xabc::write(&state, since).await,
         Err(AppError::Internal(message)) if message.contains("没有找到线索")
     ));
     failing.store(0, Ordering::SeqCst);
     assert!(matches!(
-        daily::write(&state, since).await,
+        xabc::write(&state, since).await,
         Err(AppError::Internal(message)) if message.contains("最近写过")
     ));
     // Two writers finishing together publish once.
     let later = Utc::now();
     let body = "字".repeat(500);
     let (first, second) = tokio::join!(
-        daily::publish(&state, author, later, "甲", &body, &[], None),
-        daily::publish(&state, author, later, "乙", &body, &[], None),
+        xabc::publish(&state, author, later, "甲", &body, &[], None),
+        xabc::publish(&state, author, later, "乙", &body, &[], None),
     );
     assert_eq!(
         [first.is_ok(), second.is_ok()]

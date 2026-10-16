@@ -84,7 +84,7 @@ impl AppState {
             config: Arc::new(config),
             in_flight: Arc::default(),
             run_slots: Arc::new(Semaphore::new(max_concurrent_runs)),
-            image_slots: Arc::new(Semaphore::new(3)),
+            image_slots: Arc::new(Semaphore::new(crate::media::IMAGE_SLOTS)),
             shutdown: CancellationToken::new(),
             workers: TaskTracker::new(),
         };

@@ -1487,14 +1487,16 @@ async fn check_media_limits(mut state: AppState) {
             .await
             .is_err()
     );
-    assert_eq!(state.image_slots.available_permits(), 3);
+    assert_eq!(state.image_slots.available_permits(), media::IMAGE_SLOTS);
 
+    // Two batches together ask for two transfers more than the slots allow.
     Arc::get_mut(&mut state.config).unwrap().image_timeout = Duration::from_secs(5);
+    let per_batch = media::IMAGE_SLOTS / 2 + 1;
     let mut tasks = tokio::task::JoinSet::new();
     for batch in 0..2 {
         let state = state.clone();
-        let mut images = (0..4)
-            .map(|index| slow(1 + batch * 4 + index))
+        let mut images = (0..per_batch)
+            .map(|index| slow(1 + batch * per_batch + index))
             .collect::<Vec<_>>();
         tasks.spawn(async move {
             media::mirror_images(&state, &mut images).await;
@@ -1502,7 +1504,7 @@ async fn check_media_limits(mut state: AppState) {
         });
     }
     let mut sockets = Vec::new();
-    for _ in 0..3 {
+    for _ in 0..media::IMAGE_SLOTS {
         sockets.push(
             tokio::time::timeout(Duration::from_secs(1), listener.accept())
                 .await
@@ -1521,12 +1523,15 @@ async fn check_media_limits(mut state: AppState) {
         assert!(result.unwrap().iter().all(Option::is_none));
     }
     drop(
-        tokio::time::timeout(Duration::from_secs(1), state.image_slots.acquire_many(3))
-            .await
-            .unwrap()
-            .unwrap(),
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            state.image_slots.acquire_many(media::IMAGE_SLOTS as u32),
+        )
+        .await
+        .unwrap()
+        .unwrap(),
     );
-    assert_eq!(state.image_slots.available_permits(), 3);
+    assert_eq!(state.image_slots.available_permits(), media::IMAGE_SLOTS);
 }
 
 async fn wait_for_generation(state: &AppState) {

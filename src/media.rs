@@ -30,6 +30,10 @@ pub(crate) const RENEW_BEFORE: TimeDelta = TimeDelta::hours(6);
 /// News images of this many recent days are renewed, even after a copy has lapsed.
 const RENEW_DAYS: i64 = 7;
 const IMAGE_BATCH_TIMEOUT: Duration = Duration::from_secs(90);
+/// Image transfers under way at once, across every job. Each holds at most
+/// `NEWS_IMAGE_MAX_BYTES` (8 MB by default), so even a full burst stays near half a gigabyte,
+/// and a batch of slow drawings leaves the news pictures room.
+pub(crate) const IMAGE_SLOTS: usize = 64;
 const ORIGIN_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 // Tiny square thumbnails are commonly used by publishers for "image unavailable"
 // placeholders. They are not useful as visual-news cards even when they return 200.
@@ -68,21 +72,7 @@ where
     F: Future<Output = T> + Send + 'static,
     T: Send + 'static,
 {
-    batch_within(state, jobs, IMAGE_BATCH_TIMEOUT).await
-}
-
-/// `batch` with its own time budget, for jobs as slow as drawing a picture.
-pub(crate) async fn batch_within<J, F, T>(
-    state: &AppState,
-    jobs: impl IntoIterator<Item = J>,
-    budget: Duration,
-) -> Vec<T>
-where
-    J: FnOnce(OwnedSemaphorePermit) -> F + Send + 'static,
-    F: Future<Output = T> + Send + 'static,
-    T: Send + 'static,
-{
-    let deadline = Instant::now() + budget;
+    let deadline = Instant::now() + IMAGE_BATCH_TIMEOUT;
     let mut tasks = JoinSet::new();
     for job in jobs {
         let slots = Arc::clone(&state.image_slots);

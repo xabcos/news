@@ -2,9 +2,9 @@
 //! public once an administrator gives it a ❤️, and an author's edit takes it back to review.
 //! Pictures go to tmpfile as they were uploaded; their links appear only on public pages, and
 //! until then the author sees them through this server. A read counts once a day per browser,
-//! never the author's own. XABC, the site's own pen name, publishes one every morning (`daily`).
-pub(crate) mod daily;
+//! never the author's own. XABC, the site's own pen name, publishes one every hour (`xabc`).
 mod pages;
+pub(crate) mod xabc;
 
 #[cfg(test)]
 mod tests;
@@ -241,8 +241,8 @@ async fn edit(
     Ok(Json(owned(&state, &user, &id).await?))
 }
 
-/// Saves the revision the editor holds. A pending article goes back to being a draft, and a
-/// public one back to review, unless an administrator wrote it.
+/// Saves the revision the editor holds. An author's edit takes a pending article back to being
+/// a draft and a public one back to review; an administrator's leaves its status as it was.
 async fn save(
     State(state): State<AppState>,
     user: User,
@@ -254,8 +254,8 @@ async fn save(
     let saved: Option<(String, i32, DateTime<Utc>)> = sqlx::query_as(
         "UPDATE articles SET title = $4, body = $5, excerpt = $6, cover = $7,
              revision = revision + 1, updated_at = now(),
-             status = CASE WHEN status = 'pending' THEN 'draft'
-                           WHEN status = 'published' AND NOT $8 THEN 'pending' ELSE status END
+             status = CASE WHEN $8 THEN status WHEN status = 'pending' THEN 'draft'
+                           WHEN status = 'published' THEN 'pending' ELSE status END
          WHERE id = $1 AND (author_id = $2 OR $8) AND revision = $3
          RETURNING status, revision, updated_at",
     )
@@ -366,9 +366,15 @@ async fn upload(
     {
         return Err(missing());
     }
-    let day = take(&state.pool, user.id, state.digest.today(), Quota::Images).await?;
+    // An administrator's pictures, often for XABC's articles, count against no allowance.
+    let day = match user.is_admin() {
+        true => None,
+        false => Some(take(&state.pool, user.id, state.digest.today(), Quota::Images).await?),
+    };
     let Some(stored) = crate::media::upload_image(&state, bytes.into(), content_type).await else {
-        give_back(&state.pool, user.id, day).await;
+        if let Some(day) = day {
+            give_back(&state.pool, user.id, day).await;
+        }
         return Err(AppError::ServiceUnavailable(
             "图片暂时存不下，请稍后重试".into(),
         ));
@@ -673,8 +679,8 @@ fn image_id(destination: &str) -> Option<Uuid> {
         .and_then(|id| Uuid::parse_str(id).ok())
 }
 
-/// The start of the body as one line of plain text: no markup and no picture descriptions.
-fn excerpt(body: &str) -> String {
+/// The body's words as one line of plain text: no markup and no picture descriptions.
+fn words(body: &str) -> String {
     let mut text = String::new();
     let mut picture = false;
     for event in Parser::new_ext(body, MARKDOWN) {
@@ -694,12 +700,13 @@ fn excerpt(body: &str) -> String {
             ) => text.push(' '),
             _ => {}
         }
-        // Enough for the excerpt, whatever the script.
-        if text.len() > EXCERPT_CHARS * 8 {
-            break;
-        }
     }
-    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The start of the body's words, for lists.
+fn excerpt(body: &str) -> String {
+    let line = words(body);
     if line.chars().count() <= EXCERPT_CHARS {
         return line;
     }

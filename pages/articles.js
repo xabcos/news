@@ -71,20 +71,15 @@ PublicPage.page();
   const body = () => {
     const copy = article.querySelector(".read-body").cloneNode(true);
     copy.querySelectorAll("img").forEach((image, index) => {
-      const caption = image.nextElementSibling?.matches("em") ? image.nextElementSibling : null;
+      // A caption is the emphasis right after a picture, with at most a line break between.
+      let caption = image.nextSibling;
+      if (caption?.nodeType === Node.TEXT_NODE && !caption.textContent.trim()) caption = caption.nextSibling;
+      if (caption?.nodeName !== "EM") caption = null;
       const words = caption?.textContent.trim() || image.alt.trim();
-      const text = `〔配图 ${index + 1}${words ? `：${words}` : ""}〕`;
-      const paragraph = image.parentElement;
-      // A picture with its caption line fills its paragraph; one inside a sentence stays inline.
-      const alone = paragraph?.matches("p") && paragraph.textContent.trim() === (caption?.textContent.trim() || "");
-      const note = document.createElement(alone ? "p" : "span");
-      note.textContent = text;
-      if (alone) {
-        paragraph.replaceWith(note);
-      } else {
-        caption?.remove();
-        image.replaceWith(note);
-      }
+      const note = document.createElement("span");
+      note.textContent = `〔配图 ${index + 1}${words ? `：${words}` : ""}〕`;
+      caption?.remove();
+      image.replaceWith(note);
     });
     const text = [...copy.children]
       .map((block) => (block.matches("ul, ol")

@@ -249,7 +249,7 @@ async fn today_runs(state: &AppState, topic: &Topic) -> Result<i64> {
 /// Claims due topics up to the free concurrency slots and starts them. Claiming clears
 /// `next_run_at`, so a topic cannot be picked twice; the run reschedules it on completion.
 async fn tick(state: &AppState) -> Result<()> {
-    crate::articles::daily::tick(state).await;
+    crate::articles::xabc::tick(state).await;
     insight::tick(state).await?;
     let slots = state.run_slots.available_permits();
     if slots == 0 {

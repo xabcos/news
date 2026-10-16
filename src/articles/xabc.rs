@@ -1,9 +1,9 @@
-//! XABC's article of the day. Each morning grok looks through X and the web, and the briefing
-//! model through the web, for things worth sharing. The briefing model then picks one subject
+//! XABC, the site's own pen name, writes a 分享 article every hour. Grok looks through X and the
+//! web, and the briefing model through the web, for things worth sharing. The briefing model picks one subject
 //! from both sets of finds, reads further where it needs to and writes it up its own way, and
 //! the article goes out at once under the pen name XABC. Its pictures come from the pages it
 //! cites or are drawn by an image model, and it links only to addresses the models found.
-use super::{MARKDOWN, checked, kind};
+use super::{MARKDOWN, checked, kind, words};
 use crate::{
     ai,
     error::{AppError, Result},
@@ -50,8 +50,6 @@ const PICTURES: usize = 8;
 const ACCEPT: &str = "image/webp,image/jpeg,image/png,image/gif";
 const SEARCH_TIME: Duration = Duration::from_secs(15 * 60);
 const WRITE_TIME: Duration = Duration::from_secs(25 * 60);
-const PICTURE_TIME: Duration = Duration::from_secs(8 * 60);
-const DRAW_TIME: Duration = Duration::from_secs(180);
 /// Characters of text an article needs before it is worth publishing.
 const MIN_TEXT: usize = 400;
 /// Rounds of link checks before an article whose rewriting keeps forming new links is given up.
@@ -91,7 +89,7 @@ fn progress<T>(change: impl FnOnce(&mut Progress) -> T) -> T {
 /// waiting after a failure. The scheduler calls this on every tick.
 pub(crate) async fn tick(state: &AppState) {
     let now = Utc::now();
-    if progress(|progress| progress.next > now) {
+    if progress(|progress| progress.next > now) || state.in_flight().contains(IN_FLIGHT) {
         return;
     }
     match last(state).await {
@@ -167,7 +165,7 @@ pub(super) async fn write(state: &AppState, since: DateTime<Utc>) -> Result<Uuid
     // page those articles linked to is left out.
     let lately: Vec<(String, String)> = sqlx::query_as(
         "SELECT title, body FROM articles
-         WHERE author_id = $1 AND created_at >= NOW() - INTERVAL '7 days' ORDER BY created_at DESC",
+         WHERE author_id = $1 AND published_at >= NOW() - INTERVAL '7 days' ORDER BY published_at DESC",
     )
     .bind(author)
     .fetch_all(&state.pool)
@@ -227,23 +225,29 @@ pub(super) async fn write(state: &AppState, since: DateTime<Utc>) -> Result<Uuid
     known.extend(drafted.cited);
     let article = drafted.article;
     let title = article.title.trim();
+    let body = uncited(&article.body);
+    // A draft that can't be published is turned down before its pictures are paid for.
     if title.is_empty() {
         return Err(AppError::Internal("文章没有标题".into()));
     }
-    let body = uncited(&article.body);
-    // Only the pictures the body places are fetched or drawn, and the cover after them.
+    checked(title, &body, None)?;
+    if words(&body).chars().count() < MIN_TEXT {
+        return Err(AppError::Internal("文章正文太短".into()));
+    }
+    // The cover, then the pictures the body places: only those are fetched or drawn.
     let placed = placed(&body, article.pictures.len());
-    let mut wanted: Vec<Wanted> = placed
-        .iter()
-        .map(|number| article.pictures[number - 1].clone())
-        .collect();
-    wanted.push(Wanted {
+    let mut wanted = vec![Wanted {
         page: String::new(),
         prompt: article.cover.clone(),
         caption: String::new(),
-    });
-    let mut pictures = prepare(state, wanted).await;
-    let cover = pictures.pop().flatten();
+    }];
+    wanted.extend(
+        placed
+            .iter()
+            .map(|number| article.pictures[number - 1].clone()),
+    );
+    let mut pictures = prepare(state, &wanted).await.into_iter();
+    let cover = pictures.next().flatten();
     let pictures: HashMap<usize, Picture> = placed
         .iter()
         .zip(pictures)
@@ -258,9 +262,6 @@ pub(super) async fn write(state: &AppState, since: DateTime<Utc>) -> Result<Uuid
     );
     let body = compose(&body, &article.pictures, &pictures, &known)
         .ok_or_else(|| AppError::Internal("正文的链接改写后仍在变化".into()))?;
-    if text(&body).chars().count() < MIN_TEXT {
-        return Err(AppError::Internal("文章正文太短".into()));
-    }
     let shown: Vec<&Picture> = pictures.values().collect();
     let id = publish(state, author, since, title, &body, &shown, cover.as_ref()).await?;
     tracing::info!(
@@ -558,15 +559,15 @@ pub(super) struct Picture {
     credit: Option<(String, String)>,
 }
 
-/// Fetches or draws the pictures within the time pictures have, each job holding one of the
-/// shared image slots.
-async fn prepare(state: &AppState, wanted: Vec<Wanted>) -> Vec<Option<Picture>> {
+/// Fetches or draws the pictures together, like any batch of images: each job holds one of the
+/// shared image slots for as long as it works, within the batch's time.
+async fn prepare(state: &AppState, wanted: &[Wanted]) -> Vec<Option<Picture>> {
     let mut pictures: Vec<Option<Picture>> = wanted.iter().map(|_| None).collect();
-    let jobs = wanted.into_iter().enumerate().map(|(index, wanted)| {
+    let jobs = wanted.iter().cloned().enumerate().map(|(index, wanted)| {
         let state = state.clone();
         move |slot| async move { (index, picture(&state, &wanted, slot).await) }
     });
-    for (index, picture) in media::batch_within(state, jobs, PICTURE_TIME).await {
+    for (index, picture) in media::batch(state, jobs).await {
         pictures[index] = picture;
     }
     pictures
@@ -650,7 +651,6 @@ async fn draw(
             state.config.ai_base_url.as_str().trim_end_matches('/')
         ))
         .bearer_auth(&state.config.ai_api_key)
-        .timeout(DRAW_TIME)
         .json(&json!({
             "model": IMAGE_MODEL,
             "prompt": format!("{}\n画面中不要出现任何文字、标志或水印。", prompt.trim()),
@@ -676,17 +676,18 @@ async fn draw(
     Ok((jpeg, slot))
 }
 
-/// The body as readers get it: without search marks, each placed picture with a caption line
-/// under it and no other picture, and no link to an address the models never found. Reducing a
-/// link to its words can let the brackets around it form another link, so links are checked
-/// until nothing changes; each round that changes something removes a pair of brackets.
+/// The body, its search marks already gone, as readers get it: each placed picture with a
+/// caption line under it and no other picture, and no link to an address the models never
+/// found. Reducing a link to its words can let the brackets around it form another link, so
+/// links are checked until nothing changes; each round that changes something removes a pair of
+/// brackets.
 fn compose(
     body: &str,
     wanted: &[Wanted],
     pictures: &HashMap<usize, Picture>,
     known: &HashSet<String>,
 ) -> Option<String> {
-    let mut body = pictured(&uncited(body), wanted, pictures);
+    let mut body = pictured(body, wanted, pictures);
     for _ in 0..LINK_ROUNDS {
         let checked = unlinked(&body, known);
         if checked == body {
@@ -855,21 +856,6 @@ fn plain(text: &str) -> String {
     plain
 }
 
-/// The body's words, without markup or picture descriptions.
-fn text(body: &str) -> String {
-    let mut text = String::new();
-    let mut picture = false;
-    for event in Parser::new_ext(body, MARKDOWN) {
-        match event {
-            Event::Start(Tag::Image { .. }) => picture = true,
-            Event::End(TagEnd::Image) => picture = false,
-            Event::Text(part) | Event::Code(part) if !picture => text.push_str(&part),
-            _ => {}
-        }
-    }
-    text
-}
-
 /// Publishes the article with its pictures, unless XABC published one since `since` meanwhile.
 pub(super) async fn publish(
     state: &AppState,
@@ -894,7 +880,7 @@ pub(super) async fn publish(
     .fetch_one(&mut *tx)
     .await?
     {
-        return Err(AppError::Conflict("XABC 今天的文章已经发布".into()));
+        return Err(AppError::Conflict("XABC 刚发过一篇文章".into()));
     }
     let id = Uuid::new_v4();
     sqlx::query(
@@ -1230,7 +1216,7 @@ mod tests {
         );
         // Composing drops them too.
         assert_eq!(
-            compose(body, &[], &HashMap::new(), &HashSet::new()).unwrap(),
+            compose(&uncited(body), &[], &HashMap::new(), &HashSet::new()).unwrap(),
             "它不需要越狱。\n\n见 GitHub 仓库和 (官网)，以及 linpados.com 本身。"
         );
     }
@@ -1245,13 +1231,5 @@ mod tests {
         )
         .unwrap();
         assert_eq!(composed, "去 New York 看看");
-    }
-
-    #[test]
-    fn text_counts_words_but_not_markup_or_picture_descriptions() {
-        assert_eq!(
-            text("## 标题\n\n一段 **加粗** 和 `code`。\n\n![描述](image:abc)\n\n- 列表"),
-            "标题一段 加粗 和 code。列表"
-        );
     }
 }

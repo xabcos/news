@@ -33,13 +33,13 @@ const FROM: &str = " FROM articles a JOIN authors w ON w.user_id = a.author_id J
 const LIST: Chrome<'static> = Chrome {
     current: "articles",
     section: "reads articles",
-    stylesheet: "/reads.css?v=13",
+    stylesheet: "/reads.css?v=14",
     script: "/reads.js?v=8",
     feed: ("News", "/feed.xml"),
 };
 /// An article counts its reads, and its review takes a ❤️.
 const ARTICLE: Chrome<'static> = Chrome {
-    script: "/articles.js?v=3",
+    script: "/articles.js?v=4",
     ..LIST
 };
 
@@ -471,30 +471,44 @@ async fn render(
         "pending" => choose(en, "待审", "In review"),
         _ => choose(en, "草稿", "Draft"),
     };
+    // An administrator's previews lead to the editor and copy the title and body to post on X
+    // Articles; the review preview also holds the ❤️.
+    let edit = |label: &str| {
+        format!(
+            "<a class=\"button button-small button-secondary\" href=\"/me/write.html?id={}\">{label}</a>",
+            article.id
+        )
+    };
+    let copies = format!(
+        "<button class=\"button button-small button-secondary\" type=button data-article-copy=title>{}</button><button class=\"button button-small button-secondary\" type=button data-article-copy=body>{}</button>",
+        choose(en, "复制标题", "Copy title"),
+        choose(en, "复制正文", "Copy body"),
+    );
     let notice = match mode {
         Mode::Public => String::new(),
-        // An administrator also edits it, and copies its title and body to post on X Articles.
         Mode::Review => {
             let published = article.status == "published";
             format!(
-                "<div class=article-notice><span>{status}</span><span class=article-actions><a href=\"/me/write.html?id={id}\">{}</a><button class=\"button button-small button-secondary\" type=button data-article-copy=title>{}</button><button class=\"button button-small button-secondary\" type=button data-article-copy=body>{}</button><button class=\"button button-small\" type=button data-article-review=\"{id}\" data-revision=\"{}\" data-published=\"{published}\">{}</button></span></div>",
-                choose(en, "编辑", "Edit"),
-                choose(en, "复制标题", "Copy title"),
-                choose(en, "复制正文", "Copy body"),
+                "<div class=article-notice><span class=article-status>{status}</span><span class=article-actions>{}{copies}<button class=\"button button-small button-primary\" type=button data-article-review=\"{}\" data-revision=\"{}\" data-published=\"{published}\">{}</button></span></div>",
+                edit(choose(en, "编辑", "Edit")),
+                article.id,
                 article.revision,
                 if published {
                     choose(en, "取消 ❤️", "Take back ❤️")
                 } else {
                     choose(en, "❤️ 公开", "❤️ Publish")
                 },
-                id = article.id,
             )
         }
-        Mode::Author(_) => format!(
-            "<div class=article-notice><span>{} · {status}</span><a href=\"/me/write.html?id={}\">{}</a></div>",
+        Mode::Author(author) => format!(
+            "<div class=article-notice><span class=article-status>{} · {status}</span><span class=article-actions>{}{}</span></div>",
             choose(en, "预览", "Preview"),
-            article.id,
-            choose(en, "继续编辑", "Edit")
+            edit(choose(en, "继续编辑", "Edit")),
+            if author.is_none() {
+                copies.as_str()
+            } else {
+                ""
+            },
         ),
     };
     let by = localized(&format!("/articles?by={}", article.author_id), en);
