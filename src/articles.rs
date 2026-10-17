@@ -100,10 +100,56 @@ struct Listed {
     views: i64,
     updated_at: DateTime<Utc>,
     published_at: Option<DateTime<Utc>>,
+    /// Whether it is a 解说.
+    film: bool,
 }
 
-const LISTED: &str = "SELECT a.id, a.title, w.name AS author, a.status, a.revision, a.views, a.updated_at, a.published_at
+const LISTED: &str = "SELECT a.id, a.title, w.name AS author, a.status, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film
     FROM articles a JOIN authors w ON w.user_id = a.author_id JOIN users u ON u.id = a.author_id";
+
+/// A search of 分享 or 解说: its words, as the page shows them, and the patterns each of which an
+/// article's title or opening must hold.
+struct Search {
+    words: String,
+    patterns: Vec<String>,
+}
+
+impl Search {
+    fn new(q: Option<&str>) -> Self {
+        let words = crate::site::search_words(q);
+        let patterns = words
+            .split_whitespace()
+            .map(crate::site::containing)
+            .collect();
+        Self { words, patterns }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.patterns.is_empty()
+    }
+
+    /// Orders a list newest first, after the articles whose titles hold every word.
+    fn order(&self, query: &mut sqlx::QueryBuilder<sqlx::Postgres>) {
+        query.push(" ORDER BY ");
+        if !self.is_empty() {
+            query
+                .push("a.title ILIKE ALL(")
+                .push_bind(self.patterns.clone())
+                .push(") DESC, ");
+        }
+        query.push("a.published_at DESC, a.id DESC");
+    }
+
+    /// Narrows `query`, already filtering, to the articles holding every word.
+    fn narrow(&self, query: &mut sqlx::QueryBuilder<sqlx::Postgres>) {
+        if !self.is_empty() {
+            query
+                .push(" AND concat_ws(' ', a.title, a.excerpt) ILIKE ALL(")
+                .push_bind(self.patterns.clone())
+                .push(")");
+        }
+    }
+}
 
 /// An article as its author edits it.
 #[derive(FromRow, Serialize)]
@@ -517,18 +563,43 @@ async fn views(State(state): State<AppState>, Query(request): Query<Ids>) -> Res
     Ok(Json(json!({ "views": views })))
 }
 
-/// What waits for a ❤️, oldest first, and the latest public articles.
-async fn queue(State(state): State<AppState>, user: User) -> Result<Json<Value>> {
+#[derive(Deserialize)]
+struct Find {
+    day: Option<NaiveDate>,
+    q: Option<String>,
+}
+
+/// What waits for a ❤️, oldest first, and the latest 30 public articles, or all of one day's or
+/// of those holding some words, so an administrator finds an older one to copy.
+async fn queue(
+    State(state): State<AppState>,
+    user: User,
+    Query(find): Query<Find>,
+) -> Result<Json<Value>> {
     auth::require_admin(&user)?;
     let pending: Vec<Listed> = sqlx::QueryBuilder::new(LISTED)
         .push(" WHERE a.status = 'pending' AND u.status ORDER BY a.updated_at, a.id")
         .build_query_as()
         .fetch_all(&state.pool)
         .await?;
-    let published: Vec<Listed> = sqlx::QueryBuilder::new(LISTED)
-        .push(
-            " WHERE a.status = 'published' AND u.status ORDER BY a.published_at DESC, a.id DESC LIMIT 30",
-        )
+    let search = Search::new(find.q.as_deref());
+    let mut query = sqlx::QueryBuilder::new(LISTED);
+    query.push(" WHERE a.status = 'published' AND u.status");
+    if let Some(day) = find.day {
+        query
+            .push(" AND (a.published_at AT TIME ZONE ")
+            .push_bind(state.config.timezone.name())
+            .push(")::date = ")
+            .push_bind(day);
+    }
+    search.narrow(&mut query);
+    let published: Vec<Listed> = query
+        .push(" ORDER BY a.published_at DESC, a.id DESC LIMIT ")
+        .push_bind(if find.day.is_some() || !search.is_empty() {
+            200
+        } else {
+            30
+        })
         .build_query_as()
         .fetch_all(&state.pool)
         .await?;

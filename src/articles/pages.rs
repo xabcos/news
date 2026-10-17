@@ -1,12 +1,12 @@
 //! The 分享 pages: public articles newest first, one author's articles, an article, and the
 //! previews its author and an administrator read before readers do.
-use super::{COMMENTARY, MARKDOWN, commentary_label, image_id, label, missing, parse};
+use super::{COMMENTARY, MARKDOWN, Search, commentary_label, image_id, label, missing, parse};
 use crate::{
     auth::User,
     digest::{Rendered, conditional},
     error::{AppError, Result},
     reading::{self, Reader},
-    site::{Chrome, EYE, Picture, absolute, choose, escape, localized, markdown},
+    site::{Chrome, EYE, Picture, absolute, choose, escape, localized, markdown, search_box},
     state::AppState,
 };
 use axum::{
@@ -49,7 +49,7 @@ const ARTICLE: Chrome<'static> = Chrome {
 const EXPLAINED: Chrome<'static> = Chrome {
     current: "movie",
     section: "catalog culture catalog-commentary",
-    stylesheet: "/catalog.css?v=8",
+    stylesheet: "/catalog.css?v=9",
     ..LIST
 };
 const EXPLANATION: Chrome<'static> = Chrome {
@@ -108,6 +108,7 @@ struct Params {
     page: Option<u32>,
     by: Option<i64>,
     view: Option<String>,
+    q: Option<String>,
 }
 
 impl Params {
@@ -167,11 +168,14 @@ enum Mode {
     Author(Option<i64>),
 }
 
-/// The address of a list's page, one author's with `by`.
-fn listing(path: &str, page: u32, en: bool, by: Option<i64>) -> String {
+/// The address of a list's page, one author's with `by`, a search's with `words`.
+fn listing(path: &str, page: u32, en: bool, by: Option<i64>, words: &str) -> String {
     let mut query = url::form_urlencoded::Serializer::new(String::new());
     if let Some(by) = by {
         query.append_pair("by", &by.to_string());
+    }
+    if !words.is_empty() {
+        query.append_pair("q", words);
     }
     if page > 1 {
         query.append_pair("page", &page.to_string());
@@ -188,13 +192,13 @@ fn listing(path: &str, page: u32, en: bool, by: Option<i64>) -> String {
 }
 
 /// Links to a list's neighbouring pages; the page script follows the next one as readers scroll.
-fn pagination(path: &str, page: u32, more: bool, en: bool, by: Option<i64>) -> String {
+fn pagination(path: &str, page: u32, more: bool, en: bool, by: Option<i64>, words: &str) -> String {
     let mut nav = "<nav class=reads-pagination aria-label=Pagination>".to_owned();
     if page > 1 {
         let _ = write!(
             nav,
             "<a rel=prev href=\"{}\">{}</a>",
-            escape(&listing(path, page - 1, en, by)),
+            escape(&listing(path, page - 1, en, by, words)),
             choose(en, "上一页", "Newer")
         );
     }
@@ -202,7 +206,7 @@ fn pagination(path: &str, page: u32, more: bool, en: bool, by: Option<i64>) -> S
         let _ = write!(
             nav,
             "<a rel=next href=\"{}\">{}</a>",
-            escape(&listing(path, page + 1, en, by)),
+            escape(&listing(path, page + 1, en, by, words)),
             choose(en, "继续阅读", "Older articles")
         );
     }
@@ -226,8 +230,9 @@ async fn index(
 ) -> Result<Response> {
     let en = params.english();
     let page = page(&params)?;
+    let search = Search::new(params.q.as_deref());
     // 热读 ranks the section's last 30 days as Reads ranks its own: reads, fading by half a week.
-    let hot = params.view.as_deref() == Some("hot") && params.by.is_none();
+    let hot = params.view.as_deref() == Some("hot") && params.by.is_none() && search.is_empty();
     if hot && page != 1 {
         return Err(AppError::NotFound("页面不存在".into()));
     }
@@ -243,24 +248,30 @@ async fn index(
         ),
         None => None,
     };
-    let mut query = QueryBuilder::<Postgres>::new(
+    // The public articles the page lists: 解说 has a list of its own.
+    let listed = |select: &str| {
+        let mut query = QueryBuilder::<Postgres>::new(select);
+        query
+            .push(FROM)
+            .push(" AND a.status = 'published' AND a.film IS NULL");
+        if let Some(by) = params.by {
+            query.push(" AND a.author_id = ").push_bind(by);
+        }
+        search.narrow(&mut query);
+        query
+    };
+    let mut query = listed(
         "SELECT a.id, a.author_id, w.name AS author, a.title, a.excerpt, a.views, a.published_at",
     );
-    // 解说 has a list of its own.
-    query
-        .push(FROM)
-        .push(" AND a.status = 'published' AND a.film IS NULL");
     if hot {
         query
             .push(" AND a.views > 0 AND a.published_at >= NOW() - INTERVAL '30 days' ORDER BY ")
             .push(HOT)
             .push(" DESC, a.published_at DESC, a.id DESC LIMIT 24");
     } else {
-        if let Some(by) = params.by {
-            query.push(" AND a.author_id = ").push_bind(by);
-        }
+        search.order(&mut query);
         query
-            .push(" ORDER BY a.published_at DESC, a.id DESC LIMIT ")
+            .push(" LIMIT ")
             .push_bind(PAGE_SIZE + 1)
             .push(" OFFSET ")
             .push_bind(i64::from(page - 1) * PAGE_SIZE);
@@ -285,13 +296,25 @@ async fn index(
         )
         .to_owned(),
     };
+    let found = found(
+        &search,
+        page,
+        en,
+        listed("SELECT count(*)").build_query_scalar(),
+        &state,
+    )
+    .await?;
     // One author's page keeps to their articles in order.
     let views = if author.is_none() {
         format!(
             "<nav class=reads-views aria-label=\"{}\"><a href=\"{}\"{}>{}</a><a href=\"{}\"{}>{}</a></nav>",
             choose(en, "阅读排序", "Reading order"),
             localized("/articles", en),
-            if hot { "" } else { " aria-current=\"page\"" },
+            if hot || !search.is_empty() {
+                ""
+            } else {
+                " aria-current=\"page\""
+            },
             choose(en, "最新", "Latest"),
             escape(&localized("/articles?view=hot", en)),
             if hot { " aria-current=\"page\"" } else { "" },
@@ -301,9 +324,16 @@ async fn index(
         String::new()
     };
     let mut content = format!(
-        "<header class=reads-heading><h1>{}</h1><p>{}</p><div class=reads-tools><a class=article-write href=\"/me/\">{}</a>{views}</div></header><div class=reads-list>",
+        "<header class=reads-heading><h1>{}</h1><p>{}</p><div class=reads-tools>{}<a class=article-write href=\"/me/\">{}</a>{views}</div></header><div class=reads-list>",
         label(en),
-        escape(&description),
+        found.unwrap_or_else(|| escape(&description)),
+        search_box(
+            "reads-search",
+            "/articles",
+            &search.words,
+            choose(en, "搜索分享的标题和内容", "Search titles and openings"),
+            en
+        ),
         choose(en, "写文章", "Write")
     );
     for (index, row) in rows.iter().enumerate() {
@@ -314,7 +344,13 @@ async fn index(
             state.config.timezone,
         ));
     }
-    if rows.is_empty() && hot {
+    if rows.is_empty() && !search.is_empty() {
+        content.push_str(choose(
+            en,
+            "<p class=muted>没有找到相关文章，换个词试试，或看看<a href=\"/articles\">最新文章</a>。</p>",
+            "<p class=muted>No articles match these words. Try others, or explore the <a href=\"/articles?lang=en\">latest ones</a>.</p>",
+        ));
+    } else if rows.is_empty() && hot {
         content.push_str(choose(
             en,
             "<p class=muted>热读正在积累，先看看<a href=\"/articles\">最新文章</a>。</p>",
@@ -334,7 +370,14 @@ async fn index(
         ));
     }
     content.push_str("</div>");
-    content.push_str(&pagination("/articles", page, more, en, params.by));
+    content.push_str(&pagination(
+        "/articles",
+        page,
+        more,
+        en,
+        params.by,
+        &search.words,
+    ));
     let title = match (&author, page) {
         (Some(name), _) => format!("{name} · {}", label(en)),
         (None, _) if hot => format!("{} · {}", choose(en, "热读", "Popular"), label(en)),
@@ -344,7 +387,7 @@ async fn index(
     let path = if hot {
         "/articles?view=hot".to_owned()
     } else {
-        listing("/articles", page, false, params.by)
+        listing("/articles", page, false, params.by, &search.words)
     };
     let html = crate::site::layout(
         &state,
@@ -357,11 +400,50 @@ async fn index(
         None,
         &LIST,
     );
-    Ok(conditional(
-        &headers,
-        &Rendered::new(html),
-        "text/html; charset=utf-8",
-    ))
+    Ok(listed_page(&headers, html, &search))
+}
+
+/// What a search found, for the line under a list's title: on its first page how many articles
+/// hold the words, on the pages scrolling loads only the words.
+async fn found(
+    search: &Search,
+    page: u32,
+    en: bool,
+    count: sqlx::query::QueryScalar<'_, Postgres, i64, sqlx::postgres::PgArguments>,
+    state: &AppState,
+) -> Result<Option<String>> {
+    if search.is_empty() {
+        return Ok(None);
+    }
+    let words = escape(&search.words);
+    Ok(Some(if page > 1 {
+        choose(
+            en,
+            &format!("「{words}」的搜索结果"),
+            &format!("Results for “{words}”"),
+        )
+        .to_owned()
+    } else {
+        let found = count.fetch_one(&state.pool).await?;
+        choose(
+            en,
+            &format!("「{words}」找到 {found} 篇"),
+            &format!("Results for “{words}”: {found}"),
+        )
+        .to_owned()
+    }))
+}
+
+/// A list page as cached; pages for words stay out of search engines, as Reads' do.
+fn listed_page(headers: &HeaderMap, html: String, search: &Search) -> Response {
+    let mut response = conditional(headers, &Rendered::new(html), "text/html; charset=utf-8");
+    if !search.is_empty() {
+        response.headers_mut().insert(
+            header::HeaderName::from_static("x-robots-tag"),
+            HeaderValue::from_static("noindex"),
+        );
+    }
+    response
 }
 
 /// One of 值得读's articles, as the home page script lays it out.
@@ -422,24 +504,54 @@ async fn commentary(
 ) -> Result<Response> {
     let en = params.english();
     let page = page(&params)?;
-    let mut rows: Vec<Explained> = sqlx::query_as(
+    let search = Search::new(params.q.as_deref());
+    let listed = |select: &str| {
+        let mut query = QueryBuilder::<Postgres>::new(select);
+        query.push(
+            " FROM articles a JOIN users u ON u.id = a.author_id
+              LEFT JOIN article_images i ON i.id = a.cover
+              WHERE u.status AND a.status = 'published' AND a.film IS NOT NULL",
+        );
+        search.narrow(&mut query);
+        query
+    };
+    let mut query = listed(
         "SELECT a.id, a.title, a.excerpt, a.views, a.published_at,
-                CASE WHEN i.expires_at > now() THEN i.url END AS cover, i.width, i.height
-         FROM articles a JOIN users u ON u.id = a.author_id
-         LEFT JOIN article_images i ON i.id = a.cover
-         WHERE u.status AND a.status = 'published' AND a.film IS NOT NULL
-         ORDER BY a.published_at DESC, a.id DESC LIMIT $1 OFFSET $2",
-    )
-    .bind(PAGE_SIZE + 1)
-    .bind(i64::from(page - 1) * PAGE_SIZE)
-    .fetch_all(&state.pool)
-    .await?;
+                CASE WHEN i.expires_at > now() THEN i.url END AS cover, i.width, i.height",
+    );
+    search.order(&mut query);
+    let mut rows: Vec<Explained> = query
+        .push(" LIMIT ")
+        .push_bind(PAGE_SIZE + 1)
+        .push(" OFFSET ")
+        .push_bind(i64::from(page - 1) * PAGE_SIZE)
+        .build_query_as()
+        .fetch_all(&state.pool)
+        .await?;
     if page > 1 && rows.is_empty() {
         return Err(AppError::NotFound("页面不存在".into()));
     }
     let more = rows.len() > PAGE_SIZE as usize;
     rows.truncate(PAGE_SIZE as usize);
+    let found = found(
+        &search,
+        page,
+        en,
+        listed("SELECT count(*)").build_query_scalar(),
+        &state,
+    )
+    .await?;
     let mut content = crate::catalog::commentary_tabs(&state, reader, en);
+    content.push_str(&search_box(
+        "catalog-search",
+        COMMENTARY,
+        &search.words,
+        choose(en, "搜索解说的片名和内容", "Search titles and openings"),
+        en,
+    ));
+    if let Some(found) = found {
+        let _ = write!(content, "<p class=\"commentary-found muted\">{found}</p>");
+    }
     content.push_str("<div class=\"reads-list catalog-grid\">");
     for row in &rows {
         content.push_str(&explained(row, en, state.config.timezone));
@@ -449,10 +561,18 @@ async fn commentary(
         let _ = write!(
             content,
             "<p class=empty>{}</p>",
-            choose(en, "第一篇解说正在写。", "The first one is being written.")
+            if search.is_empty() {
+                choose(en, "第一篇解说正在写。", "The first one is being written.")
+            } else {
+                choose(
+                    en,
+                    "没有找到相关解说，换个词试试。",
+                    "Nothing explained matches these words. Try others.",
+                )
+            }
         );
     }
-    content.push_str(&pagination(COMMENTARY, page, more, en, None));
+    content.push_str(&pagination(COMMENTARY, page, more, en, None, &search.words));
     let label = commentary_label(en);
     let title = match page {
         1 => format!("{label} · {}", crate::catalog::Section::Culture.label(en)),
@@ -465,7 +585,7 @@ async fn commentary(
         &state,
         reader,
         en,
-        &listing(COMMENTARY, page, false, None),
+        &listing(COMMENTARY, page, false, None, &search.words),
         &title,
         choose(
             en,
@@ -476,11 +596,7 @@ async fn commentary(
         None,
         &EXPLAINED,
     );
-    Ok(conditional(
-        &headers,
-        &Rendered::new(html),
-        "text/html; charset=utf-8",
-    ))
+    Ok(listed_page(&headers, html, &search))
 }
 
 fn explained(item: &Explained, en: bool, timezone: chrono_tz::Tz) -> String {

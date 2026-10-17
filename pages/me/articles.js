@@ -8,6 +8,8 @@ export function createArticles(session) {
   const signal = session.controller.signal;
   let author = null;
   let version = 0;
+  // An administrator finds older public articles by day or by words, to copy them again.
+  const find = { day: "", q: "" };
 
   $("#penNameButton").addEventListener("click", () => editName(), { signal });
   $("#writeButton").addEventListener("click", (event) => {
@@ -39,7 +41,8 @@ export function createArticles(session) {
     const current = ++version;
     const [mine, review] = await Promise.all([
       session.request("/api/articles"),
-      session.admin ? session.request("/api/admin/articles") : null,
+      // Only what is filled in: an empty day is no date to the server.
+      session.admin ? session.request(`/api/admin/articles?${new URLSearchParams(Object.entries(find).filter(([, value]) => value))}`) : null,
     ]);
     if (current !== version || signal.aborted) return;
     author = mine.author;
@@ -97,10 +100,39 @@ export function createArticles(session) {
       box.append(list);
       return box;
     };
+    const finding = Boolean(find.day || find.q);
+    const recent = section(finding ? `找到 ${published.length} 篇` : "最近公开", published, finding ? "没有找到。" : "还没有公开的文章。",
+      (article) => `${article.film ? "解说" : "分享"} · 阅读 ${article.views} · 公开于 ${formatTime(article.published_at, session.timezone)}`);
+    recent.querySelector("h3").after(finder());
     lists.replaceChildren(
       section(`待审（${pending.length}）`, pending, "没有等待审核的文章。", (article) => `更新于 ${formatTime(article.updated_at, session.timezone)}`),
-      section("最近公开", published, "还没有公开的文章。", (article) => `阅读 ${article.views} · 公开于 ${formatTime(article.published_at, session.timezone)}`),
+      recent,
     );
+  }
+
+  // A day, words in the title or opening, or both; 最近 goes back to the latest.
+  function finder() {
+    const form = node("form", "review-find inline");
+    const day = Object.assign(node("input"), { type: "date", value: find.day });
+    day.setAttribute("aria-label", "公开日期");
+    const words = Object.assign(node("input"), { type: "search", value: find.q, placeholder: "标题或开头里的词" });
+    words.setAttribute("aria-label", "关键词");
+    const search = node("button", "button button-quiet button-small", "查找");
+    const latest = node("button", "button button-quiet button-small", "最近");
+    latest.type = "button";
+    const run = () => void load().catch(reportError);
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      Object.assign(find, { day: day.value, q: words.value.trim() });
+      run();
+    });
+    day.addEventListener("change", () => form.requestSubmit());
+    latest.addEventListener("click", () => {
+      Object.assign(find, { day: "", q: "" });
+      run();
+    });
+    form.append(day, words, search, latest);
+    return form;
   }
 
   function link(text, href, external = false) {

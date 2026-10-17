@@ -551,6 +551,32 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
     assert_eq!(queue["pending"][0]["id"], id.as_str());
     assert_eq!(queue["pending"][0]["author"], "小明");
     assert_eq!(status(heart(&admin, true, 2).send().await.unwrap()), 200);
+    // The workspace finds it again by the day it went out, by words of its title, or by both.
+    let today = Utc::now()
+        .with_timezone(&state.config.timezone)
+        .date_naive();
+    for (find, found) in [
+        (format!("day={today}"), 1),
+        ("q=第一".to_owned(), 1),
+        (format!("day={}&q=第一", today.pred_opt().unwrap()), 0),
+        ("q=第一 没有".to_owned(), 0),
+    ] {
+        let queue: Value = get(&format!("/api/admin/articles?{find}"), &admin)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            queue["published"].as_array().unwrap().len(),
+            found,
+            "{find}"
+        );
+        if found > 0 {
+            assert_eq!(queue["published"][0]["film"], false);
+        }
+    }
 
     // Readers see it under the pen name, with its tmpfile pictures, and never the email.
     let list = anonymous("/articles")
@@ -1401,6 +1427,23 @@ async fn postgres_xabc_shares_and_explains_films() {
         !page(format!("{base}/articles"))
             .await
             .contains("修订后的解说")
+    );
+    // Each list searches its own articles, and search pages stay out of search engines.
+    let found = http
+        .get(format!("{base}/culture/commentary?q=修订后"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(found.headers()["x-robots-tag"], "noindex");
+    let found = found.text().await.unwrap();
+    assert!(found.contains("「修订后」找到 1 篇") && found.contains("修订后的解说"));
+    assert!(found.contains("name=q value=\"修订后\""), "{found}");
+    let shared = page(format!("{base}/articles?q=修订后")).await;
+    assert!(shared.contains("「修订后」找到 0 篇") && shared.contains("没有找到相关文章"));
+    assert!(
+        page(format!("{base}/culture/commentary?q=没有这部"))
+            .await
+            .contains("没有找到相关解说")
     );
     let article = page(format!("{base}/articles/{explained}")).await;
     assert!(article.contains("<a href=\"/culture/commentary\">← 解说</a>"));

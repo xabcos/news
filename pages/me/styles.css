@@ -144,6 +144,9 @@ fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
 .pen-name-form input { max-width: 18rem; }
 .review-lists { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem; margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line); }
 .review-list h3 { margin: 0 0 .4rem; font-size: .9rem; }
+.review-find { margin: 0 0 .5rem; }
+.review-find input { width: auto; padding: .3rem .5rem; font-size: .8rem; }
+.review-find input[type=search] { flex: 1; min-width: 8rem; }
 .review-list .item-row:first-child { border-top: 0; }
 
 /* The writing page reads like the article it becomes. */
