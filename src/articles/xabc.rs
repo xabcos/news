@@ -1,4 +1,4 @@
-//! XABC, the site's own pen name, writes on two lines, each every half hour. For 分享, grok looks
+//! XABC, the site's own pen name, writes on two lines, each every quarter of an hour. For 分享, grok looks
 //! through X and the web, and the briefing model through the web, for things worth sharing; the
 //! briefing model picks one subject from both sets of finds, reads further where it needs to
 //! and writes it up its own way. For 文娱 · 解说 it explains a film or series, or revises an
@@ -33,8 +33,8 @@ use uuid::Uuid;
 
 /// XABC's account, which migration 0007 makes.
 pub(super) const EMAIL: &str = "xabc@xabcnews.invalid";
-/// Each line writes again half an hour after its last article.
-const INTERVAL: chrono::Duration = chrono::Duration::minutes(30);
+/// Each line writes again a quarter of an hour after its last article.
+const INTERVAL: chrono::Duration = chrono::Duration::minutes(15);
 /// After a failure XABC waits half an hour, twice as long after each failure in a row, eight
 /// hours at most: a lasting fault costs a few tries a day, not one every half hour.
 const RETRY_SECONDS: i64 = 30 * 60;
@@ -1125,7 +1125,7 @@ async fn keep(
     Ok(())
 }
 
-const SEARCHING: &str = "你是 XABC 的选题编辑。XABC 每半小时在 xabcnews.com 的「分享」栏目写一篇文章，分享真正有趣、好玩、有价值的东西，读者是对科技、AI、生活和世界充满好奇的中文读者。
+const SEARCHING: &str = "你是 XABC 的选题编辑。XABC 每 15 分钟在 xabcnews.com 的「分享」栏目写一篇文章，分享真正有趣、好玩、有价值的东西，读者是对科技、AI、生活和世界充满好奇的中文读者。
 今天请你{scope}，搜得越广越好，找出尽量多值得写成分享的线索，至少 12 条。好线索让人眼前一亮、忍不住转给朋友，或者读完马上就能用上，比如：
 - 好用的工具、App、网站和开源项目，值得收藏的资料、教程和资源合集；
 - AI 的新玩法、实用技巧和真实的使用经验；
@@ -1209,7 +1209,7 @@ mod tests {
     }
 
     #[test]
-    fn a_line_writes_again_half_an_hour_after_and_failures_wait_longer_each_time() {
+    fn a_line_writes_again_a_quarter_hour_after_and_failures_wait_longer_each_time() {
         let now = DateTime::parse_from_rfc3339("2026-10-16T05:00:00+08:00")
             .unwrap()
             .to_utc();
@@ -1226,7 +1226,7 @@ mod tests {
         progress.wrote(now);
         assert_eq!(
             (progress.failures, progress.next - now),
-            (0, chrono::Duration::minutes(30))
+            (0, chrono::Duration::minutes(15))
         );
         progress.failed(now);
         assert_eq!(progress.next - now, chrono::Duration::minutes(30));
