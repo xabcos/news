@@ -1254,6 +1254,14 @@ async fn postgres_xabc_shares_and_explains_films() {
         .await
         .unwrap();
     assert!(list.contains("今天分享一个好玩的工具"));
+    // 分享 tiles picture cards across the window as 解说 does, each with its cover and author;
+    // its articles keep the reading column.
+    assert!(list.contains("<body class=\"public reads articles article-cards\">"));
+    assert!(list.contains(&format!(
+        "<article class=\"item image-news-card catalog-card\"><a class=image-news-media href=\"/articles/{id}\""
+    )));
+    assert!(list.contains(&format!("/articles?by={author}\">XABC</a> · <time")));
+    assert!(page.contains("<body class=\"public reads articles\">"));
     // ln(1 + 3) beats ln(1 + 9) halved by ten days of age.
     let hot = http
         .get(format!("{base}/articles?view=hot"))

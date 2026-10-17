@@ -31,16 +31,18 @@ const HOT: &str = "ln(1 + a.views::float8) * power(2, -extract(epoch FROM NOW() 
 const SITEMAP_SIZE: i64 = 50_000;
 /// Articles of authors whose accounts are open; the caller names which of them.
 const FROM: &str = " FROM articles a JOIN authors w ON w.user_id = a.author_id JOIN users u ON u.id = a.author_id WHERE u.status";
-/// Articles read like Reads: the same list, endless scrolling and article layout.
+/// Articles read like Reads: the same endless scrolling and article layout, but the list tiles
+/// picture cards across the window as 解说's does.
 const LIST: Chrome<'static> = Chrome {
     current: "articles",
-    section: "reads articles",
-    stylesheet: "/reads.css?v=15",
+    section: "reads articles article-cards",
+    stylesheet: "/reads.css?v=16",
     script: "/reads.js?v=9",
     feed: ("News", "/feed.xml"),
 };
 /// An article counts its reads, and its review takes a ❤️.
 const ARTICLE: Chrome<'static> = Chrome {
+    section: "reads articles",
     script: "/articles.js?v=5",
     ..LIST
 };
@@ -117,6 +119,8 @@ impl Params {
     }
 }
 
+/// A public article on 分享's or 解说's list: the cover while tmpfile keeps it, and its author,
+/// title, date, reads and opening.
 #[derive(FromRow)]
 struct Card {
     id: Uuid,
@@ -126,6 +130,31 @@ struct Card {
     excerpt: String,
     views: i64,
     published_at: DateTime<Utc>,
+    cover: Option<String>,
+    width: Option<i32>,
+    height: Option<i32>,
+}
+
+const CARD: &str =
+    "SELECT a.id, a.author_id, w.name AS author, a.title, a.excerpt, a.views, a.published_at,
+        CASE WHEN i.expires_at > now() THEN i.url END AS cover, i.width, i.height";
+
+/// The public articles of 分享's list, or with `film` of 解说's, holding the words searched;
+/// `select` names what to take of them.
+fn listed(select: &str, film: bool, by: Option<i64>, search: &Search) -> QueryBuilder<Postgres> {
+    let mut query = QueryBuilder::new(select);
+    query
+        .push(
+            " FROM articles a JOIN authors w ON w.user_id = a.author_id JOIN users u ON u.id = a.author_id
+              LEFT JOIN article_images i ON i.id = a.cover
+              WHERE u.status AND a.status = 'published' AND a.film IS ",
+        )
+        .push(if film { "NOT NULL" } else { "NULL" });
+    if let Some(by) = by {
+        query.push(" AND a.author_id = ").push_bind(by);
+    }
+    search.narrow(&mut query);
+    query
 }
 
 #[derive(FromRow)]
@@ -248,21 +277,8 @@ async fn index(
         ),
         None => None,
     };
-    // The public articles the page lists: 解说 has a list of its own.
-    let listed = |select: &str| {
-        let mut query = QueryBuilder::<Postgres>::new(select);
-        query
-            .push(FROM)
-            .push(" AND a.status = 'published' AND a.film IS NULL");
-        if let Some(by) = params.by {
-            query.push(" AND a.author_id = ").push_bind(by);
-        }
-        search.narrow(&mut query);
-        query
-    };
-    let mut query = listed(
-        "SELECT a.id, a.author_id, w.name AS author, a.title, a.excerpt, a.views, a.published_at",
-    );
+    // 解说 has a list of its own.
+    let mut query = listed(CARD, false, params.by, &search);
     if hot {
         query
             .push(" AND a.views > 0 AND a.published_at >= NOW() - INTERVAL '30 days' ORDER BY ")
@@ -300,7 +316,7 @@ async fn index(
         &search,
         page,
         en,
-        listed("SELECT count(*)").build_query_scalar(),
+        listed("SELECT count(*)", false, params.by, &search).build_query_scalar(),
         &state,
     )
     .await?;
@@ -341,9 +357,11 @@ async fn index(
             row,
             en,
             hot.then_some(index + 1),
+            true,
             state.config.timezone,
         ));
     }
+    content.push_str("</div>");
     if rows.is_empty() && !search.is_empty() {
         content.push_str(choose(
             en,
@@ -369,7 +387,6 @@ async fn index(
             "<p class=muted>No articles yet. <a href=\"/me/\">Write the first one</a>.</p>",
         ));
     }
-    content.push_str("</div>");
     content.push_str(&pagination(
         "/articles",
         page,
@@ -491,19 +508,6 @@ async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Resp
     ))
 }
 
-/// A 解说 on its list: the cover while tmpfile keeps it, and its title, date, reads and opening.
-#[derive(FromRow)]
-struct Explained {
-    id: Uuid,
-    title: String,
-    excerpt: String,
-    views: i64,
-    published_at: DateTime<Utc>,
-    cover: Option<String>,
-    width: Option<i32>,
-    height: Option<i32>,
-}
-
 /// 文娱 · 解说: XABC's articles on films and series, newest first, as picture cards under
 /// Culture's tabs.
 async fn commentary(
@@ -515,22 +519,9 @@ async fn commentary(
     let en = params.english();
     let page = page(&params)?;
     let search = Search::new(params.q.as_deref());
-    let listed = |select: &str| {
-        let mut query = QueryBuilder::<Postgres>::new(select);
-        query.push(
-            " FROM articles a JOIN users u ON u.id = a.author_id
-              LEFT JOIN article_images i ON i.id = a.cover
-              WHERE u.status AND a.status = 'published' AND a.film IS NOT NULL",
-        );
-        search.narrow(&mut query);
-        query
-    };
-    let mut query = listed(
-        "SELECT a.id, a.title, a.excerpt, a.views, a.published_at,
-                CASE WHEN i.expires_at > now() THEN i.url END AS cover, i.width, i.height",
-    );
+    let mut query = listed(CARD, true, None, &search);
     search.order(&mut query);
-    let mut rows: Vec<Explained> = query
+    let mut rows: Vec<Card> = query
         .push(" LIMIT ")
         .push_bind(PAGE_SIZE + 1)
         .push(" OFFSET ")
@@ -547,7 +538,7 @@ async fn commentary(
         &search,
         page,
         en,
-        listed("SELECT count(*)").build_query_scalar(),
+        listed("SELECT count(*)", true, None, &search).build_query_scalar(),
         &state,
     )
     .await?;
@@ -564,7 +555,7 @@ async fn commentary(
     }
     content.push_str("<div class=\"reads-list catalog-grid\">");
     for row in &rows {
-        content.push_str(&explained(row, en, state.config.timezone));
+        content.push_str(&card(row, en, None, false, state.config.timezone));
     }
     content.push_str("</div>");
     if rows.is_empty() {
@@ -609,7 +600,25 @@ async fn commentary(
     Ok(listed_page(&headers, html, &search))
 }
 
-fn explained(item: &Explained, en: bool, timezone: chrono_tz::Tz) -> String {
+/// A card's reads, whose place stays hidden while nobody has read it: the page script brings
+/// the count up to date, so a cached list still shows what is read now.
+fn reads(id: Uuid, views: i64, en: bool) -> String {
+    format!(
+        "<span data-views=\"{id}\"{}> · <span class=read-views title=\"{}\">{EYE}<span>{views}</span></span></span>",
+        if views > 0 { "" } else { " hidden" },
+        choose(en, "阅读次数", "Reads"),
+    )
+}
+
+/// An article's card: its cover, then 热读's place, the author unless the list is all XABC's
+/// (解说's), the date, the reads, the title and the opening.
+fn card(
+    item: &Card,
+    en: bool,
+    rank: Option<usize>,
+    author: bool,
+    timezone: chrono_tz::Tz,
+) -> String {
     let href = localized(&format!("/articles/{}", item.id), en);
     let cover = item
         .cover
@@ -623,42 +632,25 @@ fn explained(item: &Explained, en: bool, timezone: chrono_tz::Tz) -> String {
             )
         })
         .unwrap_or_default();
+    let rank = rank
+        .map(|rank| format!("<span class=read-rank aria-hidden=true>{rank:02}</span>"))
+        .unwrap_or_default();
+    let author = if author {
+        format!(
+            "<a href=\"{}\">{}</a> · ",
+            escape(&localized(&format!("/articles?by={}", item.author_id), en)),
+            escape(&item.author)
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "<article class=\"item image-news-card catalog-card\">{cover}<div class=catalog-card-body><p class=item-meta><time datetime=\"{}\">{}</time>{}</p><h2 class=item-title><a href=\"{href}\">{}</a></h2><p class=item-summary>{}</p></div></article>",
+        "<article class=\"item image-news-card catalog-card\">{cover}<div class=catalog-card-body><p class=item-meta>{rank}{author}<time datetime=\"{}\">{}</time>{}</p><h2 class=item-title><a href=\"{href}\">{}</a></h2><p class=item-summary>{}</p></div></article>",
         item.published_at.to_rfc3339(),
         item.published_at
             .with_timezone(&timezone)
             .format("%Y-%m-%d"),
         reads(item.id, item.views, en),
-        escape(&item.title),
-        escape(&item.excerpt)
-    )
-}
-
-/// A card's reads, whose place stays hidden while nobody has read it: the page script brings
-/// the count up to date, so a cached list still shows what is read now.
-fn reads(id: Uuid, views: i64, en: bool) -> String {
-    format!(
-        "<span data-views=\"{id}\"{}> · <span class=read-views title=\"{}\">{EYE}<span>{views}</span></span></span>",
-        if views > 0 { "" } else { " hidden" },
-        choose(en, "阅读次数", "Reads"),
-    )
-}
-
-fn card(item: &Card, en: bool, rank: Option<usize>, timezone: chrono_tz::Tz) -> String {
-    let rank = rank
-        .map(|rank| format!("<span class=read-rank aria-hidden=true>{rank:02}</span>"))
-        .unwrap_or_default();
-    let views = reads(item.id, item.views, en);
-    format!(
-        "<article class=item>{rank}<div class=read-card><div class=item-meta><a href=\"{}\">{}</a> · <span class=read-date><time datetime=\"{}\">{}</time>{views}</span></div><h2 class=item-title><a href=\"{}\">{}</a></h2><p class=item-summary>{}</p></div></article>",
-        escape(&localized(&format!("/articles?by={}", item.author_id), en)),
-        escape(&item.author),
-        item.published_at.to_rfc3339(),
-        item.published_at
-            .with_timezone(&timezone)
-            .format("%Y-%m-%d"),
-        localized(&format!("/articles/{}", item.id), en),
         escape(&item.title),
         escape(&item.excerpt)
     )

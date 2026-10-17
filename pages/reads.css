@@ -44,6 +44,13 @@
 .read-related > h2 { color: var(--muted); font-size: .85rem; font-weight: 500; margin-bottom: .5rem; }
 /* 分享 reads like Reads: articles readers write, with an optional cover cut like X's. */
 .article-write { flex-shrink: 0; font-size: .85rem; color: var(--primary-strong); text-decoration: none; padding-bottom: .4rem; }
+/* Its list tiles picture cards across the window like 解说's (catalog.css), each with three lines of its opening. */
+.public.article-cards .shell { max-width: none; padding: .75rem clamp(1.25rem, 3vw, 3rem) 3rem; }
+.article-cards .reads-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(var(--tile), 100%), 1fr)); gap: 1.5rem; align-items: start; }
+.article-cards .reads-list .item { display: block; padding: 0 0 .85rem; }
+.article-cards .item-title { font-size: 1.05rem; line-height: 1.5; font-weight: 650; }
+.article-cards .item-summary { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.article-cards .read-rank { width: auto; padding: 0; }
 .article .read-title { margin: 0 0 .7rem; }
 .article-cover { display: block; width: 100%; height: auto; aspect-ratio: 5 / 2; object-fit: cover; margin-bottom: 1.8rem; border-radius: var(--radius-l); background: var(--surface-soft); }
 /* A line in italics right after a picture is its caption: XABC credits each picture so. */
