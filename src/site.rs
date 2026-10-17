@@ -330,7 +330,7 @@ pub(crate) fn layout(
     if !topics.iter().any(|topic| topic.id == "overseas-ai") {
         tabs.push_str(&equity_tab);
     }
-    // 分享 is not a topic: readers write it. Its tab follows 精读.
+    // 分享 is not a topic: readers write it. Its tab follows 开源.
     let articles_tab = format!(
         "<a class=tab href=\"{}\"{}>{}</a>",
         localized("/articles", en),
@@ -399,11 +399,11 @@ pub(crate) fn layout(
         if id == "overseas-ai" {
             tabs.push_str(&equity_tab);
         }
-        if id == "reads" {
+        if id == "github" {
             tabs.push_str(&articles_tab);
         }
     }
-    if !topics.iter().any(|topic| topic.id == "reads") {
+    if !topics.iter().any(|topic| topic.id == "github") {
         tabs.push_str(&articles_tab);
     }
     // An article's picture in its structured data also stands for it where the page is shared.

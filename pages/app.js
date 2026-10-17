@@ -137,7 +137,7 @@ const CATALOG = {
 };
 const sectionOf = (id) => Object.keys(CATALOG).find((section) => CATALOG[section].topics.includes(id));
 // Topics with their own server-rendered page instead of a news feed.
-// 分享 (articles) is not a topic: readers write it, and its tab follows 精读.
+// 分享 (articles) is not a topic: readers write it, and its tab follows 开源.
 const ARTICLES_ID = "articles";
 const PAGE_TOPICS = ["reads", "llm", ARTICLES_ID, ...Object.keys(CATALOG), ...Object.values(CATALOG).flatMap((section) => section.topics)];
 const topicPage = (id) => `/${sectionOf(id) ? `${sectionOf(id)}/${id}` : id}${state.lang === "en" ? "?lang=en" : ""}`;
@@ -679,8 +679,8 @@ function renderTabs() {
   ];
   const overseas = tabs.findIndex((tab) => tab.id === "overseas-ai");
   tabs.splice(overseas < 0 ? 2 : overseas + 1, 0, { id: EQUITY_ID, label: t().equity });
-  const reads = tabs.findIndex((tab) => tab.id === "reads");
-  tabs.splice(reads < 0 ? tabs.length : reads + 1, 0, { id: ARTICLES_ID, label: t().articles });
+  const github = tabs.findIndex((tab) => tab.id === "github");
+  tabs.splice(github < 0 ? tabs.length : github + 1, 0, { id: ARTICLES_ID, label: t().articles });
   el.tabs.replaceChildren(...tabs.map(({ id, label }) => {
     if (PAGE_TOPICS.includes(id)) {
       const tab = document.createElement("a");
