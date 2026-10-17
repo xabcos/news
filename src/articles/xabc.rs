@@ -32,7 +32,7 @@ use url::Url;
 use uuid::Uuid;
 
 /// XABC's account, which migration 0007 makes.
-const EMAIL: &str = "xabc@xabcnews.invalid";
+pub(super) const EMAIL: &str = "xabc@xabcnews.invalid";
 /// Each line writes again half an hour after its last article.
 const INTERVAL: chrono::Duration = chrono::Duration::minutes(30);
 /// After a failure XABC waits half an hour, twice as long after each failure in a row, eight

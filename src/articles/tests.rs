@@ -1451,7 +1451,13 @@ async fn postgres_xabc_shares_and_explains_films() {
         "<a class=tab href=\"/culture\" data-last=\"/culture/book\" aria-current=\"true\">文娱</a>"
     ));
 
-    // 值得读 ranks 分享 and 解说 together as 热读 does; unread ones follow, newest first.
+    // 值得读 opens with XABC's newest 分享, newest first, however well a 解说 is read; the rest
+    // rank 分享 and 解说 together as 热读 does, unread ones following newest first.
+    sqlx::query("UPDATE articles SET views = 100 WHERE id = $1")
+        .bind(explained)
+        .execute(&state.pool)
+        .await
+        .unwrap();
     let worth: Value =
         serde_json::from_str(&page(format!("{base}/articles/worth.json")).await).unwrap();
     let ranked: Vec<(String, bool)> = worth["articles"]
@@ -1467,8 +1473,9 @@ async fn postgres_xabc_shares_and_explains_films() {
         .collect();
     assert_eq!(ranked.len(), 4);
     assert_eq!(ranked[0], (id.to_string(), false));
+    assert!(!ranked[1].1);
     assert_eq!(
         ranked[2..],
-        [(classic.to_string(), true), (explained.to_string(), true)]
+        [(explained.to_string(), true), (classic.to_string(), true)]
     );
 }

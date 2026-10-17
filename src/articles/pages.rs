@@ -458,19 +458,29 @@ struct Worth {
     height: Option<i32>,
 }
 
-/// 值得读, which opens ALL: the twelve hottest of the last 30 days of 分享 and 解说 together,
-/// ranked as 热读 is; while few are read, the newest fill the places.
+/// 值得读, which opens ALL: XABC's four newest 分享, newest first, then the twelve hottest of the
+/// last 30 days of 分享 and 解说 together, ranked as 热读 is, each article once; while few are
+/// read, the newest fill the places.
 async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
     let articles: Vec<Worth> = QueryBuilder::<Postgres>::new(
-        "SELECT a.id, a.title, a.views, a.film IS NOT NULL AS film,
+        "WITH newest AS (
+             SELECT a.id, a.published_at FROM articles a JOIN users u ON u.id = a.author_id
+             WHERE u.email = ",
+    )
+    .push_bind(super::xabc::EMAIL)
+    .push(
+        " AND a.status = 'published' AND a.film IS NULL
+             ORDER BY a.published_at DESC, a.id DESC LIMIT 4)
+         SELECT a.id, a.title, a.views, a.film IS NOT NULL AS film,
                 CASE WHEN i.expires_at > now() THEN i.url END AS cover, i.width, i.height
          FROM articles a JOIN users u ON u.id = a.author_id
          LEFT JOIN article_images i ON i.id = a.cover
+         LEFT JOIN newest n ON n.id = a.id
          WHERE u.status AND a.status = 'published' AND a.published_at >= NOW() - INTERVAL '30 days'
-         ORDER BY ",
+         ORDER BY n.published_at DESC NULLS LAST, ",
     )
     .push(HOT)
-    .push(" DESC, a.published_at DESC, a.id DESC LIMIT 12")
+    .push(" DESC, a.published_at DESC, a.id DESC LIMIT 16")
     .build_query_as()
     .fetch_all(&state.pool)
     .await?;
