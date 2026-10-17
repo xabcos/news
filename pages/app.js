@@ -174,7 +174,7 @@ async function init() {
       && window.scrollY < window.innerHeight
       && !document.body.classList.contains("dialog-open")) load(true);
   }, REFRESH_MS);
-  PublicPage.init({ canSwipe: (target) => Boolean(target.closest("#digest"))
+  PublicPage.init({ canSwipe: (target) => Boolean(target.closest("#worth, #digest"))
     || (!el.digest.childElementCount && !target.closest("a")) });
   setupInfiniteScroll();
 
@@ -1014,7 +1014,7 @@ async function loadWorth() {
   }
   try {
     const { articles } = await fetchJson("/articles/worth.json");
-    // A refresh that brings the same articles leaves the cards, and a phone's swipe, as they are.
+    // A refresh that brings the same articles leaves the cards as they are.
     const same = el.worth.childElementCount && JSON.stringify(articles) === JSON.stringify(state.worth);
     state.worth = articles;
     if (same) el.worth.hidden = !worthShown() || !articles.length;
