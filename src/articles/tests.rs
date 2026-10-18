@@ -1746,6 +1746,29 @@ async fn postgres_xabc_shares_and_explains_films() {
             .unwrap(),
         fourth
     );
+    // A keyword in more than ten of the week's stories is too common to say a lesson changed.
+    sqlx::query(
+        "UPDATE articles SET keywords = '{常见词}', published_at = published_at - INTERVAL '8 days',
+             updated_at = updated_at - INTERVAL '8 days'
+         WHERE id = $1",
+    )
+    .bind(second)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO items (id, topic_id, day, fingerprint, title, summary, url)
+         SELECT id, 'issues', CURRENT_DATE, sha256(convert_to(id::text, 'UTF8')), '常见词又有新闻', '常见',
+                'https://tips.example/common/' || n
+         FROM (SELECT gen_random_uuid() AS id, n FROM generate_series(1, 11) n) stories",
+    )
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    let fifth = xabc::write(&state, xabc::Line::Lesson, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(lesson(fifth).await.0.as_deref(), Some("rag"));
 
     // Two more lessons in the first track, the last opening a chapter, give the lessons neighbours.
     let written = |title: &str| xabc::Finished {

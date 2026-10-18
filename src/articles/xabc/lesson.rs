@@ -31,6 +31,9 @@ const REVIEW_DAYS: std::ops::RangeInclusive<i32> = 30..=180;
 /// last `NEWS_DAYS` since its last revision, `NEWS_DAYS` after that at least.
 const NEWS: i64 = 2;
 const NEWS_DAYS: i32 = 7;
+/// A keyword more of the week's stories hold than this is too common to tell that a lesson
+/// changed: popular products are named in a hundred stories a week.
+const COMMON: i64 = 10;
 /// Where the site's stories for a lesson come from: news, tips, problems and their fixes,
 /// open source, cases and long reads on AI and its hardware.
 const SOURCES: [&str; 9] = [
@@ -169,7 +172,8 @@ async fn next(state: &AppState) -> Result<&'static Track> {
 /// The public lesson of a track still taught that is due for revision: news on its subjects first,
 /// then its review date; the most read first, then the one longest unrevised. Each keyword is
 /// looked for once in the week's stories, and the stories it is found in counted for each lesson
-/// that keeps it, so the check stays quick however many lessons there are.
+/// that keeps it, so the check stays quick however many lessons there are; a keyword found in more
+/// than `COMMON` of them is left out.
 async fn due(state: &AppState) -> Result<Option<Due>> {
     let ids: Vec<String> = TRACKS.iter().map(|track| track.id.to_owned()).collect();
     Ok(sqlx::query_as(
@@ -188,12 +192,13 @@ async fn due(state: &AppState) -> Result<Option<Due>> {
              WHERE l.updated_at <= now() - make_interval(days => $3)
          ),
          found AS (
-             SELECT w.word, s.id, s.first_seen_at
+             SELECT w.word, s.id, s.first_seen_at, count(*) OVER (PARTITION BY w.word) AS spread
              FROM (SELECT DISTINCT word FROM words) w JOIN stories s ON strpos(s.text, w.word) > 0
          ),
          news AS (
              SELECT w.id, count(DISTINCT f.id) >= $4 AS news
              FROM words w JOIN found f ON f.word = w.word AND f.first_seen_at > w.updated_at
+             WHERE f.spread <= $5
              GROUP BY w.id
          )
          SELECT l.id, l.course, l.chapter, l.lesson, l.title, l.body, l.revision, l.cover, l.updated_at,
@@ -207,6 +212,7 @@ async fn due(state: &AppState) -> Result<Option<Due>> {
     .bind(SOURCES.map(String::from).to_vec())
     .bind(NEWS_DAYS)
     .bind(NEWS)
+    .bind(COMMON)
     .fetch_optional(&state.pool)
     .await?)
 }
@@ -484,7 +490,7 @@ pub(super) const SEARCHING: &str = "你是 XABC「学习」栏目的资料编辑
 const PLANNING: &str = "你是 XABC「学习」栏目的课程主编。XABC 在 xabcnews.com 写一门门循序渐进的课程，每个板块是一串编号的课，分成若干章。输入是一个板块的说明（读者、范围和建议的章节路线）和已经写好的课程目录。
 - title 是这一课的标题，具体、清楚，不超过 30 个字，不写「第几课」。
 - goal 用一句话说学完这一课能做到什么；outline 列出这一课要讲的 3–8 个要点。
-- keywords 是 2–5 个关键词，用来在新闻里找这一课的相关资料、发现它该更新了：写这一课具体讲的功能、命令、芯片、库或技术的名字（如 Claude Code hooks、ESP-SR WakeNet、pgvector），比单写产品名好；不要泛泛的词。
+- keywords 是至多 5 个关键词，用来在新闻里找这一课的相关资料、发现它该更新了：只写这一课具体讲的功能、命令、版本、库或芯片的名字（如 Claude Code hooks、ESP-SR WakeNet、pgvector），不写只是产品名或泛泛的概念（如 Claude Code、Agent、大语言模型）；讲原理和方法、不依赖具体产品的课留空。
 - review_days 是这一课多少天后该复查：讲具体命令、界面、配置、版本、价格或新产品的写 30–60，讲方法、原理和思路的写 90–180。
 严格按 JSON Schema 输出。
 ";
