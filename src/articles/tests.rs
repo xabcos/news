@@ -913,9 +913,10 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
     assert_eq!(counts().await, (tomorrow, 0, 1));
 }
 
-/// XABC's two lines from start to finish against stand-ins for the AI service and tmpfile: a 分享
-/// article's searches, writing, drawn pictures, publication and pages; then 解说 explaining a
-/// work 影视 discusses and a classic, revising the first, and listing them under Culture.
+/// XABC's three lines from start to finish against stand-ins for the AI service and tmpfile: a
+/// 分享 article's searches, writing, drawn pictures, publication and pages; 解说 explaining a work
+/// 影视 discusses and a classic, revising the first, and listing them under Culture; then 学习's
+/// lessons, planned track by track, revised a month on, and their contents and places.
 #[tokio::test]
 #[ignore = "requires NEWS_XABC_TEST_DATABASE_URL and local test configuration"]
 async fn postgres_xabc_shares_and_explains_films() {
@@ -967,6 +968,62 @@ async fn postgres_xabc_shares_and_explains_films() {
                         asked.lock().unwrap().push(request.clone());
                         let instructions = request["instructions"].as_str().unwrap_or_default();
                         let film = instructions.contains("文娱 · 解说");
+                        if request["text"]["format"]["name"] == "plan" {
+                            let again = instructions.contains("一课的修订");
+                            return (
+                                StatusCode::OK,
+                                Json(reply(
+                                    json!({
+                                        "chapter": "认识大模型",
+                                        "title": if again { "修订后的课" } else { "大模型能做什么" },
+                                        "goal": "知道大模型能做什么",
+                                        "outline": ["能做什么", "不能做什么"],
+                                        // One letter finds too much, so it is left out; a
+                                        // revision brings keywords of its own.
+                                        "keywords": if again { json!(["新关键词"]) } else { json!(["测试关键词", "x"]) },
+                                        // A revision's review date is kept within 180 days.
+                                        "review_days": if again { 400 } else { 45 },
+                                    }),
+                                    "https://cited.example/plan",
+                                )),
+                            );
+                        }
+                        let lesson = instructions.contains("「学习」");
+                        if request["text"]["format"]["name"] == "finds" && lesson {
+                            return (
+                                StatusCode::OK,
+                                Json(reply(
+                                    json!({ "finds": [{
+                                        "title": "官方文档", "why": "权威", "points": "这样装",
+                                        "sources": ["https://docs.example/guide"], "pictures": [],
+                                    }] }),
+                                    "https://cited.example/docs",
+                                )),
+                            );
+                        }
+                        if request["text"]["format"]["name"] == "article" && lesson {
+                            let revising = instructions.contains("这次是修订");
+                            let body = if revising {
+                                format!("{}\n\n![](keep:1)\n\n更新后的做法。", "修订后的课文，".repeat(80))
+                            } else {
+                                format!(
+                                    "{}\n\n![](img:1)\n\n看[官方文档](https://docs.example/guide)和[踩坑](https://tips.example/story)。",
+                                    "讲透一个概念，".repeat(80)
+                                )
+                            };
+                            return (
+                                StatusCode::OK,
+                                Json(reply(
+                                    json!({
+                                        "title": if revising { "修订后的课" } else { "大模型能做什么" },
+                                        "body": body,
+                                        "pictures": [{ "page": "", "prompt": "示意图", "caption": "示意" }],
+                                        "cover": "封面插画",
+                                    }),
+                                    "https://cited.example/lesson",
+                                )),
+                            );
+                        }
                         if request["text"]["format"]["name"] == "classics" {
                             // The first is written about already.
                             return (
@@ -1196,8 +1253,8 @@ async fn postgres_xabc_shares_and_explains_films() {
     };
     let (one, other) = (article("甲"), article("乙"));
     let (first, second) = tokio::join!(
-        xabc::publish(&state, author, later, None, &one),
-        xabc::publish(&state, author, later, None, &other),
+        xabc::publish(&state, author, later, xabc::Subject::Share, &one),
+        xabc::publish(&state, author, later, xabc::Subject::Share, &other),
     );
     assert_eq!(
         [first.is_ok(), second.is_ok()]
@@ -1484,5 +1541,352 @@ async fn postgres_xabc_shares_and_explains_films() {
     assert_eq!(
         ranked[2..],
         [(explained.to_string(), true), (classic.to_string(), true)]
+    );
+
+    // 学习: the first track's first lesson is planned from its empty contents, searched for on the
+    // web alone and written with what the site gathered on the plan's subjects.
+    sqlx::query(
+        "INSERT INTO items (id, topic_id, day, fingerprint, title, summary, url)
+         VALUES ($1, 'issues', CURRENT_DATE, sha256(convert_to($1::text, 'UTF8')), '测试关键词出了个坑', '这样修',
+                 'https://tips.example/story')",
+    )
+    .bind(Uuid::new_v4())
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    let lesson = |id: Uuid| {
+        let state = state.clone();
+        async move {
+            sqlx::query_as::<_, (Option<String>, Option<String>, Option<i32>, String, String, i32, Option<Uuid>)>(
+                "SELECT course, chapter, lesson, title, body, revision, cover FROM articles WHERE id = $1",
+            )
+            .bind(id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap()
+        }
+    };
+    let asked_before = asked_log.lock().unwrap().len();
+    let first = xabc::write(&state, xabc::Line::Lesson, Utc::now())
+        .await
+        .unwrap();
+    let (course, chapter, number, title, body, _, cover) = lesson(first).await;
+    assert_eq!(
+        (
+            course.as_deref(),
+            chapter.as_deref(),
+            number,
+            title.as_str()
+        ),
+        (
+            Some("basics"),
+            Some("认识大模型"),
+            Some(1),
+            "大模型能做什么"
+        )
+    );
+    assert!(
+        body.contains("[官方文档](https://docs.example/guide)")
+            && body.contains("[踩坑](https://tips.example/story)"),
+        "{body}"
+    );
+    let asked = asked_log.lock().unwrap()[asked_before..].to_vec();
+    let plan = asked
+        .iter()
+        .find(|request| request["text"]["format"]["name"] == "plan")
+        .unwrap();
+    let planned = plan["input"][0]["content"].as_str().unwrap();
+    assert!(planned.contains("板块：AI 入门") && planned.contains("（还没有课。）"));
+    let searches: Vec<&Value> = asked
+        .iter()
+        .filter(|request| request["text"]["format"]["name"] == "finds")
+        .collect();
+    assert_eq!(searches.len(), 1);
+    assert_eq!(searches[0]["tools"], json!([{ "type": "web_search" }]));
+    assert!(
+        searches[0]["input"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("这一课：《大模型能做什么》，在「认识大模型」一章")
+    );
+    assert!(writing(&asked).contains("- 测试关键词出了个坑：这样修（https://tips.example/story）"));
+
+    // The lesson keeps the plan's keywords, the one-letter one left out, and its review date.
+    let upkeep = |id: Uuid| {
+        let state = state.clone();
+        async move {
+            sqlx::query_as::<_, (Vec<String>, i64)>(
+                "SELECT keywords, round(extract(epoch FROM review_at - now()) / 86400)::int8
+                 FROM articles WHERE id = $1",
+            )
+            .bind(id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(upkeep(first).await, (vec!["测试关键词".to_owned()], 45));
+
+    // With nothing due the next run turns to the next track. Once lessons are due for review,
+    // runs revise them before writing more, the most read first. A revision keeps the lesson's
+    // place, figure and cover, and takes the new plan's review date, 180 days at most.
+    let second = xabc::write(&state, xabc::Line::Lesson, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(lesson(second).await.0.as_deref(), Some("prompts"));
+    sqlx::query(
+        "UPDATE articles SET review_at = now() - INTERVAL '1 day',
+             published_at = published_at - INTERVAL '31 days', updated_at = updated_at - INTERVAL '31 days',
+             views = CASE WHEN id = $2 THEN 5 ELSE 0 END
+         WHERE id IN ($1, $2)",
+    )
+    .bind(first)
+    .bind(second)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        xabc::write(&state, xabc::Line::Lesson, Utc::now())
+            .await
+            .unwrap(),
+        second
+    );
+    assert_eq!(upkeep(second).await, (vec!["新关键词".to_owned()], 180));
+    let figure = body
+        .lines()
+        .skip_while(|line| !line.starts_with("![示意](image:"))
+        .take(2)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(figure.ends_with("*示意（AI 生成）*"), "{body}");
+    assert_eq!(
+        xabc::write(&state, xabc::Line::Lesson, Utc::now())
+            .await
+            .unwrap(),
+        first
+    );
+    let (course, chapter, number, title, revised, revision, kept) = lesson(first).await;
+    assert_eq!(
+        (
+            course.as_deref(),
+            chapter.as_deref(),
+            number,
+            title.as_str(),
+            revision,
+            kept
+        ),
+        (
+            Some("basics"),
+            Some("认识大模型"),
+            Some(1),
+            "修订后的课",
+            2,
+            cover
+        )
+    );
+    assert!(revised.contains(&figure), "{revised}");
+    let asked = asked_log.lock().unwrap().clone();
+    let material = writing(&asked);
+    assert!(material.contains("这一课的现有全文") && material.contains("\n\n![](keep:1)\n\n"));
+    let planned = asked
+        .iter()
+        .rev()
+        .find(|request| request["text"]["format"]["name"] == "plan")
+        .unwrap()["input"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(planned.contains("要修订的是第 1 课《大模型能做什么》，在「认识大模型」一章"));
+
+    // With nothing due a new lesson follows. News makes a lesson due sooner: two stories on its
+    // subjects since its last revision, a week after it; one is not enough.
+    let third = xabc::write(&state, xabc::Line::Lesson, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(lesson(third).await.0.as_deref(), Some("coding"));
+    sqlx::query(
+        "UPDATE articles SET published_at = published_at - INTERVAL '8 days',
+             updated_at = updated_at - INTERVAL '8 days'
+         WHERE id = $1",
+    )
+    .bind(third)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    let fourth = xabc::write(&state, xabc::Line::Lesson, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(lesson(fourth).await.0.as_deref(), Some("agents"));
+    sqlx::query(
+        "INSERT INTO items (id, topic_id, day, fingerprint, title, summary, url)
+         VALUES ($1, 'github', CURRENT_DATE, sha256(convert_to($1::text, 'UTF8')), '测试关键词发布新版本', '改了用法',
+                 'https://tips.example/release')",
+    )
+    .bind(Uuid::new_v4())
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    // News comes before a review date: the fourth lesson, due for review with no news on it,
+    // waits for the next run.
+    sqlx::query("UPDATE articles SET review_at = now() - INTERVAL '1 day' WHERE id = $1")
+        .bind(fourth)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        xabc::write(&state, xabc::Line::Lesson, Utc::now())
+            .await
+            .unwrap(),
+        third
+    );
+    assert_eq!(lesson(third).await.5, 2);
+    assert_eq!(
+        xabc::write(&state, xabc::Line::Lesson, Utc::now())
+            .await
+            .unwrap(),
+        fourth
+    );
+
+    // Two more lessons in the first track, the last opening a chapter, give the lessons neighbours.
+    let written = |title: &str| xabc::Finished {
+        title: title.into(),
+        body: "字".repeat(500),
+        pictures: Vec::new(),
+        cover: None,
+    };
+    let middle = xabc::publish(
+        &state,
+        author,
+        Utc::now(),
+        xabc::Subject::Lesson {
+            course: "basics",
+            chapter: "认识大模型",
+            upkeep: xabc::Upkeep {
+                keywords: &[],
+                review_days: 90,
+            },
+        },
+        &written("第二课"),
+    )
+    .await
+    .unwrap();
+    let opener = xabc::publish(
+        &state,
+        author,
+        Utc::now(),
+        xabc::Subject::Lesson {
+            course: "basics",
+            chapter: "用好<提示>",
+            upkeep: xabc::Upkeep {
+                keywords: &[],
+                review_days: 90,
+            },
+        },
+        &written("第三课"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(lesson(opener).await.2, Some(3));
+    // The middle one is older, so the latest are not all the track has and lead its page.
+    sqlx::query(
+        "UPDATE articles SET published_at = now() - INTERVAL '10 days',
+             updated_at = now() - INTERVAL '10 days'
+         WHERE id = $1",
+    )
+    .bind(middle)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    // The map counts each track's lessons; a track lists its own by chapter after the latest,
+    // a revised one as updated and a new one as new.
+    let map = page(format!("{base}/learn")).await;
+    assert!(map.contains(
+        "<a class=tab href=\"/learn\" data-last=\"/learn/esp32\" aria-current=\"true\">学习</a>"
+    ));
+    assert!(map.contains("AI 入门</a><span class=learn-meta> · 3 课 · 更新 "));
+    assert!(map.contains("ESP32</a><span class=learn-meta> · 第一课正在写</span>"));
+    let contents = page(format!("{base}/learn/basics")).await;
+    assert!(contents.contains("<a href=\"/learn/basics\" aria-current=\"true\">入门</a>"));
+    assert!(contents.contains("3 课 · 2 章 · 最近更新"));
+    assert!(contents.contains(&format!(
+        "<h2><span class=learn-number>第 1 章</span>认识大模型</h2><ol class=learn-lessons><li><a href=\"/articles/{first}\"><span class=learn-number>第 1 课</span>修订后的课</a>"
+    )));
+    assert!(contents.contains("<h2><span class=learn-number>第 2 章</span>用好&lt;提示&gt;</h2>"));
+    assert!(contents.contains(&format!(
+        "<li><span class=learn-badge>更新</span><a href=\"/articles/{first}\">"
+    )));
+    assert!(contents.contains(&format!(
+        "<li><span class=learn-badge>新</span><a href=\"/articles/{opener}\">"
+    )));
+    assert!(!contents.contains(&format!(
+        "<span class=learn-badge>新</span><a href=\"/articles/{middle}\">"
+    )));
+    // A track whose lessons are all new lists them once.
+    assert!(
+        !page(format!("{base}/learn/prompts"))
+            .await
+            .contains("class=learn-recent")
+    );
+    assert_eq!(
+        http.get(format!("{base}/learn/nope"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+
+    // A lesson tells its place, how current it is and its neighbours, under 学习's tab.
+    let shown = page(format!("{base}/articles/{middle}")).await;
+    assert!(shown.contains(
+        "<p class=learn-crumbs><a href=\"/learn\">学习</a> › <a href=\"/learn/basics\">AI 入门</a> › 第 1 章 认识大模型</p>"
+    ));
+    assert!(shown.contains("第 2 课 · 最后更新 <time"));
+    assert!(shown.contains(&format!(
+        "<a rel=prev href=\"/articles/{first}\">← 第 1 课 修订后的课</a>"
+    )));
+    assert!(shown.contains(&format!(
+        "<a rel=next href=\"/articles/{opener}\">第 3 课 第三课 →</a>"
+    )));
+    assert!(shown.contains("<a href=\"/learn/basics\">← AI 入门目录</a>"));
+    assert!(shown.contains("data-last=\"/learn/esp32\" aria-current=\"true\">学习</a>"));
+    assert!(
+        page(format!("{base}/articles/{opener}"))
+            .await
+            .contains("› 第 2 章 用好&lt;提示&gt;</p>")
+    );
+
+    // The English map names the tracks and links in English.
+    let english = page(format!("{base}/learn?lang=en")).await;
+    assert!(
+        english.contains("<a href=\"/learn/basics?lang=en\">𝑩𝒂𝒔𝒊𝒄𝒔</a>")
+            && english.contains("<a href=\"/learn/basics?lang=en\">AI Basics</a>")
+            && english.contains(">𝑳𝒆𝒂𝒓𝒏</a>")
+    );
+
+    // Lessons stay out of 分享's list and 值得读, where XABC's newest shares still lead though
+    // its lessons are newer; the sitemap lists the courses and the lessons.
+    assert!(
+        !page(format!("{base}/articles"))
+            .await
+            .contains("修订后的课")
+    );
+    let worth: Value =
+        serde_json::from_str(&page(format!("{base}/articles/worth.json")).await).unwrap();
+    let after: Vec<&str> = worth["articles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|article| article["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        after,
+        ranked.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>()
+    );
+    let sitemap = page(format!("{base}/articles/sitemap.xml")).await;
+    assert!(
+        sitemap.contains("/learn/esp32</loc>")
+            && sitemap.contains(&format!("/articles/{first}</loc>"))
     );
 }

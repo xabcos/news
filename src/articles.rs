@@ -2,7 +2,9 @@
 //! public once an administrator gives it a ❤️, and an author's edit takes it back to review.
 //! Pictures go to tmpfile as they were uploaded; their links appear only on public pages, and
 //! until then the author sees them through this server. A read counts once a day per browser,
-//! never the author's own. XABC, the site's own pen name, publishes one every quarter of an hour (`xabc`).
+//! never the author's own. XABC, the site's own pen name, publishes one every quarter of an hour
+//! (`xabc`), and writes the courses of 学习 (`learn`).
+pub(crate) mod learn;
 mod pages;
 pub(crate) mod xabc;
 
@@ -87,6 +89,7 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/api/admin/articles", get(queue))
         .route("/api/admin/articles/{id}", patch(review))
         .merge(pages::router())
+        .merge(learn::router())
 }
 
 /// An article in the author's list or the review queue.
@@ -100,11 +103,13 @@ struct Listed {
     views: i64,
     updated_at: DateTime<Utc>,
     published_at: Option<DateTime<Utc>>,
-    /// Whether it is a 解说.
+    /// Whether it is a 解说, or a lesson of 学习.
     film: bool,
+    lesson: bool,
 }
 
-const LISTED: &str = "SELECT a.id, a.title, w.name AS author, a.status, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film
+const LISTED: &str = "SELECT a.id, a.title, w.name AS author, a.status, a.revision, a.views, a.updated_at, a.published_at,
+        a.film IS NOT NULL AS film, a.course IS NOT NULL AS lesson
     FROM articles a JOIN authors w ON w.user_id = a.author_id JOIN users u ON u.id = a.author_id";
 
 /// A search of 分享 or 解说: its words, as the page shows them, and the patterns each of which an

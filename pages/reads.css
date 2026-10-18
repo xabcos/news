@@ -60,6 +60,30 @@
 .article-status { white-space: nowrap; }
 .article-actions { display: flex; flex-wrap: wrap; gap: .5rem; color: var(--text); }
 .article-actions a { color: inherit; text-decoration: none; }
+/* 学习: the map of tracks, a track's numbered lessons by chapter after the latest, and a lesson's place. */
+.learn .reads-heading p { white-space: normal; }
+.learn-map { display: grid; gap: 1.5rem; }
+.learn-track h2 { margin: 0 0 .3rem; font-size: 1.08rem; font-weight: 680; }
+.learn-track h2 a { text-decoration: none; }
+.learn-track h2 a:hover { color: var(--primary); }
+.learn-track p { margin: 0; color: var(--muted); font-size: .9rem; line-height: 1.7; }
+.learn-meta, .learn-stats, .learn-lessons time, .learn-recent time { color: var(--muted); font-size: .8rem; font-weight: 400; font-variant-numeric: tabular-nums; }
+.learn-stats { margin: -1rem 0 1.6rem; }
+.learn-recent, .learn-chapter { margin-bottom: 1.8rem; }
+.learn-recent h2, .learn-chapter h2 { margin: 0 0 .5rem; font-size: 1rem; font-weight: 650; }
+.learn-recent ul, .learn-lessons { margin: 0; padding: 0; list-style: none; }
+.learn-recent li, .learn-lessons li { display: flex; align-items: baseline; gap: .8rem; padding: .5rem 0; border-bottom: 1px solid var(--line); }
+.learn-recent a, .learn-lessons a { flex: 1; min-width: 0; text-decoration: none; line-height: 1.6; }
+.learn-recent a:hover, .learn-lessons a:hover { color: var(--primary); }
+.learn-number { margin-right: .6rem; color: var(--muted); font-size: .85rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.learn-badge { flex-shrink: 0; padding: .05rem .4rem; border-radius: 999px; background: var(--surface-soft); color: var(--primary-strong); font-size: .72rem; }
+.learn-crumbs { margin: 0 0 1rem; color: var(--muted); font-size: .85rem; }
+.learn-crumbs a { color: inherit; text-decoration: none; }
+.learn-crumbs a:hover { color: var(--primary-strong); }
+.learn-steps { display: flex; justify-content: space-between; gap: 1.5rem; margin-top: 2.5rem; padding-top: 1.25rem; border-top: 1px solid var(--line); font-size: .9rem; line-height: 1.6; }
+.learn-steps a { max-width: 48%; text-decoration: none; }
+.learn-steps a:hover { color: var(--primary-strong); }
+.learn-steps [rel=next] { margin-left: auto; text-align: right; }
 @media (max-width: 768px) {
   .reads-list, .read-heading, .read-source, .read-actions, .read-related,
   .read-body :is(p, h1, h2, h3, h4, h5, h6) { touch-action: pan-y pinch-zoom; }

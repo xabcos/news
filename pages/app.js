@@ -55,7 +55,7 @@ const storage = (() => {
 
 const TEXT = {
   zh: {
-    locale: "zh-CN", lang: "EN", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", equity: "股市", articles: "分享", commentary: "解说", worth: "值得读", today: "今天", top: "重要",
+    locale: "zh-CN", lang: "EN", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", equity: "股市", articles: "分享", learn: "学习", commentary: "解说", worth: "值得读", today: "今天", top: "重要",
     fresh: "NEW", failed: "加载失败", retry: "重试",
     empty: "这一天还没有内容", latest: "查看最近有内容的一天",
     space: "工作台", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
@@ -67,7 +67,7 @@ const TEXT = {
     publish: "公开", unpublish: "取消公开",
   },
   en: {
-    locale: "en", lang: "中文", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", equity: "𝑬", articles: "𝑨𝒓𝒕𝒊𝒄𝒍𝒆𝒔", commentary: "𝑬𝒙𝒑𝒍𝒂𝒊𝒏𝒆𝒅", worth: "Worth reading", today: "Today", top: "Top",
+    locale: "en", lang: "中文", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", equity: "𝑬", articles: "𝑨𝒓𝒕𝒊𝒄𝒍𝒆𝒔", learn: "𝑳𝒆𝒂𝒓𝒏", commentary: "𝑬𝒙𝒑𝒍𝒂𝒊𝒏𝒆𝒅", worth: "Worth reading", today: "Today", top: "Top",
     fresh: "NEW", failed: "Failed to load", retry: "Retry",
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
     space: "𝑾𝒐𝒓𝒌𝒔𝒑𝒂𝒄𝒆", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
@@ -137,9 +137,13 @@ const CATALOG = {
 };
 const sectionOf = (id) => Object.keys(CATALOG).find((section) => CATALOG[section].topics.includes(id));
 // Topics with their own server-rendered page instead of a news feed.
-// 分享 (articles) is not a topic: readers write it, and its tab follows 开源.
+// 分享 (articles) is not a topic: readers write it, and its tab follows 开源; 学习 (learn), whose
+// courses XABC writes, follows 分享.
 const ARTICLES_ID = "articles";
-const PAGE_TOPICS = ["reads", "llm", ARTICLES_ID, ...Object.keys(CATALOG), ...Object.values(CATALOG).flatMap((section) => section.topics)];
+const LEARN_ID = "learn";
+// Swiping back into 学习 enters its last track, as the server's tab does (articles::learn::last).
+const LEARN_LAST = "/learn/esp32";
+const PAGE_TOPICS = ["reads", "llm", ARTICLES_ID, LEARN_ID, ...Object.keys(CATALOG), ...Object.values(CATALOG).flatMap((section) => section.topics)];
 const topicPage = (id) => `/${sectionOf(id) ? `${sectionOf(id)}/${id}` : id}${state.lang === "en" ? "?lang=en" : ""}`;
 
 async function init() {
@@ -680,7 +684,7 @@ function renderTabs() {
   const overseas = tabs.findIndex((tab) => tab.id === "overseas-ai");
   tabs.splice(overseas < 0 ? 2 : overseas + 1, 0, { id: EQUITY_ID, label: t().equity });
   const github = tabs.findIndex((tab) => tab.id === "github");
-  tabs.splice(github < 0 ? tabs.length : github + 1, 0, { id: ARTICLES_ID, label: t().articles });
+  tabs.splice(github < 0 ? tabs.length : github + 1, 0, { id: ARTICLES_ID, label: t().articles }, { id: LEARN_ID, label: t().learn });
   el.tabs.replaceChildren(...tabs.map(({ id, label }) => {
     if (PAGE_TOPICS.includes(id)) {
       const tab = document.createElement("a");
@@ -689,6 +693,7 @@ function renderTabs() {
       tab.textContent = label;
       // Swiping back into a catalogue section enters its last collection (public.js).
       if (CATALOG[id]) tab.dataset.last = topicPage(CATALOG[id].topics.findLast((topic) => state.topics.some((entry) => entry.id === topic)));
+      if (id === LEARN_ID) tab.dataset.last = `${LEARN_LAST}${state.lang === "en" ? "?lang=en" : ""}`;
       return tab;
     }
     const tab = button(label, () => navigate({ topic: id, day: "" }), "tab");

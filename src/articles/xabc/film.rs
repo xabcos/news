@@ -3,7 +3,7 @@
 //! one alternates between the work 影视 discusses most and an acclaimed classic. Searching,
 //! writing and pictures are 分享's (`super`).
 use super::{
-    Finished, KEPT, Line, MARKDOWN, apply, draft, finish, identity, linked, listed, look, publish,
+    Finished, Line, Subject, draft, figures, finish, identity, linked, listed, look, publish,
     revise, written_lately,
 };
 use crate::{
@@ -12,7 +12,6 @@ use crate::{
     state::AppState,
 };
 use chrono::{DateTime, Utc};
-use pulldown_cmark::{Event, Parser, Tag};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{collections::HashSet, fmt::Write};
@@ -121,7 +120,7 @@ pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -
     found.usage += drafted.usage;
     found.known.extend(drafted.cited);
     let article = finish(state, drafted.article, found.known, &[], true).await?;
-    let id = publish(state, author, since, Some(&work.key), &article).await?;
+    let id = publish(state, author, since, Subject::Film(&work.key), &article).await?;
     log(id, "XABC's 解说 written", &work, &article, found.usage);
     Ok(id)
 }
@@ -297,7 +296,7 @@ async fn revised(state: &AppState, due: Due) -> Result<Uuid> {
     found.usage += drafted.usage;
     found.known.extend(drafted.cited);
     let article = finish(state, drafted.article, found.known, &kept, false).await?;
-    revise(state, due.id, due.revision, due.cover, &article).await?;
+    revise(state, due.id, due.revision, due.cover, None, &article).await?;
     log(
         due.id,
         "XABC's 解说 revised",
@@ -306,39 +305,6 @@ async fn revised(state: &AppState, due: Due) -> Result<Uuid> {
         found.usage,
     );
     Ok(due.id)
-}
-
-/// The body with each figure it shows, a picture leading a paragraph of its own with the
-/// caption line under it, standing as `![](keep:N)`; and the figures as they were.
-fn figures(body: &str) -> (String, Vec<String>) {
-    let mut paragraph = None;
-    let mut found = Vec::new();
-    for (event, range) in Parser::new_ext(body, MARKDOWN).into_offset_iter() {
-        match event {
-            Event::Start(Tag::Paragraph) => paragraph = Some(range),
-            Event::Start(Tag::Image { dest_url, .. }) => {
-                if let Some(paragraph) = paragraph.take()
-                    && paragraph.start == range.start
-                    && crate::articles::image_id(&dest_url).is_some()
-                {
-                    // The blank line after it stays, so the placeholder keeps its paragraph.
-                    let end = paragraph.start + body[paragraph].trim_end().len();
-                    found.push(range.start..end);
-                }
-            }
-            _ => {}
-        }
-    }
-    let kept = found
-        .iter()
-        .map(|range| body[range.clone()].to_owned())
-        .collect();
-    let edits = found
-        .into_iter()
-        .enumerate()
-        .map(|(index, range)| (range, format!("![]({KEPT}{})", index + 1)))
-        .collect();
-    (apply(body, edits), kept)
 }
 
 fn log(id: Uuid, done: &str, work: &Work, article: &Finished, usage: crate::fetch::Usage) {
@@ -374,39 +340,6 @@ const CLASSICS: &str = "你为 xabcnews.com 的「文娱 · 解说」挑选下�
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-
-    #[test]
-    fn a_revision_keeps_the_figures_it_moves_and_drops_the_rest() {
-        let figure = |id: u128, caption: &str| {
-            format!(
-                "![{caption}](image:{})\n*{caption}（AI 生成）*",
-                Uuid::from_u128(id)
-            )
-        };
-        let body = format!(
-            "开头，\n\n{}\n\n中间 ![行内](image:{}) 的图。\n\n{}\n\n结尾。",
-            figure(1, "甲"),
-            Uuid::from_u128(2),
-            figure(3, "乙")
-        );
-        let (shown, kept) = figures(&body);
-        assert_eq!(
-            shown,
-            format!(
-                "开头，\n\n![](keep:1)\n\n中间 ![行内](image:{}) 的图。\n\n![](keep:2)\n\n结尾。",
-                Uuid::from_u128(2)
-            )
-        );
-        assert_eq!(kept, [figure(1, "甲"), figure(3, "乙")]);
-        // The writer moved the second up and dropped the first; a figure it names twice shows
-        // once, and the picture inside a paragraph goes like any picture not placed.
-        let revised = "![](keep:2)\n\n新的开头。\n\n![](keep:2)\n\n![](keep:9)\n\n中间 ![行内](image:x) 的图。";
-        assert_eq!(
-            super::super::pictured(revised, &[], &HashMap::new(), &kept),
-            format!("{}\n\n新的开头。\n\n\n\n\n\n中间  的图。", figure(3, "乙"))
-        );
-    }
 
     #[test]
     fn a_work_is_described_with_what_its_guide_checked() {

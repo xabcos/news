@@ -1,9 +1,6 @@
 /* The catalogue keeps the site's quiet canvas, with a format suited to each medium; lists fill the window. */
 .public.catalog .shell { max-width: none; padding: 0 clamp(1.25rem, 3vw, 3rem) 3rem; }
 .public.catalog .back-to-top { right: calc(1rem + env(safe-area-inset-right, 0px)); }
-.catalog-tabs { display: flex; justify-content: center; gap: clamp(.8rem, 4vw, 3rem); padding: 1.25rem 0 .9rem; border-bottom: 1px solid var(--line); }
-.catalog-tabs a { padding: .3rem .15rem; color: var(--muted); font-size: .95rem; text-decoration: none; border-bottom: 2px solid transparent; }
-.catalog-tabs a[aria-current] { color: var(--primary-strong); border-color: var(--primary); }
 .catalog-eyebrow { margin: 0 0 .45rem; color: var(--primary-strong); font-size: .8rem; letter-spacing: .06em; }
 .catalog-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(var(--tile), 100%), 1fr)); gap: 1.5rem; align-items: start; }
 .catalog-music .catalog-grid { --tile: 16rem; }
@@ -93,8 +90,6 @@
 @media (max-width: 560px) {
   .catalog-specs > div { grid-template-columns: 6.5rem minmax(0, 1fr); gap: .75rem; }
   .catalog-grid { gap: 1.1rem; }
-  .catalog-tabs { gap: 1.35rem; padding-top: .85rem; }
-  .catalog-tabs a { font-size: .88rem; }
   .catalog-card.catalog-book { grid-template-columns: 5.2rem minmax(0,1fr); gap: 1rem; padding: 1rem; }
   .catalog-work { margin-top: 1.6rem; }
   .catalog-work-heading { grid-template-columns: 1fr; gap: 1.3rem; }
