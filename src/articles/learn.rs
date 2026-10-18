@@ -259,8 +259,8 @@ async fn map(
         label(en),
         choose(
             en,
-            "AI 与 ESP32 课程，每小时更新，常学常新",
-            "Courses on AI and the ESP32, growing and kept current every hour"
+            "AI 与 ESP32 课程，持续更新，常学常新",
+            "Courses on AI and the ESP32, growing and kept current around the clock"
         ),
     );
     for track in &TRACKS {

@@ -1,9 +1,9 @@
-//! XABC, the site's own pen name, writes on three lines. For 分享, every quarter of an hour, grok
-//! looks through X and the web, and the briefing model through the web, for things worth sharing;
-//! the briefing model picks one subject from both sets of finds, reads further where it needs to
-//! and writes it up its own way. For 文娱 · 解说, as often, it explains a film or series, or revises
-//! an explanation (`film`). For 学习, every hour, it writes a course's next lesson or revises an
-//! old one (`lesson`). Articles go out at once under the pen name XABC. Their pictures come from
+//! XABC, the site's own pen name, writes on three lines, each every quarter of an hour. For 分享,
+//! grok looks through X and the web, and the briefing model through the web, for things worth
+//! sharing; the briefing model picks one subject from both sets of finds, reads further where it
+//! needs to and writes it up its own way. For 文娱 · 解说 it explains a film or series, or revises an
+//! explanation (`film`). For 学习 it revises a lesson that is due or writes a course's next one
+//! (`lesson`). Articles go out at once under the pen name XABC. Their pictures come from
 //! the pages the models cite or are drawn by an image model, and they link only to addresses the
 //! models found.
 mod film;
@@ -35,6 +35,9 @@ use uuid::Uuid;
 
 /// XABC's account, which migration 0007 makes.
 pub(super) const EMAIL: &str = "xabc@xabcnews.invalid";
+/// Each line writes again a quarter of an hour after its last article, or for 解说 and lessons its
+/// last revision.
+const INTERVAL: chrono::Duration = chrono::Duration::minutes(15);
 /// After a failure XABC waits half an hour, twice as long after each failure in a row, eight
 /// hours at most: a lasting fault costs a few tries a day, not one every half hour.
 const RETRY_SECONDS: i64 = 30 * 60;
@@ -82,14 +85,6 @@ impl Line {
         }
     }
 
-    /// How long after its last article the line writes again.
-    fn interval(self) -> chrono::Duration {
-        match self {
-            Self::Share | Self::Film => chrono::Duration::minutes(15),
-            Self::Lesson => chrono::Duration::hours(1),
-        }
-    }
-
     /// What the line's searches look for; `{scope}` is what each scout looks through.
     fn brief(self) -> &'static str {
         match self {
@@ -122,9 +117,9 @@ struct Progress {
 }
 
 impl Progress {
-    fn wrote(&mut self, now: DateTime<Utc>, line: Line) {
+    fn wrote(&mut self, now: DateTime<Utc>) {
         self.failures = 0;
-        self.next = now + line.interval();
+        self.next = now + INTERVAL;
     }
 
     fn failed(&mut self, now: DateTime<Utc>) {
@@ -165,8 +160,8 @@ async fn start(state: &AppState, line: Line) {
         return;
     }
     match last(state, line).await {
-        Ok(Some(at)) if at + line.interval() > now => {
-            return progress(line, |progress| progress.next = at + line.interval());
+        Ok(Some(at)) if at + INTERVAL > now => {
+            return progress(line, |progress| progress.next = at + INTERVAL);
         }
         Ok(_) => {}
         Err(error) => {
@@ -177,7 +172,7 @@ async fn start(state: &AppState, line: Line) {
     if !state.in_flight().insert(line.job().to_owned()) {
         return;
     }
-    let since = now - line.interval();
+    let since = now - INTERVAL;
     let worker = state.clone();
     state.spawn_worker(async move {
         let outcome = tokio::select! {
@@ -187,7 +182,7 @@ async fn start(state: &AppState, line: Line) {
         match outcome {
             Ok(id) => {
                 tracing::info!(%id, ?line, "XABC published an article");
-                progress(line, |progress| progress.wrote(Utc::now(), line));
+                progress(line, |progress| progress.wrote(Utc::now()));
             }
             Err(error) => {
                 tracing::warn!(%error, ?line, "XABC's article failed");
@@ -1329,7 +1324,7 @@ mod tests {
     }
 
     #[test]
-    fn a_line_writes_again_after_its_interval_and_failures_wait_longer_each_time() {
+    fn a_line_writes_again_a_quarter_hour_after_and_failures_wait_longer_each_time() {
         let now = DateTime::parse_from_rfc3339("2026-10-16T05:00:00+08:00")
             .unwrap()
             .to_utc();
@@ -1343,16 +1338,13 @@ mod tests {
             waits.push((progress.next - now).num_minutes());
         }
         assert_eq!(waits, [30, 60, 120, 240, 480, 480]);
-        progress.wrote(now, Line::Share);
+        progress.wrote(now);
         assert_eq!(
             (progress.failures, progress.next - now),
             (0, chrono::Duration::minutes(15))
         );
         progress.failed(now);
         assert_eq!(progress.next - now, chrono::Duration::minutes(30));
-        // 学习 writes every hour.
-        progress.wrote(now, Line::Lesson);
-        assert_eq!(progress.next - now, chrono::Duration::hours(1));
     }
 
     #[test]

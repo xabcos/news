@@ -1,4 +1,4 @@
-//! 学习: every hour XABC keeps the courses current before it extends them. It revises the lesson
+//! 学习: every quarter of an hour XABC keeps the courses current before it extends them. It revises the lesson
 //! that is due, one the site's news has moved on from or one whose review date has come, the most
 //! read first; when none is, it writes the next lesson of the track whose newest lesson is oldest.
 //! Each starts from a plan: the next lesson after the track's contents, or what a revision should
