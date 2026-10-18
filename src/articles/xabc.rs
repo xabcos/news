@@ -39,9 +39,6 @@ const INTERVAL: chrono::Duration = chrono::Duration::minutes(15);
 /// hours at most: a lasting fault costs a few tries a day, not one every half hour.
 const RETRY_SECONDS: i64 = 30 * 60;
 const LONGEST_WAIT_SECONDS: i64 = 8 * 60 * 60;
-/// GPT Image 2.5 Sunburst, the more precise of the two: a 1536×1024 picture at medium quality
-/// took 21–34 s with four drawn at once.
-const IMAGE_MODEL: &str = "gpt-image-2.5-sunburst";
 /// The image model's answer may weigh this much: a drawn 1536×1024 PNG is about 3 MB, and
 /// base64 adds a third.
 const DRAWN_BYTES: u64 = 16 * 1024 * 1024;
@@ -802,7 +799,7 @@ async fn draw(
         ))
         .bearer_auth(&state.config.ai_api_key)
         .json(&json!({
-            "model": IMAGE_MODEL,
+            "model": state.config.ai_image_model,
             "prompt": format!("{}\n画面中不要出现任何文字、标志或水印。", prompt.trim()),
             "n": 1,
             "size": "1536x1024",

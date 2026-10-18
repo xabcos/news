@@ -1164,7 +1164,7 @@ async fn postgres_xabc_shares_and_explains_films() {
     assert!(
         drawings
             .iter()
-            .all(|drawing| drawing["model"] == "gpt-image-2.5-sunburst")
+            .all(|drawing| drawing["model"] == state.config.ai_image_model.as_str())
     );
 
     // The last article tells when the next is due. Without finds nothing is written, and finds
