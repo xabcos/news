@@ -58,7 +58,7 @@ const TEXT = {
     locale: "zh-CN", lang: "EN", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", equity: "股市", articles: "分享", learn: "学习", commentary: "解说", worth: "值得读", today: "今天", top: "重要",
     fresh: "NEW", failed: "加载失败", retry: "重试",
     empty: "这一天还没有内容", latest: "查看最近有内容的一天",
-    space: "工作台", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
+    space: "工作台", source: "开源代码 · AGPL-3.0", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
     backToTop: "回到顶部", insightEmpty: "XAI 日报将在今日生成后显示。", insightLabel: "XAI 日报",
     hotspots: "今日热点", gossip: "AI 圈热议", references: "参考来源", archive: "资料图", changes: "趋势分析", figures: "今日数字", watchSignals: "后续观察", coverSource: "原文",
     outlook: "机会与风险", angle: "看点", outlookKinds: { opportunity: "机会", employment: "就业", risk: "风险", action: "行动" }, sources: "来源",
@@ -70,7 +70,7 @@ const TEXT = {
     locale: "en", lang: "中文", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", equity: "𝑬", articles: "𝑨𝒓𝒕𝒊𝒄𝒍𝒆𝒔", learn: "𝑳𝒆𝒂𝒓𝒏", commentary: "𝑬𝒙𝒑𝒍𝒂𝒊𝒏𝒆𝒅", worth: "Worth reading", today: "Today", top: "Top",
     fresh: "NEW", failed: "Failed to load", retry: "Retry",
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
-    space: "𝑾𝒐𝒓𝒌𝒔𝒑𝒂𝒄𝒆", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
+    space: "𝑾𝒐𝒓𝒌𝒔𝒑𝒂𝒄𝒆", source: "Source on GitHub · AGPL-3.0", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
     backToTop: "Back to top", insightEmpty: "XAI Daily will appear after today's edition is generated.", insightLabel: "XAI Daily",
     hotspots: "Today’s headlines", gossip: "AI buzz", references: "References", archive: "Archive photo", changes: "Trend analysis", figures: "By the numbers", watchSignals: "Signals ahead", coverSource: "Source",
     outlook: "Opportunities & risks", angle: "Why it matters", outlookKinds: { opportunity: "Opportunity", employment: "Jobs", risk: "Risk", action: "Action" }, sources: "Sources",
@@ -105,7 +105,7 @@ const state = {
 storage.setItem("news.lastVisit", String(Date.now()));
 
 const el = {
-  tabs: $("#tabs"), lang: $("#langToggle"), me: $("#meLink"),
+  tabs: $("#tabs"), lang: $("#langToggle"), me: $("#meLink"), source: $("#sourceLink"),
   shell: $(".shell"), status: $("#status"), worth: $("#worth"), digest: $("#digest"), loadMore: $("#loadMore"),
   backToTop: $("#backToTop"),
 };
@@ -651,6 +651,8 @@ function applyLang() {
   document.documentElement.lang = t().locale;
   el.lang.textContent = t().lang;
   el.me.textContent = t().space;
+  el.source.setAttribute("aria-label", t().source);
+  el.source.title = t().source;
   el.backToTop.setAttribute("aria-label", t().backToTop);
   el.backToTop.title = t().backToTop;
   updateHistoryLoader();
