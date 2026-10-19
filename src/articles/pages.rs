@@ -41,7 +41,7 @@ const FROM: &str = " FROM articles a JOIN authors w ON w.user_id = a.author_id J
 const LIST: Chrome<'static> = Chrome {
     current: "articles",
     section: "reads articles article-cards",
-    stylesheet: "/reads.css?v=17",
+    stylesheet: "/reads.css?v=18",
     script: "/reads.js?v=9",
     feed: ("News", "/feed.xml"),
 };
@@ -56,16 +56,17 @@ const ARTICLE: Chrome<'static> = Chrome {
 const EXPLAINED: Chrome<'static> = Chrome {
     current: "movie",
     section: "catalog culture catalog-commentary",
-    stylesheet: "/catalog.css?v=10",
+    stylesheet: "/catalog.css?v=9",
     ..LIST
 };
 const EXPLANATION: Chrome<'static> = Chrome {
     current: "movie",
     ..ARTICLE
 };
-/// A lesson marks 学习's tab.
+/// A lesson marks 学习's tab and has its course's contents beside it.
 const LESSON: Chrome<'static> = Chrome {
     current: "learn",
+    section: "reads articles learn",
     ..ARTICLE
 };
 
@@ -901,7 +902,10 @@ async fn render(
         crate::site::headline(title),
     );
     match &place {
-        Some(place) => content.push_str(&place.steps(en)),
+        Some(place) => {
+            content.push_str(&place.steps(en));
+            content = learn::columns(&place.contents(en), &content);
+        }
         None => {
             let _ = write!(
                 content,

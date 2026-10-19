@@ -60,12 +60,14 @@
 .article-status { white-space: nowrap; }
 .article-actions { display: flex; flex-wrap: wrap; gap: .5rem; color: var(--text); }
 .article-actions a { color: inherit; text-decoration: none; }
-/* 学习: the map of tracks, a track's numbered lessons by chapter after the latest, and a lesson's place. */
+/* 学习: the map of courses by group, a course's numbered lessons by chapter after the latest, and a lesson's place. */
 .learn .reads-heading p { white-space: normal; }
-.learn-map { display: grid; gap: 1.5rem; }
-.learn-track h2 { margin: 0 0 .3rem; font-size: 1.08rem; font-weight: 680; }
-.learn-track h2 a { text-decoration: none; }
-.learn-track h2 a:hover { color: var(--primary); }
+.learn-group + .learn-group { margin-top: 2.4rem; }
+.learn-group > h2 { margin: 0 0 1rem; color: var(--muted); font-size: .85rem; font-weight: 500; }
+.learn-track + .learn-track { margin-top: 1.4rem; }
+.learn-track h3 { margin: 0 0 .3rem; font-size: 1.08rem; font-weight: 680; }
+.learn-track h3 a { text-decoration: none; }
+.learn-track h3 a:hover { color: var(--primary); }
 .learn-track p { margin: 0; color: var(--muted); font-size: .9rem; line-height: 1.7; }
 .learn-meta, .learn-stats, .learn-lessons time, .learn-recent time { color: var(--muted); font-size: .8rem; font-weight: 400; font-variant-numeric: tabular-nums; }
 .learn-stats { margin: -1rem 0 1.6rem; }
@@ -84,8 +86,30 @@
 .learn-steps a { max-width: 48%; text-decoration: none; }
 .learn-steps a:hover { color: var(--primary-strong); }
 .learn-steps [rel=next] { margin-left: auto; text-align: right; }
+/* On a wide screen a course's page and its lessons have contents beside them, in view while the page scrolls, and the back-to-top button keeps right of the wider page; a narrow screen shows the page alone. */
+.learn-side { display: none; }
+@media (min-width: 1200px) {
+  .public .shell:has(> .learn-layout) { max-width: 67rem; }
+  .public:has(.learn-layout) .back-to-top { right: max(calc(1rem + env(safe-area-inset-right, 0px)), calc((100% - 67rem) / 2 - 3.75rem)); }
+  .learn-layout { display: grid; grid-template-columns: 15rem minmax(0, 46rem); gap: 3.5rem; align-items: start; }
+  .learn-side { display: block; position: sticky; top: 4.5rem; max-height: calc(100vh - 6rem); overflow-y: auto; padding: 0 .4rem 1rem 0; font-size: .88rem; line-height: 1.55; }
+}
+.learn-side h2 { margin: 1.4rem 0 .35rem .6rem; color: var(--muted); font-size: .78rem; font-weight: 500; }
+.learn-side ul, .learn-side ol { margin: 0; padding: 0; list-style: none; }
+.learn-side a { display: block; padding: .3rem .6rem; border-radius: var(--radius-m); color: var(--muted); text-decoration: none; }
+.learn-side a:hover { color: var(--text); }
+.learn-side a[aria-current] { background: var(--surface-soft); color: var(--primary-strong); }
+.learn-side .learn-back { font-size: .8rem; }
+.learn-side .learn-course { margin-top: .5rem; color: var(--text); font-size: 1rem; font-weight: 650; }
+.learn-side .learn-meta { margin: 0 0 .7rem .6rem; }
+.learn-side summary { display: flex; padding: .35rem .6rem; color: var(--text); cursor: pointer; list-style: none; }
+.learn-side summary::-webkit-details-marker { display: none; }
+.learn-side summary::after { content: "›"; margin-left: auto; padding-left: .5rem; color: var(--muted); transition: transform .15s; }
+.learn-side details[open] > summary::after { transform: rotate(90deg); }
+.learn-side details ol { margin-bottom: .3rem; padding-left: .8rem; }
+.learn-side .learn-number { margin-right: .45rem; font-size: .78rem; }
 @media (max-width: 768px) {
-  .reads-list, .read-heading, .read-source, .read-actions, .read-related,
+  .reads-list, .read-heading, .read-source, .read-actions, .read-related, .learn-map, .learn-recent, .learn-chapter,
   .read-body :is(p, h1, h2, h3, h4, h5, h6) { touch-action: pan-y pinch-zoom; }
   .reads-heading { flex-wrap: wrap; gap: .6rem .8rem; }
   .reads-heading p { flex: 1 1 0; }

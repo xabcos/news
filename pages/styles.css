@@ -271,7 +271,7 @@ p { margin-top: 0; }
 @media (max-width: 768px) {
   /* Horizontal swipes switch tabs (public.js), so the browser must not take them over. */
   .public :is(.worth, .digest),
-  .public:is(.catalog, .travel, .learn) .shell { touch-action: pan-y pinch-zoom; }
+  .public:is(.catalog, .travel) .shell { touch-action: pan-y pinch-zoom; }
   .public .shell.is-loading {
     touch-action: pan-y pinch-zoom;
     min-height: calc(100vh - 2.6rem);
@@ -304,15 +304,6 @@ p { margin-top: 0; }
 @media (max-width: 768px) {
   .worth-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem; }
   .worth-card .item-title a { -webkit-line-clamp: 3; }
-}
-/* A section's collections on a bar of tabs: Culture's and Gadgets' topics, 学习's tracks. */
-.catalog-tabs { display: flex; flex-wrap: wrap; justify-content: center; gap: .35rem clamp(.8rem, 4vw, 3rem); padding: 1.25rem 0 .9rem; border-bottom: 1px solid var(--line); }
-.catalog-tabs a { padding: .3rem .15rem; color: var(--muted); font-size: .95rem; text-decoration: none; white-space: nowrap; border-bottom: 2px solid transparent; }
-.catalog-tabs a[aria-current] { color: var(--primary-strong); border-color: var(--primary); }
-.learn .catalog-tabs { column-gap: clamp(.9rem, 2.6vw, 1.6rem); margin-bottom: 1.8rem; }
-@media (max-width: 560px) {
-  .catalog-tabs { column-gap: 1.35rem; padding-top: .85rem; }
-  .catalog-tabs a { font-size: .88rem; }
 }
 /* Read counts and list pages, shared by Reads, 分享 and 解说. */
 .read-views { display: inline-flex; align-items: center; vertical-align: middle; gap: .3rem; white-space: nowrap; color: var(--muted); font-size: .75rem; font-variant-numeric: tabular-nums; }

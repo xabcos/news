@@ -1703,7 +1703,7 @@ async fn postgres_xabc_shares_and_explains_films() {
     let third = xabc::write(&state, xabc::Line::Lesson, Utc::now())
         .await
         .unwrap();
-    assert_eq!(lesson(third).await.0.as_deref(), Some("coding"));
+    assert_eq!(lesson(third).await.0.as_deref(), Some("create"));
     sqlx::query(
         "UPDATE articles SET published_at = published_at - INTERVAL '8 days',
              updated_at = updated_at - INTERVAL '8 days'
@@ -1716,7 +1716,7 @@ async fn postgres_xabc_shares_and_explains_films() {
     let fourth = xabc::write(&state, xabc::Line::Lesson, Utc::now())
         .await
         .unwrap();
-    assert_eq!(lesson(fourth).await.0.as_deref(), Some("agents"));
+    assert_eq!(lesson(fourth).await.0.as_deref(), Some("coding"));
     sqlx::query(
         "INSERT INTO items (id, topic_id, day, fingerprint, title, summary, url)
          VALUES ($1, 'github', CURRENT_DATE, sha256(convert_to($1::text, 'UTF8')), '测试关键词发布新版本', '改了用法',
@@ -1768,7 +1768,7 @@ async fn postgres_xabc_shares_and_explains_films() {
     let fifth = xabc::write(&state, xabc::Line::Lesson, Utc::now())
         .await
         .unwrap();
-    assert_eq!(lesson(fifth).await.0.as_deref(), Some("rag"));
+    assert_eq!(lesson(fifth).await.0.as_deref(), Some("agents"));
 
     // Two more lessons in the first track, the last opening a chapter, give the lessons neighbours.
     let written = |title: &str| xabc::Finished {
@@ -1821,16 +1821,19 @@ async fn postgres_xabc_shares_and_explains_films() {
     .await
     .unwrap();
 
-    // The map counts each track's lessons; a track lists its own by chapter after the latest,
-    // a revised one as updated and a new one as new.
+    // The map counts each course's lessons, the courses by group; a course lists its own by
+    // chapter after the latest, a revised one as updated and a new one as new, with every course
+    // beside them.
     let map = page(format!("{base}/learn")).await;
+    assert!(map.contains("<a class=tab href=\"/learn\" aria-current=\"true\">学习</a>"));
     assert!(map.contains(
-        "<a class=tab href=\"/learn\" data-last=\"/learn/esp32\" aria-current=\"true\">学习</a>"
+        "<section class=learn-group><h2>AI 入门与应用</h2><div class=learn-track><h3><a href=\"/learn/basics\">AI 入门</a><span class=learn-meta> · 3 课 · 更新 "
     ));
-    assert!(map.contains("AI 入门</a><span class=learn-meta> · 3 课 · 更新 "));
     assert!(map.contains("ESP32</a><span class=learn-meta> · 第一课正在写</span>"));
     let contents = page(format!("{base}/learn/basics")).await;
-    assert!(contents.contains("<a href=\"/learn/basics\" aria-current=\"true\">入门</a>"));
+    assert!(contents.contains(
+        "<div class=learn-layout><nav class=learn-side aria-label=\"全部课程\"><a class=learn-back href=\"/learn\">← 全部课程</a><h2>AI 入门与应用</h2><ul><li><a href=\"/learn/basics\" aria-current=\"page\">AI 入门</a></li>"
+    ));
     assert!(contents.contains("3 课 · 2 章 · 最近更新"));
     assert!(contents.contains(&format!(
         "<h2><span class=learn-number>第 1 章</span>认识大模型</h2><ol class=learn-lessons><li><a href=\"/articles/{first}\"><span class=learn-number>第 1 课</span>修订后的课</a>"
@@ -1860,8 +1863,20 @@ async fn postgres_xabc_shares_and_explains_films() {
         404
     );
 
-    // A lesson tells its place, how current it is and its neighbours, under 学习's tab.
+    // A lesson tells its place, how current it is and its neighbours, under 学习's tab, with its
+    // course's contents beside it: its chapter open and itself marked, the other chapter folded.
     let shown = page(format!("{base}/articles/{middle}")).await;
+    assert!(shown.contains(
+        "<a class=learn-course href=\"/learn/basics\">AI 入门</a><p class=learn-meta>3 课 · 2 章</p><details open><summary><span class=learn-number>1</span>认识大模型</summary>"
+    ));
+    assert!(shown.contains(&format!(
+        "<a href=\"/articles/{middle}\" aria-current=\"page\"><span class=learn-number>2</span>第二课</a>"
+    )));
+    assert!(
+        shown.contains(
+            "<details><summary><span class=learn-number>2</span>用好&lt;提示&gt;</summary>"
+        )
+    );
     assert!(shown.contains(
         "<p class=learn-crumbs><a href=\"/learn\">学习</a> › <a href=\"/learn/basics\">AI 入门</a> › 第 1 章 认识大模型</p>"
     ));
@@ -1873,17 +1888,17 @@ async fn postgres_xabc_shares_and_explains_films() {
         "<a rel=next href=\"/articles/{opener}\">第 3 课 第三课 →</a>"
     )));
     assert!(shown.contains("<a href=\"/learn/basics\">← AI 入门目录</a>"));
-    assert!(shown.contains("data-last=\"/learn/esp32\" aria-current=\"true\">学习</a>"));
+    assert!(shown.contains("<a class=tab href=\"/learn\" aria-current=\"true\">学习</a>"));
     assert!(
         page(format!("{base}/articles/{opener}"))
             .await
             .contains("› 第 2 章 用好&lt;提示&gt;</p>")
     );
 
-    // The English map names the tracks and links in English.
+    // The English map names the groups and courses and links in English.
     let english = page(format!("{base}/learn?lang=en")).await;
     assert!(
-        english.contains("<a href=\"/learn/basics?lang=en\">𝑩𝒂𝒔𝒊𝒄𝒔</a>")
+        english.contains("<h2>Getting started with AI</h2>")
             && english.contains("<a href=\"/learn/basics?lang=en\">AI Basics</a>")
             && english.contains(">𝑳𝒆𝒂𝒓𝒏</a>")
     );

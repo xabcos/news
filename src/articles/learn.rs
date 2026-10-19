@@ -29,12 +29,18 @@ pub(crate) fn label(en: bool) -> &'static str {
     choose(en, "学习", "𝑳𝒆𝒂𝒓𝒏")
 }
 
-/// A course: its address, its names on the tabs and over its page, a line on what it teaches,
-/// and what XABC is told about its readers, its scope and the chapters it should go through.
+/// The groups courses are listed in, by name and English name.
+type Group = (&'static str, &'static str);
+const STARTING: Group = ("AI 入门与应用", "Getting started with AI");
+const BUILDING: Group = ("AI 开发", "Building with AI");
+const HARDWARE: Group = ("硬件与嵌入式", "Hardware and embedded");
+
+/// A course: its address, its group, its name, a line on what it teaches, and what XABC is told
+/// about its readers, its scope and the chapters it should go through. Courses of a group stand
+/// together, in the order they are listed.
 pub(crate) struct Track {
     pub(crate) id: &'static str,
-    pub(crate) name: &'static str,
-    pub(crate) name_en: &'static str,
+    group: Group,
     pub(crate) title: &'static str,
     pub(crate) title_en: &'static str,
     pub(crate) intro: &'static str,
@@ -45,8 +51,7 @@ pub(crate) struct Track {
 pub(crate) const TRACKS: [Track; 9] = [
     Track {
         id: "basics",
-        name: "入门",
-        name_en: "𝑩𝒂𝒔𝒊𝒄𝒔",
+        group: STARTING,
         title: "AI 入门",
         title_en: "AI Basics",
         intro: "从零认识大模型：它能做什么、怎么用好、怎么选",
@@ -55,8 +60,7 @@ pub(crate) const TRACKS: [Track; 9] = [
     },
     Track {
         id: "prompts",
-        name: "提示词",
-        name_en: "𝑷𝒓𝒐𝒎𝒑𝒕𝒔",
+        group: STARTING,
         title: "提示词",
         title_en: "Prompting",
         intro: "把需求说清楚：结构化提示、举例、让模型自查",
@@ -64,9 +68,17 @@ pub(crate) const TRACKS: [Track; 9] = [
         brief: "读者会用聊天式 AI，想让它稳定地给出好结果。建议的章节路线：好提示词的要素（目标、背景、约束、格式）→ 角色与语气 → 举例（少样本）→ 拆解复杂任务与分步推理 → 结构化输出（表格、JSON）→ 让模型自查与改写 → 长文档与资料的提问方法 → 推理模型与普通模型的提示差异 → 写作、编程、数据分析和学习等场景的提示模板 → 评测与迭代提示词，提示注入与防护。每课给出能直接复制使用的提示词，以及改进前后的对比。",
     },
     Track {
+        id: "create",
+        group: STARTING,
+        title: "AI 创作与提效",
+        title_en: "Creating with AI",
+        intro: "用 AI 画图、做视频和语音，写作、办公与研究提效",
+        intro_en: "Images, video and voice with AI, and faster writing, office work and research",
+        brief: "读者是创作者和职场人，不需要编程。建议的章节路线：图像生成（GPT Image、Midjourney、即梦等）的提示与风格 → 图像编辑与角色一致性 → 视频生成（Sora、Veo、可灵、Grok Imagine 等）→ 语音合成、配音与音乐 → 写作与编辑 → 办公：文档、表格、演示与会议纪要 → 研究与深度搜索 → 数据分析与图表 → 学习与知识管理 → 自动化工作流 → 版权、标注与合规。工具变得快，课里写明工具的版本和日期，优先讲能迁移到别的工具的方法。",
+    },
+    Track {
         id: "coding",
-        name: "AI 编程",
-        name_en: "𝑪𝒐𝒅𝒊𝒏𝒈",
+        group: BUILDING,
         title: "AI 编程",
         title_en: "AI Coding",
         intro: "Claude Code、Codex、Cursor 等工具，从安装到专业工作流",
@@ -75,8 +87,7 @@ pub(crate) const TRACKS: [Track; 9] = [
     },
     Track {
         id: "agents",
-        name: "Agent",
-        name_en: "𝑨𝒈𝒆𝒏𝒕𝒔",
+        group: BUILDING,
         title: "Agent 与 MCP",
         title_en: "Agents & MCP",
         intro: "工具调用、MCP、自动化工作流与多 Agent",
@@ -85,8 +96,7 @@ pub(crate) const TRACKS: [Track; 9] = [
     },
     Track {
         id: "rag",
-        name: "RAG",
-        name_en: "𝑹𝑨𝑮",
+        group: BUILDING,
         title: "RAG 与知识库",
         title_en: "RAG & Knowledge Bases",
         intro: "让 AI 用上你的资料：嵌入、检索与知识库",
@@ -95,8 +105,7 @@ pub(crate) const TRACKS: [Track; 9] = [
     },
     Track {
         id: "api",
-        name: "API",
-        name_en: "𝑨𝑷𝑰𝒔",
+        group: BUILDING,
         title: "模型 API 开发",
         title_en: "Model APIs",
         intro: "调用大模型 API：流式、结构化输出、缓存与成本",
@@ -105,8 +114,7 @@ pub(crate) const TRACKS: [Track; 9] = [
     },
     Track {
         id: "local",
-        name: "本地模型",
-        name_en: "𝑳𝒐𝒄𝒂𝒍",
+        group: BUILDING,
         title: "开源与本地模型",
         title_en: "Open & Local Models",
         intro: "在自己的电脑和服务器上跑模型：部署、量化与微调",
@@ -114,19 +122,8 @@ pub(crate) const TRACKS: [Track; 9] = [
         brief: "读者有一些命令行基础。建议的章节路线：开源模型全景（Qwen、DeepSeek、Llama、Gemma、Mistral 等）与许可证 → 硬件怎么选：显存、内存与 Apple Silicon → Ollama、LM Studio 快速上手 → llama.cpp 与 GGUF，量化的原理与选择 → vLLM、SGLang 等推理服务 → 把本地模型接入编辑器、聊天界面与 Agent → 性能调优与多卡 → 微调：LoRA、QLoRA 与数据准备 → 评测 → 部署到服务器与成本 → 端侧与移动端 → 实战项目。命令和版本以各项目官方文档为准。",
     },
     Track {
-        id: "create",
-        name: "创作提效",
-        name_en: "𝑪𝒓𝒆𝒂𝒕𝒆",
-        title: "AI 创作与提效",
-        title_en: "Creating with AI",
-        intro: "用 AI 画图、做视频和语音，写作、办公与研究提效",
-        intro_en: "Images, video and voice with AI, and faster writing, office work and research",
-        brief: "读者是创作者和职场人，不需要编程。建议的章节路线：图像生成（GPT Image、Midjourney、即梦等）的提示与风格 → 图像编辑与角色一致性 → 视频生成（Sora、Veo、可灵、Grok Imagine 等）→ 语音合成、配音与音乐 → 写作与编辑 → 办公：文档、表格、演示与会议纪要 → 研究与深度搜索 → 数据分析与图表 → 学习与知识管理 → 自动化工作流 → 版权、标注与合规。工具变得快，课里写明工具的版本和日期，优先讲能迁移到别的工具的方法。",
-    },
-    Track {
         id: "esp32",
-        name: "ESP32",
-        name_en: "𝑬𝑺𝑷32",
+        group: HARDWARE,
         title: "ESP32",
         title_en: "ESP32",
         intro: "用 ESP-IDF 做商业级产品：从选型、量产到端侧与云端 AI",
@@ -139,16 +136,10 @@ pub(crate) fn track(id: &str) -> Option<&'static Track> {
     TRACKS.iter().find(|track| track.id == id)
 }
 
-/// The track page a swipe enters coming back from the tab after 学习: the last one, which
-/// app.js names too (`LEARN_LAST`).
-pub(crate) fn last() -> String {
-    format!("{PATH}/{}", TRACKS[TRACKS.len() - 1].id)
-}
-
 const LEARN: Chrome<'static> = Chrome {
     current: "learn",
     section: "reads learn",
-    stylesheet: "/reads.css?v=17",
+    stylesheet: "/reads.css?v=18",
     script: "/reads.js?v=9",
     feed: ("News", "/feed.xml"),
 };
@@ -207,24 +198,60 @@ pub(super) fn numbered<'a>(chapters: impl IntoIterator<Item = &'a str>) -> Vec<u
         .collect()
 }
 
-/// The tracks' tabs, the current one marked; on phones a swipe moves between them (public.js).
-fn tabs(current: Option<&str>, en: bool) -> String {
-    let mut html = format!(
-        "<nav class=catalog-tabs aria-label=\"{}\">",
-        choose(en, "学习板块", "Courses")
-    );
+/// The courses by group, in the order they are listed.
+fn groups() -> Vec<(Group, Vec<&'static Track>)> {
+    let mut groups: Vec<(Group, Vec<&'static Track>)> = Vec::new();
     for track in &TRACKS {
-        let _ = write!(
-            html,
-            "<a href=\"{}\"{}>{}</a>",
-            escape(&localized(&format!("{PATH}/{}", track.id), en)),
-            if current == Some(track.id) {
-                " aria-current=\"true\""
-            } else {
-                ""
-            },
-            choose(en, track.name, track.name_en)
-        );
+        match groups.last_mut() {
+            Some((group, tracks)) if *group == track.group => tracks.push(track),
+            _ => groups.push((track.group, vec![track])),
+        }
+    }
+    groups
+}
+
+/// A page with its contents beside it: on a wide screen they stand left of the page and stay in
+/// view, on a narrow one the page stands alone (reads.css).
+pub(super) fn columns(side: &str, main: &str) -> String {
+    format!("<div class=learn-layout>{side}<div class=learn-main>{main}</div></div>")
+}
+
+/// The way back to every course, at the head of the contents.
+fn back(en: bool) -> String {
+    format!(
+        "<a class=learn-back href=\"{}\">← {}</a>",
+        localized(PATH, en),
+        choose(en, "全部课程", "All courses")
+    )
+}
+
+fn course(track: &Track, en: bool) -> String {
+    escape(&localized(&format!("{PATH}/{}", track.id), en))
+}
+
+/// Beside a course's page: every course by group, this one marked.
+fn courses(current: &str, en: bool) -> String {
+    let mut html = format!(
+        "<nav class=learn-side aria-label=\"{}\">{}",
+        choose(en, "全部课程", "All courses"),
+        back(en)
+    );
+    for ((name, name_en), tracks) in groups() {
+        let _ = write!(html, "<h2>{}</h2><ul>", choose(en, name, name_en));
+        for track in tracks {
+            let _ = write!(
+                html,
+                "<li><a href=\"{}\"{}>{}</a></li>",
+                course(track, en),
+                if track.id == current {
+                    " aria-current=\"page\""
+                } else {
+                    ""
+                },
+                choose(en, track.title, track.title_en)
+            );
+        }
+        html.push_str("</ul>");
     }
     html.push_str("</nav>");
     html
@@ -236,7 +263,17 @@ fn day(at: DateTime<Utc>, state: &AppState) -> String {
         .to_string()
 }
 
-/// `/learn`: every track, how many lessons it has and when one last changed.
+/// How many lessons and chapters a course has.
+fn size(lessons: usize, chapters: usize, en: bool) -> String {
+    choose(
+        en,
+        &format!("{lessons} 课 · {chapters} 章"),
+        &format!("{lessons} lessons · {chapters} chapters"),
+    )
+    .to_owned()
+}
+
+/// `/learn`: the courses by group, how many lessons each has and when one last changed.
 async fn map(
     State(state): State<AppState>,
     reader: Reader,
@@ -254,8 +291,7 @@ async fn map(
     .map(|(course, count, updated)| (course, (count, updated)))
     .collect();
     let mut content = format!(
-        "{}<header class=reads-heading><h1>{}</h1><p>{}</p></header><div class=learn-map>",
-        tabs(None, en),
+        "<header class=reads-heading><h1>{}</h1><p>{}</p></header><div class=learn-map>",
         label(en),
         choose(
             en,
@@ -263,23 +299,31 @@ async fn map(
             "Courses on AI and the ESP32, growing and kept current around the clock"
         ),
     );
-    for track in &TRACKS {
-        let meta = match counts.get(track.id) {
-            Some((count, updated)) => choose(
-                en,
-                &format!("{count} 课 · 更新 {}", day(*updated, &state)),
-                &format!("{count} lessons · updated {}", day(*updated, &state)),
-            )
-            .to_owned(),
-            None => choose(en, "第一课正在写", "The first lesson is being written").to_owned(),
-        };
+    for ((name, name_en), tracks) in groups() {
         let _ = write!(
             content,
-            "<section class=learn-track><h2><a href=\"{}\">{}</a><span class=learn-meta> · {meta}</span></h2><p>{}</p></section>",
-            escape(&localized(&format!("{PATH}/{}", track.id), en)),
-            choose(en, track.title, track.title_en),
-            choose(en, track.intro, track.intro_en),
+            "<section class=learn-group><h2>{}</h2>",
+            choose(en, name, name_en)
         );
+        for track in tracks {
+            let meta = match counts.get(track.id) {
+                Some((count, updated)) => choose(
+                    en,
+                    &format!("{count} 课 · 更新 {}", day(*updated, &state)),
+                    &format!("{count} lessons · updated {}", day(*updated, &state)),
+                )
+                .to_owned(),
+                None => choose(en, "第一课正在写", "The first lesson is being written").to_owned(),
+            };
+            let _ = write!(
+                content,
+                "<div class=learn-track><h3><a href=\"{}\">{}</a><span class=learn-meta> · {meta}</span></h3><p>{}</p></div>",
+                course(track, en),
+                choose(en, track.title, track.title_en),
+                choose(en, track.intro, track.intro_en),
+            );
+        }
+        content.push_str("</section>");
     }
     content.push_str("</div>");
     let html = crate::site::layout(
@@ -309,7 +353,8 @@ const RECENT_DAYS: i64 = 7;
 /// How many of them, at most.
 const RECENT: usize = 5;
 
-/// `/learn/{track}`: the track's lessons by chapter, after the latest new or revised ones.
+/// `/learn/{track}`: the track's lessons by chapter, after the latest new or revised ones, with
+/// every course beside them.
 async fn contents(
     State(state): State<AppState>,
     reader: Reader,
@@ -341,30 +386,22 @@ async fn contents(
         )
     };
     let mut content = format!(
-        "{}<header class=reads-heading><h1>{}</h1><p>{}</p></header>",
-        tabs(Some(track.id), en),
+        "<header class=reads-heading><h1>{}</h1><p>{}</p></header>",
         choose(en, track.title, track.title_en),
         choose(en, track.intro, track.intro_en),
     );
     match lessons.iter().map(|lesson| lesson.updated_at).max() {
         Some(updated) => {
-            let chapters = numbers.last().copied().unwrap_or_default();
             let _ = write!(
                 content,
-                "<p class=learn-stats>{}</p>",
-                choose(
-                    en,
-                    &format!(
-                        "{} 课 · {chapters} 章 · 最近更新 {}",
-                        lessons.len(),
-                        day(updated, &state)
-                    ),
-                    &format!(
-                        "{} lessons · {chapters} chapters · updated {}",
-                        lessons.len(),
-                        day(updated, &state)
-                    ),
-                )
+                "<p class=learn-stats>{} · {} {}</p>",
+                size(
+                    lessons.len(),
+                    numbers.last().copied().unwrap_or_default(),
+                    en
+                ),
+                choose(en, "最近更新", "updated"),
+                day(updated, &state)
             );
         }
         None => {
@@ -442,7 +479,7 @@ async fn contents(
             label(en)
         ),
         choose(en, track.intro, track.intro_en),
-        &content,
+        &columns(&courses(track.id, en), &content),
         None,
         &LEARN,
     );
@@ -453,18 +490,19 @@ async fn contents(
     ))
 }
 
-/// Where a lesson stands: its track, its chapter and the lessons on either side of it.
+/// Where a lesson stands: its track, its number and chapter, among the track's public lessons.
 pub(super) struct Place {
     track: &'static Track,
+    lesson: i32,
     chapter: usize,
     name: String,
-    previous: Option<(Uuid, i32, String)>,
-    next: Option<(Uuid, i32, String)>,
+    lessons: Vec<Lesson>,
+    numbers: Vec<usize>,
 }
 
 impl Place {
-    /// The lesson numbered `lesson` in `course`, among the track's public lessons; a lesson not
-    /// public, as a preview shows it, still finds its neighbours.
+    /// The lesson numbered `lesson` in `course`; a lesson not public, as a preview shows it, still
+    /// finds its chapter and neighbours.
     pub(super) async fn find(
         state: &AppState,
         course: &str,
@@ -476,26 +514,19 @@ impl Place {
         };
         let lessons = lessons(state, course).await?;
         let numbers = numbered(lessons.iter().map(|lesson| lesson.chapter.as_str()));
-        let before = lessons.iter().rposition(|other| other.lesson < lesson);
-        let after = lessons.iter().position(|other| other.lesson > lesson);
-        let step = |at: Option<usize>| {
-            at.map(|at| {
-                let lesson = &lessons[at];
-                (lesson.id, lesson.lesson, lesson.title.clone())
-            })
-        };
         // Its chapter continues the one before it when it bears that name, or else follows it.
-        let chapter_number = match before {
+        let chapter_number = match lessons.iter().rposition(|other| other.lesson < lesson) {
             Some(at) if lessons[at].chapter == chapter => numbers[at],
             Some(at) => numbers[at] + 1,
             None => 1,
         };
         Ok(Some(Self {
             track,
+            lesson,
             chapter: chapter_number,
             name: chapter.to_owned(),
-            previous: step(before),
-            next: step(after),
+            lessons,
+            numbers,
         }))
     }
 
@@ -505,7 +536,7 @@ impl Place {
             "<p class=learn-crumbs><a href=\"{}\">{}</a> › <a href=\"{}\">{}</a> › {} {}</p>",
             localized(PATH, en),
             label(en),
-            escape(&localized(&format!("{PATH}/{}", self.track.id), en)),
+            course(self.track, en),
             choose(en, self.track.title, self.track.title_en),
             choose(
                 en,
@@ -516,32 +547,100 @@ impl Place {
         )
     }
 
+    /// Beside the lesson: its course's chapters, each folding its lessons away but its own, which
+    /// stands open with the lesson marked. A lesson not public, as a preview shows it, is not among
+    /// them, and opens none.
+    pub(super) fn contents(&self, en: bool) -> String {
+        let open = self
+            .lessons
+            .iter()
+            .position(|lesson| lesson.lesson == self.lesson)
+            .map(|at| self.numbers[at]);
+        let mut html = format!(
+            "<nav class=learn-side aria-label=\"{}\">{}<a class=learn-course href=\"{}\">{}</a><p class=learn-meta>{}</p>",
+            choose(en, "课程目录", "Contents"),
+            back(en),
+            course(self.track, en),
+            choose(en, self.track.title, self.track.title_en),
+            size(
+                self.lessons.len(),
+                self.numbers.last().copied().unwrap_or_default(),
+                en
+            )
+        );
+        let mut chapter = 0;
+        for (lesson, number) in self.lessons.iter().zip(&self.numbers) {
+            if *number != chapter {
+                if chapter > 0 {
+                    html.push_str("</ol></details>");
+                }
+                chapter = *number;
+                let _ = write!(
+                    html,
+                    "<details{}><summary><span class=learn-number>{number}</span>{}</summary><ol>",
+                    if Some(chapter) == open { " open" } else { "" },
+                    escape(&lesson.chapter)
+                );
+            }
+            let _ = write!(
+                html,
+                "<li><a href=\"{}\"{}><span class=learn-number>{}</span>{}</a></li>",
+                escape(&localized(&format!("/articles/{}", lesson.id), en)),
+                if lesson.lesson == self.lesson {
+                    " aria-current=\"page\""
+                } else {
+                    ""
+                },
+                lesson.lesson,
+                escape(&lesson.title)
+            );
+        }
+        if chapter > 0 {
+            html.push_str("</ol></details>");
+        }
+        html.push_str("</nav>");
+        html
+    }
+
     /// Under the lesson: the lessons before and after it, and the way back to the contents.
     pub(super) fn steps(&self, en: bool) -> String {
-        let step = |(id, lesson, title): &(Uuid, i32, String), rel: &str, arrow: (&str, &str)| {
-            format!(
-                "<a rel={rel} href=\"{}\">{}{}{}</a>",
-                escape(&localized(&format!("/articles/{id}"), en)),
-                arrow.0,
-                escape(&format!(
-                    "{} {title}",
-                    choose(en, &format!("第 {lesson} 课"), &format!("Lesson {lesson}"))
-                )),
-                arrow.1
-            )
+        let step = |lesson: Option<&Lesson>, rel: &str, arrow: (&str, &str)| {
+            lesson
+                .map(|lesson| {
+                    format!(
+                        "<a rel={rel} href=\"{}\">{}{}{}</a>",
+                        escape(&localized(&format!("/articles/{}", lesson.id), en)),
+                        arrow.0,
+                        escape(&format!(
+                            "{} {}",
+                            choose(
+                                en,
+                                &format!("第 {} 课", lesson.lesson),
+                                &format!("Lesson {}", lesson.lesson)
+                            ),
+                            lesson.title
+                        )),
+                        arrow.1
+                    )
+                })
+                .unwrap_or_default()
         };
+        let previous = self
+            .lessons
+            .iter()
+            .rev()
+            .find(|other| other.lesson < self.lesson);
+        let next = self.lessons.iter().find(|other| other.lesson > self.lesson);
         format!(
             "<nav class=learn-steps aria-label=\"{}\">{}{}</nav><div class=read-actions><a href=\"{}\">← {}</a></div>",
             choose(en, "上一课与下一课", "Previous and next lessons"),
-            self.previous
-                .as_ref()
-                .map(|previous| step(previous, "prev", ("← ", "")))
-                .unwrap_or_else(|| "<span></span>".into()),
-            self.next
-                .as_ref()
-                .map(|next| step(next, "next", ("", " →")))
-                .unwrap_or_default(),
-            escape(&localized(&format!("{PATH}/{}", self.track.id), en)),
+            if previous.is_some() {
+                step(previous, "prev", ("← ", ""))
+            } else {
+                "<span></span>".into()
+            },
+            step(next, "next", ("", " →")),
+            course(self.track, en),
             choose(
                 en,
                 &format!("{}目录", self.track.title),
@@ -567,7 +666,7 @@ mod tests {
     }
 
     #[test]
-    fn tracks_have_distinct_addresses_and_names() {
+    fn tracks_have_distinct_addresses_and_stand_together_by_group() {
         let mut ids: Vec<&str> = TRACKS.iter().map(|track| track.id).collect();
         ids.sort_unstable();
         ids.dedup();
@@ -579,9 +678,15 @@ mod tests {
                     .bytes()
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
             );
-            assert!(!track.brief.is_empty() && !track.intro.is_empty() && !track.name.is_empty());
+            assert!(!track.brief.is_empty() && !track.intro.is_empty() && !track.title.is_empty());
         }
-        // app.js's LEARN_LAST names the same page.
-        assert_eq!(last(), "/learn/esp32");
+        // A group listed twice would split its courses.
+        let groups: Vec<Group> = groups().into_iter().map(|(group, _)| group).collect();
+        let mut distinct = groups.clone();
+        distinct.dedup();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(groups.len(), distinct.len());
+        assert_eq!(groups, [STARTING, BUILDING, HARDWARE]);
     }
 }

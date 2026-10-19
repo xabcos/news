@@ -141,8 +141,6 @@ const sectionOf = (id) => Object.keys(CATALOG).find((section) => CATALOG[section
 // courses XABC writes, follows 分享.
 const ARTICLES_ID = "articles";
 const LEARN_ID = "learn";
-// Swiping back into 学习 enters its last track, as the server's tab does (articles::learn::last).
-const LEARN_LAST = "/learn/esp32";
 const PAGE_TOPICS = ["reads", "llm", ARTICLES_ID, LEARN_ID, ...Object.keys(CATALOG), ...Object.values(CATALOG).flatMap((section) => section.topics)];
 const topicPage = (id) => `/${sectionOf(id) ? `${sectionOf(id)}/${id}` : id}${state.lang === "en" ? "?lang=en" : ""}`;
 
@@ -693,7 +691,6 @@ function renderTabs() {
       tab.textContent = label;
       // Swiping back into a catalogue section enters its last collection (public.js).
       if (CATALOG[id]) tab.dataset.last = topicPage(CATALOG[id].topics.findLast((topic) => state.topics.some((entry) => entry.id === topic)));
-      if (id === LEARN_ID) tab.dataset.last = `${LEARN_LAST}${state.lang === "en" ? "?lang=en" : ""}`;
       return tab;
     }
     const tab = button(label, () => navigate({ topic: id, day: "" }), "tab");
