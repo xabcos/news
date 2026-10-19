@@ -100,11 +100,11 @@ async fn sitemap(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         escape(&absolute(&state, COMMENTARY)),
         escape(&absolute(&state, learn::PATH))
     );
-    for track in &learn::TRACKS {
+    for course in learn::courses(&state).await? {
         let _ = write!(
             xml,
             "<url><loc>{}</loc></url>",
-            escape(&absolute(&state, &format!("{}/{}", learn::PATH, track.id)))
+            escape(&absolute(&state, &format!("{}/{}", learn::PATH, course.id)))
         );
     }
     for (id, updated_at) in rows {

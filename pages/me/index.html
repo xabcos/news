@@ -10,7 +10,7 @@
   <title>𝑵𝒆𝒘𝒔 · 工作台</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
   <link rel="stylesheet" href="/styles.css?v=sides">
-  <link rel="stylesheet" href="/me/styles.css?v=articles">
+  <link rel="stylesheet" href="/me/styles.css?v=courses">
 </head>
 <body>
   <main class="workspace-shell">
@@ -88,6 +88,17 @@
         </form>
         <div id="reviewLists" class="review-lists hidden"></div>
         <p id="articlesMessage" class="empty-state hidden" role="status"></p><ul id="articleList" class="item-list"></ul>
+      </section>
+      <section id="coursesPanel" class="panel courses-panel hidden" aria-labelledby="coursesTitle">
+        <div class="panel-heading">
+          <div><h2 id="coursesTitle"><a href="/learn" target="_blank" rel="noopener">学习课程 ↗</a></h2><p id="coursesMeta" class="muted small" role="status"></p></div>
+        </div>
+        <form id="courseForm" class="course-form">
+          <label for="courseIdea">开一门课</label>
+          <div class="inline"><input id="courseIdea" name="idea" minlength="4" maxlength="200" placeholder="一句话说想开的课，比如：用 ESP32 和大模型做一个语音助手" required><button class="button button-primary button-small" type="submit">开课</button></div>
+          <p class="field-hint muted">XABC 会先查这个方向现在的做法，再设计整门课，一两分钟后出现在下面，接着开始写第一课。</p>
+        </form>
+        <ul id="courseList" class="item-list"></ul>
       </section>
       <section class="panel topics-panel" aria-label="主题列表">
         <div class="panel-heading"><h2>主题</h2><button id="refreshButton" class="button button-quiet button-small" type="button">刷新</button></div>
@@ -167,6 +178,6 @@
     <div class="dialog-actions"><button class="button button-quiet" type="button" data-close-dialog>取消</button><button id="confirmActionButton" class="button button-danger" type="button">确认删除</button></div>
   </dialog>
   <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
-  <script src="/me/app.js?v=16" type="module"></script>
+  <script src="/me/app.js?v=17" type="module"></script>
 </body>
 </html>

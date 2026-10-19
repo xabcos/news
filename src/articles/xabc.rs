@@ -6,6 +6,7 @@
 //! (`lesson`). Articles go out at once under the pen name XABC. Their pictures come from
 //! the pages the models cite or are drawn by an image model, and they link only to addresses the
 //! models found.
+pub(crate) mod course;
 mod film;
 mod lesson;
 
@@ -1103,6 +1104,16 @@ pub(super) async fn publish(
     {
         return Err(AppError::Conflict("XABC 刚发过一篇文章".into()));
     }
+    // A lesson goes only into a course still shown; hiding it waits for this save.
+    if let Subject::Lesson { course, .. } = subject
+        && !sqlx::query_scalar::<_, bool>("SELECT visible FROM courses WHERE id = $1 FOR UPDATE")
+            .bind(course)
+            .fetch_optional(&mut *tx)
+            .await?
+            .unwrap_or(false)
+    {
+        return Err(AppError::Conflict("课程已隐藏".into()));
+    }
     let (film, course, chapter, upkeep) = match subject {
         Subject::Share => (None, None, None, None),
         Subject::Film(work) => (Some(work), None, None, None),
@@ -1158,6 +1169,19 @@ pub(super) async fn revise(
 ) -> Result<()> {
     let content = checked(&article.title, &article.body, cover)?;
     let mut tx = state.pool.begin().await?;
+    // A lesson is revised only while its course shows; hiding it waits for this save.
+    if upkeep.is_some()
+        && !sqlx::query_scalar::<_, bool>(
+            "SELECT c.visible FROM courses c JOIN articles a ON a.course = c.id WHERE a.id = $1
+             FOR UPDATE OF c",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .unwrap_or(false)
+    {
+        return Err(AppError::Conflict("课程已隐藏".into()));
+    }
     let saved = sqlx::query(
         "UPDATE articles SET title = $3, body = $4, excerpt = $5, revision = revision + 1,
            updated_at = now(), keywords = COALESCE($6, keywords),

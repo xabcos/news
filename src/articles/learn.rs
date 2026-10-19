@@ -1,22 +1,25 @@
-//! 学习: XABC's courses, one track (`TRACKS`) each. `/learn` maps the tracks, `/learn/{track}`
-//! lists a track's lessons by chapter, and a lesson reads on the article page, which shows where
-//! it stands (`Place`). XABC writes and revises the lessons (`xabc::lesson`).
+//! 学习: XABC's courses (`courses`). `/learn` maps them by group, `/learn/{course}` lists a
+//! course's lessons by chapter, and a lesson reads on the article page, which shows where it
+//! stands (`Place`). XABC writes and revises the lessons (`xabc::lesson`) and designs new courses
+//! (`xabc::course`); an administrator opens one with a sentence and hides any (`admin`).
 use crate::{
+    auth::{self, User},
     digest::{Rendered, conditional},
-    error::{AppError, Result},
+    error::{ApiJson, AppError, Result},
     reading::{self, Reader},
     site::{Chrome, choose, escape, localized},
     state::AppState,
 };
 use axum::{
-    Router,
+    Json, Router,
     extract::{Path, Query, State},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
     response::Response,
-    routing::get,
+    routing::{get, patch},
 };
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use sqlx::FromRow;
 use std::{collections::HashMap, fmt::Write};
 use uuid::Uuid;
@@ -29,121 +32,41 @@ pub(crate) fn label(en: bool) -> &'static str {
     choose(en, "学习", "𝑳𝒆𝒂𝒓𝒏")
 }
 
-/// The groups courses are listed in, by name and English name.
-type Group = (&'static str, &'static str);
-const STARTING: Group = ("AI 入门与应用", "Getting started with AI");
-const BUILDING: Group = ("AI 开发", "Building with AI");
-const HARDWARE: Group = ("硬件与嵌入式", "Hardware and embedded");
-const PROJECTS: Group = ("实战项目", "Projects");
-
-/// A course: its address, its group, its name, a line on what it teaches, and what XABC is told
-/// about its readers, its scope and the chapters it should go through. Courses of a group stand
-/// together, in the order they are listed.
-pub(crate) struct Track {
-    pub(crate) id: &'static str,
-    group: Group,
-    pub(crate) title: &'static str,
-    pub(crate) title_en: &'static str,
-    pub(crate) intro: &'static str,
-    pub(crate) intro_en: &'static str,
-    pub(crate) brief: &'static str,
+/// A course, as the pages show it and XABC teaches it: its address, its group and name in both
+/// languages, a line on what it teaches, and what XABC is told about its readers, its scope and
+/// the chapters it should go through.
+#[derive(Clone, FromRow)]
+pub(crate) struct Course {
+    pub(crate) id: String,
+    pub(crate) grp: String,
+    pub(crate) grp_en: String,
+    pub(crate) title: String,
+    pub(crate) title_en: String,
+    pub(crate) intro: String,
+    pub(crate) intro_en: String,
+    pub(crate) brief: String,
 }
 
-pub(crate) const TRACKS: [Track; 10] = [
-    Track {
-        id: "basics",
-        group: STARTING,
-        title: "AI 入门",
-        title_en: "AI Basics",
-        intro: "从零认识大模型：它能做什么、怎么用好、怎么选",
-        intro_en: "Large language models from zero: what they do, how to use them well and how to choose",
-        brief: "读者是刚开始接触 AI 的普通人，不需要编程基础。建议的章节路线：大模型是什么、能做什么不能做什么 → token、上下文与幻觉 → 主流模型和产品（ChatGPT、Claude、Gemini、Grok、DeepSeek、通义千问、Kimi、豆包等）怎么选，免费与付费订阅怎么选 → 日常用法：问答、写作、翻译、总结、学习与搜索 → 多模态：看图、语音、文件与长文档 → 记忆、项目与自定义助手 → 隐私、安全与辨别 AI 内容 → 用 AI 持续学习与提效。讲概念多用生活里的类比，少用术语，用到时先解释。",
-    },
-    Track {
-        id: "prompts",
-        group: STARTING,
-        title: "提示词",
-        title_en: "Prompting",
-        intro: "把需求说清楚：结构化提示、举例、让模型自查",
-        intro_en: "Saying what you want: structured prompts, examples and self-checks",
-        brief: "读者会用聊天式 AI，想让它稳定地给出好结果。建议的章节路线：好提示词的要素（目标、背景、约束、格式）→ 角色与语气 → 举例（少样本）→ 拆解复杂任务与分步推理 → 结构化输出（表格、JSON）→ 让模型自查与改写 → 长文档与资料的提问方法 → 推理模型与普通模型的提示差异 → 写作、编程、数据分析和学习等场景的提示模板 → 评测与迭代提示词，提示注入与防护。每课给出能直接复制使用的提示词，以及改进前后的对比。",
-    },
-    Track {
-        id: "create",
-        group: STARTING,
-        title: "AI 创作与提效",
-        title_en: "Creating with AI",
-        intro: "用 AI 画图、做视频和语音，写作、办公与研究提效",
-        intro_en: "Images, video and voice with AI, and faster writing, office work and research",
-        brief: "读者是创作者和职场人，不需要编程。建议的章节路线：图像生成（GPT Image、Midjourney、即梦等）的提示与风格 → 图像编辑与角色一致性 → 视频生成（Sora、Veo、可灵、Grok Imagine 等）→ 语音合成、配音与音乐 → 写作与编辑 → 办公：文档、表格、演示与会议纪要 → 研究与深度搜索 → 数据分析与图表 → 学习与知识管理 → 自动化工作流 → 版权、标注与合规。工具变得快，课里写明工具的版本和日期，优先讲能迁移到别的工具的方法。",
-    },
-    Track {
-        id: "coding",
-        group: BUILDING,
-        title: "AI 编程",
-        title_en: "AI Coding",
-        intro: "Claude Code、Codex、Cursor 等工具，从安装到专业工作流",
-        intro_en: "Claude Code, Codex, Cursor and more, from setup to professional workflows",
-        brief: "读者是开发者，或想用 AI 写代码的人。建议的章节路线：AI 编程工具全景与怎么选（Claude Code、OpenAI Codex、Cursor、GitHub Copilot、Gemini CLI 等）→ 安装、登录与计费方式 → 第一个项目：让 AI 读懂代码库、改代码、跑测试 → 项目说明文件（如 CLAUDE.md、AGENTS.md）与上下文管理 → 计划模式、审查改动与版本控制 → 测试驱动与调试 → 重构与大型项目 → 子代理、并行任务与自动化（hooks、自定义命令、在 CI 中运行）→ 用 MCP 接入外部工具 → 代码审查与安全 → 成本与额度控制 → 团队协作与规范。命令、配置和快捷键以各工具官方文档的最新版本为准，写明版本。",
-    },
-    Track {
-        id: "agents",
-        group: BUILDING,
-        title: "Agent 与 MCP",
-        title_en: "Agents & MCP",
-        intro: "工具调用、MCP、自动化工作流与多 Agent",
-        intro_en: "Tool calling, MCP, automated workflows and multi-agent systems",
-        brief: "读者有一些编程基础。建议的章节路线：Agent 是什么、和聊天有什么不同 → 函数调用与工具调用的原理和 API 写法 → 设计好用的工具 → MCP 协议：概念与使用现成的 MCP 服务器 → 自己写 MCP 服务器（Python、TypeScript）→ 远程 MCP 与认证 → Agent 框架与 SDK（OpenAI Agents SDK、Claude Agent SDK、LangGraph 等）→ 规划、记忆与长任务 → 多 Agent 协作 → 操作浏览器与电脑 → 评测、可观测性与成本 → 安全：权限、提示注入与沙箱 → 实战项目。代码以官方 SDK 文档为准，写明版本。",
-    },
-    Track {
-        id: "rag",
-        group: BUILDING,
-        title: "RAG 与知识库",
-        title_en: "RAG & Knowledge Bases",
-        intro: "让 AI 用上你的资料：嵌入、检索与知识库",
-        intro_en: "Putting your own documents to work: embeddings, retrieval and knowledge bases",
-        brief: "读者有一些编程基础。建议的章节路线：RAG 是什么、什么时候用（与长上下文、微调对比）→ 嵌入与向量相似度 → 文档解析与切分 → 向量数据库（pgvector、Milvus、Qdrant 等）与选型 → 检索：混合检索与重排 → 组装提示与引用来源 → 评测：召回率与忠实度 → 进阶：查询改写、多跳检索、GraphRAG、Agentic RAG → 多模态 RAG → 生产化：增量更新、权限、成本与延迟 → 现成方案（Dify、RAGFlow 等）与自建的取舍 → 实战项目。示例代码给出能运行的最小版本，写明库的版本。",
-    },
-    Track {
-        id: "api",
-        group: BUILDING,
-        title: "模型 API 开发",
-        title_en: "Model APIs",
-        intro: "调用大模型 API：流式、结构化输出、缓存与成本",
-        intro_en: "Building on model APIs: streaming, structured output, caching and cost",
-        brief: "读者是开发者。建议的章节路线：主流 API 全景（OpenAI、Anthropic、Gemini、xAI、DeepSeek、通义千问等）与 Key 管理 → 第一次调用（Python、TypeScript、curl）→ 消息、角色与参数 → 流式输出 → 结构化输出与 JSON Schema → 工具调用 → 多模态输入：图片、PDF 与音频 → 图像、语音与嵌入接口 → 提示缓存与批处理 → token 计算、价格与成本控制（各家官方价格可以引用本站汇总的大模型价格表 https://xabcnews.com/llm）→ 错误处理、重试与限流 → 兼容接口与多模型切换 → 安全与合规 → 生产部署。接口、参数和价格以各家官方文档为准，写明日期。",
-    },
-    Track {
-        id: "local",
-        group: BUILDING,
-        title: "开源与本地模型",
-        title_en: "Open & Local Models",
-        intro: "在自己的电脑和服务器上跑模型：部署、量化与微调",
-        intro_en: "Running models on your own machines: deployment, quantization and fine-tuning",
-        brief: "读者有一些命令行基础。建议的章节路线：开源模型全景（Qwen、DeepSeek、Llama、Gemma、Mistral 等）与许可证 → 硬件怎么选：显存、内存与 Apple Silicon → Ollama、LM Studio 快速上手 → llama.cpp 与 GGUF，量化的原理与选择 → vLLM、SGLang 等推理服务 → 把本地模型接入编辑器、聊天界面与 Agent → 性能调优与多卡 → 微调：LoRA、QLoRA 与数据准备 → 评测 → 部署到服务器与成本 → 端侧与移动端 → 实战项目。命令和版本以各项目官方文档为准。",
-    },
-    Track {
-        id: "esp32",
-        group: HARDWARE,
-        title: "ESP32",
-        title_en: "ESP32",
-        intro: "用 ESP-IDF 做商业级产品：从选型、量产到端侧与云端 AI",
-        intro_en: "Commercial products with ESP-IDF, from choosing a chip to mass production and AI on the device and in the cloud",
-        brief: "只讲乐鑫官方的专业开发路线：ESP-IDF（C 语言，FreeRTOS）、官方工具链（idf.py、VS Code 的 ESP-IDF 插件）和乐鑫官方的组件与框架；不讲 Arduino、MicroPython 和 PlatformIO。读者会 C 语言，目标是做出能量产、能上市的产品。默认开发板是 ESP32-S3（N16R8），语音和视觉需要它的算力与 PSRAM；Matter 与 Thread 用 ESP32-C6 或 H2，屏幕与多媒体用 ESP32-P4。建议的章节路线：芯片与选型（全系列对比、模组与量产型号、BOM 成本）→ ESP-IDF 工程化（安装、工程结构、组件与 CMake、Kconfig 与 menuconfig、组件管理器、JTAG 与 GDB 调试、日志与 core dump，用 AI 编程工具写和调试固件）→ FreeRTOS 与系统（任务与同步、内存与 PSRAM、分区表、NVS、看门狗）→ 外设与驱动（GPIO、LEDC、ADC、I²C、SPI、UART、RMT、I2S 音频、esp_lcd 屏幕与触摸、摄像头）→ 联网（Wi-Fi 与配网：BluFi、SoftAP；HTTPS、WebSocket、MQTT；NimBLE；ESP-NOW；Thread、Zigbee 与 Matter）→ 安全与量产（Secure Boot v2、Flash 加密、eFuse、TLS 证书、OTA 双分区与回滚、产测与烧录、ESP Insights、无线认证）→ 低功耗与产品化（Light Sleep、Deep Sleep、ULP、电源与可靠性）→ 端侧 AI（ESP-SR 的 AFE、唤醒词与命令词，ESP-DL 的模型部署与量化，ESP-WHO 视觉，ESP32-P4 的 AI 与多媒体）→ 接入大模型（HTTPS 调用大模型 API、流式输出、语音链路：识别、大模型、合成，实时语音，小智 AI 等开源项目的架构，用 MCP 让大模型控制设备）→ 实战项目（AI 语音硬件、Matter 智能家居设备、视觉终端）。API、配置项和命令以 ESP-IDF 官方编程指南的最新稳定版为准，写明适用的 ESP-IDF 版本和芯片。",
-    },
-    Track {
-        id: "voice-assistant",
-        group: PROJECTS,
-        title: "ESP32 AI 语音助手实战",
-        title_en: "Building an ESP32 AI Voice Assistant",
-        intro: "用 ESP32 和大模型做一台能语音对话、云端管理、可自定义声色与性格的个人助手",
-        intro_en: "A personal assistant on the ESP32 and large models: voice conversation, management in the cloud, and a voice and character of your own",
-        brief: "实战项目课：从零做出一台完整的个人语音助手，并能上线使用。全课做同一个项目、用同一套技术栈，一课接一课往上加功能，每课在前面各课的代码上继续，第一课定下整体架构和代码仓库结构。设备端用 ESP-IDF（C 语言）和 ESP32-S3（N16R8，带麦克风与扬声器的开发板），不讲 Arduino；云端服务用 Python、FastAPI、WebSocket 和 PostgreSQL，用 Docker 部署；Web 管理台用 Vue 3 和 TypeScript。语音识别、大模型和语音合成既讲云端 API（OpenAI、Gemini 等实时语音接口，以及阿里云百炼、火山引擎等国内服务），也讲开源方案（如 FunASR、CosyVoice），说明各自的延迟、成本和适用场景；可以参考小智 AI 等开源项目的架构，但课程讲的是自己的完整实现。读者会 C 语言和一点 Python，ESP32 的基础知识需要时指向本站「ESP32」课程。建议的章节路线：产品与架构（设备、云端、管理台三部分和「唤醒 → 录音 → 识别 → 大模型 → 合成 → 播放」的数据流）→ 硬件与音频（I2S 麦克风与功放、ESP-SR 的回声消除、降噪与唤醒词）→ 设备固件（ESP-IDF 工程、Wi-Fi 配网、WebSocket 连接云端、Opus 流式音频、OTA）→ 云端语音链路（流式识别、大模型对话、流式合成与低延迟优化）→ 自定义声色（音色选择、声音克隆的技术与合规、语速与情绪参数）→ 性格与记忆（角色设定提示词、长期记忆、工具调用与用 MCP 控制设备）→ Web 管理台（账户、设备绑定、角色与声色配置、对话记录、配置下发）→ 安全、成本与量产（鉴权、隐私、费用控制、部署、批量烧录与 OTA）。命令、接口和版本以各官方文档为准，写明版本；声音克隆必须讲清授权同意和标识要求。",
-    },
-];
+/// The visible courses: group by group in the order the groups came, each group's courses in the
+/// order they came.
+pub(crate) async fn courses(state: &AppState) -> Result<Vec<Course>> {
+    Ok(sqlx::query_as(
+        "SELECT id, grp, grp_en, title, title_en, intro, intro_en, brief FROM courses WHERE visible
+         ORDER BY min(place) OVER (PARTITION BY grp), place",
+    )
+    .fetch_all(&state.pool)
+    .await?)
+}
 
-pub(crate) fn track(id: &str) -> Option<&'static Track> {
-    TRACKS.iter().find(|track| track.id == id)
+/// A visible course.
+pub(crate) async fn course(state: &AppState, id: &str) -> Result<Option<Course>> {
+    Ok(sqlx::query_as(
+        "SELECT id, grp, grp_en, title, title_en, intro, intro_en, brief FROM courses
+         WHERE id = $1 AND visible",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?)
 }
 
 const LEARN: Chrome<'static> = Chrome {
@@ -158,9 +81,88 @@ pub(super) fn router() -> Router<AppState> {
     reading::pages(
         Router::new()
             .route(PATH, get(map))
-            .route("/learn/{track}", get(contents)),
+            .route("/learn/{course}", get(contents)),
     )
     .layer(tower_http::compression::CompressionLayer::new())
+    .route("/api/admin/courses", get(admin).post(open))
+    .route("/api/admin/courses/{course}", patch(show))
+}
+
+/// A course as the administrator's list shows it.
+#[derive(FromRow, Serialize)]
+struct Listed {
+    id: String,
+    title: String,
+    group: String,
+    source: String,
+    visible: bool,
+    lessons: i64,
+}
+
+/// Every course, hidden ones too, in the order the pages give them, and what the administrator's
+/// last sentence came to.
+async fn admin(State(state): State<AppState>, user: User) -> Result<Json<Value>> {
+    auth::require_admin(&user)?;
+    let courses: Vec<Listed> = sqlx::query_as(
+        "SELECT c.id, c.title, c.grp AS \"group\", c.source, c.visible,
+                count(a.id) FILTER (WHERE a.status = 'published') AS lessons
+         FROM courses c LEFT JOIN articles a ON a.course = c.id
+         GROUP BY c.id
+         ORDER BY min(c.place) OVER (PARTITION BY c.grp), c.place",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    let (designing, error) = super::xabc::course::progress();
+    Ok(Json(
+        json!({ "courses": courses, "designing": designing, "error": error }),
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Idea {
+    idea: String,
+}
+
+/// An administrator opens a course with a sentence; XABC designs it in the background.
+async fn open(
+    State(state): State<AppState>,
+    user: User,
+    ApiJson(request): ApiJson<Idea>,
+) -> Result<(StatusCode, Json<Value>)> {
+    auth::require_admin(&user)?;
+    let idea = request.idea.trim().to_owned();
+    if !(4..=200).contains(&idea.chars().count()) {
+        return Err(AppError::BadRequest("用 4–200 个字说想开的课".into()));
+    }
+    super::xabc::course::request(&state, idea)?;
+    Ok((StatusCode::ACCEPTED, Json(json!({ "designing": true }))))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Shown {
+    visible: bool,
+}
+
+/// Shows or hides a course: a hidden one is neither listed nor extended, and its lessons stay.
+async fn show(
+    State(state): State<AppState>,
+    user: User,
+    Path(id): Path<String>,
+    ApiJson(request): ApiJson<Shown>,
+) -> Result<Json<Value>> {
+    auth::require_admin(&user)?;
+    let changed = sqlx::query("UPDATE courses SET visible = $2 WHERE id = $1")
+        .bind(&id)
+        .bind(request.visible)
+        .execute(&state.pool)
+        .await?
+        .rows_affected();
+    if changed == 0 {
+        return Err(AppError::NotFound("课程不存在".into()));
+    }
+    Ok(Json(json!({ "visible": request.visible })))
 }
 
 #[derive(Deserialize)]
@@ -208,13 +210,13 @@ pub(super) fn numbered<'a>(chapters: impl IntoIterator<Item = &'a str>) -> Vec<u
         .collect()
 }
 
-/// The courses by group, in the order they are listed.
-fn groups() -> Vec<(Group, Vec<&'static Track>)> {
-    let mut groups: Vec<(Group, Vec<&'static Track>)> = Vec::new();
-    for track in &TRACKS {
+/// The courses by group, in the order `courses` gives them.
+fn groups(courses: &[Course]) -> Vec<((&str, &str), Vec<&Course>)> {
+    let mut groups: Vec<((&str, &str), Vec<&Course>)> = Vec::new();
+    for course in courses {
         match groups.last_mut() {
-            Some((group, tracks)) if *group == track.group => tracks.push(track),
-            _ => groups.push((track.group, vec![track])),
+            Some(((group, _), members)) if *group == course.grp => members.push(course),
+            _ => groups.push(((&course.grp, &course.grp_en), vec![course])),
         }
     }
     groups
@@ -235,30 +237,30 @@ fn back(en: bool) -> String {
     )
 }
 
-fn course(track: &Track, en: bool) -> String {
-    escape(&localized(&format!("{PATH}/{}", track.id), en))
+fn href(course: &Course, en: bool) -> String {
+    escape(&localized(&format!("{PATH}/{}", course.id), en))
 }
 
 /// Beside a course's page: every course by group, this one marked.
-fn courses(current: &str, en: bool) -> String {
+fn catalogue(courses: &[Course], current: &str, en: bool) -> String {
     let mut html = format!(
         "<nav class=learn-side aria-label=\"{}\">{}",
         choose(en, "全部课程", "All courses"),
         back(en)
     );
-    for ((name, name_en), tracks) in groups() {
-        let _ = write!(html, "<h2>{}</h2><ul>", choose(en, name, name_en));
-        for track in tracks {
+    for ((name, name_en), members) in groups(courses) {
+        let _ = write!(html, "<h2>{}</h2><ul>", escape(choose(en, name, name_en)));
+        for course in members {
             let _ = write!(
                 html,
                 "<li><a href=\"{}\"{}>{}</a></li>",
-                course(track, en),
-                if track.id == current {
+                href(course, en),
+                if course.id == current {
                     " aria-current=\"page\""
                 } else {
                     ""
                 },
-                choose(en, track.title, track.title_en)
+                escape(choose(en, &course.title, &course.title_en))
             );
         }
         html.push_str("</ul>");
@@ -291,6 +293,7 @@ async fn map(
     headers: HeaderMap,
 ) -> Result<Response> {
     let en = params.lang.as_deref() == Some("en");
+    let courses = courses(&state).await?;
     let counts: HashMap<String, (i64, DateTime<Utc>)> = sqlx::query_as::<_, (String, i64, DateTime<Utc>)>(
         "SELECT a.course, count(*), max(a.updated_at) FROM articles a JOIN users u ON u.id = a.author_id
          WHERE u.status AND a.status = 'published' AND a.course IS NOT NULL GROUP BY a.course",
@@ -309,14 +312,14 @@ async fn map(
             "Courses on AI and the ESP32, growing and kept current around the clock"
         ),
     );
-    for ((name, name_en), tracks) in groups() {
+    for ((name, name_en), members) in groups(&courses) {
         let _ = write!(
             content,
             "<section class=learn-group><h2>{}</h2>",
-            choose(en, name, name_en)
+            escape(choose(en, name, name_en))
         );
-        for track in tracks {
-            let meta = match counts.get(track.id) {
+        for course in members {
+            let meta = match counts.get(&course.id) {
                 Some((count, updated)) => choose(
                     en,
                     &format!("{count} 课 · 更新 {}", day(*updated, &state)),
@@ -328,9 +331,9 @@ async fn map(
             let _ = write!(
                 content,
                 "<div class=learn-track><h3><a href=\"{}\">{}</a><span class=learn-meta> · {meta}</span></h3><p>{}</p></div>",
-                course(track, en),
-                choose(en, track.title, track.title_en),
-                choose(en, track.intro, track.intro_en),
+                href(course, en),
+                escape(choose(en, &course.title, &course.title_en)),
+                escape(choose(en, &course.intro, &course.intro_en)),
             );
         }
         content.push_str("</section>");
@@ -344,8 +347,8 @@ async fn map(
         &format!("{} · 𝑵𝒆𝒘𝒔", label(en)),
         choose(
             en,
-            "AI 入门、提示词、AI 编程、Agent 与 MCP、RAG、模型 API、本地模型、AI 创作、ESP32 与实战项目的系列课程，持续更新",
-            "Courses on AI basics, prompting, AI coding, agents and MCP, RAG, model APIs, local models, creating with AI, the ESP32 and projects, kept current",
+            "AI 与 ESP32 的系列课程：入门、提示词、编程、Agent、RAG、模型 API、本地模型、创作与实战项目，持续更新",
+            "Courses on AI and the ESP32, from the basics, prompting, coding, agents, RAG, model APIs and local models to creating and projects, kept current",
         ),
         &content,
         None,
@@ -358,12 +361,12 @@ async fn map(
     ))
 }
 
-/// Lessons new or revised within this many days lead a track's page, unless they are all it has.
+/// Lessons new or revised within this many days lead a course's page, unless they are all it has.
 const RECENT_DAYS: i64 = 7;
 /// How many of them, at most.
 const RECENT: usize = 5;
 
-/// `/learn/{track}`: the track's lessons by chapter, after the latest new or revised ones, with
+/// `/learn/{course}`: the course's lessons by chapter, after the latest new or revised ones, with
 /// every course beside them.
 async fn contents(
     State(state): State<AppState>,
@@ -373,10 +376,14 @@ async fn contents(
     headers: HeaderMap,
 ) -> Result<Response> {
     let en = params.lang.as_deref() == Some("en");
-    let track = track(&id).ok_or_else(|| AppError::NotFound("课程不存在".into()))?;
-    let lessons = lessons(&state, track.id).await?;
+    let courses = courses(&state).await?;
+    let course = courses
+        .iter()
+        .find(|course| course.id == id)
+        .ok_or_else(|| AppError::NotFound("课程不存在".into()))?;
+    let lessons = lessons(&state, &course.id).await?;
     let numbers = numbered(lessons.iter().map(|lesson| lesson.chapter.as_str()));
-    let href = |lesson: &Lesson| localized(&format!("/articles/{}", lesson.id), en);
+    let link = |lesson: &Lesson| localized(&format!("/articles/{}", lesson.id), en);
     let name = |lesson: &Lesson| {
         format!(
             "<span class=learn-number>{}</span>{}",
@@ -397,8 +404,8 @@ async fn contents(
     };
     let mut content = format!(
         "<header class=reads-heading><h1>{}</h1><p>{}</p></header>",
-        choose(en, track.title, track.title_en),
-        choose(en, track.intro, track.intro_en),
+        escape(choose(en, &course.title, &course.title_en)),
+        escape(choose(en, &course.intro, &course.intro_en)),
     );
     match lessons.iter().map(|lesson| lesson.updated_at).max() {
         Some(updated) => {
@@ -446,7 +453,7 @@ async fn contents(
                 } else {
                     choose(en, "新", "New")
                 },
-                escape(&href(lesson)),
+                escape(&link(lesson)),
                 name(lesson),
                 time(lesson.updated_at)
             );
@@ -470,7 +477,7 @@ async fn contents(
         let _ = write!(
             content,
             "<li><a href=\"{}\">{}</a>{}</li>",
-            escape(&href(lesson)),
+            escape(&link(lesson)),
             name(lesson),
             time(lesson.updated_at)
         );
@@ -482,14 +489,14 @@ async fn contents(
         &state,
         reader,
         en,
-        &format!("{PATH}/{}", track.id),
+        &format!("{PATH}/{}", course.id),
         &format!(
             "{} · {}",
-            choose(en, track.title, track.title_en),
+            choose(en, &course.title, &course.title_en),
             label(en)
         ),
-        choose(en, track.intro, track.intro_en),
-        &columns(&courses(track.id, en), &content),
+        choose(en, &course.intro, &course.intro_en),
+        &columns(&catalogue(&courses, &course.id, en), &content),
         None,
         &LEARN,
     );
@@ -500,9 +507,9 @@ async fn contents(
     ))
 }
 
-/// Where a lesson stands: its track, its number and chapter, among the track's public lessons.
+/// Where a lesson stands: its course, its number and chapter, among the course's public lessons.
 pub(super) struct Place {
-    track: &'static Track,
+    course: Course,
     lesson: i32,
     chapter: usize,
     name: String,
@@ -511,18 +518,18 @@ pub(super) struct Place {
 }
 
 impl Place {
-    /// The lesson numbered `lesson` in `course`; a lesson not public, as a preview shows it, still
-    /// finds its chapter and neighbours.
+    /// The lesson numbered `lesson` in a visible course; a lesson not public, as a preview shows
+    /// it, still finds its chapter and neighbours. A hidden course's lesson stands alone.
     pub(super) async fn find(
         state: &AppState,
-        course: &str,
+        id: &str,
         chapter: &str,
         lesson: i32,
     ) -> Result<Option<Self>> {
-        let Some(track) = track(course) else {
+        let Some(course) = course(state, id).await? else {
             return Ok(None);
         };
-        let lessons = lessons(state, course).await?;
+        let lessons = lessons(state, id).await?;
         let numbers = numbered(lessons.iter().map(|lesson| lesson.chapter.as_str()));
         // Its chapter continues the one before it when it bears that name, or else follows it.
         let chapter_number = match lessons.iter().rposition(|other| other.lesson < lesson) {
@@ -531,7 +538,7 @@ impl Place {
             None => 1,
         };
         Ok(Some(Self {
-            track,
+            course,
             lesson,
             chapter: chapter_number,
             name: chapter.to_owned(),
@@ -540,14 +547,18 @@ impl Place {
         }))
     }
 
-    /// Above the title: 学习 › the track › the chapter.
+    fn title(&self, en: bool) -> String {
+        escape(choose(en, &self.course.title, &self.course.title_en))
+    }
+
+    /// Above the title: 学习 › the course › the chapter.
     pub(super) fn crumbs(&self, en: bool) -> String {
         format!(
             "<p class=learn-crumbs><a href=\"{}\">{}</a> › <a href=\"{}\">{}</a> › {} {}</p>",
             localized(PATH, en),
             label(en),
-            course(self.track, en),
-            choose(en, self.track.title, self.track.title_en),
+            href(&self.course, en),
+            self.title(en),
             choose(
                 en,
                 &format!("第 {} 章", self.chapter),
@@ -570,8 +581,8 @@ impl Place {
             "<nav class=learn-side aria-label=\"{}\">{}<a class=learn-course href=\"{}\">{}</a><p class=learn-meta>{}</p>",
             choose(en, "课程目录", "Contents"),
             back(en),
-            course(self.track, en),
-            choose(en, self.track.title, self.track.title_en),
+            href(&self.course, en),
+            self.title(en),
             size(
                 self.lessons.len(),
                 self.numbers.last().copied().unwrap_or_default(),
@@ -650,11 +661,11 @@ impl Place {
                 "<span></span>".into()
             },
             step(next, "next", ("", " →")),
-            course(self.track, en),
+            href(&self.course, en),
             choose(
                 en,
-                &format!("{}目录", self.track.title),
-                &format!("{} contents", self.track.title_en)
+                &format!("{}目录", self.title(en)),
+                &format!("{} contents", self.title(en))
             ),
         )
     }
@@ -676,27 +687,28 @@ mod tests {
     }
 
     #[test]
-    fn tracks_have_distinct_addresses_and_stand_together_by_group() {
-        let mut ids: Vec<&str> = TRACKS.iter().map(|track| track.id).collect();
-        ids.sort_unstable();
-        ids.dedup();
-        assert_eq!(ids.len(), TRACKS.len());
-        for track in &TRACKS {
-            assert!(
-                track
-                    .id
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-            );
-            assert!(!track.brief.is_empty() && !track.intro.is_empty() && !track.title.is_empty());
-        }
-        // A group listed twice would split its courses.
-        let groups: Vec<Group> = groups().into_iter().map(|(group, _)| group).collect();
-        let mut distinct = groups.clone();
-        distinct.dedup();
-        distinct.sort_unstable();
-        distinct.dedup();
-        assert_eq!(groups.len(), distinct.len());
-        assert_eq!(groups, [STARTING, BUILDING, HARDWARE, PROJECTS]);
+    fn courses_group_as_they_come() {
+        let course = |id: &str, grp: &str| Course {
+            id: id.into(),
+            grp: grp.into(),
+            grp_en: format!("{grp} en"),
+            title: id.into(),
+            title_en: id.into(),
+            intro: String::new(),
+            intro_en: String::new(),
+            brief: String::new(),
+        };
+        let courses = [course("a", "甲"), course("b", "甲"), course("c", "乙")];
+        let grouped: Vec<((&str, &str), Vec<&str>)> = groups(&courses)
+            .into_iter()
+            .map(|(group, members)| (group, members.iter().map(|c| c.id.as_str()).collect()))
+            .collect();
+        assert_eq!(
+            grouped,
+            [
+                (("甲", "甲 en"), vec!["a", "b"]),
+                (("乙", "乙 en"), vec!["c"])
+            ]
+        );
     }
 }

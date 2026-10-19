@@ -911,6 +911,54 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
     assert_eq!(status(response), 503);
     refuse.store(false, Ordering::SeqCst);
     assert_eq!(counts().await, (tomorrow, 0, 1));
+    // 学习's courses for an administrator: every course in order, hidden ones too, and none for a
+    // reader. Hiding one shows in the list; an unknown course and a sentence too short are refused.
+    let courses = || async {
+        get("/api/admin/courses", &admin)
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()
+    };
+    let listed = courses().await;
+    assert_eq!(listed["courses"].as_array().unwrap().len(), 10);
+    assert_eq!(
+        (&listed["courses"][0]["id"], &listed["courses"][0]["group"]),
+        (&json!("basics"), &json!("AI 入门与应用"))
+    );
+    assert_eq!(listed["designing"], Value::Null);
+    assert_eq!(
+        status(get("/api/admin/courses", &author).send().await.unwrap()),
+        403
+    );
+    let shown = |id: &'static str, visible: bool| {
+        send(
+            reqwest::Method::PATCH,
+            &format!("/api/admin/courses/{id}"),
+            &admin,
+        )
+        .json(&json!({ "visible": visible }))
+        .send()
+    };
+    assert_eq!(status(shown("esp32", false).await.unwrap()), 200);
+    let esp32 = courses().await["courses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|course| course["id"] == "esp32")
+        .cloned()
+        .unwrap();
+    assert_eq!(esp32["visible"], false);
+    assert_eq!(status(shown("esp32", true).await.unwrap()), 200);
+    assert_eq!(status(shown("nowhere", false).await.unwrap()), 404);
+    let short = send(reqwest::Method::POST, "/api/admin/courses", &admin)
+        .json(&json!({ "idea": "短" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(status(short), 400);
 }
 
 /// XABC's three lines from start to finish against stand-ins for the AI service and tmpfile: a
@@ -968,6 +1016,34 @@ async fn postgres_xabc_shares_and_explains_films() {
                         asked.lock().unwrap().push(request.clone());
                         let instructions = request["instructions"].as_str().unwrap_or_default();
                         let film = instructions.contains("文娱 · 解说");
+                        if request["text"]["format"]["name"] == "course" {
+                            // An existing group's English name stays whatever the model writes.
+                            let idea = request["input"][0]["content"].as_str().unwrap();
+                            let skill = idea.contains("测试技能");
+                            return (
+                                StatusCode::OK,
+                                Json(reply(
+                                    json!({
+                                        "id": if skill { "skill-course" } else if idea.contains("后台") { "background-course" } else { " Test-Course " },
+                                        "group": "实战项目", "group_en": "Other words",
+                                        "title": if skill { "测试技能课" } else { "测试实战课" },
+                                        "title_en": "A test course",
+                                        "intro": "做一个测试项目", "intro_en": "Build a test project",
+                                        "brief": "读者会一点编程。建议的章节路线：准备 → 动手 → 上线。",
+                                    }),
+                                    "https://cited.example/course",
+                                )),
+                            );
+                        }
+                        if request["text"]["format"]["name"] == "discovery" {
+                            return (
+                                StatusCode::OK,
+                                Json(reply(
+                                    json!({ "idea": "教读者用测试技能做出东西", "tags": ["测试技能"] }),
+                                    "https://cited.example/discovery",
+                                )),
+                            );
+                        }
                         if request["text"]["format"]["name"] == "plan" {
                             let again = instructions.contains("一课的修订");
                             return (
@@ -1927,4 +2003,127 @@ async fn postgres_xabc_shares_and_explains_films() {
         sitemap.contains("/learn/esp32</loc>")
             && sitemap.contains(&format!("/articles/{first}</loc>"))
     );
+    // A sentence opens a course: the briefing model designs it, in the group it names, which keeps
+    // its English name, and it shows at once; a design naming an address taken is refused.
+    let opened = xabc::course::design(&state, "用 ESP32 做一个测试项目", "request")
+        .await
+        .unwrap();
+    assert_eq!(opened, "test-course");
+    let (group_en, source, idea, visible): (String, String, String, bool) = sqlx::query_as(
+        "SELECT grp_en, source, idea, visible FROM courses WHERE id = 'test-course'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (group_en.as_str(), source.as_str(), idea.as_str(), visible),
+        ("Projects", "request", "用 ESP32 做一个测试项目", true)
+    );
+    assert!(matches!(
+        xabc::course::design(&state, "再开一次", "request").await,
+        Err(AppError::Conflict(_))
+    ));
+    let map = page(format!("{base}/learn")).await;
+    assert!(
+        map.contains("<h2>实战项目</h2>")
+            && map.contains("测试实战课</a><span class=learn-meta> · 第一课正在写")
+    );
+
+    // An administrator's sentence is designed in the background; the workspace sees it go out,
+    // or why it did not.
+    let designed = || async {
+        for _ in 0..200 {
+            if xabc::course::progress().0.is_none() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        xabc::course::progress()
+    };
+    xabc::course::request(&state, "后台开一门课".into()).unwrap();
+    assert_eq!(designed().await, (None, None));
+    let source: String =
+        sqlx::query_scalar("SELECT source FROM courses WHERE id = 'background-course'")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(source, "request");
+    xabc::course::request(&state, "后台开一门课".into()).unwrap();
+    assert!(
+        designed()
+            .await
+            .1
+            .is_some_and(|error| error.contains("background-course"))
+    );
+
+    // The news opens one a week at most, resting on a tag found in thirty stories of two topics;
+    // a tag repeated within a story counts once.
+    let stories = |count: i32, tags: &'static str| {
+        let state = state.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO items (id, topic_id, day, fingerprint, title, summary, url, tags)
+                 SELECT id, CASE WHEN n % 2 = 0 THEN 'issues' ELSE 'github' END, CURRENT_DATE,
+                        sha256(convert_to(id::text, 'UTF8')), '测试技能的新用法', '用法',
+                        'https://tips.example/skill/' || id, $2::text[]
+                 FROM (SELECT gen_random_uuid() AS id, n FROM generate_series(1, $1) n) stories",
+            )
+            .bind(count)
+            .bind(tags)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+            sqlx::query("DELETE FROM maintenance_state WHERE task = 'course_discovery'")
+                .execute(&state.pool)
+                .await
+                .unwrap();
+        }
+    };
+    stories(15, "{测试技能,别的,测试技能}").await;
+    assert_eq!(xabc::course::discover(&state).await.unwrap(), None);
+    stories(15, "{测试技能}").await;
+    assert_eq!(
+        xabc::course::discover(&state).await.unwrap().as_deref(),
+        Some("skill-course")
+    );
+    assert_eq!(xabc::course::discover(&state).await.unwrap(), None);
+    let source: String = sqlx::query_scalar("SELECT source FROM courses WHERE id = 'skill-course'")
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(source, "news");
+
+    // A hidden course leaves the pages; its address answers no more.
+    sqlx::query("UPDATE courses SET visible = false WHERE id = 'skill-course'")
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    assert!(!page(format!("{base}/learn")).await.contains("测试技能课"));
+    assert_eq!(
+        http.get(format!("{base}/learn/skill-course"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    // No lesson goes into it any more, however far its writing had come.
+    assert!(matches!(
+        xabc::publish(
+            &state,
+            author,
+            Utc::now(),
+            xabc::Subject::Lesson {
+                course: "skill-course",
+                chapter: "第一章",
+                upkeep: xabc::Upkeep {
+                    keywords: &[],
+                    review_days: 90,
+                },
+            },
+            &written("迟到的一课"),
+        )
+        .await,
+        Err(AppError::Conflict(_))
+    ));
 }

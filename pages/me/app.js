@@ -1,6 +1,7 @@
 import { $, api, node, button, withBusy, toast, reportError, openDialog, closeDialog, bindDialogs, confirmDelete, safeUrl, formatTime, cost } from "./ui.js";
 import { createAccount } from "./account.js";
 import { createArticles } from "./articles.js";
+import { createCourses } from "./courses.js";
 
 let session = null;
 let authController;
@@ -224,6 +225,10 @@ async function enterApp(data) {
   if (!s.admin) s.account = createAccount(s, () => refresh(s));
   s.articles = createArticles(s);
   void s.articles.load().catch(reportError);
+  if (s.admin) {
+    s.courses = createCourses(s);
+    void s.courses.load().catch(reportError);
+  }
   $("#authView").classList.add("hidden");
   $("#appView").classList.remove("hidden");
   $("#accountEmail").textContent = s.user.email;
@@ -233,6 +238,7 @@ async function enterApp(data) {
   $("#runsPanel").classList.toggle("hidden", !s.admin);
   $("#briefingPanel").classList.toggle("hidden", !s.admin);
   $("#equityPanel").classList.toggle("hidden", !s.admin);
+  $("#coursesPanel").classList.toggle("hidden", !s.admin);
   $("#newTopicButton").disabled = true;
   message("topicsMessage", "");
   try { await refresh(s); }

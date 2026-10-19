@@ -142,6 +142,9 @@ fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
 .pen-name-form { margin-bottom: 1rem; }
 .pen-name-form .inline { flex-wrap: nowrap; }
 .pen-name-form input { max-width: 18rem; }
+.course-form { margin-bottom: 1rem; }
+.course-form .inline { flex-wrap: nowrap; }
+.course-form input { flex: 1; min-width: 0; }
 .review-lists { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem; margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line); }
 .review-list h3 { margin: 0 0 .4rem; font-size: .9rem; }
 .review-find { margin: 0 0 .5rem; }

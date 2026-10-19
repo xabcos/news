@@ -11,7 +11,7 @@ use super::{
 };
 use crate::{
     ai,
-    articles::learn::{self, Lesson, TRACKS, Track},
+    articles::learn::{self, Course, Lesson},
     error::{AppError, Result},
     fetch::Usage,
     site::absolute,
@@ -96,13 +96,17 @@ struct Due {
     news: bool,
 }
 
-/// Revises the lesson that is due, or else writes a track's next lesson.
+/// Revises the lesson that is due, or else writes a course's next lesson; once a week it first
+/// looks through the news for a course to open (`course`).
 pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -> Result<Uuid> {
+    if let Err(error) = super::course::discover(state).await {
+        tracing::warn!(%error, "XABC could not look for a new course");
+    }
     if let Some(due) = due(state).await? {
         return revised(state, due).await;
     }
-    let track = next(state).await?;
-    let lessons = learn::lessons(state, track.id).await?;
+    let track = &next(state).await?;
+    let lessons = learn::lessons(state, &track.id).await?;
     let (plan, mut usage) = plan(state, track, &lessons, None).await?;
     let chapter = plan.chapter.trim();
     if !(1..=40).contains(&chapter.chars().count()) {
@@ -139,7 +143,7 @@ pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -
         author,
         since,
         Subject::Lesson {
-            course: track.id,
+            course: &track.id,
             chapter,
             upkeep: Upkeep {
                 keywords: &keywords,
@@ -153,52 +157,52 @@ pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -
     Ok(id)
 }
 
-/// The track whose newest lesson is oldest, those without lessons first, in `TRACKS`' order.
-async fn next(state: &AppState) -> Result<&'static Track> {
-    let ids: Vec<String> = TRACKS.iter().map(|track| track.id.to_owned()).collect();
-    let id: String = sqlx::query_scalar(
-        "SELECT t.id FROM unnest($1::text[]) WITH ORDINALITY AS t(id, place)
-         LEFT JOIN articles a ON a.course = t.id
-         GROUP BY t.id, t.place
-         ORDER BY max(a.published_at) NULLS FIRST, t.place
+/// The visible course whose newest lesson is oldest, those without lessons first, then in the
+/// order courses came.
+async fn next(state: &AppState) -> Result<Course> {
+    sqlx::query_as(
+        "SELECT c.id, c.grp, c.grp_en, c.title, c.title_en, c.intro, c.intro_en, c.brief
+         FROM courses c LEFT JOIN articles a ON a.course = c.id
+         WHERE c.visible
+         GROUP BY c.id
+         ORDER BY max(a.published_at) NULLS FIRST, c.place
          LIMIT 1",
     )
-    .bind(&ids)
-    .fetch_one(&state.pool)
-    .await?;
-    learn::track(&id).ok_or_else(|| AppError::Internal("课程板块不存在".into()))
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| AppError::Internal("没有可写的课程".into()))
 }
 
-/// The public lesson of a track still taught that is due for revision: news on its subjects first,
+/// The public lesson of a visible course that is due for revision: news on its subjects first,
 /// then its review date; the most read first, then the one longest unrevised. Each keyword is
 /// looked for once in the week's stories, and the stories it is found in counted for each lesson
 /// that keeps it, so the check stays quick however many lessons there are; a keyword found in more
 /// than `COMMON` of them is left out.
 async fn due(state: &AppState) -> Result<Option<Due>> {
-    let ids: Vec<String> = TRACKS.iter().map(|track| track.id.to_owned()).collect();
     Ok(sqlx::query_as(
         "WITH lessons AS (
              SELECT a.* FROM articles a JOIN users u ON u.id = a.author_id
-             WHERE u.status AND a.status = 'published' AND a.course = ANY($1)
+             JOIN courses c ON c.id = a.course AND c.visible
+             WHERE u.status AND a.status = 'published'
          ),
          stories AS MATERIALIZED (
              SELECT i.id, i.first_seen_at, lower(i.title || ' ' || i.summary) AS text
              FROM items i JOIN topics t ON t.id = i.topic_id
-             WHERE i.topic_id = ANY($2) AND t.enabled AND t.visible AND NOT i.hidden
-               AND i.first_seen_at >= now() - make_interval(days => $3)
+             WHERE i.topic_id = ANY($1) AND t.enabled AND t.visible AND NOT i.hidden
+               AND i.first_seen_at >= now() - make_interval(days => $2)
          ),
          words AS (
              SELECT l.id, l.updated_at, k AS word FROM lessons l, unnest(l.keywords) k
-             WHERE l.updated_at <= now() - make_interval(days => $3)
+             WHERE l.updated_at <= now() - make_interval(days => $2)
          ),
          found AS (
              SELECT w.word, s.id, s.first_seen_at, count(*) OVER (PARTITION BY w.word) AS spread
              FROM (SELECT DISTINCT word FROM words) w JOIN stories s ON strpos(s.text, w.word) > 0
          ),
          news AS (
-             SELECT w.id, count(DISTINCT f.id) >= $4 AS news
+             SELECT w.id, count(DISTINCT f.id) >= $3 AS news
              FROM words w JOIN found f ON f.word = w.word AND f.first_seen_at > w.updated_at
-             WHERE f.spread <= $5
+             WHERE f.spread <= $4
              GROUP BY w.id
          )
          SELECT l.id, l.course, l.chapter, l.lesson, l.title, l.body, l.revision, l.cover, l.updated_at,
@@ -208,7 +212,6 @@ async fn due(state: &AppState) -> Result<Option<Due>> {
          ORDER BY COALESCE(n.news, false) DESC, l.views DESC, l.updated_at
          LIMIT 1",
     )
-    .bind(&ids)
     .bind(SOURCES.map(String::from).to_vec())
     .bind(NEWS_DAYS)
     .bind(NEWS)
@@ -220,9 +223,10 @@ async fn due(state: &AppState) -> Result<Option<Due>> {
 /// The lesson revised from a new plan, the site's stories and a search: it keeps its place, its
 /// chapter, its figures and its cover, and takes the plan's keywords and review date.
 async fn revised(state: &AppState, due: Due) -> Result<Uuid> {
-    let track =
-        learn::track(&due.course).ok_or_else(|| AppError::Internal("课程板块不存在".into()))?;
-    let lessons = learn::lessons(state, track.id).await?;
+    let track = &learn::course(state, &due.course)
+        .await?
+        .ok_or_else(|| AppError::Internal("课程已隐藏".into()))?;
+    let lessons = learn::lessons(state, &track.id).await?;
     let (plan, mut usage) = plan(state, track, &lessons, Some(&due)).await?;
     let keywords = plan.keywords();
     let stories = stories(state, &keywords).await?;
@@ -281,7 +285,7 @@ async fn revised(state: &AppState, due: Due) -> Result<Uuid> {
 /// The briefing model plans the next lesson after the track's contents, or the revision of `due`.
 async fn plan(
     state: &AppState,
-    track: &Track,
+    track: &Course,
     lessons: &[Lesson],
     due: Option<&Due>,
 ) -> Result<(Plan, Usage)> {
@@ -365,7 +369,7 @@ fn own(state: &AppState, lessons: &[Lesson], stories: &[(String, String, String)
         .collect()
 }
 
-fn describe(track: &Track) -> String {
+fn describe(track: &Course) -> String {
     format!(
         "板块：{}（{}）\n板块说明：{}",
         track.title, track.intro, track.brief
@@ -410,7 +414,7 @@ fn planned(chapter: &str, plan: &Plan) -> String {
 /// What the scout looks for: the lesson as planned and, for a revision, what came since.
 fn searching(
     state: &AppState,
-    track: &Track,
+    track: &Course,
     chapter: &str,
     plan: &Plan,
     due: Option<&Due>,
@@ -473,9 +477,9 @@ fn headings(body: &str) -> Vec<String> {
     headings
 }
 
-fn log(id: Uuid, done: &str, track: &Track, article: &Finished, usage: Usage) {
+fn log(id: Uuid, done: &str, track: &Course, article: &Finished, usage: Usage) {
     tracing::info!(
-        %id, course = track.id, title = article.title, pictures = article.pictures.len(),
+        %id, course = track.id.as_str(), title = article.title, pictures = article.pictures.len(),
         input_tokens = usage.input_tokens, output_tokens = usage.output_tokens,
         web_searches = usage.server_side_tool_usage_details.web_search_calls,
         cost_ticks = usage.cost_in_usd_ticks,
