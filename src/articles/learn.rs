@@ -34,6 +34,7 @@ type Group = (&'static str, &'static str);
 const STARTING: Group = ("AI 入门与应用", "Getting started with AI");
 const BUILDING: Group = ("AI 开发", "Building with AI");
 const HARDWARE: Group = ("硬件与嵌入式", "Hardware and embedded");
+const PROJECTS: Group = ("实战项目", "Projects");
 
 /// A course: its address, its group, its name, a line on what it teaches, and what XABC is told
 /// about its readers, its scope and the chapters it should go through. Courses of a group stand
@@ -48,7 +49,7 @@ pub(crate) struct Track {
     pub(crate) brief: &'static str,
 }
 
-pub(crate) const TRACKS: [Track; 9] = [
+pub(crate) const TRACKS: [Track; 10] = [
     Track {
         id: "basics",
         group: STARTING,
@@ -129,6 +130,15 @@ pub(crate) const TRACKS: [Track; 9] = [
         intro: "用 ESP-IDF 做商业级产品：从选型、量产到端侧与云端 AI",
         intro_en: "Commercial products with ESP-IDF, from choosing a chip to mass production and AI on the device and in the cloud",
         brief: "只讲乐鑫官方的专业开发路线：ESP-IDF（C 语言，FreeRTOS）、官方工具链（idf.py、VS Code 的 ESP-IDF 插件）和乐鑫官方的组件与框架；不讲 Arduino、MicroPython 和 PlatformIO。读者会 C 语言，目标是做出能量产、能上市的产品。默认开发板是 ESP32-S3（N16R8），语音和视觉需要它的算力与 PSRAM；Matter 与 Thread 用 ESP32-C6 或 H2，屏幕与多媒体用 ESP32-P4。建议的章节路线：芯片与选型（全系列对比、模组与量产型号、BOM 成本）→ ESP-IDF 工程化（安装、工程结构、组件与 CMake、Kconfig 与 menuconfig、组件管理器、JTAG 与 GDB 调试、日志与 core dump，用 AI 编程工具写和调试固件）→ FreeRTOS 与系统（任务与同步、内存与 PSRAM、分区表、NVS、看门狗）→ 外设与驱动（GPIO、LEDC、ADC、I²C、SPI、UART、RMT、I2S 音频、esp_lcd 屏幕与触摸、摄像头）→ 联网（Wi-Fi 与配网：BluFi、SoftAP；HTTPS、WebSocket、MQTT；NimBLE；ESP-NOW；Thread、Zigbee 与 Matter）→ 安全与量产（Secure Boot v2、Flash 加密、eFuse、TLS 证书、OTA 双分区与回滚、产测与烧录、ESP Insights、无线认证）→ 低功耗与产品化（Light Sleep、Deep Sleep、ULP、电源与可靠性）→ 端侧 AI（ESP-SR 的 AFE、唤醒词与命令词，ESP-DL 的模型部署与量化，ESP-WHO 视觉，ESP32-P4 的 AI 与多媒体）→ 接入大模型（HTTPS 调用大模型 API、流式输出、语音链路：识别、大模型、合成，实时语音，小智 AI 等开源项目的架构，用 MCP 让大模型控制设备）→ 实战项目（AI 语音硬件、Matter 智能家居设备、视觉终端）。API、配置项和命令以 ESP-IDF 官方编程指南的最新稳定版为准，写明适用的 ESP-IDF 版本和芯片。",
+    },
+    Track {
+        id: "voice-assistant",
+        group: PROJECTS,
+        title: "ESP32 AI 语音助手实战",
+        title_en: "Building an ESP32 AI Voice Assistant",
+        intro: "用 ESP32 和大模型做一台能语音对话、云端管理、可自定义声色与性格的个人助手",
+        intro_en: "A personal assistant on the ESP32 and large models: voice conversation, management in the cloud, and a voice and character of your own",
+        brief: "实战项目课：从零做出一台完整的个人语音助手，并能上线使用。全课做同一个项目、用同一套技术栈，一课接一课往上加功能，每课在前面各课的代码上继续，第一课定下整体架构和代码仓库结构。设备端用 ESP-IDF（C 语言）和 ESP32-S3（N16R8，带麦克风与扬声器的开发板），不讲 Arduino；云端服务用 Python、FastAPI、WebSocket 和 PostgreSQL，用 Docker 部署；Web 管理台用 Vue 3 和 TypeScript。语音识别、大模型和语音合成既讲云端 API（OpenAI、Gemini 等实时语音接口，以及阿里云百炼、火山引擎等国内服务），也讲开源方案（如 FunASR、CosyVoice），说明各自的延迟、成本和适用场景；可以参考小智 AI 等开源项目的架构，但课程讲的是自己的完整实现。读者会 C 语言和一点 Python，ESP32 的基础知识需要时指向本站「ESP32」课程。建议的章节路线：产品与架构（设备、云端、管理台三部分和「唤醒 → 录音 → 识别 → 大模型 → 合成 → 播放」的数据流）→ 硬件与音频（I2S 麦克风与功放、ESP-SR 的回声消除、降噪与唤醒词）→ 设备固件（ESP-IDF 工程、Wi-Fi 配网、WebSocket 连接云端、Opus 流式音频、OTA）→ 云端语音链路（流式识别、大模型对话、流式合成与低延迟优化）→ 自定义声色（音色选择、声音克隆的技术与合规、语速与情绪参数）→ 性格与记忆（角色设定提示词、长期记忆、工具调用与用 MCP 控制设备）→ Web 管理台（账户、设备绑定、角色与声色配置、对话记录、配置下发）→ 安全、成本与量产（鉴权、隐私、费用控制、部署、批量烧录与 OTA）。命令、接口和版本以各官方文档为准，写明版本；声音克隆必须讲清授权同意和标识要求。",
     },
 ];
 
@@ -334,8 +344,8 @@ async fn map(
         &format!("{} · 𝑵𝒆𝒘𝒔", label(en)),
         choose(
             en,
-            "AI 入门、提示词、AI 编程、Agent 与 MCP、RAG、模型 API、本地模型、AI 创作与 ESP32 的系列课程，持续更新",
-            "Courses on AI basics, prompting, AI coding, agents and MCP, RAG, model APIs, local models, creating with AI and the ESP32, kept current",
+            "AI 入门、提示词、AI 编程、Agent 与 MCP、RAG、模型 API、本地模型、AI 创作、ESP32 与实战项目的系列课程，持续更新",
+            "Courses on AI basics, prompting, AI coding, agents and MCP, RAG, model APIs, local models, creating with AI, the ESP32 and projects, kept current",
         ),
         &content,
         None,
@@ -676,7 +686,7 @@ mod tests {
                 track
                     .id
                     .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
             );
             assert!(!track.brief.is_empty() && !track.intro.is_empty() && !track.title.is_empty());
         }
@@ -687,6 +697,6 @@ mod tests {
         distinct.sort_unstable();
         distinct.dedup();
         assert_eq!(groups.len(), distinct.len());
-        assert_eq!(groups, [STARTING, BUILDING, HARDWARE]);
+        assert_eq!(groups, [STARTING, BUILDING, HARDWARE, PROJECTS]);
     }
 }
