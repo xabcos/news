@@ -148,6 +148,7 @@ pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -
             upkeep: Upkeep {
                 keywords: &keywords,
                 review_days: plan.review_days(),
+                turned: track.adjusted_at,
             },
         },
         &article,
@@ -161,7 +162,8 @@ pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -
 /// order courses came.
 async fn next(state: &AppState) -> Result<Course> {
     sqlx::query_as(
-        "SELECT c.id, c.grp, c.grp_en, c.title, c.title_en, c.intro, c.intro_en, c.brief
+        "SELECT c.id, c.grp, c.grp_en, c.title, c.title_en, c.intro, c.intro_en, c.brief,
+                c.direction, c.adjusted_at
          FROM courses c LEFT JOIN articles a ON a.course = c.id
          WHERE c.visible
          GROUP BY c.id
@@ -242,10 +244,11 @@ async fn revised(state: &AppState, due: Due) -> Result<Uuid> {
     found.known.extend(own(state, &lessons, &stories));
     let (body, kept) = figures(&due.body);
     let material = format!(
-        "{}\n课程目录：\n{}\n{}\n这一课的现有全文：\n标题：{}\n\n{body}\n\n站内最近收录的相关资料（可以引用）：\n{}\n线索：\n{}",
+        "{}\n课程目录：\n{}\n{}{}\n这一课的现有全文：\n标题：{}\n\n{body}\n\n站内最近收录的相关资料（可以引用）：\n{}\n线索：\n{}",
         describe(track),
         contents(state, &lessons, true),
         planned(&due.chapter, &plan),
+        turned(state, track, &due),
         due.title,
         listed_stories(&stories),
         listed(&found.finds)
@@ -258,6 +261,7 @@ async fn revised(state: &AppState, due: Due) -> Result<Uuid> {
     let upkeep = Upkeep {
         keywords: &keywords,
         review_days: plan.review_days(),
+        turned: track.adjusted_at,
     };
     revise(
         state,
@@ -304,6 +308,7 @@ async fn plan(
             day(state, due.updated_at),
             bullets(&headings(&due.body))
         );
+        input.push_str(&turned(state, track, due));
     }
     let reply = ai::request(
         state,
@@ -367,6 +372,18 @@ fn own(state: &AppState, lessons: &[Lesson], stories: &[(String, String, String)
         .chain([absolute(state, "/llm")])
         .filter_map(|url| identity(&url))
         .collect()
+}
+
+/// For a lesson written before an administrator turned its course: how, and that it follows.
+fn turned(state: &AppState, track: &Course, due: &Due) -> String {
+    match track.adjusted_at {
+        Some(at) if at > due.updated_at => format!(
+            "\n课程方向在 {} 调整：{}。这一课写于调整之前，要按上面新的板块说明改写：与新方向冲突的内容整段改掉，不保留旧的方案。\n",
+            day(state, at),
+            track.direction
+        ),
+        _ => String::new(),
+    }
 }
 
 fn describe(track: &Course) -> String {

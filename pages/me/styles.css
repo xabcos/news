@@ -145,10 +145,15 @@ fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
 .course-form { margin-bottom: 1rem; }
 .course-form .inline { flex-wrap: nowrap; }
 .course-form input { flex: 1; min-width: 0; }
-/* A course a line: its name and where it came from, the switch at the right. */
-.courses-panel .item-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .7rem 0; }
+/* A course a line: its name and where it came from, its buttons at the right; its brief and the sentence that turns it below. */
+.courses-panel .item-row { padding: .7rem 0; }
+.course-line { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
 .courses-panel .item-row p { margin: .2rem 0 0; }
 .courses-panel .item-actions { flex-shrink: 0; margin-top: 0; }
+.course-brief summary { cursor: pointer; margin-top: .3rem; }
+.course-brief p { margin: .4rem 0 0; color: var(--text); line-height: 1.7; white-space: pre-wrap; }
+.course-turn { display: flex; align-items: center; gap: .5rem; margin-top: .5rem; }
+.course-turn input { flex: 1; min-width: 0; }
 .review-lists { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem; margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line); }
 .review-list h3 { margin: 0 0 .4rem; font-size: .9rem; }
 .review-find { margin: 0 0 .5rem; }

@@ -1058,11 +1058,12 @@ pub(super) enum Subject<'a> {
 }
 
 /// What keeps a lesson current: the subjects news about it would name, and in how many days it
-/// is reviewed again.
+/// is reviewed again; and the course's last turn it was written to.
 #[derive(Clone, Copy)]
 pub(super) struct Upkeep<'a> {
     pub(super) keywords: &'a [String],
     pub(super) review_days: i32,
+    pub(super) turned: Option<DateTime<Utc>>,
 }
 
 impl Subject<'_> {
@@ -1104,15 +1105,13 @@ pub(super) async fn publish(
     {
         return Err(AppError::Conflict("XABC 刚发过一篇文章".into()));
     }
-    // A lesson goes only into a course still shown; hiding it waits for this save.
-    if let Subject::Lesson { course, .. } = subject
-        && !sqlx::query_scalar::<_, bool>("SELECT visible FROM courses WHERE id = $1 FOR UPDATE")
-            .bind(course)
-            .fetch_optional(&mut *tx)
-            .await?
-            .unwrap_or(false)
-    {
-        return Err(AppError::Conflict("课程已隐藏".into()));
+    if let Subject::Lesson { course, upkeep, .. } = subject {
+        let shown =
+            sqlx::query_as("SELECT visible, adjusted_at FROM courses WHERE id = $1 FOR UPDATE")
+                .bind(course)
+                .fetch_optional(&mut *tx)
+                .await?;
+        steady(shown, upkeep)?;
     }
     let (film, course, chapter, upkeep) = match subject {
         Subject::Share => (None, None, None, None),
@@ -1157,6 +1156,17 @@ pub(super) async fn publish(
     Ok(id)
 }
 
+/// A lesson saves only into a course still shown and not turned since it was written; hiding or
+/// turning the course, which locks its row too, waits for the save, and a turn made meanwhile
+/// leaves the lesson to be written again to the new brief.
+fn steady(course: Option<(bool, Option<DateTime<Utc>>)>, upkeep: Upkeep<'_>) -> Result<()> {
+    match course {
+        Some((true, turned)) if turned == upkeep.turned => Ok(()),
+        Some((true, _)) => Err(AppError::Conflict("课程刚调整过".into())),
+        _ => Err(AppError::Conflict("课程已隐藏".into())),
+    }
+}
+
 /// Saves a revised 解说 or lesson over the revision XABC read, unless an administrator saved it
 /// meanwhile; its cover stays, and a lesson takes its new upkeep.
 pub(super) async fn revise(
@@ -1169,18 +1179,15 @@ pub(super) async fn revise(
 ) -> Result<()> {
     let content = checked(&article.title, &article.body, cover)?;
     let mut tx = state.pool.begin().await?;
-    // A lesson is revised only while its course shows; hiding it waits for this save.
-    if upkeep.is_some()
-        && !sqlx::query_scalar::<_, bool>(
-            "SELECT c.visible FROM courses c JOIN articles a ON a.course = c.id WHERE a.id = $1
-             FOR UPDATE OF c",
+    if let Some(upkeep) = upkeep {
+        let shown = sqlx::query_as(
+            "SELECT c.visible, c.adjusted_at FROM courses c JOIN articles a ON a.course = c.id
+             WHERE a.id = $1 FOR UPDATE OF c",
         )
         .bind(id)
         .fetch_optional(&mut *tx)
-        .await?
-        .unwrap_or(false)
-    {
-        return Err(AppError::Conflict("课程已隐藏".into()));
+        .await?;
+        steady(shown, upkeep)?;
     }
     let saved = sqlx::query(
         "UPDATE articles SET title = $3, body = $4, excerpt = $5, revision = revision + 1,

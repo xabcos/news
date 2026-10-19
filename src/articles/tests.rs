@@ -959,6 +959,25 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
         .await
         .unwrap();
     assert_eq!(status(short), 400);
+    let turn = |id: &'static str, change: &'static str| {
+        send(
+            reqwest::Method::POST,
+            &format!("/api/admin/courses/{id}/direction"),
+            &admin,
+        )
+        .json(&json!({ "change": change }))
+        .send()
+    };
+    assert_eq!(status(turn("basics", "短").await.unwrap()), 400);
+    assert_eq!(
+        status(turn("nowhere", "服务端改用 Rust").await.unwrap()),
+        404
+    );
+    assert!(
+        courses().await["courses"][0]["brief"]
+            .as_str()
+            .is_some_and(|brief| !brief.is_empty())
+    );
 }
 
 /// XABC's three lines from start to finish against stand-ins for the AI service and tmpfile: a
@@ -1032,6 +1051,21 @@ async fn postgres_xabc_shares_and_explains_films() {
                                         "brief": "读者会一点编程。建议的章节路线：准备 → 动手 → 上线。",
                                     }),
                                     "https://cited.example/course",
+                                )),
+                            );
+                        }
+                        if request["text"]["format"]["name"] == "turn" {
+                            return (
+                                StatusCode::OK,
+                                Json(reply(
+                                    json!({
+                                        "title": "AI 入门", "title_en": "AI Basics",
+                                        "intro": "从零认识大模型", "intro_en": "Large language models from zero",
+                                        "brief": "改写后的课程说明：读者从零开始，多做动手练习。",
+                                        // A change for later lessons leaves the written ones be.
+                                        "rewrite": !request["input"][0]["content"].as_str().unwrap_or_default().contains("以后"),
+                                    }),
+                                    "https://cited.example/turn",
                                 )),
                             );
                         }
@@ -1863,6 +1897,7 @@ async fn postgres_xabc_shares_and_explains_films() {
             upkeep: xabc::Upkeep {
                 keywords: &[],
                 review_days: 90,
+                turned: None,
             },
         },
         &written("第二课"),
@@ -1879,6 +1914,7 @@ async fn postgres_xabc_shares_and_explains_films() {
             upkeep: xabc::Upkeep {
                 keywords: &[],
                 review_days: 90,
+                turned: None,
             },
         },
         &written("第三课"),
@@ -2107,6 +2143,96 @@ async fn postgres_xabc_shares_and_explains_films() {
             .status(),
         404
     );
+    // An administrator turns a course with a sentence: its brief is rewritten, and when the lessons
+    // have to follow they all come due, the writer of each revision told of the turn.
+    xabc::course::redesign(&state, "basics", "多讲动手练习")
+        .await
+        .unwrap();
+    let (brief, direction): (String, String) =
+        sqlx::query_as("SELECT brief, direction FROM courses WHERE id = 'basics'")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (brief.as_str(), direction.as_str()),
+        (
+            "改写后的课程说明：读者从零开始，多做动手练习。",
+            "多讲动手练习"
+        )
+    );
+    let due: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM articles WHERE course = 'basics' AND review_at <= now()",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(due, 3);
+    let turned = xabc::write(&state, xabc::Line::Lesson, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(lesson(turned).await.0.as_deref(), Some("basics"));
+    let asked = asked_log.lock().unwrap().clone();
+    assert!(writing(&asked).contains("调整：多讲动手练习。这一课写于调整之前"));
+    assert!(writing(&asked).contains("改写后的课程说明"));
+    // A lesson written to the brief before the turn does not save after it.
+    assert!(matches!(
+        xabc::publish(
+            &state,
+            author,
+            Utc::now(),
+            xabc::Subject::Lesson {
+                course: "basics",
+                chapter: "认识大模型",
+                upkeep: xabc::Upkeep {
+                    keywords: &[],
+                    review_days: 90,
+                    turned: None,
+                },
+            },
+            &written("旧说明的一课"),
+        )
+        .await,
+        Err(AppError::Conflict(message)) if message == "课程刚调整过"
+    ));
+    // A turn for later lessons leaves the written ones' reviews where they were; a revision
+    // written before it does not save either.
+    let reviews = async || -> Vec<(Uuid, i32, String, DateTime<Utc>)> {
+        sqlx::query_as(
+            "SELECT id, revision, body, review_at FROM articles WHERE course = 'basics' ORDER BY lesson",
+        )
+        .fetch_all(&state.pool)
+        .await
+        .unwrap()
+    };
+    let before = reviews().await;
+    let first: Option<DateTime<Utc>> =
+        sqlx::query_scalar("SELECT adjusted_at FROM courses WHERE id = 'basics'")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    xabc::course::redesign(&state, "basics", "以后加一章 Agent")
+        .await
+        .unwrap();
+    assert_eq!(reviews().await, before);
+    let (id, revision, ..) = before[0].clone();
+    assert!(matches!(
+        xabc::revise(
+            &state,
+            id,
+            revision,
+            None,
+            Some(xabc::Upkeep {
+                keywords: &[],
+                review_days: 90,
+                turned: first,
+            }),
+            &written("旧方向的修订"),
+        )
+        .await,
+        Err(AppError::Conflict(message)) if message == "课程刚调整过"
+    ));
+    assert_eq!(reviews().await, before);
+
     // No lesson goes into it any more, however far its writing had come.
     assert!(matches!(
         xabc::publish(
@@ -2119,6 +2245,7 @@ async fn postgres_xabc_shares_and_explains_films() {
                 upkeep: xabc::Upkeep {
                     keywords: &[],
                     review_days: 90,
+                    turned: None,
                 },
             },
             &written("迟到的一课"),

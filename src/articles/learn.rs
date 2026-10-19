@@ -15,7 +15,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::Response,
-    routing::{get, patch},
+    routing::{get, patch, post},
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -45,13 +45,17 @@ pub(crate) struct Course {
     pub(crate) intro: String,
     pub(crate) intro_en: String,
     pub(crate) brief: String,
+    /// How an administrator last turned it, and when.
+    pub(crate) direction: String,
+    pub(crate) adjusted_at: Option<DateTime<Utc>>,
 }
 
 /// The visible courses: group by group in the order the groups came, each group's courses in the
 /// order they came.
 pub(crate) async fn courses(state: &AppState) -> Result<Vec<Course>> {
     Ok(sqlx::query_as(
-        "SELECT id, grp, grp_en, title, title_en, intro, intro_en, brief FROM courses WHERE visible
+        "SELECT id, grp, grp_en, title, title_en, intro, intro_en, brief, direction, adjusted_at
+         FROM courses WHERE visible
          ORDER BY min(place) OVER (PARTITION BY grp), place",
     )
     .fetch_all(&state.pool)
@@ -61,8 +65,8 @@ pub(crate) async fn courses(state: &AppState) -> Result<Vec<Course>> {
 /// A visible course.
 pub(crate) async fn course(state: &AppState, id: &str) -> Result<Option<Course>> {
     Ok(sqlx::query_as(
-        "SELECT id, grp, grp_en, title, title_en, intro, intro_en, brief FROM courses
-         WHERE id = $1 AND visible",
+        "SELECT id, grp, grp_en, title, title_en, intro, intro_en, brief, direction, adjusted_at
+         FROM courses WHERE id = $1 AND visible",
     )
     .bind(id)
     .fetch_optional(&state.pool)
@@ -86,14 +90,16 @@ pub(super) fn router() -> Router<AppState> {
     .layer(tower_http::compression::CompressionLayer::new())
     .route("/api/admin/courses", get(admin).post(open))
     .route("/api/admin/courses/{course}", patch(show))
+    .route("/api/admin/courses/{course}/direction", post(direct))
 }
 
-/// A course as the administrator's list shows it.
+/// A course as the administrator's list shows it, with its brief to read.
 #[derive(FromRow, Serialize)]
 struct Listed {
     id: String,
     title: String,
     group: String,
+    brief: String,
     source: String,
     visible: bool,
     lessons: i64,
@@ -104,7 +110,7 @@ struct Listed {
 async fn admin(State(state): State<AppState>, user: User) -> Result<Json<Value>> {
     auth::require_admin(&user)?;
     let courses: Vec<Listed> = sqlx::query_as(
-        "SELECT c.id, c.title, c.grp AS \"group\", c.source, c.visible,
+        "SELECT c.id, c.title, c.grp AS \"group\", c.brief, c.source, c.visible,
                 count(a.id) FILTER (WHERE a.status = 'published') AS lessons
          FROM courses c LEFT JOIN articles a ON a.course = c.id
          GROUP BY c.id
@@ -136,6 +142,35 @@ async fn open(
         return Err(AppError::BadRequest("用 4–200 个字说想开的课".into()));
     }
     super::xabc::course::request(&state, idea)?;
+    Ok((StatusCode::ACCEPTED, Json(json!({ "designing": true }))))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Change {
+    change: String,
+}
+
+/// An administrator turns a course with a sentence; XABC rewrites it in the background.
+async fn direct(
+    State(state): State<AppState>,
+    user: User,
+    Path(id): Path<String>,
+    ApiJson(request): ApiJson<Change>,
+) -> Result<(StatusCode, Json<Value>)> {
+    auth::require_admin(&user)?;
+    let change = request.change.trim().to_owned();
+    if !(4..=200).contains(&change.chars().count()) {
+        return Err(AppError::BadRequest("用 4–200 个字说怎么调整".into()));
+    }
+    if !sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM courses WHERE id = $1)")
+        .bind(&id)
+        .fetch_one(&state.pool)
+        .await?
+    {
+        return Err(AppError::NotFound("课程不存在".into()));
+    }
+    super::xabc::course::adjust(&state, id, change)?;
     Ok((StatusCode::ACCEPTED, Json(json!({ "designing": true }))))
 }
 
@@ -697,6 +732,8 @@ mod tests {
             intro: String::new(),
             intro_en: String::new(),
             brief: String::new(),
+            direction: String::new(),
+            adjusted_at: None,
         };
         let courses = [course("a", "甲"), course("b", "甲"), course("c", "乙")];
         let grouped: Vec<((&str, &str), Vec<&str>)> = groups(&courses)
