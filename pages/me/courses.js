@@ -47,7 +47,9 @@ export function createCourses(session) {
       }));
       const actions = node("div", "item-actions");
       actions.append(toggle);
-      row.append(title, node("p", "item-meta muted", `${course.group} · ${sources[course.source]} · ${course.lessons} 课${course.visible ? "" : " · 已隐藏"}`), actions);
+      const about = node("div");
+      about.append(title, node("p", "item-meta muted", `${course.group} · ${sources[course.source]} · ${course.lessons} 课${course.visible ? "" : " · 已隐藏"}`));
+      row.append(about, actions);
       return row;
     }));
   }
