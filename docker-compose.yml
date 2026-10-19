@@ -14,7 +14,7 @@ services:
       TZ: Asia/Shanghai
       DATABASE_URL: postgres://postgres:io@news-postgres:5432/news?sslmode=disable
       PUBLIC_BASE_URL: https://xabcnews.com
-      NEWS_ADMIN_EMAILS: ${NEWS_ADMIN_EMAILS:-ywgx@xabcloud.com,ywgx@xairouter.com}
+      NEWS_ADMIN_EMAILS: ${NEWS_ADMIN_EMAILS:-you@example.com}
       NEWS_TIMEZONE: Asia/Shanghai
       NEWS_BRIEFING_TIME: ${NEWS_BRIEFING_TIME:-06:00}
       NEWS_SCHEDULER_ENABLED: ${NEWS_SCHEDULER_ENABLED:-true}

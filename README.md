@@ -2,6 +2,8 @@
 
 NEWS 按主题采集、去重并整理中英文新闻，提供新闻首页、Atom 订阅和每日 XAI 日报。工作台位于 `/me/`，管理员管理公共栏目和日报稿件，Pro 用户管理个人主题。
 
+> **AI 接口由 [𝐙𝐀𝐈 Router](https://zairouter.com) 提供** —— AI API 聚合平台，一个入口调用全部主流大模型，兼容 OpenAI、Claude、DeepSeek 接口，充值即用。本项目的新闻采集（grok 的 X 与网页检索）、XAI 日报和 XABC 配图都经它调用，`AI_BASE_URL` 默认就是 `https://api.zairouter.com`：在 [zairouter.com](https://zairouter.com) 取得 API Key，填入 `AI_API_KEY` 即可运行。
+
 ## 公共栏目
 
 | 名称 | ID | 关注方向 |
@@ -213,7 +215,7 @@ docker compose up -d
 | `DATABASE_URL` | 必填 | PostgreSQL 连接地址 |
 | `PUBLIC_BASE_URL` | 必填 | 对外地址，生产环境使用 HTTPS |
 | `NEWS_ADMIN_EMAILS` | 必填 | 管理员邮箱，逗号分隔 |
-| `AI_API_KEY` | 启用采集时必填 | Responses API 密钥 |
+| `AI_API_KEY` | 启用采集时必填 | Responses API 密钥，在 [zairouter.com](https://zairouter.com) 取得 |
 | `AI_BASE_URL` / `AI_DEFAULT_MODEL` | `https://api.zairouter.com` / `grok-4.7` | 采集接口与新建主题的模型 |
 | `AI_INSIGHT_MODEL` | `gpt-6-astra` | 支持图片输入的日报模型 |
 | `AI_IMAGE_MODEL` | `gpt-image-2.5-flare` | XABC 画插图和封面的生图模型 |
@@ -270,3 +272,9 @@ NEWS_DAILY_TEST_DATABASE_URL=postgres://.../news_daily_test_check NEWS_PAYMENT_T
 ```
 
 `release-check` 执行格式检查、单元测试、Clippy、前端语法和 Compose 配置检查。`integration-test` 使用九个独立空库，名称分别以 `news_daily_test`、`news_payment_audit_`、`news_reads_test`、`news_equity_test`、`news_llm_test`、`news_gallery_test`、`news_travel_test`、`news_culture_test` 和 `news_articles_test` 开头，并需要本地测试配置。模拟接口覆盖日报与支付流程，Reads 的全文、发布与归档，以及主题开关四种组合、各角色阅读可见性、股市研判生成、引用隐私、采集复用、同日版本、缓存和历史读取；𝑳𝑳𝑴 覆盖首次导入、调价与下线记录、暂缓与确认下线、服务商下线与恢复收录、一天清理与候选清理、隐藏模型和公开页面、JSON 与订阅；𝑾 覆盖 X 核验、敏感与时间窗口过滤、同账号去重、照片转存与续期、待公开照片只在管理员预览中出现、点 ❤️ 后公开、日报排除；𝑻𝒓𝒂𝒗𝒆𝒍 覆盖 X 与 Wikidata 核验、地点简称、国家限额、导读的人物景点吃食名称核验、数字核验与重试、目的地页面与分页、附近与同国目的地、地图与站点地图、深挖目的地的挑选、日报排除；Culture 与 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 覆盖新闻先发布、按英文名归并作品、评论角色与作品页分组、作品陈列与同创作者作品、深挖作品的挑选、来源读取与引用校验、作品导读、中英文页面、隐藏与站点地图、来源不变时跳过生成、日报排除，Culture 评论随新闻删除与无内容作品的清理，以及产品只认官方资料、品牌与型号标识、评测与分享的角色和长期保留、参数核验、官方图片与产品陈列；分享覆盖笔名、新建与上传、修订号冲突、他人越权、作者预览经本站中转图片、待审与 ❤️ 锁定版本、公开页面与阅读计数、修改后重新审核、停用账户、每日配额与删除；XABC 覆盖分享的检索、写作与配图，解说的新写与修订，以及学习按板块排课、先维护再扩展（新闻提到的与复查到期的先修，阅读多的优先）、学习地图、目录与课文的位置、开课、隐藏与调整课程（改写说明、课文改为该修订、调整期间写成的课文不保存）。CI 自动执行。
+
+## 许可证
+
+本项目按 [AGPL-3.0](LICENSE) 授权。以修改后的版本对外提供网络服务时，须按同一许可证向用户公开完整源码；需要不受 AGPL 约束的商业授权，可与作者另行协商。
+
+XABC、xabcnews、XAI 日报等名称，以及站点图标（`pages/icon.svg`、`pages/og.png`）不在授权范围内，衍生版本请换用自己的名称和图标。
