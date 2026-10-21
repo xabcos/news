@@ -103,6 +103,39 @@ export function bindDialogs() {
   });
 }
 
+// The arrow back to the top that the public pages have (styles.css), behaving as theirs: it
+// shows while the workspace is scrolled back up beyond its first screen, and hides on the way
+// down.
+export function backToTop() {
+  const arrow = node("button", "button back-to-top");
+  arrow.type = "button";
+  arrow.title = "回到顶部";
+  arrow.setAttribute("aria-label", arrow.title);
+  arrow.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 12 6-6 6 6M12 6v12"/></svg>';
+  let anchor = window.scrollY;
+  let visible = false;
+  const update = () => {
+    const y = Math.max(0, window.scrollY);
+    anchor = visible ? Math.min(anchor, y) : Math.max(anchor, y);
+    if (y <= 100) {
+      visible = false;
+      anchor = y;
+    } else if (Math.abs(y - anchor) >= 8) {
+      visible = y < anchor && y > window.innerHeight;
+      anchor = y;
+    }
+    arrow.classList.toggle("is-visible", visible);
+  };
+  window.addEventListener("scroll", update, { passive: true });
+  window.addEventListener("resize", update);
+  arrow.addEventListener("click", () => {
+    $(".workspace-topbar .brand")?.focus({ preventScroll: true });
+    window.scrollTo({ top: 0, behavior: "auto" });
+  });
+  document.body.append(arrow);
+  update();
+}
+
 export function confirmDelete(title, message, action) {
   $("#confirmTitle").textContent = title;
   $("#confirmMessage").textContent = message;

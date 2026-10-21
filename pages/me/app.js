@@ -1,4 +1,4 @@
-import { $, api, node, button, withBusy, toast, reportError, openDialog, closeDialog, bindDialogs, confirmDelete, safeUrl, formatTime, cost } from "./ui.js";
+import { $, api, node, button, withBusy, toast, reportError, openDialog, closeDialog, bindDialogs, backToTop, confirmDelete, safeUrl, formatTime, cost } from "./ui.js";
 import { createAccount } from "./account.js";
 import { createArticles } from "./articles.js";
 import { createCourses } from "./courses.js";
@@ -20,6 +20,7 @@ const changeKinds = { added: "新增", price: "调价", spec: "规格", status: 
 const vendorStates = { active: "在线", candidate: "候选", offline: "已下线" };
 
 bindDialogs();
+backToTop();
 bindEvents();
 buildScheduleInputs();
 const linkToken = takeLoginToken();

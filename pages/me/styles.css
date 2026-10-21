@@ -99,6 +99,8 @@ fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
 .payment-content img { width: 12rem; height: 12rem; padding: .5rem; border-radius: var(--radius-m); background: #fff; }
 .payment-content p { margin: 0; font-size: .83rem; text-align: center; }
 .payment-content a { font-size: .8rem; color: var(--primary-strong); }
+/* The arrow back to the top (ui.js) keeps beside the workspace's column, wider than a public page's. */
+.back-to-top { right: max(calc(1rem + env(safe-area-inset-right, 0px)), calc((100% - 1120px) / 2 - 3.75rem)); }
 .toast-region { position: fixed; z-index: 120; inset: auto 1rem 1rem auto; pointer-events: none; }
 .toast { max-width: min(25rem, calc(100vw - 2rem)); padding: .85rem 1rem; border: 1px solid var(--line); border-radius: var(--radius-l); color: var(--text); background: var(--surface-solid); box-shadow: var(--shadow-small); }
 .toast.error { color: var(--danger); }
