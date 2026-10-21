@@ -165,7 +165,8 @@ pub(crate) async fn feed(state: &AppState) {
     .execute(&state.pool)
     .await
     .unwrap();
-    sqlx::query("INSERT INTO topics(id,name,brief,owner_user_id) SELECT 'preview-personal','Personal','Test',id FROM users WHERE role='user' ORDER BY id LIMIT 1")
+    // The reader just signed in owns it.
+    sqlx::query("INSERT INTO topics(id,name,brief,owner_user_id) SELECT 'preview-personal','Personal','Test',id FROM users WHERE role='user' ORDER BY id DESC LIMIT 1")
         .execute(&state.pool).await.unwrap();
     sqlx::query("UPDATE topics SET visible=false WHERE id='w'")
         .execute(&state.pool)
@@ -371,6 +372,92 @@ pub(crate) async fn feed(state: &AppState) {
             .status(),
         404
     );
+    // Everyone gets the same news page, with the public catalogue's tabs in both languages: a
+    // hidden topic has no tab, and an administrator opens it by its address.
+    let home = |path: &str, cookie: &str| {
+        http.get(format!("{base}{path}"))
+            .header("cookie", cookie)
+            .send()
+    };
+    let response = home("/?topic=w", "").await.unwrap();
+    assert!(
+        response.headers()["cache-control"]
+            .to_str()
+            .unwrap()
+            .starts_with("public,")
+    );
+    let page = response.text().await.unwrap();
+    for cookie in [admin.as_str(), user.as_str()] {
+        assert_eq!(
+            home("/?topic=w", cookie)
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+            page
+        );
+    }
+    assert!(page.contains(
+        "<nav id=\"tabs\" class=\"tabs\" aria-label=\"主题\"><a class=tab href=\"/\">𝐀𝐋𝐋</a>"
+    ));
+    assert!(page.contains("<template id=\"otherTabs\"><a class=tab href=\"/?lang=en\">𝐀𝐋𝐋</a>"));
+    assert!(page.contains("<a class=tab href=\"/?topic=preview-shared\">Shared</a>"));
+    for absent in [
+        "topic=w\"",
+        "preview-personal",
+        "aria-current",
+        "rel=\"preload\"",
+    ] {
+        assert!(!page.contains(absent), "{absent}");
+    }
+    let english = home("/?topic=preview-shared&lang=en", "")
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(english.contains("<nav id=\"tabs\" class=\"tabs\" aria-label=\"Topics\">"));
+    assert!(english.contains(
+        "<a class=tab href=\"/?topic=preview-shared&amp;lang=en\" aria-current=\"true\">Shared</a>"
+    ));
+    assert!(english.contains(
+        "<link rel=\"preload\" href=\"/digest?topic=preview-shared&amp;limit=12\" as=\"fetch\" crossorigin fetchpriority=\"high\">"
+    ));
+    assert_eq!(
+        home("/index.html", "").await.unwrap().text().await.unwrap(),
+        home("/", "").await.unwrap().text().await.unwrap()
+    );
+    // The page's validator holds until the catalogue changes (checked after 𝑾 is shown below).
+    let etag = home("/", "").await.unwrap().headers()["etag"].clone();
+    let revalidate = || {
+        http.get(format!("{base}/"))
+            .header("if-none-match", &etag)
+            .send()
+    };
+    assert_eq!(revalidate().await.unwrap().status(), 304);
+    // An administrator's preview of a page draws the public tabs as well.
+    let previewed = preview("/articles").await.unwrap().text().await.unwrap();
+    assert!(previewed.contains("<a class=tab href=\"/articles\" aria-current=\"true\">"));
+    assert!(!previewed.contains("topic=w\""));
+    // A signed-in reader's own topic comes marked as theirs, for the tab the page adds.
+    let mine = http
+        .get(format!("{base}/api/me/feed?limit=1"))
+        .header("cookie", &user)
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    let own = mine["topics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|topic| topic["own"] == true)
+        .map(|topic| topic["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(own, ["preview-personal"]);
     // A visibility change takes effect with the same invalidation used by the workspace.
     sqlx::query("UPDATE topics SET visible=true WHERE id='w'")
         .execute(&state.pool)
@@ -384,6 +471,15 @@ pub(crate) async fn feed(state: &AppState) {
             .unwrap()
             .status(),
         200
+    );
+    let shown = revalidate().await.unwrap();
+    assert_eq!(shown.status(), 200);
+    assert!(
+        shown
+            .text()
+            .await
+            .unwrap()
+            .contains("<a class=tab href=\"/?topic=w\">")
     );
     // A logged-in reader's pages follow 𝑾's order too.
     let (mut seen, mut after) = (std::collections::HashSet::new(), String::new());

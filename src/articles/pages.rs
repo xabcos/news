@@ -280,7 +280,8 @@ fn page(params: &Params) -> Result<u32> {
 
 async fn index(
     State(state): State<AppState>,
-    reader: Reader,
+    // The page is the same for everyone, but a preview of it still needs an administrator.
+    _: Reader,
     Query(params): Query<Params>,
     headers: HeaderMap,
 ) -> Result<Response> {
@@ -435,7 +436,6 @@ async fn index(
     };
     let html = crate::site::layout(
         &state,
-        reader,
         en,
         &path,
         &title,
@@ -612,7 +612,6 @@ async fn commentary(
     };
     let html = crate::site::layout(
         &state,
-        reader,
         en,
         &listing(COMMENTARY, page, false, None, &search.words),
         &title,
@@ -697,7 +696,7 @@ async fn detail(
     } else {
         Mode::Public
     };
-    let html = render(&state, reader, parse(&id)?, params.english(), mode).await?;
+    let html = render(&state, parse(&id)?, params.english(), mode).await?;
     Ok(conditional(
         &headers,
         &Rendered::new(html),
@@ -714,7 +713,6 @@ async fn preview(
 ) -> Result<Response> {
     let html = render(
         &state,
-        Reader::Public,
         parse(&id)?,
         params.english(),
         Mode::Author((!user.is_admin()).then_some(user.id)),
@@ -728,13 +726,7 @@ async fn preview(
     Ok(response)
 }
 
-async fn render(
-    state: &AppState,
-    reader: Reader,
-    id: Uuid,
-    en: bool,
-    mode: Mode,
-) -> Result<String> {
+async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<String> {
     let mut query = QueryBuilder::<Postgres>::new(
         "SELECT a.id, a.author_id, w.name AS author, a.title, a.body, a.excerpt, a.cover, a.status, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.course, a.chapter, a.lesson",
     );
@@ -939,7 +931,6 @@ async fn render(
     };
     Ok(crate::site::layout(
         state,
-        reader,
         en,
         &path,
         &format!("{title} · {name}"),

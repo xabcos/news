@@ -946,7 +946,6 @@ async fn index(
     });
     let html = crate::site::layout(
         &state,
-        reader,
         en,
         "/llm",
         &format!(

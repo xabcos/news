@@ -56,6 +56,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .merge(crate::llm::router())
         .merge(crate::travel::router())
         .merge(crate::catalog::router())
+        .merge(crate::site::router())
         .route("/api", any(api_not_found))
         .route("/api/{*path}", any(api_not_found))
         .fallback_service(

@@ -201,7 +201,6 @@ fn description(section: Section, topic: &str, en: bool) -> &'static str {
 #[allow(clippy::too_many_arguments)]
 fn layout(
     state: &AppState,
-    reader: Reader,
     section: Section,
     topic: &str,
     en: bool,
@@ -213,7 +212,6 @@ fn layout(
 ) -> String {
     crate::site::layout(
         state,
-        reader,
         en,
         path,
         title,
@@ -717,7 +715,6 @@ async fn collection(
     let path = list_path(section, &topic, kind);
     let html = layout(
         &state,
-        reader,
         section,
         &topic,
         en,
@@ -872,7 +869,6 @@ async fn search(
     let path = format!("/{}/search?{}", section.path(), query.finish());
     let html = layout(
         &state,
-        reader,
         section,
         current,
         en,
@@ -1053,7 +1049,6 @@ async fn detail(
     };
     let html = layout(
         &state,
-        reader,
         section,
         &topic,
         en,

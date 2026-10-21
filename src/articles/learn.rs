@@ -323,7 +323,8 @@ fn size(lessons: usize, chapters: usize, en: bool) -> String {
 /// `/learn`: the courses by group, how many lessons each has and when one last changed.
 async fn map(
     State(state): State<AppState>,
-    reader: Reader,
+    // The page is the same for everyone, but a preview of it still needs an administrator.
+    _: Reader,
     Query(params): Query<Params>,
     headers: HeaderMap,
 ) -> Result<Response> {
@@ -376,7 +377,6 @@ async fn map(
     content.push_str("</div>");
     let html = crate::site::layout(
         &state,
-        reader,
         en,
         PATH,
         &format!("{} · 𝑵𝒆𝒘𝒔", label(en)),
@@ -405,7 +405,8 @@ const RECENT: usize = 5;
 /// every course beside them.
 async fn contents(
     State(state): State<AppState>,
-    reader: Reader,
+    // The page is the same for everyone, but a preview of it still needs an administrator.
+    _: Reader,
     Path(id): Path<String>,
     Query(params): Query<Params>,
     headers: HeaderMap,
@@ -522,7 +523,6 @@ async fn contents(
     }
     let html = crate::site::layout(
         &state,
-        reader,
         en,
         &format!("{PATH}/{}", course.id),
         &format!(

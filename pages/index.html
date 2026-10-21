@@ -20,15 +20,10 @@
   <title>𝑵𝒆𝒘𝒔</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
   <link rel="alternate" type="application/atom+xml" title="𝑵𝒆𝒘𝒔" href="/feed.xml">
-  <link rel="stylesheet" href="/styles.css?v=source">
+  <link rel="stylesheet" href="/styles.css?v=tabs">
   <link rel="stylesheet" href="/equity.css?v=5">
   <link rel="stylesheet" href="/catalog.css?v=9">
-  <!-- The first screen's data leaves with the HTML instead of after app.js has run. The URLs
-       must match app.js exactly (ALL_PAGE_LIMIT, DAYS_LIMIT); `crossorigin` gives the preloads
-       the same credentials mode as fetch(), which is what makes the browser reuse them. -->
-  <link rel="preload" href="/digest?limit=6" as="fetch" crossorigin fetchpriority="high">
-  <link rel="preload" href="/days?limit=366" as="fetch" crossorigin>
-  <link rel="preload" href="/topics" as="fetch" crossorigin>
+  <!-- preload, written by site::home -->
 </head>
 <body class="public">
   <header id="topbar" class="topbar">
@@ -36,7 +31,7 @@
       <img class="brand-logo" src="/icon.svg" alt="">
       <h1>𝑵𝒆𝒘𝒔</h1>
     </a>
-    <nav id="tabs" class="tabs" aria-label="主题"></nav>
+    <!-- tabs, drawn by site::home -->
     <div class="tools">
       <a id="meLink" class="space-link button button-quiet button-small" href="/me/">工作台</a>
       <button id="langToggle" class="button button-quiet button-small" type="button">EN</button>
@@ -61,10 +56,10 @@
   </button>
 
   <script src="/stats.js?v=3" data-track-url="https://stats.xairouter.com/track/pk-c994c1ce749548c8b45c55d21fdfc4cf" defer></script>
-  <script src="/public.js?v=10" defer></script>
+  <script src="/public.js?v=11" defer></script>
   <script src="/equity.js?v=10" defer></script>
   <script src="/travel.js?v=12" defer></script>
-  <script src="/app.js?v=39" defer></script>
+  <script src="/app.js?v=40" defer></script>
   <!-- async: a slow third-party banner must not hold back DOMContentLoaded, which starts app.js. -->
   <script src="https://broadcast.xairouter.com/embed.js" async></script>
 </body>

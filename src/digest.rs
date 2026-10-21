@@ -790,8 +790,8 @@ struct CachedDays {
 }
 
 /// The small catalogue used by the authenticated home page. It intentionally contains
-/// only display data and aggregate counts; ownership is enforced by the query and is never
-/// serialized into the response.
+/// only display data and aggregate counts; ownership is enforced by the query, and only `own`
+/// tells the reader which topics are theirs: the page has tabs for the site's and adds theirs.
 #[derive(Debug, Serialize, FromRow)]
 struct PersonalTopicCard {
     id: String,
@@ -802,6 +802,7 @@ struct PersonalTopicCard {
     today_count: i64,
     updated_at: Option<DateTime<Utc>>,
     revision: i64,
+    own: bool,
 }
 
 #[derive(Debug, FromRow)]
@@ -1075,6 +1076,7 @@ async fn personal_topic_cards(state: &AppState, user_id: i64) -> Result<Vec<Pers
             today_count: snapshot.items.len() as i64,
             updated_at: snapshot.updated_at,
             revision: snapshot.revision,
+            own: false,
         });
     }
     let personal = sqlx::query_as::<_, PersonalTopicCard>(
@@ -1087,7 +1089,8 @@ async fn personal_topic_cards(state: &AppState, user_id: i64) -> Result<Vec<Pers
             MAX(items.day) AS latest_day,
             COUNT(items.id) FILTER (WHERE items.day = $2) AS today_count,
             MAX(items.first_seen_at) FILTER (WHERE items.day = $2) AS updated_at,
-            topics.feed_revision AS revision
+            topics.feed_revision AS revision,
+            TRUE AS own
         FROM topics
         LEFT JOIN items
           ON items.topic_id = topics.id

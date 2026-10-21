@@ -258,7 +258,6 @@ async fn destination(
     }
     let html = crate::site::layout(
         &state,
-        reader,
         en,
         &path,
         &title,

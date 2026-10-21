@@ -1,9 +1,18 @@
-//! The shell shared by the server-rendered public pages: head tags,
-//! language alternates and the topic tabs that match the news page.
+//! The shell shared by the server-rendered public pages: head tags, language alternates and
+//! the topic tabs, which the news page (`home`) draws from here too.
 use crate::{
+    catalog::Section,
+    digest::{Rendered, TopicMeta, conditional},
     error::{AppError, Result},
     reading::Reader,
     state::AppState,
+};
+use axum::{
+    Router,
+    extract::{RawQuery, State},
+    http::HeaderMap,
+    response::Response,
+    routing::get,
 };
 use chrono::{DateTime, Utc};
 use pulldown_cmark::{Event, Tag, TagEnd, TextMergeStream, html};
@@ -13,6 +22,96 @@ use uuid::Uuid;
 
 /// Topics with their own server-rendered page instead of the news feed.
 const PAGE_TOPICS: [&str; 2] = ["reads", "llm"];
+
+/// Where `pages/index.html` takes what `home` writes into it.
+const PRELOAD_MARK: &str = "<!-- preload, written by site::home -->";
+const TABS_MARK: &str = "<!-- tabs, drawn by site::home -->";
+/// app.js's first page of 𝐀𝐋𝐋 and of one topic, and the days it lists, which its preloads repeat.
+const ALL_PAGE_LIMIT: &str = "6";
+const PAGE_LIMIT: &str = "12";
+const DAYS_LIMIT: &str = "366";
+
+pub(crate) fn router() -> Router<AppState> {
+    Router::new()
+        .route("/", get(home))
+        .route("/index.html", get(home))
+        .layer(tower_http::compression::CompressionLayer::new())
+}
+
+/// The news page: `pages/index.html`, whose feed app.js draws, with the tabs drawn here as on
+/// every page, so the strip is whole in the first frame. The page switches language in place, so
+/// the other language's tabs wait in a `<template>`. Readers, signed in or not, and
+/// administrators get the same page; hidden topics have no tab, and an administrator opens
+/// them by address.
+async fn home(
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+) -> Result<Response> {
+    let query = query.unwrap_or_default();
+    // The first value of a parameter, as app.js reads it; an empty one counts as none.
+    let param = |name: &str| {
+        url::form_urlencoded::parse(query.as_bytes())
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.into_owned())
+            .filter(|value| !value.is_empty())
+    };
+    let en = param("lang").as_deref() == Some("en");
+    let topic = param("topic").unwrap_or_default();
+    let topics = state.digest.topics();
+    let page = tokio::fs::read_to_string(state.config.pages_dir.join("index.html"))
+        .await
+        .map_err(|error| AppError::Internal(format!("首页模板不可读: {error}").into()))?;
+    let strip = format!(
+        "<nav id=\"tabs\" class=\"tabs\" aria-label=\"{}\">{}</nav><template id=\"otherTabs\">{}</template>",
+        choose(en, "主题", "Topics"),
+        tabs(&topics, &topic, en),
+        tabs(&topics, &topic, !en)
+    );
+    let dated = param("day").is_some() || param("at").is_some();
+    let preload = preloads(&topics, &topic, dated);
+    let html = page
+        .replacen(PRELOAD_MARK, &preload, 1)
+        .replacen(TABS_MARK, &strip, 1);
+    Ok(conditional(
+        &headers,
+        &Rendered::new(html),
+        "text/html; charset=utf-8",
+    ))
+}
+
+/// The news page's first requests, sent off with its HTML instead of after app.js has run. They
+/// must match app.js exactly (PAGE_LIMIT, ALL_PAGE_LIMIT, DAYS_LIMIT and the order `search()`
+/// writes); `crossorigin` gives them fetch()'s credentials mode, which is what makes the browser
+/// reuse them. Signed-in readers and administrators read elsewhere and leave them unused; a
+/// dated address gets none. Topic ids are slugs, safe in a query as they are.
+fn preloads(topics: &[TopicMeta], topic: &str, dated: bool) -> String {
+    let link = |path: &str, first: bool| {
+        format!(
+            "<link rel=\"preload\" href=\"{}\" as=\"fetch\" crossorigin{}>",
+            escape(path),
+            if first { " fetchpriority=\"high\"" } else { "" }
+        )
+    };
+    let feed = |query: &str, limit: &str| {
+        link(&format!("/digest?{query}limit={limit}"), true)
+            + &link(&format!("/days?{query}limit={DAYS_LIMIT}"), false)
+    };
+    match topic {
+        _ if dated => String::new(),
+        "" => feed("", ALL_PAGE_LIMIT),
+        "insight" => link("/insight", true),
+        "equity-insight" => link("/equity-insight", true),
+        // Pages of their own, and topics readers can't see, have nothing here.
+        _ if topics.iter().any(|known| known.id == topic)
+            && !PAGE_TOPICS.contains(&topic)
+            && Section::of(topic).is_none() =>
+        {
+            feed(&format!("topic={topic}&"), PAGE_LIMIT)
+        }
+        _ => String::new(),
+    }
+}
 
 /// What differs between the server-rendered sections.
 pub(crate) struct Chrome<'a> {
@@ -304,27 +403,28 @@ fn refused(inside: &str) -> bool {
         && [first, last].iter().any(|edge| !edge.is_alphanumeric())
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn layout(
-    state: &AppState,
-    reader: Reader,
-    en: bool,
-    path: &str,
-    title: &str,
-    description: &str,
-    content: &str,
-    structured: Option<serde_json::Value>,
-    chrome: &Chrome<'_>,
-) -> String {
-    let topics = state.digest.topics_for(reader);
+/// The topic tabs of every public page, the news page's included: 𝐀𝐋𝐋 and 𝐀𝐈, then the site's
+/// visible topics, each catalogue section as one tab, with 股市 after 海外 AI and 分享 and 学习
+/// after 开源. `current` is the page's topic, "" on the news page's 𝐀𝐋𝐋.
+pub(crate) fn tabs(topics: &[TopicMeta], current: &str, en: bool) -> String {
+    let marked = |id: &str| {
+        if current == id {
+            " aria-current=\"true\""
+        } else {
+            ""
+        }
+    };
     let mut tabs = format!(
-        "<a class=tab href=\"{}\">𝐀𝐋𝐋</a><a class=tab href=\"{}\">𝐀𝐈</a>",
+        "<a class=tab href=\"{}\"{}>𝐀𝐋𝐋</a><a class=tab href=\"{}\"{}>𝐀𝐈</a>",
         localized("/", en),
-        escape(&localized("/?topic=insight", en))
+        marked(""),
+        escape(&localized("/?topic=insight", en)),
+        marked("insight")
     );
     let equity_tab = format!(
-        "<a class=tab href=\"{}\">{}</a>",
+        "<a class=tab href=\"{}\"{}>{}</a>",
         escape(&localized("/?topic=equity-insight", en)),
+        marked("equity-insight"),
         choose(en, "股市", "𝑬")
     );
     if !topics.iter().any(|topic| topic.id == "overseas-ai") {
@@ -332,20 +432,13 @@ pub(crate) fn layout(
     }
     // 分享 is not a topic: readers write it. Its tab follows 开源, and 学习's, whose courses XABC
     // writes, follows it.
-    let current = |id: &str| {
-        if chrome.current == id {
-            " aria-current=\"true\""
-        } else {
-            ""
-        }
-    };
     let articles_tab = format!(
         "<a class=tab href=\"{}\"{}>{}</a><a class=tab href=\"{}\"{}>{}</a>",
         localized("/articles", en),
-        current("articles"),
+        marked("articles"),
         crate::articles::label(en),
         localized(crate::articles::learn::PATH, en),
-        current("learn"),
+        marked("learn"),
         crate::articles::learn::label(en)
     );
     // A catalogue section's topics share one tab; swiping back into it enters the last
@@ -372,7 +465,7 @@ pub(crate) fn layout(
                     "<a class=tab href=\"{}\" data-last=\"{}\"{}>{}</a>",
                     escape(&localized(&path, en)),
                     escape(&localized(&format!("{path}/{last}"), en)),
-                    if crate::catalog::Section::of(chrome.current) == Some(section) {
+                    if crate::catalog::Section::of(current) == Some(section) {
                         " aria-current=\"true\""
                     } else {
                         ""
@@ -396,11 +489,7 @@ pub(crate) fn layout(
             tabs,
             "<a class=tab href=\"{}\"{}>{}</a>",
             escape(&href),
-            if id == chrome.current {
-                " aria-current=\"true\""
-            } else {
-                ""
-            },
+            marked(id),
             escape(choose(en, &topic.name, &topic.name_en))
         );
         if id == "overseas-ai" {
@@ -413,6 +502,23 @@ pub(crate) fn layout(
     if !topics.iter().any(|topic| topic.id == "github") {
         tabs.push_str(&articles_tab);
     }
+    tabs
+}
+
+/// A server-rendered page. Its tabs are the public catalogue's for every reader: a preview shows
+/// an administrator the page, not the hidden topics' tabs.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn layout(
+    state: &AppState,
+    en: bool,
+    path: &str,
+    title: &str,
+    description: &str,
+    content: &str,
+    structured: Option<serde_json::Value>,
+    chrome: &Chrome<'_>,
+) -> String {
+    let tabs = tabs(&state.digest.topics(), chrome.current, en);
     // An article's picture in its structured data also stands for it where the page is shared.
     let card = structured
         .as_ref()
@@ -442,11 +548,11 @@ pub(crate) fn layout(
 <title>{title}</title><meta name="description" content="{description}"><meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f6f4"><meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1115">
 <link rel="canonical" href="{canonical}"><link rel="alternate" hreflang="zh-CN" href="{zh}"><link rel="alternate" hreflang="en" href="{english}"><link rel="alternate" hreflang="x-default" href="{zh}">
 <meta property="og:type" content="{og_type}"><meta property="og:title" content="{title}"><meta property="og:description" content="{description}"><meta property="og:url" content="{canonical}"><meta property="og:site_name" content="News">{card}
-<link rel="icon" type="image/svg+xml" href="/icon.svg"><link rel="alternate" type="application/atom+xml" title="{feed_title}" href="{feed_href}"><link rel="stylesheet" href="/styles.css?v=source"><link rel="stylesheet" href="{stylesheet}">{schema}</head>
+<link rel="icon" type="image/svg+xml" href="/icon.svg"><link rel="alternate" type="application/atom+xml" title="{feed_title}" href="{feed_href}"><link rel="stylesheet" href="/styles.css?v=tabs"><link rel="stylesheet" href="{stylesheet}">{schema}</head>
 <body class="public {section}"><header class="topbar"><a class="brand" href="{home}" aria-label="News"><img class="brand-logo" src="/icon.svg" alt=""><span>𝑵𝒆𝒘𝒔</span></a><nav class="tabs" aria-label="{topics_label}">{tabs}</nav><div class="tools"><a class="space-link button button-quiet button-small" href="/me/">{workspace}</a><a class="space-link button button-quiet button-small" href="{other_lang}" hreflang="{other_code}">{language_label}</a><a class="source-link button button-quiet button-small" href="https://github.com/xabcos/news" target="_blank" rel="noopener noreferrer" aria-label="{source}" title="{source}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg></a></div></header>
 <main class="shell">{content}</main>
 <button id="backToTop" class="button back-to-top" type="button" aria-label="{back_to_top}" title="{back_to_top}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 12 6-6 6 6M12 6v12"/></svg></button>
-<script src="/public.js?v=10" defer></script><script src="{script}" defer></script><script src="/stats.js?v=3" data-track-url="{track_url}" defer></script></body></html>"##,
+<script src="/public.js?v=11" defer></script><script src="{script}" defer></script><script src="/stats.js?v=3" data-track-url="{track_url}" defer></script></body></html>"##,
         lang = choose(en, "zh-CN", "en"),
         title = escape(title),
         description = escape(description),
@@ -477,8 +583,147 @@ pub(crate) fn layout(
 
 #[cfg(test)]
 mod tests {
-    use super::{headline, markdown};
+    use super::{PRELOAD_MARK, TABS_MARK, TopicMeta, headline, markdown, preloads, tabs};
     use pulldown_cmark::{Options, Parser};
+
+    fn topic(id: &str, name: &str, name_en: &str) -> TopicMeta {
+        TopicMeta {
+            id: id.into(),
+            name: name.into(),
+            name_en: name_en.into(),
+            description: String::new(),
+            visible: true,
+        }
+    }
+
+    fn topics() -> [TopicMeta; 6] {
+        [
+            topic("x", "要闻", "𝐗"),
+            topic("overseas-ai", "海外 AI", "𝑶"),
+            topic("github", "开源", "𝑮"),
+            topic("movie", "影视", "𝑴𝒐𝒗𝒊𝒆"),
+            topic("book", "图书", "𝑩𝒐𝒐𝒌"),
+            topic("reads", "精读", "𝑹𝒆𝒂𝒅𝒔"),
+        ]
+    }
+
+    #[test]
+    fn every_page_draws_the_same_tabs_and_marks_its_own() {
+        assert_eq!(
+            tabs(&topics(), "", false),
+            concat!(
+                "<a class=tab href=\"/\" aria-current=\"true\">𝐀𝐋𝐋</a>",
+                "<a class=tab href=\"/?topic=insight\">𝐀𝐈</a>",
+                "<a class=tab href=\"/?topic=x\">要闻</a>",
+                "<a class=tab href=\"/?topic=overseas-ai\">海外 AI</a>",
+                "<a class=tab href=\"/?topic=equity-insight\">股市</a>",
+                "<a class=tab href=\"/?topic=github\">开源</a>",
+                "<a class=tab href=\"/articles\">分享</a><a class=tab href=\"/learn\">学习</a>",
+                "<a class=tab href=\"/culture\" data-last=\"/culture/book\">文娱</a>",
+                "<a class=tab href=\"/reads\">精读</a>",
+            )
+        );
+        let english = tabs(&topics(), "x", true);
+        assert!(english.starts_with("<a class=tab href=\"/?lang=en\">𝐀𝐋𝐋</a>"));
+        for tab in [
+            "<a class=tab href=\"/?topic=x&amp;lang=en\" aria-current=\"true\">𝐗</a>",
+            "<a class=tab href=\"/?topic=equity-insight&amp;lang=en\">𝑬</a>",
+            "<a class=tab href=\"/culture?lang=en\" data-last=\"/culture/book?lang=en\">𝑪𝒖𝒍𝒕𝒖𝒓𝒆</a>",
+        ] {
+            assert!(english.contains(tab), "{tab}");
+        }
+        for (current, tab) in [
+            ("insight", ">𝐀𝐈</a>"),
+            ("equity-insight", ">股市</a>"),
+            ("movie", ">文娱</a>"),
+            ("reads", ">精读</a>"),
+            ("learn", ">学习</a>"),
+        ] {
+            let html = tabs(&topics(), current, false);
+            assert_eq!(html.matches("aria-current").count(), 1, "{current}");
+            assert!(
+                html.contains(&format!(" aria-current=\"true\"{tab}")),
+                "{current}"
+            );
+        }
+    }
+
+    #[test]
+    fn tabs_keep_their_places_without_their_neighbours() {
+        // Without 海外 AI and 开源, 股市 follows 𝐀𝐈 and 分享 and 学习 come last; without 图书,
+        // swiping back into 文娱 enters 影视. Names are escaped in both languages.
+        let topics = [
+            topic("movie", "影视", "𝑴𝒐𝒗𝒊𝒆"),
+            topic("odd", "A&B \"</template>", "<b>"),
+        ];
+        assert_eq!(
+            tabs(&topics, "", false),
+            concat!(
+                "<a class=tab href=\"/\" aria-current=\"true\">𝐀𝐋𝐋</a>",
+                "<a class=tab href=\"/?topic=insight\">𝐀𝐈</a>",
+                "<a class=tab href=\"/?topic=equity-insight\">股市</a>",
+                "<a class=tab href=\"/culture\" data-last=\"/culture/movie\">文娱</a>",
+                "<a class=tab href=\"/?topic=odd\">A&amp;B &quot;&lt;/template&gt;</a>",
+                "<a class=tab href=\"/articles\">分享</a><a class=tab href=\"/learn\">学习</a>",
+            )
+        );
+        assert!(
+            tabs(&topics, "", true)
+                .contains("<a class=tab href=\"/?topic=odd&amp;lang=en\">&lt;b&gt;</a>")
+        );
+    }
+
+    #[test]
+    fn the_news_page_preloads_what_app_js_asks_for_first() {
+        let link = |href: &str, first: bool| {
+            format!(
+                "<link rel=\"preload\" href=\"{href}\" as=\"fetch\" crossorigin{}>",
+                if first { " fetchpriority=\"high\"" } else { "" }
+            )
+        };
+        assert_eq!(
+            preloads(&topics(), "", false),
+            link("/digest?limit=6", true) + &link("/days?limit=366", false)
+        );
+        assert_eq!(
+            preloads(&topics(), "x", false),
+            link("/digest?topic=x&amp;limit=12", true)
+                + &link("/days?topic=x&amp;limit=366", false)
+        );
+        assert_eq!(
+            preloads(&topics(), "insight", false),
+            link("/insight", true)
+        );
+        assert_eq!(
+            preloads(&topics(), "equity-insight", false),
+            link("/equity-insight", true)
+        );
+        // Dated addresses, pages of their own, and topics readers can't see.
+        for (topic, dated) in [
+            ("", true),
+            ("x", true),
+            ("equity-insight", true),
+            ("reads", false),
+            ("movie", false),
+            ("articles", false),
+            ("w", false),
+        ] {
+            assert_eq!(preloads(&topics(), topic, dated), "", "{topic}");
+        }
+        // The preloads only help while they are the very requests app.js makes.
+        let script = include_str!("../pages/app.js");
+        for constant in [
+            "const ALL_PAGE_LIMIT = 6;",
+            "const PAGE_LIMIT = 12;",
+            "const DAYS_LIMIT = 366;",
+        ] {
+            assert!(script.contains(constant), "{constant}");
+        }
+        let page = include_str!("../pages/index.html");
+        for mark in [PRELOAD_MARK, TABS_MARK] {
+            assert_eq!(page.matches(mark).count(), 1, "{mark}");
+        }
+    }
 
     #[test]
     fn headlines_break_after_their_punctuation_and_stay_escaped() {

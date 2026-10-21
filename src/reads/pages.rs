@@ -300,7 +300,6 @@ async fn index(
     };
     let html = crate::site::layout(
         &state,
-        reader,
         en,
         &path,
         &title,
@@ -469,7 +468,6 @@ async fn detail(
     });
     let html = crate::site::layout(
         &state,
-        reader,
         en,
         &path,
         &format!("{title} · {}", label),

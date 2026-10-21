@@ -55,7 +55,7 @@ const storage = (() => {
 
 const TEXT = {
   zh: {
-    locale: "zh-CN", lang: "EN", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", equity: "股市", articles: "分享", learn: "学习", commentary: "解说", worth: "值得读", today: "今天", top: "重要",
+    locale: "zh-CN", lang: "EN", topics: "主题", articles: "分享", commentary: "解说", worth: "值得读", today: "今天", top: "重要",
     fresh: "NEW", failed: "加载失败", retry: "重试",
     empty: "这一天还没有内容", latest: "查看最近有内容的一天",
     space: "工作台", source: "开源代码 · AGPL-3.0", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
@@ -67,7 +67,7 @@ const TEXT = {
     publish: "公开", unpublish: "取消公开",
   },
   en: {
-    locale: "en", lang: "中文", all: "𝐀𝐋𝐋", insight: "𝐀𝐈", equity: "𝑬", articles: "𝑨𝒓𝒕𝒊𝒄𝒍𝒆𝒔", learn: "𝑳𝒆𝒂𝒓𝒏", commentary: "𝑬𝒙𝒑𝒍𝒂𝒊𝒏𝒆𝒅", worth: "Worth reading", today: "Today", top: "Top",
+    locale: "en", lang: "中文", topics: "Topics", articles: "𝑨𝒓𝒕𝒊𝒄𝒍𝒆𝒔", commentary: "𝑬𝒙𝒑𝒍𝒂𝒊𝒏𝒆𝒅", worth: "Worth reading", today: "Today", top: "Top",
     fresh: "NEW", failed: "Failed to load", retry: "Retry",
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
     space: "𝑾𝒐𝒓𝒌𝒔𝒑𝒂𝒄𝒆", source: "Source on GitHub · AGPL-3.0", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
@@ -121,27 +121,22 @@ let travelMap = null;
 
 document.addEventListener("DOMContentLoaded", init);
 
-// Catalogue sections share one tab over their topics, which have server-rendered pages; each
-// names its reviews and posts on X in its own words.
+// Catalogue sections have server-rendered pages for their topics; each names its reviews and
+// posts on X in its own words.
 const CATALOG = {
   culture: {
-    label: { zh: "文娱", en: "𝑪𝒖𝒍𝒕𝒖𝒓𝒆" },
     topics: ["movie", "music", "game", "book"],
     roles: { zh: { review: "评论", share: "大家说" }, en: { review: "Review", share: "On X" } },
   },
   gadgets: {
-    label: { zh: "数码", en: "𝑮𝒂𝒅𝒈𝒆𝒕𝒔" },
     topics: ["eink", "ai-hardware", "digital"],
     roles: { zh: { review: "评测", share: "分享" }, en: { review: "Review", share: "Shared" } },
   },
 };
 const sectionOf = (id) => Object.keys(CATALOG).find((section) => CATALOG[section].topics.includes(id));
-// Topics with their own server-rendered page instead of a news feed.
-// 分享 (articles) is not a topic: readers write it, and its tab follows 开源; 学习 (learn), whose
-// courses XABC writes, follows 分享.
-const ARTICLES_ID = "articles";
-const LEARN_ID = "learn";
-const PAGE_TOPICS = ["reads", "llm", ARTICLES_ID, LEARN_ID, ...Object.keys(CATALOG), ...Object.values(CATALOG).flatMap((section) => section.topics)];
+// Topics with their own server-rendered page instead of a news feed, where an old link to one
+// of them here goes. 分享 (articles) and 学习 (learn) are not topics but have such pages too.
+const PAGE_TOPICS = ["reads", "llm", "articles", "learn", ...Object.keys(CATALOG), ...Object.values(CATALOG).flatMap((section) => section.topics)];
 const topicPage = (id) => `/${sectionOf(id) ? `${sectionOf(id)}/${id}` : id}${state.lang === "en" ? "?lang=en" : ""}`;
 
 async function init() {
@@ -154,6 +149,7 @@ async function init() {
     const scrollTop = window.scrollY;
     state.lang = state.lang === "zh" ? "en" : "zh";
     storage.setItem("news.lang", state.lang);
+    history.replaceState({}, "", address());
     applyLang();
     renderTabs();
     renderWorth();
@@ -161,11 +157,21 @@ async function init() {
     else if (state.topic === EQUITY_ID) renderEquity(true, scrollTop);
     else render(true, scrollTop);
   });
+  // Tabs are links; one to another topic of this page switches in place.
+  el.tabs.addEventListener("click", (event) => {
+    const tab = event.target.closest(".tab");
+    const topic = tab && tabTopic(tab);
+    if (typeof topic !== "string" || event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    navigate({ topic, day: "" });
+  });
   window.addEventListener("popstate", () => {
     const params = new URLSearchParams(location.search);
     state.topic = params.get("topic") || "";
     state.day = state.topic === INSIGHT_ID ? "" : params.get("day") || "";
     state.at = state.topic === EQUITY_ID ? params.get("at") || "" : "";
+    // The language is the reader's choice for the visit: an earlier entry takes it on.
+    history.replaceState({}, "", address());
     renderTabs();
     load();
   });
@@ -181,10 +187,11 @@ async function init() {
   setupInfiniteScroll();
 
   // Everything the first screen needs leaves in one round trip: the role cookie replaces the
-  // old `/api/me` probe, and the catalogue loads beside the digest instead of before it.
+  // old `/api/me` probe, and the tabs come with the page.
   state.personal = viewerRole() === "user";
   renderTabs();
-  await Promise.all([loadCatalog(), load()]);
+  scrollActiveTab("auto");
+  await load();
 }
 
 async function fetchJson(path, { signal, withEtag = false } = {}) {
@@ -243,17 +250,8 @@ function clearViewerRole() {
   document.cookie = `${ROLE_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax${secure}`;
 }
 
-async function loadCatalog() {
-  if (state.personal) return;
-  try {
-    state.topics = (await fetchJson(PublicPage.readPath("/topics"))).topics;
-    renderTabs();
-  } catch {
-    // The digest still loads; the tabs just stay at ALL and AI.
-  }
-}
-
-// Logged-in tabs come from /api/me/feed, which the insight path does not otherwise call.
+// A signed-in reader's own topics come from /api/me/feed, which the insight path does not
+// otherwise call.
 async function personalCatalog(signal) {
   try {
     const payload = await fetchJson(`/api/me/feed?limit=1`, { signal });
@@ -409,10 +407,9 @@ async function load(silent = false) {
       state.day = "";
       state.topics = [];
       state.days = [];
-      history.replaceState({}, "", `${location.pathname}${search()}`);
+      history.replaceState({}, "", address());
       renderTabs();
-      await Promise.all([loadCatalog(), load()]);
-      renderTabs();
+      await load();
       return;
     }
     // A link can still contain a topic outside this account's visible catalogue (for
@@ -421,7 +418,7 @@ async function load(silent = false) {
     if (state.personal && error.status === 404 && state.topic && epoch === state.epoch) {
       state.topic = "";
       state.day = "";
-      history.replaceState({}, "", `${location.pathname}${search()}`);
+      history.replaceState({}, "", address());
       renderTabs();
       await load();
       return;
@@ -438,7 +435,7 @@ async function loadInsight(silent = false) {
   const epoch = ++state.epoch;
   if (!equity && state.day) {
     state.day = "";
-    history.replaceState({}, "", `${location.pathname}${search()}`);
+    history.replaceState({}, "", address());
   }
   if (!silent) {
     state.timeline = [];
@@ -461,7 +458,7 @@ async function loadInsight(silent = false) {
     if (catalog?.expired) {
       clearViewerRole();
       state.personal = false;
-      await loadCatalog();
+      renderTabs();
     } else if (catalog?.topics) {
       state.topics = catalog.topics;
       renderTabs();
@@ -631,14 +628,16 @@ function updateHistoryLoader() {
 }
 
 function navigate(changes) {
-  if (PAGE_TOPICS.includes(changes.topic)) {
-    location.assign(topicPage(changes.topic));
-    return;
-  }
   Object.assign(state, { at: "" }, changes);
-  history.pushState({}, "", `${location.pathname}${search()}`);
+  history.pushState({}, "", address());
   renderTabs();
   load();
+}
+
+// The page's own address. Like a server-rendered page's, it names the language, so the page
+// comes in it at once when it loads again.
+function address() {
+  return `${location.pathname}${search(state.lang === "en" ? { lang: "en" } : {})}`;
 }
 
 function setStatus(message) {
@@ -655,7 +654,20 @@ function applyLang() {
   el.source.title = t().source;
   el.backToTop.setAttribute("aria-label", t().backToTop);
   el.backToTop.title = t().backToTop;
+  el.tabs.setAttribute("aria-label", t().topics);
+  swapTabs();
   updateHistoryLoader();
+}
+
+// The page comes with its tabs in both languages (site::home), the other set in #otherTabs.
+let tabsLang = initial.get("lang") === "en" ? "en" : "zh";
+function swapTabs() {
+  const other = $("#otherTabs")?.content;
+  if (!other || tabsLang === state.lang) return;
+  const shown = [...el.tabs.querySelectorAll(".tab:not([data-own])")];
+  el.tabs.replaceChildren(...other.children);
+  other.replaceChildren(...shown);
+  tabsLang = state.lang;
 }
 
 function renderTabs() {
@@ -668,40 +680,31 @@ function renderTabs() {
   document.title = state.topic === INSIGHT_ID
     ? `𝑵𝒆𝒘𝒔 · ${state.lang === "en" ? "XAI Daily" : "XAI 日报"}`
     : state.topic === EQUITY_ID ? `𝑵𝒆𝒘𝒔 · ${state.lang === "en" ? "Equity notes" : "股市观察"}` : "𝑵𝒆𝒘𝒔";
-  const shown = new Set();
-  const catalogue = state.topics.flatMap((topic) => {
-    const section = sectionOf(topic.id);
-    if (!section) return [{ id: topic.id, label: name(topic) }];
-    if (shown.has(section)) return [];
-    shown.add(section);
-    return [{ id: section, label: CATALOG[section].label[state.lang] }];
-  });
-  const tabs = [
-    { id: "", label: t().all },
-    { id: INSIGHT_ID, label: t().insight },
-    ...catalogue,
-  ];
-  const overseas = tabs.findIndex((tab) => tab.id === "overseas-ai");
-  tabs.splice(overseas < 0 ? 2 : overseas + 1, 0, { id: EQUITY_ID, label: t().equity });
-  const github = tabs.findIndex((tab) => tab.id === "github");
-  tabs.splice(github < 0 ? tabs.length : github + 1, 0, { id: ARTICLES_ID, label: t().articles }, { id: LEARN_ID, label: t().learn });
-  el.tabs.replaceChildren(...tabs.map(({ id, label }) => {
-    if (PAGE_TOPICS.includes(id)) {
-      const tab = document.createElement("a");
-      tab.className = "tab";
-      tab.href = topicPage(id);
-      tab.textContent = label;
-      // Swiping back into a catalogue section enters its last collection (public.js).
-      if (CATALOG[id]) tab.dataset.last = topicPage(CATALOG[id].topics.findLast((topic) => state.topics.some((entry) => entry.id === topic)));
-      return tab;
-    }
-    const tab = button(label, () => navigate({ topic: id, day: "" }), "tab");
-    if (id === state.topic) tab.setAttribute("aria-current", "true");
-    return tab;
-  }));
-  // Deep links, browser back/forward, and the async catalogue load can all select
-  // a tab that is initially outside the strip's horizontal viewport.
+  // The tabs come with the page; a signed-in reader's own topics follow them.
+  el.tabs.querySelectorAll("[data-own]").forEach((tab) => tab.remove());
+  if (state.personal) el.tabs.append(...state.topics.filter((topic) => topic.own).map(ownTab));
+  for (const tab of el.tabs.children) {
+    if (tabTopic(tab) === state.topic) tab.setAttribute("aria-current", "true");
+    else tab.removeAttribute("aria-current");
+  }
+  // Browser back/forward, a reader's own topics and the tabs' own links can all select a tab
+  // outside the strip's horizontal viewport.
   window.requestAnimationFrame(() => scrollActiveTab());
+}
+
+// The feed topic a tab opens on this page, or null when it opens a page of its own.
+function tabTopic(tab) {
+  const url = new URL(tab.href);
+  return url.pathname === "/" ? url.searchParams.get("topic") || "" : null;
+}
+
+function ownTab(topic) {
+  const tab = document.createElement("a");
+  tab.className = "tab";
+  tab.dataset.own = "";
+  tab.href = `/?topic=${encodeURIComponent(topic.id)}${state.lang === "en" ? "&lang=en" : ""}`;
+  tab.textContent = name(topic);
+  return tab;
 }
 
 // The map sits above the travel tab's postcards and follows the page language.
@@ -722,16 +725,18 @@ function renderTravelMap() {
   TravelUI.map(travelMap);
 }
 
-function scrollActiveTab() {
+// The strip moves only to bring the tab into view, as little as it must: at once as the page
+// opens (styles.css does it before the first frame where it can), gliding when a tab is chosen.
+function scrollActiveTab(behavior = "smooth") {
   const active = el.tabs.querySelector('[aria-current="true"]');
   if (!active?.scrollIntoView) return;
   const tabsRect = el.tabs.getBoundingClientRect();
   const activeRect = active.getBoundingClientRect();
   if (activeRect.left >= tabsRect.left && activeRect.right <= tabsRect.right) return;
   active.scrollIntoView({
-    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : behavior,
     block: "nearest",
-    inline: "center",
+    inline: "nearest",
   });
 }
 

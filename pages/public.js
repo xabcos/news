@@ -173,7 +173,7 @@
       window.PublicPage.init();
       const lang = document.documentElement.lang === "en" ? "en" : "zh";
       try { localStorage.setItem("news.lang", lang); } catch { /* Reading works without storage. */ }
-      document.querySelector('.tabs [aria-current="true"]')?.scrollIntoView({ block: "nearest", inline: "center" });
+      document.querySelector('.tabs [aria-current="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
     },
 
     init({ canSwipe = () => true } = {}) {
