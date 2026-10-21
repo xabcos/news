@@ -55,11 +55,11 @@ const storage = (() => {
 
 const TEXT = {
   zh: {
-    locale: "zh-CN", lang: "EN", topics: "主题", articles: "分享", commentary: "解说", worth: "值得读", today: "今天", top: "重要",
+    locale: "zh-CN", articles: "分享", commentary: "解说", worth: "值得读", today: "今天", top: "重要",
     fresh: "NEW", failed: "加载失败", retry: "重试",
     empty: "这一天还没有内容", latest: "查看最近有内容的一天",
-    space: "工作台", source: "开源代码 · AGPL-3.0", personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
-    backToTop: "回到顶部", insightEmpty: "XAI 日报将在今日生成后显示。", insightLabel: "XAI 日报",
+    personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
+    insightEmpty: "XAI 日报将在今日生成后显示。", insightLabel: "XAI 日报",
     hotspots: "今日热点", gossip: "AI 圈热议", references: "参考来源", archive: "资料图", changes: "趋势分析", figures: "今日数字", watchSignals: "后续观察", coverSource: "原文",
     outlook: "机会与风险", angle: "看点", outlookKinds: { opportunity: "机会", employment: "就业", risk: "风险", action: "行动" }, sources: "来源",
     items: (n) => `${n} 条`, photos: (n) => `${n} 张`,
@@ -67,11 +67,11 @@ const TEXT = {
     publish: "公开", unpublish: "取消公开",
   },
   en: {
-    locale: "en", lang: "中文", topics: "Topics", articles: "𝑨𝒓𝒕𝒊𝒄𝒍𝒆𝒔", commentary: "𝑬𝒙𝒑𝒍𝒂𝒊𝒏𝒆𝒅", worth: "Worth reading", today: "Today", top: "Top",
+    locale: "en", articles: "𝑨𝒓𝒕𝒊𝒄𝒍𝒆𝒔", commentary: "𝑬𝒙𝒑𝒍𝒂𝒊𝒏𝒆𝒅", worth: "Worth reading", today: "Today", top: "Top",
     fresh: "NEW", failed: "Failed to load", retry: "Retry",
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
-    space: "𝑾𝒐𝒓𝒌𝒔𝒑𝒂𝒄𝒆", source: "Source on GitHub · AGPL-3.0", personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
-    backToTop: "Back to top", insightEmpty: "XAI Daily will appear after today's edition is generated.", insightLabel: "XAI Daily",
+    personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
+    insightEmpty: "XAI Daily will appear after today's edition is generated.", insightLabel: "XAI Daily",
     hotspots: "Today’s headlines", gossip: "AI buzz", references: "References", archive: "Archive photo", changes: "Trend analysis", figures: "By the numbers", watchSignals: "Signals ahead", coverSource: "Source",
     outlook: "Opportunities & risks", angle: "Why it matters", outlookKinds: { opportunity: "Opportunity", employment: "Jobs", risk: "Risk", action: "Action" }, sources: "Sources",
     items: (n) => `${n} ${n === 1 ? "item" : "items"}`, photos: (n) => `${n} ${n === 1 ? "photo" : "photos"}`,
@@ -82,7 +82,7 @@ const TEXT = {
 
 const initial = new URLSearchParams(location.search);
 const state = {
-  lang: initial.has("lang") ? (initial.get("lang") === "en" ? "en" : "zh") : (storage.getItem("news.lang") === "en" ? "en" : "zh"),
+  lang: initial.get("lang") === "en" ? "en" : "zh",
   topic: initial.get("topic") || "",
   day: initial.get("day") || "",
   at: initial.get("topic") === EQUITY_ID ? initial.get("at") || "" : "",
@@ -92,7 +92,7 @@ const state = {
   timeline: [],
   insight: null,
   insightEtag: null,
-  // 值得读's articles, kept to lay them out again in the other language.
+  // 值得读's articles, kept so a refresh that brings the same ones leaves the cards alone.
   worth: [],
   personal: false,
   historyLoading: false,
@@ -105,9 +105,8 @@ const state = {
 storage.setItem("news.lastVisit", String(Date.now()));
 
 const el = {
-  tabs: $("#tabs"), lang: $("#langToggle"), me: $("#meLink"), source: $("#sourceLink"),
+  tabs: $(".tabs"), lang: $(".tools [hreflang]"),
   shell: $(".shell"), status: $("#status"), worth: $("#worth"), digest: $("#digest"), loadMore: $("#loadMore"),
-  backToTop: $("#backToTop"),
 };
 const t = () => TEXT[state.lang];
 // Sentinels at the end of groups with more items on the server, and the group each belongs to.
@@ -144,19 +143,6 @@ async function init() {
     location.replace(topicPage(state.topic));
     return;
   }
-  applyLang();
-  el.lang.addEventListener("click", () => {
-    const scrollTop = window.scrollY;
-    state.lang = state.lang === "zh" ? "en" : "zh";
-    storage.setItem("news.lang", state.lang);
-    history.replaceState({}, "", address());
-    applyLang();
-    renderTabs();
-    renderWorth();
-    if (state.topic === INSIGHT_ID) renderInsight(state.insight, true, scrollTop);
-    else if (state.topic === EQUITY_ID) renderEquity(true, scrollTop);
-    else render(true, scrollTop);
-  });
   // Tabs are links; one to another topic of this page switches in place.
   el.tabs.addEventListener("click", (event) => {
     const tab = event.target.closest(".tab");
@@ -170,8 +156,6 @@ async function init() {
     state.topic = params.get("topic") || "";
     state.day = state.topic === INSIGHT_ID ? "" : params.get("day") || "";
     state.at = state.topic === EQUITY_ID ? params.get("at") || "" : "";
-    // The language is the reader's choice for the visit: an earlier entry takes it on.
-    history.replaceState({}, "", address());
     renderTabs();
     load();
   });
@@ -634,8 +618,7 @@ function navigate(changes) {
   load();
 }
 
-// The page's own address. Like a server-rendered page's, it names the language, so the page
-// comes in it at once when it loads again.
+// The page's own address, which names its language as every page's does.
 function address() {
   return `${location.pathname}${search(state.lang === "en" ? { lang: "en" } : {})}`;
 }
@@ -644,30 +627,6 @@ function setStatus(message) {
   el.status.replaceChildren();
   if (!message) return;
   el.status.append(message, " ", button(t().retry, () => load(), "button button-secondary button-small"));
-}
-
-function applyLang() {
-  document.documentElement.lang = t().locale;
-  el.lang.textContent = t().lang;
-  el.me.textContent = t().space;
-  el.source.setAttribute("aria-label", t().source);
-  el.source.title = t().source;
-  el.backToTop.setAttribute("aria-label", t().backToTop);
-  el.backToTop.title = t().backToTop;
-  el.tabs.setAttribute("aria-label", t().topics);
-  swapTabs();
-  updateHistoryLoader();
-}
-
-// The page comes with its tabs in both languages (site::home), the other set in #otherTabs.
-let tabsLang = initial.get("lang") === "en" ? "en" : "zh";
-function swapTabs() {
-  const other = $("#otherTabs")?.content;
-  if (!other || tabsLang === state.lang) return;
-  const shown = [...el.tabs.querySelectorAll(".tab:not([data-own])")];
-  el.tabs.replaceChildren(...other.children);
-  other.replaceChildren(...shown);
-  tabsLang = state.lang;
 }
 
 function renderTabs() {
@@ -680,7 +639,13 @@ function renderTabs() {
   document.title = state.topic === INSIGHT_ID
     ? `𝑵𝒆𝒘𝒔 · ${state.lang === "en" ? "XAI Daily" : "XAI 日报"}`
     : state.topic === EQUITY_ID ? `𝑵𝒆𝒘𝒔 · ${state.lang === "en" ? "Equity notes" : "股市观察"}` : "𝑵𝒆𝒘𝒔";
-  // The tabs come with the page; a signed-in reader's own topics follow them.
+  // The bar comes with the page. Its switch opens this address in the other language, as the
+  // server writes it (a page cached from before has none), and a signed-in reader's own topics
+  // follow the site's tabs.
+  const other = new URL(location.href);
+  if (state.lang === "en") other.searchParams.delete("lang");
+  else other.searchParams.set("lang", "en");
+  el.lang?.setAttribute("href", `${other.pathname}${other.search}`);
   el.tabs.querySelectorAll("[data-own]").forEach((tab) => tab.remove());
   if (state.personal) el.tabs.append(...state.topics.filter((topic) => topic.own).map(ownTab));
   for (const tab of el.tabs.children) {
@@ -707,21 +672,18 @@ function ownTab(topic) {
   return tab;
 }
 
-// The map sits above the travel tab's postcards and follows the page language.
+// The map sits above the travel tab's postcards.
 function renderTravelMap() {
   if (state.topic !== TRAVEL_TOPIC) {
     travelMap?.remove();
     travelMap = null;
     return;
   }
-  if (travelMap?.dataset.lang === state.lang) return;
-  if (!travelMap) {
-    travelMap = document.createElement("div");
-    travelMap.className = "travel-map-slot";
-    travelMap.hidden = true;
-    el.digest.before(travelMap);
-  }
-  travelMap.dataset.lang = state.lang;
+  if (travelMap) return;
+  travelMap = document.createElement("div");
+  travelMap.className = "travel-map-slot";
+  travelMap.hidden = true;
+  el.digest.before(travelMap);
   TravelUI.map(travelMap);
 }
 

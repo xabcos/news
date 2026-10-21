@@ -168,11 +168,9 @@
       };
     },
 
-    // A server-rendered page: `init`, its language kept for the news page, and its tab in view.
+    // A server-rendered page: `init`, and its tab in view.
     page() {
       window.PublicPage.init();
-      const lang = document.documentElement.lang === "en" ? "en" : "zh";
-      try { localStorage.setItem("news.lang", lang); } catch { /* Reading works without storage. */ }
       document.querySelector('.tabs [aria-current="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
     },
 

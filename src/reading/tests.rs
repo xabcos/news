@@ -372,7 +372,7 @@ pub(crate) async fn feed(state: &AppState) {
             .status(),
         404
     );
-    // Everyone gets the same news page, with the public catalogue's tabs in both languages: a
+    // Everyone gets the same news page, with every page's bar in the address's language: a
     // hidden topic has no tab, and an administrator opens it by its address.
     let home = |path: &str, cookie: &str| {
         http.get(format!("{base}{path}"))
@@ -398,11 +398,15 @@ pub(crate) async fn feed(state: &AppState) {
             page
         );
     }
-    assert!(page.contains(
-        "<nav id=\"tabs\" class=\"tabs\" aria-label=\"主题\"><a class=tab href=\"/\">𝐀𝐋𝐋</a>"
-    ));
-    assert!(page.contains("<template id=\"otherTabs\"><a class=tab href=\"/?lang=en\">𝐀𝐋𝐋</a>"));
-    assert!(page.contains("<a class=tab href=\"/?topic=preview-shared\">Shared</a>"));
+    for part in [
+        "<html lang=\"zh-CN\">",
+        "<nav class=\"tabs\" aria-label=\"主题\"><a class=tab href=\"/\">𝐀𝐋𝐋</a>",
+        "<a class=tab href=\"/?topic=preview-shared\">Shared</a>",
+        "href=\"/?topic=w&amp;lang=en\" hreflang=\"en\">EN</a>",
+        "aria-label=\"回到顶部\"",
+    ] {
+        assert!(page.contains(part), "{part}");
+    }
     for absent in [
         "topic=w\"",
         "preview-personal",
@@ -417,17 +421,43 @@ pub(crate) async fn feed(state: &AppState) {
         .text()
         .await
         .unwrap();
-    assert!(english.contains("<nav id=\"tabs\" class=\"tabs\" aria-label=\"Topics\">"));
-    assert!(english.contains(
-        "<a class=tab href=\"/?topic=preview-shared&amp;lang=en\" aria-current=\"true\">Shared</a>"
+    for part in [
+        "<html lang=\"en\">",
+        "<nav class=\"tabs\" aria-label=\"Topics\">",
+        "<a class=tab href=\"/?topic=preview-shared&amp;lang=en\" aria-current=\"true\">Shared</a>",
+        ">Workspace</a><a class=\"space-link button button-quiet button-small\" href=\"/?topic=preview-shared\" hreflang=\"zh-CN\">中文</a>",
+        "aria-label=\"Back to top\"",
+        "<link rel=\"preload\" href=\"/digest?topic=preview-shared&amp;limit=12\" as=\"fetch\" crossorigin fetchpriority=\"high\">",
+    ] {
+        assert!(english.contains(part), "{part}");
+    }
+    // The switch keeps the rest of the address; a dated one preloads nothing; the share card is
+    // the configured site's.
+    let dated = home("/?day=2026-10-20&lang=en", "")
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(dated.contains("href=\"/?day=2026-10-20\" hreflang=\"zh-CN\">中文</a>"));
+    assert!(!dated.contains("rel=\"preload\""));
+    let edition = home("/?topic=equity-insight&at=2026-10-20T08%3A00%3A00Z", "")
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(edition.contains(
+        "href=\"/?topic=equity-insight&amp;at=2026-10-20T08%3A00%3A00Z&amp;lang=en\" hreflang=\"en\">EN</a>"
     ));
-    assert!(english.contains(
-        "<link rel=\"preload\" href=\"/digest?topic=preview-shared&amp;limit=12\" as=\"fetch\" crossorigin fetchpriority=\"high\">"
-    ));
-    assert_eq!(
-        home("/index.html", "").await.unwrap().text().await.unwrap(),
-        home("/", "").await.unwrap().text().await.unwrap()
-    );
+    assert!(!edition.contains("rel=\"preload\""));
+    let site = state.config.public_base_url.as_str().trim_end_matches('/');
+    for card in [
+        format!("<meta property=\"og:url\" content=\"{site}/\">"),
+        format!("<meta property=\"og:image\" content=\"{site}/og.png\">"),
+    ] {
+        assert!(page.contains(&card), "{card}");
+    }
     // The page's validator holds until the catalogue changes (checked after 𝑾 is shown below).
     let etag = home("/", "").await.unwrap().headers()["etag"].clone();
     let revalidate = || {

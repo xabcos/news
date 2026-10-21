@@ -23,9 +23,10 @@ use uuid::Uuid;
 /// Topics with their own server-rendered page instead of the news feed.
 const PAGE_TOPICS: [&str; 2] = ["reads", "llm"];
 
-/// Where `pages/index.html` takes what `home` writes into it.
-const PRELOAD_MARK: &str = "<!-- preload, written by site::home -->";
-const TABS_MARK: &str = "<!-- tabs, drawn by site::home -->";
+/// What every public page loads, with the versions that refresh caches.
+const STYLES: &str = "/styles.css?v=tabs";
+const PUBLIC_SCRIPT: &str = "/public.js?v=12";
+const STATS_SCRIPT: &str = "/stats.js?v=3";
 /// app.js's first page of 𝐀𝐋𝐋 and of one topic, and the days it lists, which its preloads repeat.
 const ALL_PAGE_LIMIT: &str = "6";
 const PAGE_LIMIT: &str = "12";
@@ -34,15 +35,13 @@ const DAYS_LIMIT: &str = "366";
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(home))
-        .route("/index.html", get(home))
         .layer(tower_http::compression::CompressionLayer::new())
 }
 
-/// The news page: `pages/index.html`, whose feed app.js draws, with the tabs drawn here as on
-/// every page, so the strip is whole in the first frame. The page switches language in place, so
-/// the other language's tabs wait in a `<template>`. Readers, signed in or not, and
-/// administrators get the same page; hidden topics have no tab, and an administrator opens
-/// them by address.
+/// The news page, whose feed app.js draws. Its bar is every page's, in the address's language,
+/// so the strip is whole in the first frame and the switch opens the page in the other language.
+/// Readers, signed in or not, and administrators get the same page; hidden topics have no tab,
+/// and an administrator opens them by address.
 async fn home(
     State(state): State<AppState>,
     RawQuery(query): RawQuery,
@@ -59,20 +58,77 @@ async fn home(
     let en = param("lang").as_deref() == Some("en");
     let topic = param("topic").unwrap_or_default();
     let topics = state.digest.topics();
-    let page = tokio::fs::read_to_string(state.config.pages_dir.join("index.html"))
-        .await
-        .map_err(|error| AppError::Internal(format!("首页模板不可读: {error}").into()))?;
-    let strip = format!(
-        "<nav id=\"tabs\" class=\"tabs\" aria-label=\"{}\">{}</nav><template id=\"otherTabs\">{}</template>",
-        choose(en, "主题", "Topics"),
-        tabs(&topics, &topic, en),
-        tabs(&topics, &topic, !en)
+    // This address in the other language.
+    let mut other = url::form_urlencoded::Serializer::new(String::new());
+    other.extend_pairs(
+        url::form_urlencoded::parse(query.as_bytes()).filter(|(key, _)| key != "lang"),
     );
+    if !en {
+        other.append_pair("lang", "en");
+    }
+    let other = match other.finish() {
+        other if other.is_empty() => "/".to_owned(),
+        other => format!("/?{other}"),
+    };
     let dated = param("day").is_some() || param("at").is_some();
-    let preload = preloads(&topics, &topic, dated);
-    let html = page
-        .replacen(PRELOAD_MARK, &preload, 1)
-        .replacen(TABS_MARK, &strip, 1);
+    let html = format!(
+        r##"<!doctype html>
+<html lang="{lang}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="𝑵𝒆𝒘𝒔 · 每日 XAI 日报与 AI 热点资讯">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f6f4">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1115">
+  <meta name="referrer" content="no-referrer">
+  <!-- How a link to the home page looks where it is shared, X first. -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="𝑵𝒆𝒘𝒔">
+  <meta property="og:title" content="𝑵𝒆𝒘𝒔 · 每日 XAI 日报与 AI 热点资讯">
+  <meta property="og:description" content="AI 与科技要闻、XAI 日报、精读长文、分享与影视解说，每天更新。">
+  <meta property="og:url" content="{home}">
+  <meta property="og:image" content="{card}">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>𝑵𝒆𝒘𝒔</title>
+  <link rel="icon" type="image/svg+xml" href="/icon.svg">
+  <link rel="alternate" type="application/atom+xml" title="𝑵𝒆𝒘𝒔" href="/feed.xml">
+  <link rel="stylesheet" href="{STYLES}">
+  <link rel="stylesheet" href="/equity.css?v=5">
+  <link rel="stylesheet" href="/catalog.css?v=9">
+  {preloads}
+</head>
+<body class="public">
+  {topbar}
+  <main class="shell">
+    <div class="broadcast-strip" data-broadcast-url="https://broadcast.xairouter.com/feed_news?mode=sequence" hidden>
+      <a class="broadcast-strip__value"></a>
+    </div>
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+    <section id="worth" class="worth" hidden></section>
+    <div id="digest" class="digest"></div>
+    <div id="loadMore" class="load-more" role="status" aria-live="polite"></div>
+  </main>
+  {back_to_top}
+  <script src="{STATS_SCRIPT}" data-track-url="{track_url}" defer></script>
+  <script src="{PUBLIC_SCRIPT}" defer></script>
+  <script src="/equity.js?v=10" defer></script>
+  <script src="/travel.js?v=12" defer></script>
+  <script src="/app.js?v=41" defer></script>
+  <!-- async: a slow third-party banner must not hold back DOMContentLoaded, which starts app.js. -->
+  <script src="https://broadcast.xairouter.com/embed.js" async></script>
+</body>
+</html>
+"##,
+        lang = choose(en, "zh-CN", "en"),
+        home = escape(&absolute(&state, "/")),
+        card = escape(&absolute(&state, "/og.png")),
+        preloads = preloads(&topics, &topic, dated),
+        topbar = topbar(&topics, &topic, en, &other),
+        back_to_top = back_to_top(en),
+        track_url = crate::reads::TRACK_URL,
+    );
     Ok(conditional(
         &headers,
         &Rendered::new(html),
@@ -518,7 +574,6 @@ pub(crate) fn layout(
     structured: Option<serde_json::Value>,
     chrome: &Chrome<'_>,
 ) -> String {
-    let tabs = tabs(&state.digest.topics(), chrome.current, en);
     // An article's picture in its structured data also stands for it where the page is shared.
     let card = structured
         .as_ref()
@@ -548,11 +603,11 @@ pub(crate) fn layout(
 <title>{title}</title><meta name="description" content="{description}"><meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f6f4"><meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1115">
 <link rel="canonical" href="{canonical}"><link rel="alternate" hreflang="zh-CN" href="{zh}"><link rel="alternate" hreflang="en" href="{english}"><link rel="alternate" hreflang="x-default" href="{zh}">
 <meta property="og:type" content="{og_type}"><meta property="og:title" content="{title}"><meta property="og:description" content="{description}"><meta property="og:url" content="{canonical}"><meta property="og:site_name" content="News">{card}
-<link rel="icon" type="image/svg+xml" href="/icon.svg"><link rel="alternate" type="application/atom+xml" title="{feed_title}" href="{feed_href}"><link rel="stylesheet" href="/styles.css?v=tabs"><link rel="stylesheet" href="{stylesheet}">{schema}</head>
-<body class="public {section}"><header class="topbar"><a class="brand" href="{home}" aria-label="News"><img class="brand-logo" src="/icon.svg" alt=""><span>𝑵𝒆𝒘𝒔</span></a><nav class="tabs" aria-label="{topics_label}">{tabs}</nav><div class="tools"><a class="space-link button button-quiet button-small" href="/me/">{workspace}</a><a class="space-link button button-quiet button-small" href="{other_lang}" hreflang="{other_code}">{language_label}</a><a class="source-link button button-quiet button-small" href="https://github.com/xabcos/news" target="_blank" rel="noopener noreferrer" aria-label="{source}" title="{source}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg></a></div></header>
+<link rel="icon" type="image/svg+xml" href="/icon.svg"><link rel="alternate" type="application/atom+xml" title="{feed_title}" href="{feed_href}"><link rel="stylesheet" href="{STYLES}"><link rel="stylesheet" href="{stylesheet}">{schema}</head>
+<body class="public {section}">{topbar}
 <main class="shell">{content}</main>
-<button id="backToTop" class="button back-to-top" type="button" aria-label="{back_to_top}" title="{back_to_top}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 12 6-6 6 6M12 6v12"/></svg></button>
-<script src="/public.js?v=11" defer></script><script src="{script}" defer></script><script src="/stats.js?v=3" data-track-url="{track_url}" defer></script></body></html>"##,
+{back_to_top}
+<script src="{PUBLIC_SCRIPT}" defer></script><script src="{script}" defer></script><script src="{STATS_SCRIPT}" data-track-url="{track_url}" defer></script></body></html>"##,
         lang = choose(en, "zh-CN", "en"),
         title = escape(title),
         description = escape(description),
@@ -569,21 +624,44 @@ pub(crate) fn layout(
         stylesheet = escape(chrome.stylesheet),
         section = chrome.section,
         script = escape(chrome.script),
+        topbar = topbar(
+            &state.digest.topics(),
+            chrome.current,
+            en,
+            &localized(path, !en)
+        ),
+        back_to_top = back_to_top(en),
+        track_url = crate::reads::TRACK_URL,
+    )
+}
+
+/// The bar atop every public page: the brand, the topic tabs, the workspace, the switch to
+/// `other` (this page in the other language) and the source on GitHub.
+fn topbar(topics: &[TopicMeta], current: &str, en: bool, other: &str) -> String {
+    format!(
+        r##"<header class="topbar"><a class="brand" href="{home}" aria-label="News"><img class="brand-logo" src="/icon.svg" alt=""><span>𝑵𝒆𝒘𝒔</span></a><nav class="tabs" aria-label="{topics_label}">{tabs}</nav><div class="tools"><a class="space-link button button-quiet button-small" href="/me/">{workspace}</a><a class="space-link button button-quiet button-small" href="{other_lang}" hreflang="{other_code}">{language_label}</a><a class="source-link button button-quiet button-small" href="https://github.com/xabcos/news" target="_blank" rel="noopener noreferrer" aria-label="{source}" title="{source}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg></a></div></header>"##,
         home = localized("/", en),
         topics_label = choose(en, "主题", "Topics"),
+        tabs = tabs(topics, current, en),
         workspace = choose(en, "工作台", "Workspace"),
-        other_lang = escape(&localized(path, !en)),
+        other_lang = escape(other),
         other_code = choose(en, "en", "zh-CN"),
         language_label = choose(en, "EN", "中文"),
         source = choose(en, "开源代码 · AGPL-3.0", "Source on GitHub · AGPL-3.0"),
+    )
+}
+
+/// The button back to the top, which public.js shows once a reader has scrolled away from it.
+fn back_to_top(en: bool) -> String {
+    format!(
+        r##"<button id="backToTop" class="button back-to-top" type="button" aria-label="{back_to_top}" title="{back_to_top}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 12 6-6 6 6M12 6v12"/></svg></button>"##,
         back_to_top = choose(en, "回到顶部", "Back to top"),
-        track_url = crate::reads::TRACK_URL,
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{PRELOAD_MARK, TABS_MARK, TopicMeta, headline, markdown, preloads, tabs};
+    use super::{TopicMeta, headline, markdown, preloads, tabs};
     use pulldown_cmark::{Options, Parser};
 
     fn topic(id: &str, name: &str, name_en: &str) -> TopicMeta {
@@ -718,10 +796,6 @@ mod tests {
             "const DAYS_LIMIT = 366;",
         ] {
             assert!(script.contains(constant), "{constant}");
-        }
-        let page = include_str!("../pages/index.html");
-        for mark in [PRELOAD_MARK, TABS_MARK] {
-            assert_eq!(page.matches(mark).count(), 1, "{mark}");
         }
     }
 
