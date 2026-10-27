@@ -1,4 +1,5 @@
 use super::*;
+use chrono::DateTime;
 
 #[test]
 fn x_aliases_and_tracking_links_have_one_identity() {
@@ -64,7 +65,7 @@ fn article(index: usize) -> Article {
         author: "Example Author".into(), source_title: "A small team’s notes".into(), source_language:"en".into(),
         body: format!("## 从具体问题开始\n\n与其一开始建立包罗万象的系统，这篇文章提供了一条更容易验证的路径：先找到一个有明确输入、输出和使用者的小问题。\n\n## 给结果留下检验的空间\n\n真正值得关注的是反馈是否能够进入下一轮改进。团队需要记录失败的例子，区分模型的能力边界与流程本身的问题，再决定是否扩大使用范围。\n\n## 如何理解这份经验\n\n这些观察来自特定团队的实践，适用范围取决于数据质量、任务复杂度和检查成本。它提供的是一种思考顺序，而非对所有场景的效果承诺。\n\n第 {index} 篇阅读。"),
         body_en: "## Begin with a concrete problem\n\nA small, observable task makes it possible to learn from actual use. The useful lesson is to connect each experiment with a clear question, a review process and a decision about what to change next.\n\n## Keep the limits in view\n\nThe account describes one team’s experience. Its value lies in the questions it raises about evaluation, feedback and the cost of checking results, rather than a universal promise about performance.".into(),
-        source_hash:vec![index as u8;32], fetched_at:Utc::now(), full_text: None,
+        full_text: None,
     }
 }
 
@@ -203,10 +204,6 @@ async fn postgres_reads_publication_visibility_and_permanent_archive() {
     assert!(!full.body_en.is_empty());
     let document = full.full_text.as_ref().unwrap();
     assert_eq!(document.original, source("essay").body.trim());
-    assert_eq!(
-        full.source_hash,
-        Sha256::digest(document.original.as_bytes()).to_vec()
-    );
     assert!(document.zh.is_some());
     assert!(document.en.is_none());
     let mut brief_item = item(1);
@@ -956,11 +953,9 @@ async fn check_related_candidates(
                    g=0, g=201
             FROM generate_series(0,201) g RETURNING id
         )
-        INSERT INTO read_articles (item_id, author, source_title, source_language,
-                                   body, source_hash, fetched_at)
+        INSERT INTO read_articles (item_id, author, source_title, source_language, body)
         SELECT id, 'Example Author', 'Original essay', 'en',
-               repeat('A paragraph explaining the original argument. ',6),
-               sha256(convert_to(id::text,'UTF8')), $1 FROM inserted",
+               repeat('A paragraph explaining the original argument. ',6) FROM inserted",
     )
     .bind(now)
     .execute(&state.pool)

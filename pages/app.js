@@ -826,7 +826,7 @@ function renderInsightStories(label, stories, sources, { gossip = false, dateTex
       angle.append(span(t().angle, "insight-angle-label"), pick(story, "angle"));
       article.append(angle);
     }
-    const links = sourceList((story.source_indexes || []).map((index) => sources.get(index)).filter(Boolean));
+    const links = sourceList(story.source_indexes.map((index) => sources.get(index)).filter(Boolean));
     if (links) article.append(links);
     return article;
   }));
@@ -880,9 +880,8 @@ function insightChange(text, meta) {
   return block;
 }
 
-// Cached responses from before the figures and outlook may lack them for a few minutes.
 function renderInsightFigures(figures, sources) {
-  if (!figures?.length) return [];
+  if (!figures.length) return [];
   const section = insightSection(t().figures);
   section.append(...figures.map((figure) => {
     const article = document.createElement("article");
@@ -901,7 +900,7 @@ function renderInsightFigures(figures, sources) {
 }
 
 function renderInsightGroup(label, items, sources) {
-  if (!items?.length) return [];
+  if (!items.length) return [];
   const section = insightSection(label);
   section.append(...items.map((item) => insightCard(item, sources)));
   return [section];
@@ -909,7 +908,7 @@ function renderInsightGroup(label, items, sources) {
 
 function insightCard(item, sources) {
   const article = document.createElement("article");
-  article.className = "item insight-item";
+  article.className = "item";
   const title = document.createElement("h3");
   title.className = "item-title";
   if (item.kind) title.append(span(t().outlookKinds[item.kind] || item.kind, "insight-story-status"));
@@ -918,7 +917,7 @@ function insightCard(item, sources) {
   summary.className = "item-summary";
   summary.append(insightText(pick(item, "summary")));
   article.append(title, summary);
-  const sourceLinks = sourceList((item.source_indexes || []).map((index) => sources.get(index)).filter(Boolean));
+  const sourceLinks = sourceList(item.source_indexes.map((index) => sources.get(index)).filter(Boolean));
   if (sourceLinks) article.append(sourceLinks);
   return article;
 }

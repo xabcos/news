@@ -2,7 +2,7 @@ use crate::error::{AppError, Result};
 use chrono::NaiveTime;
 use chrono_tz::Tz;
 use sqlx::postgres::PgConnectOptions;
-use std::{collections::HashSet, env, net::SocketAddr, path::PathBuf, time::Duration};
+use std::{collections::HashSet, env, net::SocketAddr, time::Duration};
 use url::{Host, Url};
 
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:8788";
@@ -11,8 +11,6 @@ pub struct Config {
     pub(crate) bind_addr: SocketAddr,
     pub(crate) database_url: String,
     pub(crate) database_max_connections: u32,
-    pub(crate) migrations_dir: PathBuf,
-    pub(crate) pages_dir: PathBuf,
     pub(crate) public_base_url: Url,
     pub(crate) session_cookie_name: String,
     pub(crate) session_ttl: Duration,
@@ -187,8 +185,6 @@ impl Config {
             bind_addr,
             database_url,
             database_max_connections,
-            migrations_dir: PathBuf::from(env_value("MIGRATIONS_DIR", "migrations")),
-            pages_dir: PathBuf::from(env_value("PAGES_DIR", "pages")),
             public_base_url,
             session_cookie_name,
             session_ttl: Duration::from_secs(session_days * 24 * 60 * 60),

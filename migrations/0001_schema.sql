@@ -189,8 +189,6 @@ CREATE TABLE read_articles (
     source_language text NOT NULL,
     body text NOT NULL CHECK (char_length(body) BETWEEN 200 AND 80000),
     body_en text NOT NULL DEFAULT '' CHECK (char_length(body_en) <= 80000),
-    source_hash bytea NOT NULL CHECK (octet_length(source_hash) = 32),
-    fetched_at timestamptz NOT NULL,
     views bigint CHECK (views >= 0),
     hot_rank smallint CHECK (hot_rank BETWEEN 1 AND 24),
     full_text jsonb,

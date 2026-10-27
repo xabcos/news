@@ -21,6 +21,8 @@ mod verify;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use store::prune;
+
 pub(crate) const TOPIC_ID: &str = "llm";
 /// Providers read at the same time within one run, each in two requests.
 const VENDOR_CONCURRENCY: usize = 6;
@@ -33,11 +35,6 @@ pub(crate) fn is_catalog(topic: &Topic) -> bool {
 
 pub(crate) fn router() -> Router<AppState> {
     pages::router().merge(admin::router())
-}
-
-/// Removes history past its use; see `store::prune`.
-pub(crate) async fn prune(state: &AppState) -> Result<u64> {
-    store::prune(state).await
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

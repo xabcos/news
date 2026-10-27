@@ -24,8 +24,5 @@ COPY --from=builder /tmp/news ./news
 COPY migrations ./migrations
 COPY --from=builder /app/pages ./pages
 
-ENV BIND_ADDR=0.0.0.0:8788 \
-    MIGRATIONS_DIR=/home/nonroot/migrations \
-    PAGES_DIR=/home/nonroot/pages
 EXPOSE 8788
 ENTRYPOINT ["./news"]

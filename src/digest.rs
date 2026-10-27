@@ -217,7 +217,7 @@ struct Inner {
     /// write. The public page and the API default ask for different limits.
     hot: RwLock<HashMap<usize, Arc<Rendered>>>,
     /// `/days` bodies per (topic, limit); the query behind them scans every visible item.
-    archive: RwLock<HashMap<DaysKey, Arc<Rendered>>>,
+    archive: RwLock<HashMap<DaysKey, Arc<Days>>>,
     /// Bumped by every write. A load that began before a write must not be stored after it.
     generation: AtomicU64,
     /// Serializes cache misses and explicit refreshes. Without this small
@@ -474,24 +474,15 @@ impl DigestCache {
         write(&self.0.archive).clear();
     }
 
-    /// The `/days` body: which days have visible items, newest first. PostgreSQL is asked
-    /// once per (topic, limit) between writes.
-    pub async fn days(
-        &self,
-        state: &AppState,
-        topic: Option<&str>,
-        limit: i64,
-    ) -> Result<Arc<Rendered>> {
-        self.days_for(state, topic, limit, Reader::Public).await
-    }
-
-    async fn days_for(
+    /// Which days have visible items, newest first, as `/days` serves them. PostgreSQL is asked
+    /// once per (reader, topic, limit) between writes.
+    async fn days(
         &self,
         state: &AppState,
         topic: Option<&str>,
         limit: i64,
         reader: Reader,
-    ) -> Result<Arc<Rendered>> {
+    ) -> Result<Arc<Days>> {
         let key = (reader, topic.map(str::to_owned), limit);
         if let Some(hit) = read(&self.0.archive).get(&key).cloned() {
             return Ok(hit);
@@ -501,7 +492,7 @@ impl DigestCache {
             topic.is_none_or(|id| self.topics_for(reader).iter().any(|topic| topic.id == id));
         let generation = self.0.generation.load(Ordering::Acquire);
         // An administrator's counts include 𝑾's hidden photographs.
-        let days = sqlx::query_as::<_, DayCount>(
+        let counts = sqlx::query_as::<_, DayCount>(
             "SELECT items.day, COUNT(*) AS count FROM items \
              JOIN topics ON topics.id = items.topic_id \
              WHERE ($1::text IS NULL OR items.topic_id = $1) AND topics.enabled AND (topics.visible OR $3) AND topics.owner_user_id IS NULL \
@@ -514,26 +505,27 @@ impl DigestCache {
         .bind(crate::gallery::TOPIC_ID)
         .fetch_all(&state.pool)
         .await?;
-        let rendered = Arc::new(Rendered::new(
-            json!({ "topic": topic, "days": days }).to_string(),
-        ));
+        let rendered = Rendered::new(json!({ "topic": topic, "days": counts }).to_string());
+        let days = Arc::new(Days { counts, rendered });
         if cacheable {
             let mut archive = write(&self.0.archive);
             if self.0.generation.load(Ordering::Acquire) == generation
                 && (archive.len() < DAYS_VARIANTS || archive.contains_key(&key))
             {
-                archive.insert(key, Arc::clone(&rendered));
+                archive.insert(key, Arc::clone(&days));
             }
         }
-        Ok(rendered)
+        Ok(days)
     }
 
-    /// Returns typed public day counts for private-feed assembly. The rendered response is
-    /// already cached by `(topic, limit)`, so authenticated pages do not rescan public items.
+    /// The public day counts for private-feed assembly, from the cached `/days` answer, so
+    /// authenticated pages do not rescan public items.
     async fn day_counts(&self, state: &AppState, topic: Option<&str>) -> Result<Vec<DayCount>> {
-        let rendered = self.days(state, topic, MAX_DAYS).await?;
-        let payload: CachedDays = serde_json::from_slice(&rendered.body)?;
-        Ok(payload.days)
+        Ok(self
+            .days(state, topic, MAX_DAYS, Reader::Public)
+            .await?
+            .counts
+            .clone())
     }
 
     fn selected(
@@ -769,15 +761,16 @@ struct DaysQuery {
     limit: Option<i64>,
 }
 
-#[derive(Debug, Serialize, Deserialize, FromRow)]
+#[derive(Clone, Debug, Serialize, FromRow)]
 struct DayCount {
     day: NaiveDate,
     count: i64,
 }
 
-#[derive(Debug, Deserialize)]
-struct CachedDays {
-    days: Vec<DayCount>,
+/// A `/days` answer: the counts, and the body the endpoint serves for them.
+struct Days {
+    counts: Vec<DayCount>,
+    rendered: Rendered,
 }
 
 /// The small catalogue used by the authenticated home page. It intentionally contains
@@ -891,11 +884,11 @@ async fn days(
     headers: HeaderMap,
 ) -> Result<Response> {
     let limit = query.limit.unwrap_or(DEFAULT_DAYS_LIMIT).clamp(1, MAX_DAYS);
-    let rendered = state
+    let days = state
         .digest
-        .days_for(&state, query.topic.as_deref(), limit, reader)
+        .days(&state, query.topic.as_deref(), limit, reader)
         .await?;
-    Ok(conditional(&headers, &rendered, "application/json"))
+    Ok(conditional(&headers, &days.rendered, "application/json"))
 }
 
 /// Returns the public catalogue plus the current user's enabled topics together with a

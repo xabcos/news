@@ -20,7 +20,7 @@ use crate::{
     state::AppState,
     topics::Topic,
 };
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{NaiveDate, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -39,8 +39,6 @@ pub(crate) struct Article {
     body: String,
     body_en: String,
     full_text: Option<full_text::Document>,
-    source_hash: Vec<u8>,
-    fetched_at: DateTime<Utc>,
 }
 
 pub(crate) async fn daily_count(state: &AppState, day: NaiveDate) -> Result<i64> {
@@ -179,11 +177,9 @@ async fn prepare_source(
         author: source.author,
         source_title: source.title,
         source_language: source.language,
-        source_hash: Sha256::digest(source.body.as_bytes()).to_vec(),
         body: draft.body,
         body_en: draft.body_en,
         full_text,
-        fetched_at: Utc::now(),
     }))
 }
 
@@ -194,8 +190,8 @@ pub(crate) async fn insert(
     article: Article,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO read_articles (item_id, author, source_title, source_language, body, body_en, source_hash, fetched_at, full_text, images_renew_at) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+        "INSERT INTO read_articles (item_id, author, source_title, source_language, body, body_en, full_text, images_renew_at) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
     )
     .bind(id)
     .bind(article.author)
@@ -203,8 +199,6 @@ pub(crate) async fn insert(
     .bind(article.source_language)
     .bind(article.body)
     .bind(article.body_en)
-    .bind(article.source_hash)
-    .bind(article.fetched_at)
     .bind(article.full_text.as_ref().map(sqlx::types::Json))
     .bind(article.full_text.as_ref().and_then(full_text::Document::renew_at))
     .execute(&mut **tx)

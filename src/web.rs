@@ -26,7 +26,6 @@ const HTML_MAX_AGE: &str = "public, max-age=60";
 const CSP: &str = "default-src 'self'; script-src 'self' https://broadcast.xairouter.com; style-src 'self'; img-src 'self' data: blob: https:; font-src 'self'; connect-src 'self' https://stats.xairouter.com https://broadcast.xairouter.com; media-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
 
 pub(crate) fn router(state: AppState) -> Router {
-    let pages_dir = state.config.pages_dir.clone();
     Router::new()
         .route("/api/auth/email/start", post(auth::start_email_login))
         .route("/api/auth/email/check", post(auth::check_email_login))
@@ -55,11 +54,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .merge(crate::site::router())
         .route("/api", any(api_not_found))
         .route("/api/{*path}", any(api_not_found))
-        .fallback_service(
-            ServeDir::new(&pages_dir)
-                .precompressed_gzip()
-                .append_index_html_on_directories(true),
-        )
+        .fallback_service(ServeDir::new("pages").precompressed_gzip())
         .layer(middleware::from_fn(reject_oversized_path))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .layer(middleware::from_fn_with_state(

@@ -803,7 +803,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             .1,
         "海外 AI"
     );
-    sqlx::migrate::Migrator::new(state.config.migrations_dir.clone())
+    sqlx::migrate::Migrator::new(std::path::Path::new("migrations"))
         .await
         .unwrap()
         .run(&state.pool)

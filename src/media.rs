@@ -56,13 +56,13 @@ struct StoredImageRow {
     id: Uuid,
     topic_id: String,
     day: chrono::NaiveDate,
-    image: Option<Value>,
+    image: Value,
 }
 
 #[derive(Debug, sqlx::FromRow)]
 struct StoredPayloadRow {
     id: Uuid,
-    payload: Option<Value>,
+    payload: Value,
 }
 
 /// Image jobs share `image_slots` and one batch budget. Each job owns its slot permit, so
@@ -641,36 +641,25 @@ pub async fn startup_sync(state: &AppState) -> Result<()> {
     .fetch_all(&state.pool)
     .await?;
     let insights = sqlx::query_as::<_, StoredPayloadRow>(
-        "SELECT id, payload FROM ai_insights WHERE status = 'ok' AND payload IS NOT NULL AND started_at >= NOW() - INTERVAL '7 days' ORDER BY started_at DESC",
+        "SELECT id, payload FROM ai_insights WHERE status = 'ok' AND started_at >= NOW() - INTERVAL '7 days' ORDER BY started_at DESC",
     )
     .fetch_all(&state.pool)
     .await?;
     let positions = insights
         .iter()
-        .map(|row| {
-            row.payload
-                .as_ref()
-                .map_or_else(Vec::new, selected_image_positions)
-        })
+        .map(|row| selected_image_positions(&row.payload))
         .collect::<Vec<_>>();
     let mut images =
         insights
             .iter()
             .zip(&positions)
             .flat_map(|(row, positions)| {
-                positions.iter().map(|&position| {
-                    stored_image(&row.payload.as_ref().unwrap()["sources"][position]["image"])
-                })
+                positions
+                    .iter()
+                    .map(|&position| stored_image(&row.payload["sources"][position]["image"]))
             })
-            .chain(
-                rows.iter()
-                    .map(|row| row.image.as_ref().and_then(stored_image)),
-            )
-            .chain(covers.iter().map(|row| {
-                row.payload
-                    .as_ref()
-                    .and_then(|payload| stored_image(&payload["cover"]))
-            }))
+            .chain(rows.iter().map(|row| stored_image(&row.image)))
+            .chain(covers.iter().map(|row| stored_image(&row.payload["cover"])))
             .chain(entries.iter().flat_map(|(_, pictures)| {
                 pictures.as_array().into_iter().flatten().map(stored_image)
             }))
@@ -682,9 +671,7 @@ pub async fn startup_sync(state: &AppState) -> Result<()> {
     // Network work is finished. Persist image URLs and feed versions atomically.
     let mut tx = state.pool.begin().await?;
     for (row, positions) in insights.into_iter().zip(positions) {
-        let Some(mut payload) = row.payload else {
-            continue;
-        };
+        let mut payload = row.payload;
         let mut changed = false;
         for position in positions {
             if let Some(image) = images.next().flatten() {
@@ -705,7 +692,7 @@ pub async fn startup_sync(state: &AppState) -> Result<()> {
             continue;
         };
         let value = serde_json::to_value(image)?;
-        if row.image.as_ref() == Some(&value) {
+        if row.image == value {
             continue;
         }
         sqlx::query("UPDATE items SET image = $2 WHERE id = $1")
@@ -716,10 +703,10 @@ pub async fn startup_sync(state: &AppState) -> Result<()> {
         changed_topics.insert((row.topic_id, row.day));
     }
     for row in covers {
-        let image = images.next().flatten();
-        let (Some(mut payload), Some(image)) = (row.payload, image) else {
+        let Some(image) = images.next().flatten() else {
             continue;
         };
+        let mut payload = row.payload;
         let value = serde_json::to_value(image)?;
         if payload.get("cover") == Some(&value) {
             continue;

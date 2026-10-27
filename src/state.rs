@@ -115,7 +115,7 @@ impl AppState {
 }
 
 async fn run_migrations(config: &Config) -> Result<()> {
-    let migrator = sqlx::migrate::Migrator::new(config.migrations_dir.clone()).await?;
+    let migrator = sqlx::migrate::Migrator::new(std::path::Path::new("migrations")).await?;
     // Schema changes can legitimately exceed the runtime statement timeout. A dedicated
     // one-connection pool also prevents migrations from consuming application capacity.
     let migration_pool = PgPoolOptions::new()
