@@ -31,7 +31,7 @@ use tokio::sync::OwnedSemaphorePermit;
 use url::Url;
 use uuid::Uuid;
 
-/// XABC's account, which migration 0007 makes.
+/// XABC's account, which the schema makes.
 pub(super) const EMAIL: &str = "xabc@xabcnews.invalid";
 /// Each line writes again a quarter of an hour after its last article.
 const INTERVAL: chrono::Duration = chrono::Duration::minutes(15);
