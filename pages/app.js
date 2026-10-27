@@ -132,8 +132,8 @@ const CATALOG = {
 };
 const sectionOf = (id) => Object.keys(CATALOG).find((section) => CATALOG[section].topics.includes(id));
 // Topics with their own server-rendered page instead of a news feed, where an old link to one
-// of them here goes. 分享 (articles) and 学习 (learn) are not topics but have such pages too.
-const PAGE_TOPICS = ["reads", "llm", "articles", "learn", ...Object.keys(CATALOG), ...Object.values(CATALOG).flatMap((section) => section.topics)];
+// of them here goes. 分享 (articles) is not a topic but has such a page too.
+const PAGE_TOPICS = ["reads", "llm", "articles", ...Object.keys(CATALOG), ...Object.values(CATALOG).flatMap((section) => section.topics)];
 const topicPage = (id) => `/${sectionOf(id) ? `${sectionOf(id)}/${id}` : id}${state.lang === "en" ? "?lang=en" : ""}`;
 
 async function init() {

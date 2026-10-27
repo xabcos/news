@@ -1,11 +1,7 @@
 //! The 分享 pages: public articles newest first, one author's articles, an article, and the
-//! previews its author and an administrator read before readers do. 解说 and the lessons of 学习
-//! read on the same article page.
-use super::{
-    COMMENTARY, MARKDOWN, Search, commentary_label, image_id, label,
-    learn::{self, Place},
-    missing, parse,
-};
+//! previews its author and an administrator read before readers do. 解说 reads on the same
+//! article page.
+use super::{COMMENTARY, MARKDOWN, Search, commentary_label, image_id, label, missing, parse};
 use crate::{
     auth::User,
     digest::{Rendered, conditional},
@@ -41,7 +37,7 @@ const FROM: &str = " FROM articles a JOIN authors w ON w.user_id = a.author_id J
 const LIST: Chrome<'static> = Chrome {
     current: "articles",
     section: "reads articles article-cards",
-    stylesheet: "/reads.css?v=18",
+    stylesheet: "/reads.css?v=19",
     script: "/reads.js?v=9",
     feed: ("News", "/feed.xml"),
 };
@@ -61,12 +57,6 @@ const EXPLAINED: Chrome<'static> = Chrome {
 };
 const EXPLANATION: Chrome<'static> = Chrome {
     current: "movie",
-    ..ARTICLE
-};
-/// A lesson marks 学习's tab and has its course's contents beside it.
-const LESSON: Chrome<'static> = Chrome {
-    current: "learn",
-    section: "reads articles learn",
     ..ARTICLE
 };
 
@@ -95,18 +85,10 @@ async fn sitemap(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
             .fetch_all(&state.pool)
             .await?;
     let mut xml = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\"><url><loc>{}</loc></url><url><loc>{}</loc></url><url><loc>{}</loc></url>",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\"><url><loc>{}</loc></url><url><loc>{}</loc></url>",
         escape(&absolute(&state, "/articles")),
-        escape(&absolute(&state, COMMENTARY)),
-        escape(&absolute(&state, learn::PATH))
+        escape(&absolute(&state, COMMENTARY))
     );
-    for course in learn::courses(&state).await? {
-        let _ = write!(
-            xml,
-            "<url><loc>{}</loc></url>",
-            escape(&absolute(&state, &format!("{}/{}", learn::PATH, course.id)))
-        );
-    }
     for (id, updated_at) in rows {
         let _ = write!(
             xml,
@@ -159,20 +141,16 @@ const CARD: &str =
         CASE WHEN i.expires_at > now() THEN i.url END AS cover, i.width, i.height";
 
 /// The public articles of 分享's list, or with `film` of 解说's, holding the words searched;
-/// `select` names what to take of them. Lessons have their contents under 学习.
+/// `select` names what to take of them.
 fn listed(select: &str, film: bool, by: Option<i64>, search: &Search) -> QueryBuilder<Postgres> {
     let mut query = QueryBuilder::new(select);
     query
         .push(
             " FROM articles a JOIN authors w ON w.user_id = a.author_id JOIN users u ON u.id = a.author_id
               LEFT JOIN article_images i ON i.id = a.cover
-              WHERE u.status AND a.status = 'published' AND ",
+              WHERE u.status AND a.status = 'published' AND a.film IS ",
         )
-        .push(if film {
-            "a.film IS NOT NULL"
-        } else {
-            "a.film IS NULL AND a.course IS NULL"
-        });
+        .push(if film { "NOT NULL" } else { "NULL" });
     if let Some(by) = by {
         query.push(" AND a.author_id = ").push_bind(by);
     }
@@ -196,10 +174,6 @@ struct Article {
     published_at: Option<DateTime<Utc>>,
     /// Whether it is a 解说, which belongs to Culture.
     film: bool,
-    /// A lesson's track, chapter and place.
-    course: Option<String>,
-    chapter: Option<String>,
-    lesson: Option<i32>,
 }
 
 #[derive(FromRow)]
@@ -504,7 +478,7 @@ struct Worth {
 
 /// 值得读, which opens ALL: XABC's four newest 分享, newest first, then the twelve hottest of the
 /// last 30 days of 分享 and 解说 together, ranked as 热读 is, each article once; while few are
-/// read, the newest fill the places. Lessons stay under 学习.
+/// read, the newest fill the places.
 async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
     let articles: Vec<Worth> = QueryBuilder::<Postgres>::new(
         "WITH newest AS (
@@ -513,15 +487,14 @@ async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Resp
     )
     .push_bind(super::xabc::EMAIL)
     .push(
-        " AND a.status = 'published' AND a.film IS NULL AND a.course IS NULL
+        " AND a.status = 'published' AND a.film IS NULL
              ORDER BY a.published_at DESC, a.id DESC LIMIT 4)
          SELECT a.id, a.title, a.views, a.film IS NOT NULL AS film,
                 CASE WHEN i.expires_at > now() THEN i.url END AS cover, i.width, i.height
          FROM articles a JOIN users u ON u.id = a.author_id
          LEFT JOIN article_images i ON i.id = a.cover
          LEFT JOIN newest n ON n.id = a.id
-         WHERE u.status AND a.status = 'published' AND a.course IS NULL
-           AND a.published_at >= NOW() - INTERVAL '30 days'
+         WHERE u.status AND a.status = 'published' AND a.published_at >= NOW() - INTERVAL '30 days'
          ORDER BY n.published_at DESC NULLS LAST, ",
     )
     .push(HOT)
@@ -728,7 +701,7 @@ async fn preview(
 
 async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<String> {
     let mut query = QueryBuilder::<Postgres>::new(
-        "SELECT a.id, a.author_id, w.name AS author, a.title, a.body, a.excerpt, a.cover, a.status, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.course, a.chapter, a.lesson",
+        "SELECT a.id, a.author_id, w.name AS author, a.title, a.body, a.excerpt, a.cover, a.status, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film",
     );
     query.push(FROM).push(" AND a.id = ").push_bind(id);
     match mode {
@@ -829,7 +802,7 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
             },
         ),
     };
-    // A 解说 leads back to its list, whose articles are all XABC's; a lesson to its track.
+    // A 解说 leads back to its list, whose articles are all XABC's.
     let (list, name, by) = if article.film {
         (COMMENTARY, commentary_label(en), localized(COMMENTARY, en))
     } else {
@@ -839,48 +812,8 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
             localized(&format!("/articles?by={}", article.author_id), en),
         )
     };
-    let place = match (&article.course, &article.chapter, article.lesson) {
-        (Some(course), Some(chapter), Some(lesson)) => {
-            Place::find(state, course, chapter, lesson).await?
-        }
-        _ => None,
-    };
-    let time = |at: DateTime<Utc>| {
-        format!(
-            "<time datetime=\"{}\">{}</time>",
-            at.to_rfc3339(),
-            at.with_timezone(&state.config.timezone).format("%Y-%m-%d")
-        )
-    };
-    // A lesson tells its place and how current it is; other articles their author and date.
-    let meta = match (&place, article.lesson) {
-        (Some(_), Some(lesson)) => choose(
-            en,
-            &format!(
-                "第 {lesson} 课 · 最后更新 {} · 第 {} 版",
-                time(article.updated_at),
-                article.revision
-            ),
-            &format!(
-                "Lesson {lesson} · updated {} · version {}",
-                time(article.updated_at),
-                article.revision
-            ),
-        )
-        .to_owned(),
-        _ => format!(
-            "<a href=\"{}\">{}</a> · {}",
-            escape(&by),
-            escape(&article.author),
-            time(date)
-        ),
-    };
     let mut content = format!(
-        "{notice}<article class=\"read article\">{}{}<header class=read-heading><div class=read-title><h1>{}</h1></div><div class=item-meta>{meta} · {views}</div></header><div class=read-body>{body}</div></article>",
-        place
-            .as_ref()
-            .map(|place| place.crumbs(en))
-            .unwrap_or_default(),
+        "{notice}<article class=\"read article\">{}<header class=read-heading><div class=read-title><h1>{}</h1></div><div class=item-meta><a href=\"{}\">{}</a> · <time datetime=\"{}\">{}</time> · {views}</div></header><div class=read-body>{body}</div></article>",
         cover
             .as_ref()
             .map(|cover| {
@@ -892,20 +825,16 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
             })
             .unwrap_or_default(),
         crate::site::headline(title),
+        escape(&by),
+        escape(&article.author),
+        date.to_rfc3339(),
+        date.with_timezone(&state.config.timezone).format("%Y-%m-%d"),
     );
-    match &place {
-        Some(place) => {
-            content.push_str(&place.steps(en));
-            content = learn::columns(&place.contents(en), &content);
-        }
-        None => {
-            let _ = write!(
-                content,
-                "<div class=read-actions><a href=\"{}\">← {name}</a></div>",
-                localized(list, en),
-            );
-        }
-    }
+    let _ = write!(
+        content,
+        "<div class=read-actions><a href=\"{}\">← {name}</a></div>",
+        localized(list, en),
+    );
     let path = match mode {
         Mode::Author(_) => format!("/api/articles/{}/preview", article.id),
         Mode::Public | Mode::Review => format!("/articles/{}", article.id),
@@ -924,11 +853,6 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
     {
         structured["image"] = json!(cover.src);
     }
-    let (name, chrome) = match (&place, article.film) {
-        (Some(_), _) => (learn::label(en), &LESSON),
-        (None, true) => (name, &EXPLANATION),
-        (None, false) => (name, &ARTICLE),
-    };
     Ok(crate::site::layout(
         state,
         en,
@@ -937,6 +861,6 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
         &article.excerpt,
         &content,
         Some(structured),
-        chrome,
+        if article.film { &EXPLANATION } else { &ARTICLE },
     ))
 }

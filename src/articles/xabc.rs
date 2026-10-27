@@ -1,14 +1,11 @@
-//! XABC, the site's own pen name, writes on three lines, each every quarter of an hour. For 分享,
-//! grok looks through X and the web, and the briefing model through the web, for things worth
-//! sharing; the briefing model picks one subject from both sets of finds, reads further where it
-//! needs to and writes it up its own way. For 文娱 · 解说 it explains a film or series, or revises an
-//! explanation (`film`). For 学习 it revises a lesson that is due or writes a course's next one
-//! (`lesson`). Articles go out at once under the pen name XABC. Their pictures come from
-//! the pages the models cite or are drawn by an image model, and they link only to addresses the
-//! models found.
-pub(crate) mod course;
+//! XABC, the site's own pen name, writes on two lines, each every quarter of an hour. For 分享, grok looks
+//! through X and the web, and the briefing model through the web, for things worth sharing; the
+//! briefing model picks one subject from both sets of finds, reads further where it needs to
+//! and writes it up its own way. For 文娱 · 解说 it explains a film or series, or revises an
+//! explanation (`film`). Articles go out at once under the pen name XABC. Their
+//! pictures come from the pages the models cite or are drawn by an image model, and they link
+//! only to addresses the models found.
 mod film;
-mod lesson;
 
 use super::{ARTICLE_IMAGES, MARKDOWN, checked, kind, words};
 use crate::{
@@ -36,8 +33,7 @@ use uuid::Uuid;
 
 /// XABC's account, which migration 0007 makes.
 pub(super) const EMAIL: &str = "xabc@xabcnews.invalid";
-/// Each line writes again a quarter of an hour after its last article, or for 解说 and lessons its
-/// last revision.
+/// Each line writes again a quarter of an hour after its last article.
 const INTERVAL: chrono::Duration = chrono::Duration::minutes(15);
 /// After a failure XABC waits half an hour, twice as long after each failure in a row, eight
 /// hours at most: a lasting fault costs a few tries a day, not one every half hour.
@@ -70,19 +66,16 @@ pub(super) enum Line {
     Share,
     /// A film or series explained for 文娱 · 解说, anew or revised.
     Film,
-    /// A lesson for 学习, anew or revised.
-    Lesson,
 }
 
 impl Line {
-    const ALL: [Self; 3] = [Self::Share, Self::Film, Self::Lesson];
+    const ALL: [Self; 2] = [Self::Share, Self::Film];
 
     /// The line's mark among the jobs in flight.
     fn job(self) -> &'static str {
         match self {
             Self::Share => "__xabc_article__",
             Self::Film => "__xabc_film__",
-            Self::Lesson => "__xabc_lesson__",
         }
     }
 
@@ -91,22 +84,6 @@ impl Line {
         match self {
             Self::Share => SEARCHING,
             Self::Film => film::SEARCHING,
-            Self::Lesson => lesson::SEARCHING,
-        }
-    }
-
-    /// Whether grok looks through X for the line: lessons learn from documents on the web.
-    fn on_x(self) -> bool {
-        !matches!(self, Self::Lesson)
-    }
-
-    /// Which of XABC's articles are the line's, as SQL, and the time its latest one tells:
-    /// 解说 and lessons count their revisions.
-    fn articles(self) -> (&'static str, &'static str) {
-        match self {
-            Self::Share => ("film IS NULL AND course IS NULL", "published_at"),
-            Self::Film => ("film IS NOT NULL", "updated_at"),
-            Self::Lesson => ("course IS NOT NULL", "updated_at"),
         }
     }
 }
@@ -194,19 +171,22 @@ async fn start(state: &AppState, line: Line) {
     });
 }
 
-/// When XABC last published on the line, or for 解说 and lessons last revised. An article an
-/// administrator takes back keeps its time.
+/// When XABC last published on the line, or for 解说 last revised. An article an administrator
+/// takes back keeps its time.
 pub(super) async fn last(state: &AppState, line: Line) -> Result<Option<DateTime<Utc>>> {
-    let (articles, time) = line.articles();
-    Ok(sqlx::QueryBuilder::new("SELECT max(")
-        .push(time)
-        .push(") FROM articles WHERE author_id = (SELECT id FROM users WHERE email = ")
-        .push_bind(EMAIL)
-        .push(") AND ")
-        .push(articles)
-        .build_query_scalar()
-        .fetch_one(&state.pool)
-        .await?)
+    Ok(sqlx::query_scalar(match line {
+        Line::Share => {
+            "SELECT max(a.published_at) FROM articles a JOIN users u ON u.id = a.author_id
+             WHERE u.email = $1 AND a.film IS NULL"
+        }
+        Line::Film => {
+            "SELECT max(a.updated_at) FROM articles a JOIN users u ON u.id = a.author_id
+             WHERE u.email = $1 AND a.film IS NOT NULL"
+        }
+    })
+    .bind(EMAIL)
+    .fetch_one(&state.pool)
+    .await?)
 }
 
 /// XABC's account while it is open.
@@ -233,7 +213,6 @@ pub(super) async fn write(state: &AppState, line: Line, since: DateTime<Utc>) ->
     match line {
         Line::Share => share(state, author, since).await,
         Line::Film => film::write(state, author, since).await,
-        Line::Lesson => lesson::write(state, author, since).await,
     }
 }
 
@@ -242,7 +221,7 @@ async fn share(state: &AppState, author: i64, since: DateTime<Utc>) -> Result<Uu
     // What XABC shared in the last week: the models are told the titles, and a find about a
     // page those articles linked to is left out.
     let lately: Vec<(String, String)> = sqlx::query_as(
-        "SELECT title, body FROM articles WHERE author_id = $1 AND film IS NULL AND course IS NULL
+        "SELECT title, body FROM articles WHERE author_id = $1 AND film IS NULL
            AND published_at >= NOW() - INTERVAL '7 days' ORDER BY published_at DESC",
     )
     .bind(author)
@@ -272,7 +251,7 @@ async fn share(state: &AppState, author: i64, since: DateTime<Utc>) -> Result<Uu
     found.usage += drafted.usage;
     found.known.extend(drafted.cited);
     let article = finish(state, drafted.article, found.known, &[], true).await?;
-    let id = publish(state, author, since, Subject::Share, &article).await?;
+    let id = publish(state, author, since, None, &article).await?;
     tracing::info!(
         %id, title = article.title, finds = found.finds.len(), repeated = found.repeated,
         pictures = article.pictures.len(), cover = article.cover.is_some(),
@@ -294,27 +273,19 @@ struct Found {
     usage: Usage,
 }
 
-/// The line's scouts search at once; a search that fails is only logged.
+/// Both scouts search for the line at once; a search that fails is only logged.
 async fn look(state: &AppState, line: Line, input: &str, covered: &HashSet<String>) -> Found {
-    let x = async {
-        if line.on_x() {
-            Some(search(state, line, Scout::X, input).await)
-        } else {
-            None
-        }
-    };
-    let (x, web) = tokio::join!(x, search(state, line, Scout::Web, input));
+    let (x, web) = tokio::join!(
+        search(state, line, Scout::X, input),
+        search(state, line, Scout::Web, input),
+    );
     let mut found = Found {
         finds: Vec::new(),
         known: HashSet::new(),
         repeated: 0,
         usage: Usage::default(),
     };
-    let searches = x
-        .map(|x| (Scout::X, x))
-        .into_iter()
-        .chain([(Scout::Web, web)]);
-    for (scout, searched) in searches {
+    for (scout, searched) in [(Scout::X, x), (Scout::Web, web)] {
         let searched = match searched {
             Ok(searched) => searched,
             Err(error) => {
@@ -465,9 +436,6 @@ impl Scout {
             }
             (Line::Film, Self::Web) => {
                 "用 web_search 查维基百科等资料里的完整剧情与结局，以及创作背景、主创访谈和专业影评"
-            }
-            (Line::Lesson, _) => {
-                "用 web_search 检索官方文档、官方仓库与示例、版本说明和更新日志，以及一线实践者写的高质量教程"
             }
         }
     }
@@ -1044,45 +1012,13 @@ fn plain(text: &str) -> String {
     plain
 }
 
-/// What an article is about besides itself: nothing for 分享, its work for a 解说, which has one
-/// article at most, and for a lesson its track, its chapter and its upkeep.
-#[derive(Clone, Copy)]
-pub(super) enum Subject<'a> {
-    Share,
-    Film(&'a str),
-    Lesson {
-        course: &'a str,
-        chapter: &'a str,
-        upkeep: Upkeep<'a>,
-    },
-}
-
-/// What keeps a lesson current: the subjects news about it would name, and in how many days it
-/// is reviewed again; and the course's last turn it was written to.
-#[derive(Clone, Copy)]
-pub(super) struct Upkeep<'a> {
-    pub(super) keywords: &'a [String],
-    pub(super) review_days: i32,
-    pub(super) turned: Option<DateTime<Utc>>,
-}
-
-impl Subject<'_> {
-    fn line(self) -> Line {
-        match self {
-            Self::Share => Line::Share,
-            Self::Film(_) => Line::Film,
-            Self::Lesson { .. } => Line::Lesson,
-        }
-    }
-}
-
 /// Publishes the article with its pictures, unless XABC published one on the line since `since`
-/// meanwhile. A lesson comes after its track's last.
+/// meanwhile. A 解说 names its work (`film`), which has one article at most.
 pub(super) async fn publish(
     state: &AppState,
     author: i64,
     since: DateTime<Utc>,
-    subject: Subject<'_>,
+    film: Option<&str>,
     article: &Finished,
 ) -> Result<Uuid> {
     let cover = article.cover.as_ref();
@@ -1092,44 +1028,22 @@ pub(super) async fn publish(
         .bind(author)
         .execute(&mut *tx)
         .await?;
-    if sqlx::QueryBuilder::new("SELECT EXISTS (SELECT 1 FROM articles WHERE author_id = ")
-        .push_bind(author)
-        .push(" AND published_at >= ")
-        .push_bind(since)
-        .push(" AND ")
-        .push(subject.line().articles().0)
-        .push(")")
-        .build_query_scalar::<bool>()
-        .fetch_one(&mut *tx)
-        .await?
+    if sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM articles
+           WHERE author_id = $1 AND published_at >= $2 AND (film IS NULL) = $3)",
+    )
+    .bind(author)
+    .bind(since)
+    .bind(film.is_none())
+    .fetch_one(&mut *tx)
+    .await?
     {
         return Err(AppError::Conflict("XABC 刚发过一篇文章".into()));
     }
-    if let Subject::Lesson { course, upkeep, .. } = subject {
-        let shown =
-            sqlx::query_as("SELECT visible, adjusted_at FROM courses WHERE id = $1 FOR UPDATE")
-                .bind(course)
-                .fetch_optional(&mut *tx)
-                .await?;
-        steady(shown, upkeep)?;
-    }
-    let (film, course, chapter, upkeep) = match subject {
-        Subject::Share => (None, None, None, None),
-        Subject::Film(work) => (Some(work), None, None, None),
-        Subject::Lesson {
-            course,
-            chapter,
-            upkeep,
-        } => (None, Some(course), Some(chapter), Some(upkeep)),
-    };
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO articles (id, author_id, title, body, excerpt, status, published_at, film, course, chapter,
-                               lesson, keywords, review_at)
-         VALUES ($1, $2, $3, $4, $5, 'published', now(), $6, $7, $8,
-                 CASE WHEN $7::text IS NOT NULL
-                      THEN (SELECT COALESCE(max(lesson), 0) + 1 FROM articles WHERE course = $7) END,
-                 $9, now() + make_interval(days => $10))",
+        "INSERT INTO articles (id, author_id, title, body, excerpt, status, published_at, film)
+         VALUES ($1, $2, $3, $4, $5, 'published', now(), $6)",
     )
     .bind(id)
     .bind(author)
@@ -1137,10 +1051,6 @@ pub(super) async fn publish(
     .bind(&content.body)
     .bind(&content.excerpt)
     .bind(film)
-    .bind(course)
-    .bind(chapter)
-    .bind(upkeep.map(|upkeep| upkeep.keywords))
-    .bind(upkeep.map(|upkeep| upkeep.review_days))
     .execute(&mut *tx)
     .await?;
     keep(&mut tx, id, article.pictures.iter().chain(cover)).await?;
@@ -1156,43 +1066,20 @@ pub(super) async fn publish(
     Ok(id)
 }
 
-/// A lesson saves only into a course still shown and not turned since it was written; hiding or
-/// turning the course, which locks its row too, waits for the save, and a turn made meanwhile
-/// leaves the lesson to be written again to the new brief.
-fn steady(course: Option<(bool, Option<DateTime<Utc>>)>, upkeep: Upkeep<'_>) -> Result<()> {
-    match course {
-        Some((true, turned)) if turned == upkeep.turned => Ok(()),
-        Some((true, _)) => Err(AppError::Conflict("课程刚调整过".into())),
-        _ => Err(AppError::Conflict("课程已隐藏".into())),
-    }
-}
-
-/// Saves a revised 解说 or lesson over the revision XABC read, unless an administrator saved it
-/// meanwhile; its cover stays, and a lesson takes its new upkeep.
+/// Saves a revised 解说 over the revision XABC read, unless an administrator saved it meanwhile;
+/// its cover stays.
 pub(super) async fn revise(
     state: &AppState,
     id: Uuid,
     revision: i32,
     cover: Option<Uuid>,
-    upkeep: Option<Upkeep<'_>>,
     article: &Finished,
 ) -> Result<()> {
     let content = checked(&article.title, &article.body, cover)?;
     let mut tx = state.pool.begin().await?;
-    if let Some(upkeep) = upkeep {
-        let shown = sqlx::query_as(
-            "SELECT c.visible, c.adjusted_at FROM courses c JOIN articles a ON a.course = c.id
-             WHERE a.id = $1 FOR UPDATE OF c",
-        )
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        steady(shown, upkeep)?;
-    }
     let saved = sqlx::query(
         "UPDATE articles SET title = $3, body = $4, excerpt = $5, revision = revision + 1,
-           updated_at = now(), keywords = COALESCE($6, keywords),
-           review_at = COALESCE(now() + make_interval(days => $7), review_at)
+           updated_at = now()
          WHERE id = $1 AND revision = $2",
     )
     .bind(id)
@@ -1200,51 +1087,15 @@ pub(super) async fn revise(
     .bind(&content.title)
     .bind(&content.body)
     .bind(&content.excerpt)
-    .bind(upkeep.map(|upkeep| upkeep.keywords))
-    .bind(upkeep.map(|upkeep| upkeep.review_days))
     .execute(&mut *tx)
     .await?
     .rows_affected();
     if saved == 0 {
-        return Err(AppError::Conflict("文章刚被改过".into()));
+        return Err(AppError::Conflict("解说刚被改过".into()));
     }
     keep(&mut tx, id, article.pictures.iter()).await?;
     tx.commit().await?;
     Ok(())
-}
-
-/// The body of a 解说 or lesson being revised, with each figure it shows (a picture leading a
-/// paragraph of its own, the caption line under it) standing as `![](keep:N)`; and the figures as
-/// they were.
-pub(super) fn figures(body: &str) -> (String, Vec<String>) {
-    let mut paragraph = None;
-    let mut found = Vec::new();
-    for (event, range) in Parser::new_ext(body, MARKDOWN).into_offset_iter() {
-        match event {
-            Event::Start(Tag::Paragraph) => paragraph = Some(range),
-            Event::Start(Tag::Image { dest_url, .. }) => {
-                if let Some(paragraph) = paragraph.take()
-                    && paragraph.start == range.start
-                    && super::image_id(&dest_url).is_some()
-                {
-                    // The blank line after it stays, so the placeholder keeps its paragraph.
-                    let end = paragraph.start + body[paragraph].trim_end().len();
-                    found.push(range.start..end);
-                }
-            }
-            _ => {}
-        }
-    }
-    let kept = found
-        .iter()
-        .map(|range| body[range.clone()].to_owned())
-        .collect();
-    let edits = found
-        .into_iter()
-        .enumerate()
-        .map(|(index, range)| (range, format!("![]({KEPT}{})", index + 1)))
-        .collect();
-    (apply(body, edits), kept)
 }
 
 /// Records the pictures an article shows.
@@ -1376,38 +1227,6 @@ mod tests {
         );
         progress.failed(now);
         assert_eq!(progress.next - now, chrono::Duration::minutes(30));
-    }
-
-    #[test]
-    fn a_revision_keeps_the_figures_it_moves_and_drops_the_rest() {
-        let figure = |id: u128, caption: &str| {
-            format!(
-                "![{caption}](image:{})\n*{caption}（AI 生成）*",
-                Uuid::from_u128(id)
-            )
-        };
-        let body = format!(
-            "开头，\n\n{}\n\n中间 ![行内](image:{}) 的图。\n\n{}\n\n结尾。",
-            figure(1, "甲"),
-            Uuid::from_u128(2),
-            figure(3, "乙")
-        );
-        let (shown, kept) = figures(&body);
-        assert_eq!(
-            shown,
-            format!(
-                "开头，\n\n![](keep:1)\n\n中间 ![行内](image:{}) 的图。\n\n![](keep:2)\n\n结尾。",
-                Uuid::from_u128(2)
-            )
-        );
-        assert_eq!(kept, [figure(1, "甲"), figure(3, "乙")]);
-        // The writer moved the second up and dropped the first; a figure it names twice shows
-        // once, and the picture inside a paragraph goes like any picture not placed.
-        let revised = "![](keep:2)\n\n新的开头。\n\n![](keep:2)\n\n![](keep:9)\n\n中间 ![行内](image:x) 的图。";
-        assert_eq!(
-            pictured(revised, &[], &HashMap::new(), &kept),
-            format!("{}\n\n新的开头。\n\n\n\n\n\n中间  的图。", figure(3, "乙"))
-        );
     }
 
     #[test]
