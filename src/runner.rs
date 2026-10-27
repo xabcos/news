@@ -26,7 +26,6 @@ const KNOWN_LIMIT: i64 = 80;
 /// news leaves with retention.
 const REPEAT_DAYS: i64 = 7;
 const RUN_RETENTION_DAYS: i64 = 3;
-/// XAI 日报 and equity notes alike.
 const INSIGHT_RETENTION_DAYS: i64 = 32;
 pub(crate) const CLEANUP_BATCH_SIZE: i64 = 500;
 const CLEANUP_MAX_BATCHES: usize = 20;
@@ -290,25 +289,19 @@ async fn tick(state: &AppState) -> Result<()> {
 
 /// Each completed topic is checkpointed by cutoff, so a retry only collects missing topics.
 /// The coordinator holds no semaphore permit; even a single-slot deployment can progress.
-/// Without a topic it collects what the briefing reads, the visible public news topics, so
-/// an internal source such as `equity` or the photograph topics cannot hold the briefing back.
-pub(crate) async fn collect_briefing(
-    state: &AppState,
-    window: NewsWindow,
-    topic: Option<&str>,
-) -> Result<()> {
+/// It collects what the briefing reads, the visible public news topics, so a hidden topic or
+/// the photograph topics cannot hold the briefing back.
+pub(crate) async fn collect_briefing(state: &AppState, window: NewsWindow) -> Result<()> {
     // Reads collects on its own schedule and 𝑳𝑳𝑴 writes no news.
     let mut outside = crate::insight::outside_briefing();
     outside.extend(["reads", crate::llm::TOPIC_ID]);
     let topics = sqlx::query_as::<_, Topic>(
-        "SELECT * FROM topics WHERE enabled AND owner_user_id IS NULL AND id <> ALL($3)
-         AND (($2::text IS NULL AND visible) OR id = $2)
+        "SELECT * FROM topics WHERE enabled AND visible AND owner_user_id IS NULL AND id <> ALL($2)
          AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.topic_id = topics.id
                          AND triggered_by = 'briefing' AND status = 'ok' AND window_end = $1)
          ORDER BY sort_weight, id",
     )
     .bind(window.end)
-    .bind(topic)
     .bind(outside)
     .fetch_all(&state.pool)
     .await?;
@@ -1190,7 +1183,6 @@ async fn prune(state: &AppState, today: NaiveDate) -> Result<()> {
     // Batches commit one by one, so a failed pass may still have removed the newest row.
     if !matches!(insights, Ok(0)) {
         state.insight.invalidate();
-        state.equity.invalidate();
     }
     if let Err(error) = insights {
         tracing::warn!(%error, "AI insight history pruning failed");

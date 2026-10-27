@@ -86,42 +86,6 @@ fn analysis_input_keeps_facts_and_dates_without_storage_metadata() {
 }
 
 #[test]
-fn equity_runs_twice_daily_across_dst_changes() {
-    let timezone = chrono_tz::Asia::Shanghai;
-    let time = NaiveTime::from_hms_opt(6, 0, 0).unwrap();
-    for (date, previous_hour, hour) in [
-        ("2026-03-07", 13, 13),
-        ("2026-03-08", 13, 12),
-        ("2026-09-29", 12, 12),
-        ("2026-11-01", 12, 13),
-        ("2026-11-02", 13, 13),
-    ] {
-        let day: NaiveDate = date.parse().unwrap();
-        let morning = crate::topics::to_utc(timezone, day.and_time(time));
-        let evening = day.and_hms_opt(hour, 45, 0).unwrap().and_utc();
-        let previous = day
-            .pred_opt()
-            .unwrap()
-            .and_hms_opt(previous_hour, 45, 0)
-            .unwrap()
-            .and_utc();
-        for (now, expected) in [
-            (morning - ChronoDuration::seconds(1), previous),
-            (morning, morning),
-            (evening - ChronoDuration::seconds(1), morning),
-            (evening, evening),
-            (
-                morning + ChronoDuration::hours(24) - ChronoDuration::seconds(1),
-                evening,
-            ),
-        ] {
-            assert_eq!(Kind::Equity.cutoff(now, timezone, time), expected, "{now}");
-        }
-        assert_eq!(Kind::Ai.cutoff(evening, timezone, time), morning);
-    }
-}
-
-#[test]
 fn closes_editions_at_0600_and_keeps_half_open_windows() {
     let cutoff = NaiveTime::from_hms_opt(6, 0, 0).unwrap();
     let end = Utc.with_ymd_and_hms(2026, 9, 20, 22, 0, 0).unwrap();
@@ -828,8 +792,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             "digital",
             "llm",
             "fashion",
-            "reads",
-            "equity"
+            "reads"
         ]
     );
     assert_eq!(
@@ -851,7 +814,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             .fetch_all(&state.pool)
             .await
             .unwrap();
-    assert_eq!(migrations, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    assert_eq!(migrations, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     sqlx::query("INSERT INTO topics (id,name,brief,enabled) VALUES ('inactive','Inactive','Inactive',false)")
         .execute(&state.pool).await.unwrap();
     sqlx::query("TRUNCATE items, runs, ai_insights CASCADE")
@@ -987,14 +950,14 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     let before = call_count();
     let attempt = tokio::time::timeout(
         Duration::from_secs(10),
-        runner::collect_briefing(&state, window, None),
+        runner::collect_briefing(&state, window),
     )
     .await
     .unwrap();
     assert!(attempt.is_err());
     tokio::time::timeout(
         Duration::from_secs(10),
-        runner::collect_briefing(&state, window, None),
+        runner::collect_briefing(&state, window),
     )
     .await
     .unwrap()
@@ -1041,9 +1004,9 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     assert_eq!(call_count() - before, 11); // Nine columns, one failed-column retry, one analysis.
     // Drive the actual coordinator, including slot acquisition and atomic publication.
     let before = call_count();
-    let id = start_generation(&state, day, end, Kind::Ai).await.unwrap();
+    let id = start_generation(&state, day, end).await.unwrap();
     assert!(matches!(
-        start_generation(&state, day, end, Kind::Ai).await,
+        start_generation(&state, day, end).await,
         Err(AppError::Conflict(_))
     ));
     wait_for_generation(&state).await;
@@ -1077,7 +1040,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     // A failed manual regeneration keeps the previously published edition intact.
     let before = call_count();
     fail_analysis.store(true, Ordering::Relaxed);
-    let failed_id = start_generation(&state, day, end, Kind::Ai).await.unwrap();
+    let failed_id = start_generation(&state, day, end).await.unwrap();
     wait_for_generation(&state).await;
     let failed: String = sqlx::query_scalar("SELECT status FROM ai_insights WHERE id=$1")
         .bind(failed_id)
@@ -1105,7 +1068,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     // Three failures of one edition end the automatic retries.
     let earlier = [Uuid::new_v4(), Uuid::new_v4()];
     for id in earlier {
-        sqlx::query("INSERT INTO ai_insights (id,kind,status,briefing_day,window_start,window_end,started_at,finished_at,model,error) SELECT $1,kind,status,briefing_day,window_start,window_end,started_at,finished_at,model,'earlier failure' FROM ai_insights WHERE id=$2")
+        sqlx::query("INSERT INTO ai_insights (id,status,briefing_day,window_start,window_end,started_at,finished_at,model,error) SELECT $1,status,briefing_day,window_start,window_end,started_at,finished_at,model,'earlier failure' FROM ai_insights WHERE id=$2")
             .bind(id).bind(failed_id).execute(&state.pool).await.unwrap();
     }
     tick(&state).await.unwrap();
@@ -1170,7 +1133,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     let before = call_count();
     let published = render_latest(&state).await.unwrap();
     *citation_mode.lock().unwrap() = CitationReply::AlwaysInvalid;
-    let invalid_id = start_generation(&state, day, end, Kind::Ai).await.unwrap();
+    let invalid_id = start_generation(&state, day, end).await.unwrap();
     wait_for_generation(&state).await;
     let (status, error): (String, String) =
         sqlx::query_as("SELECT status,error FROM ai_insights WHERE id=$1")
@@ -1199,7 +1162,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     .await
     .unwrap();
     let before = call_count();
-    let retry_id = start_generation(&state, day, end, Kind::Ai).await.unwrap();
+    let retry_id = start_generation(&state, day, end).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let failed_once: bool =
@@ -1244,7 +1207,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         .await
         .unwrap();
     assert!(
-        runner::collect_briefing(&state, window, None)
+        runner::collect_briefing(&state, window)
             .await
             .unwrap_err()
             .to_string()
@@ -1302,9 +1265,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         .fetch_one(&state.pool)
         .await
         .unwrap();
-    runner::collect_briefing(&state, window, None)
-        .await
-        .unwrap();
+    runner::collect_briefing(&state, window).await.unwrap();
     let counts: (i32, i32, i32) =
         sqlx::query_as("SELECT new_count,dup_count,dropped_count FROM runs WHERE topic_id='x'")
             .fetch_one(&state.pool)
@@ -1333,9 +1294,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     .execute(&state.pool)
     .await
     .unwrap();
-    runner::collect_briefing(&state, window, None)
-        .await
-        .unwrap();
+    runner::collect_briefing(&state, window).await.unwrap();
     let collected: Vec<String> =
         sqlx::query_scalar("SELECT topic_id FROM runs WHERE topic_id IN ('fashion', 'biz')")
             .fetch_all(&state.pool)
@@ -1365,8 +1324,37 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     state.shutdown_workers().await;
     image_server.abort();
     check_media_renewal(&mut state).await;
+    check_retention(&state).await;
     check_media_limits(state).await;
     server.abort();
+}
+
+/// Editions leave 32 days after they were started, failed ones too; a generation still running
+/// stays.
+async fn check_retention(state: &AppState) {
+    let mut kept = Vec::new();
+    for (status, days, stays) in [
+        ("ok", 33, false),
+        ("failed", 33, false),
+        ("ok", 31, true),
+        ("running", 40, true),
+    ] {
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO ai_insights (id,status,briefing_day,window_start,window_end,started_at,finished_at,model,payload) VALUES ($1,$2,CURRENT_DATE,NOW(),NOW(),NOW()-$3*INTERVAL '1 day',CASE WHEN $2='running' THEN NULL ELSE NOW() END,'test','{}')")
+            .bind(id).bind(status).bind(days)
+            .execute(&state.pool).await.unwrap();
+        if stays {
+            kept.push(id);
+        }
+    }
+    runner::cleanup_insights(state).await.unwrap();
+    let left: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM ai_insights WHERE started_at < NOW() - INTERVAL '30 days' ORDER BY started_at DESC",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(left, kept);
 }
 
 async fn check_media_renewal(state: &mut AppState) {

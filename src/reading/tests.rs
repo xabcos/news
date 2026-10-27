@@ -441,16 +441,6 @@ pub(crate) async fn feed(state: &AppState) {
         .unwrap();
     assert!(dated.contains("href=\"/?day=2026-10-20\" hreflang=\"zh-CN\">中文</a>"));
     assert!(!dated.contains("rel=\"preload\""));
-    let edition = home("/?topic=equity-insight&at=2026-10-20T08%3A00%3A00Z", "")
-        .await
-        .unwrap()
-        .text()
-        .await
-        .unwrap();
-    assert!(edition.contains(
-        "href=\"/?topic=equity-insight&amp;at=2026-10-20T08%3A00%3A00Z&amp;lang=en\" hreflang=\"en\">EN</a>"
-    ));
-    assert!(!edition.contains("rel=\"preload\""));
     let site = state.config.public_base_url.as_str().trim_end_matches('/');
     for card in [
         format!("<meta property=\"og:url\" content=\"{site}/\">"),
@@ -655,6 +645,57 @@ pub(crate) async fn feed(state: &AppState) {
         404
     );
     assert_eq!(preview("/digest?topic=w").await.unwrap().status(), 200);
+    // The workspace's two switches, in all four combinations, decide what every reader sees.
+    for (enabled, visible) in [(true, false), (false, true), (false, false), (true, true)] {
+        let response = http
+            .patch(format!("{base}/api/admin/topics/preview-shared"))
+            .header("cookie", &admin)
+            .header("sec-fetch-site", "same-origin")
+            .json(&serde_json::json!({ "enabled": enabled, "visible": visible }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.json::<Value>().await.unwrap()["visible"], visible);
+        let shown = enabled && visible;
+        for cookie in ["", admin.as_str(), user.as_str()] {
+            let get = |path: &str| {
+                http.get(format!("{base}{path}"))
+                    .header("cookie", cookie)
+                    .send()
+            };
+            for path in ["/topics", "/digest?limit=128"] {
+                let listed = get(path).await.unwrap().json::<Value>().await.unwrap();
+                let listed = listed["topics"].as_array().unwrap();
+                assert_eq!(
+                    listed.iter().any(|topic| topic["id"] == "preview-shared"),
+                    shown,
+                    "{path}"
+                );
+            }
+            for path in [
+                "/digest?topic=preview-shared",
+                "/feed.xml?topic=preview-shared",
+            ] {
+                let status = get(path).await.unwrap().status();
+                assert_eq!(status.is_success(), shown, "{path}");
+            }
+        }
+        let days = public("/days?topic=preview-shared".into())
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap();
+        assert_eq!(!days["days"].as_array().unwrap().is_empty(), shown);
+        let private = http
+            .get(format!("{base}/api/me/feed?topic=preview-shared"))
+            .header("cookie", &user)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(private.status().is_success(), shown);
+    }
     sqlx::query("DELETE FROM sessions")
         .execute(&state.pool)
         .await

@@ -595,11 +595,8 @@ async fn create_topic(
     } else {
         generated_topic_id()
     };
-    if matches!(
-        id.trim().to_ascii_lowercase().as_str(),
-        "insight" | "equity-insight"
-    ) {
-        return Err(AppError::BadRequest("该 ID 已用于研判入口".into()));
+    if id.trim().eq_ignore_ascii_case("insight") {
+        return Err(AppError::BadRequest("该 ID 已用于日报入口".into()));
     }
     let owner_user_id = (!scope.is_public()).then_some(user.id);
     let model = if scope.is_public() {

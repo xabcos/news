@@ -20,7 +20,6 @@ const ROLE_COOKIE = "news_role";
 const DAYS_LIMIT = 366;
 const PRELOAD_MARGIN = "0px 0px 70% 0px";
 const INSIGHT_ID = "insight";
-const EQUITY_ID = "equity-insight";
 // The photograph gallery: rows of photographs at their own ratio, opened in a lightbox that
 // plays faster than the travel viewer, since there is nothing to read beside a photograph.
 const PHOTO_TOPIC = "w";
@@ -85,7 +84,6 @@ const state = {
   lang: initial.get("lang") === "en" ? "en" : "zh",
   topic: initial.get("topic") || "",
   day: initial.get("day") || "",
-  at: initial.get("topic") === EQUITY_ID ? initial.get("at") || "" : "",
   topics: [],
   days: [],
   // One digest per loaded day; navigation/reload starts a fresh, bounded timeline.
@@ -155,14 +153,13 @@ async function init() {
     const params = new URLSearchParams(location.search);
     state.topic = params.get("topic") || "";
     state.day = state.topic === INSIGHT_ID ? "" : params.get("day") || "";
-    state.at = state.topic === EQUITY_ID ? params.get("at") || "" : "";
     renderTabs();
     load();
   });
   // A refresh redraws today's cards, so it waits while a photograph viewer walks them and
   // while the reader is below the first screen, where the redraw would move the page.
   setInterval(() => {
-    if (document.visibilityState === "visible" && !state.day && !state.at
+    if (document.visibilityState === "visible" && !state.day
       && window.scrollY < window.innerHeight
       && !document.body.classList.contains("dialog-open")) load(true);
   }, REFRESH_MS);
@@ -251,7 +248,6 @@ function search(extra = {}) {
   const params = new URLSearchParams();
   if (state.topic) params.set("topic", state.topic);
   if (state.day) params.set("day", state.day);
-  if (state.topic === EQUITY_ID && state.at) params.set("at", state.at);
   Object.entries(extra).forEach(([key, value]) => params.set(key, value));
   const query = params.toString();
   return query ? `?${query}` : "";
@@ -323,7 +319,7 @@ function clearDigest() {
 
 async function load(silent = false) {
   loadWorth();
-  if ([INSIGHT_ID, EQUITY_ID].includes(state.topic)) return loadInsight(silent);
+  if (state.topic === INSIGHT_ID) return loadInsight(silent);
   const controller = startLoad();
   const { signal } = controller;
   const epoch = ++state.epoch;
@@ -412,12 +408,10 @@ async function load(silent = false) {
 }
 
 async function loadInsight(silent = false) {
-  const equity = state.topic === EQUITY_ID;
-  const key = equity ? "equity" : "insight";
   const controller = startLoad();
   const { signal } = controller;
   const epoch = ++state.epoch;
-  if (!equity && state.day) {
+  if (state.day) {
     state.day = "";
     history.replaceState({}, "", address());
   }
@@ -433,9 +427,8 @@ async function loadInsight(silent = false) {
   }
   try {
     const needCatalog = state.personal && !state.topics.length;
-    const selector = state.at ? `at=${encodeURIComponent(state.at)}` : state.day ? `day=${encodeURIComponent(state.day)}` : "";
     const [{ data: payload, etag }, catalog] = await Promise.all([
-      fetchJson(equity ? `/equity-insight${selector ? `?${selector}` : ""}` : "/insight", { signal, withEtag: true }),
+      fetchJson("/insight", { signal, withEtag: true }),
       needCatalog ? personalCatalog(signal) : null,
     ]);
     if (epoch !== state.epoch) return;
@@ -447,21 +440,20 @@ async function loadInsight(silent = false) {
       state.topics = catalog.topics;
       renderTabs();
     }
-    if (silent && etag && etag === state[`${key}Etag`]) {
+    if (silent && etag && etag === state.insightEtag) {
       state.historyLoading = false;
       state.historyError = false;
       state.historyDone = true;
       setStatus("");
       return;
     }
-    state[`${key}Etag`] = etag;
-    state[key] = equity ? payload : payload.insight;
+    state.insightEtag = etag;
+    state.insight = payload.insight;
     state.historyLoading = false;
     state.historyError = false;
     state.historyDone = true;
     setStatus("");
-    if (equity) renderEquity(silent);
-    else renderInsight(state.insight, silent);
+    renderInsight(state.insight, silent);
   } catch (error) {
     if (error.name === "AbortError") return;
     if (epoch === state.epoch && !silent) setStatus(t().failed);
@@ -612,7 +604,7 @@ function updateHistoryLoader() {
 }
 
 function navigate(changes) {
-  Object.assign(state, { at: "" }, changes);
+  Object.assign(state, changes);
   history.pushState({}, "", address());
   renderTabs();
   load();
@@ -638,7 +630,7 @@ function renderTabs() {
   renderTravelMap();
   document.title = state.topic === INSIGHT_ID
     ? `𝑵𝒆𝒘𝒔 · ${state.lang === "en" ? "XAI Daily" : "XAI 日报"}`
-    : state.topic === EQUITY_ID ? `𝑵𝒆𝒘𝒔 · ${state.lang === "en" ? "Equity notes" : "股市观察"}` : "𝑵𝒆𝒘𝒔";
+    : "𝑵𝒆𝒘𝒔";
   // The bar comes with the page. Its switch opens this address in the other language, as the
   // server writes it (a page cached from before has none), and a signed-in reader's own topics
   // follow the site's tabs.
@@ -731,13 +723,6 @@ function render(preserveScroll = false, scrollTop = window.scrollY, { latestOnly
     }));
   }
   window.setTimeout(maybeLoadOlder, 0);
-}
-
-function renderEquity(preserveScroll = false, scrollTop = window.scrollY) {
-  clearDigest();
-  el.digest.append(EquityNotes.render(state.equity, { lang: state.lang, onEdition: (at) => navigate({ topic: EQUITY_ID, day: "", at }) }));
-  el.shell.classList.remove("is-loading");
-  if (preserveScroll) window.requestAnimationFrame(() => { document.scrollingElement.scrollTop = scrollTop; });
 }
 
 function renderInsight(insight, preserveScroll = false, scrollTop = window.scrollY) {

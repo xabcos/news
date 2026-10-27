@@ -181,9 +181,6 @@ function endSession() {
   $("#accountEmail").textContent = "";
   $("#statusLine").textContent = "";
   $("#briefingPanel").classList.add("hidden");
-  $("#equityPanel").classList.add("hidden");
-  $("#equityMeta").textContent = "";
-  message("equityMessage", "");
   $("#briefingImages").classList.add("hidden");
   $("#briefingImages").replaceChildren();
   $("#briefingDrafts").classList.add("hidden");
@@ -238,7 +235,6 @@ async function enterApp(data) {
   $("#dateTools").classList.toggle("hidden", !s.admin);
   $("#runsPanel").classList.toggle("hidden", !s.admin);
   $("#briefingPanel").classList.toggle("hidden", !s.admin);
-  $("#equityPanel").classList.toggle("hidden", !s.admin);
   $("#coursesPanel").classList.toggle("hidden", !s.admin);
   $("#newTopicButton").disabled = true;
   message("topicsMessage", "");
@@ -276,7 +272,7 @@ async function refresh(s) {
       if (finished || contentChanged) await loadItems(s);
     }
     if (s.admin && $("#runsPanel").open) await loadRuns(s);
-    if (s.admin) await Promise.all([loadBriefing(s), loadEquity(s)]);
+    if (s.admin) await loadBriefing(s);
   } finally {
     s.refreshing = false;
     if (session === s) scheduleRefresh(s);
@@ -304,30 +300,6 @@ async function loadBriefing(s) {
     if (session === s) message("briefingMessage", error.message);
   }
 }
-
-async function loadEquity(s) {
-  try {
-    const { briefing, enabled } = await s.request("/api/admin/equity-insight");
-    if (session !== s) return;
-    const status = { running: "采集与生成中", ok: "已完成", failed: "失败" };
-    $("#equityMeta").textContent = briefing
-      ? `${briefing.briefing_day} · ${briefing.edition === "evening" ? "晚间" : "早间"} · ${status[briefing.status]} · ${formatTime(briefing.finished_at || briefing.started_at, s.timezone)}`
-      : "每天早晚两期，研判近 7 天股市资料，保留历史笔记";
-    $("#runEquityButton").disabled = !enabled || briefing?.status === "running";
-    message("equityMessage", !enabled ? "启用 equity 主题抓取后可生成研判；前台展示可保持关闭。" : briefing?.error || "");
-  } catch (error) {
-    if (session === s) message("equityMessage", error.message);
-  }
-}
-
-$("#runEquityButton").addEventListener("click", () => {
-  const s = session;
-  if (!s?.admin) return;
-  void withBusy($("#runEquityButton"), "提交中…", async () => {
-    await s.request("/api/admin/equity-insight", { method: "POST" });
-    toast("股市研判已开始生成");
-  }).then(() => { if (session === s) return loadEquity(s); }).catch(reportError);
-});
 
 function renderBriefing(s) {
   const briefing = s.briefing;

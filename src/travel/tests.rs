@@ -1444,7 +1444,7 @@ async fn postgres_travel_keeps_moments_the_post_and_wikidata_confirm() {
         .execute(&state.pool)
         .await
         .unwrap();
-    crate::runner::collect_briefing(&state, window(), None)
+    crate::runner::collect_briefing(&state, window())
         .await
         .unwrap();
     let runs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runs WHERE topic_id = 'travel'")

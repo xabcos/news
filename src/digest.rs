@@ -281,14 +281,6 @@ impl DigestCache {
         self.topics_for(Reader::Public)
     }
 
-    /// Whether the site topic is switched on, whether or not readers see it.
-    pub(crate) fn enabled(&self, topic: &str) -> bool {
-        read(&self.0.topics)
-            .all
-            .iter()
-            .any(|known| known.id == topic)
-    }
-
     pub(crate) fn topics_for(&self, reader: Reader) -> Arc<Vec<TopicMeta>> {
         let catalogue = read(&self.0.topics);
         Arc::clone(if reader.is_admin() {
@@ -725,7 +717,6 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/days", get(days));
     let public = reading::public(shared.clone())
         .route("/insight", get(crate::insight::latest))
-        .route("/equity-insight", get(crate::equity::latest))
         .route("/feed.xml", get(feed))
         .layer(CompressionLayer::new())
         .layer(middleware::from_fn(public_cors));

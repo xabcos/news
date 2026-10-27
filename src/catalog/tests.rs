@@ -618,13 +618,13 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
     assert!(page.contains("<section class=catalog-shelf><h2>近期有动态 <a class=catalog-all"));
     assert!(page.contains("<span class=\"badge catalog-role\">评论</span>"));
     assert!(!page.contains("catalog-kinds"));
-    // One tab leads into the section, named in the page's language like the equity notes.
+    // One tab leads into the section, named in the page's language like 分享's.
     assert_eq!(
         page.matches("<a class=tab href=\"/culture\" data-last=\"/culture/book\" aria-current=\"true\">文娱</a>")
             .count(),
         1
     );
-    assert!(page.contains(">股市</a>"));
+    assert!(page.contains(">分享</a>"));
     let detail = get(format!("/culture/book/{slug}"))
         .await
         .text()
@@ -641,7 +641,7 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
         .await
         .unwrap();
     assert!(english.contains("Story and background") && english.contains("hreflang=\"zh-CN\""));
-    assert!(english.contains(">𝑪𝒖𝒍𝒕𝒖𝒓𝒆</a>") && english.contains(">𝑬</a>"));
+    assert!(english.contains(">𝑪𝒖𝒍𝒕𝒖𝒓𝒆</a>") && english.contains(">𝑨𝒓𝒕𝒊𝒄𝒍𝒆𝒔</a>"));
     // The section's own tabs name its topics in the page's language too.
     assert!(page.contains("aria-current=\"true\">图书</a>"));
     assert!(english.contains("aria-current=\"true\">𝑩𝒐𝒐𝒌</a>") && !english.contains(">图书</a>"));
@@ -837,7 +837,6 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
             start: chrono::Utc::now() - chrono::Duration::hours(24),
             end: chrono::Utc::now(),
         },
-        None,
     )
     .await
     .unwrap();
@@ -1496,7 +1495,6 @@ async fn postgres_catalog_publishes_news_then_sourced_guides_and_keeps_the_brief
             start: chrono::Utc::now() - chrono::Duration::hours(24),
             end: chrono::Utc::now(),
         },
-        None,
     )
     .await
     .unwrap();

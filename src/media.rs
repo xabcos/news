@@ -641,7 +641,7 @@ pub async fn startup_sync(state: &AppState) -> Result<()> {
     .fetch_all(&state.pool)
     .await?;
     let insights = sqlx::query_as::<_, StoredPayloadRow>(
-        "SELECT id, payload FROM ai_insights WHERE kind = 'ai' AND status = 'ok' AND payload IS NOT NULL AND started_at >= NOW() - INTERVAL '7 days' ORDER BY started_at DESC",
+        "SELECT id, payload FROM ai_insights WHERE status = 'ok' AND payload IS NOT NULL AND started_at >= NOW() - INTERVAL '7 days' ORDER BY started_at DESC",
     )
     .fetch_all(&state.pool)
     .await?;

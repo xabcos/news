@@ -536,7 +536,7 @@ async fn postgres_gallery_keeps_confirmed_photographs_until_their_copies_expire(
         .execute(&state.pool)
         .await
         .unwrap();
-    crate::runner::collect_briefing(&state, window(), None)
+    crate::runner::collect_briefing(&state, window())
         .await
         .unwrap();
     let runs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runs WHERE topic_id = 'w'")

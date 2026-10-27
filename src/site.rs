@@ -70,7 +70,7 @@ async fn home(
         other if other.is_empty() => "/".to_owned(),
         other => format!("/?{other}"),
     };
-    let dated = param("day").is_some() || param("at").is_some();
+    let dated = param("day").is_some();
     let html = format!(
         r##"<!doctype html>
 <html lang="{lang}">
@@ -95,7 +95,6 @@ async fn home(
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
   <link rel="alternate" type="application/atom+xml" title="𝑵𝒆𝒘𝒔" href="/feed.xml">
   <link rel="stylesheet" href="{STYLES}">
-  <link rel="stylesheet" href="/equity.css?v=5">
   <link rel="stylesheet" href="/catalog.css?v=9">
   {preloads}
 </head>
@@ -113,9 +112,8 @@ async fn home(
   {back_to_top}
   <script src="{STATS_SCRIPT}" data-track-url="{track_url}" defer></script>
   <script src="{PUBLIC_SCRIPT}" defer></script>
-  <script src="/equity.js?v=10" defer></script>
   <script src="/travel.js?v=12" defer></script>
-  <script src="/app.js?v=41" defer></script>
+  <script src="/app.js?v=42" defer></script>
   <!-- async: a slow third-party banner must not hold back DOMContentLoaded, which starts app.js. -->
   <script src="https://broadcast.xairouter.com/embed.js" async></script>
 </body>
@@ -157,7 +155,6 @@ fn preloads(topics: &[TopicMeta], topic: &str, dated: bool) -> String {
         _ if dated => String::new(),
         "" => feed("", ALL_PAGE_LIMIT),
         "insight" => link("/insight", true),
-        "equity-insight" => link("/equity-insight", true),
         // Pages of their own, and topics readers can't see, have nothing here.
         _ if topics.iter().any(|known| known.id == topic)
             && !PAGE_TOPICS.contains(&topic)
@@ -460,8 +457,8 @@ fn refused(inside: &str) -> bool {
 }
 
 /// The topic tabs of every public page, the news page's included: 𝐀𝐋𝐋 and 𝐀𝐈, then the site's
-/// visible topics, each catalogue section as one tab, with 股市 after 海外 AI and 分享 and 学习
-/// after 开源. `current` is the page's topic, "" on the news page's 𝐀𝐋𝐋.
+/// visible topics, each catalogue section as one tab, with 分享 and 学习 after 开源. `current`
+/// is the page's topic, "" on the news page's 𝐀𝐋𝐋.
 pub(crate) fn tabs(topics: &[TopicMeta], current: &str, en: bool) -> String {
     let marked = |id: &str| {
         if current == id {
@@ -477,15 +474,6 @@ pub(crate) fn tabs(topics: &[TopicMeta], current: &str, en: bool) -> String {
         escape(&localized("/?topic=insight", en)),
         marked("insight")
     );
-    let equity_tab = format!(
-        "<a class=tab href=\"{}\"{}>{}</a>",
-        escape(&localized("/?topic=equity-insight", en)),
-        marked("equity-insight"),
-        choose(en, "股市", "𝑬")
-    );
-    if !topics.iter().any(|topic| topic.id == "overseas-ai") {
-        tabs.push_str(&equity_tab);
-    }
     // 分享 is not a topic: readers write it. Its tab follows 开源, and 学习's, whose courses XABC
     // writes, follows it.
     let articles_tab = format!(
@@ -548,9 +536,6 @@ pub(crate) fn tabs(topics: &[TopicMeta], current: &str, en: bool) -> String {
             marked(id),
             escape(choose(en, &topic.name, &topic.name_en))
         );
-        if id == "overseas-ai" {
-            tabs.push_str(&equity_tab);
-        }
         if id == "github" {
             tabs.push_str(&articles_tab);
         }
@@ -694,7 +679,6 @@ mod tests {
                 "<a class=tab href=\"/?topic=insight\">𝐀𝐈</a>",
                 "<a class=tab href=\"/?topic=x\">要闻</a>",
                 "<a class=tab href=\"/?topic=overseas-ai\">海外 AI</a>",
-                "<a class=tab href=\"/?topic=equity-insight\">股市</a>",
                 "<a class=tab href=\"/?topic=github\">开源</a>",
                 "<a class=tab href=\"/articles\">分享</a><a class=tab href=\"/learn\">学习</a>",
                 "<a class=tab href=\"/culture\" data-last=\"/culture/book\">文娱</a>",
@@ -705,14 +689,12 @@ mod tests {
         assert!(english.starts_with("<a class=tab href=\"/?lang=en\">𝐀𝐋𝐋</a>"));
         for tab in [
             "<a class=tab href=\"/?topic=x&amp;lang=en\" aria-current=\"true\">𝐗</a>",
-            "<a class=tab href=\"/?topic=equity-insight&amp;lang=en\">𝑬</a>",
             "<a class=tab href=\"/culture?lang=en\" data-last=\"/culture/book?lang=en\">𝑪𝒖𝒍𝒕𝒖𝒓𝒆</a>",
         ] {
             assert!(english.contains(tab), "{tab}");
         }
         for (current, tab) in [
             ("insight", ">𝐀𝐈</a>"),
-            ("equity-insight", ">股市</a>"),
             ("movie", ">文娱</a>"),
             ("reads", ">精读</a>"),
             ("learn", ">学习</a>"),
@@ -728,8 +710,8 @@ mod tests {
 
     #[test]
     fn tabs_keep_their_places_without_their_neighbours() {
-        // Without 海外 AI and 开源, 股市 follows 𝐀𝐈 and 分享 and 学习 come last; without 图书,
-        // swiping back into 文娱 enters 影视. Names are escaped in both languages.
+        // Without 开源, 分享 and 学习 come last; without 图书, swiping back into 文娱 enters 影视.
+        // Names are escaped in both languages.
         let topics = [
             topic("movie", "影视", "𝑴𝒐𝒗𝒊𝒆"),
             topic("odd", "A&B \"</template>", "<b>"),
@@ -739,7 +721,6 @@ mod tests {
             concat!(
                 "<a class=tab href=\"/\" aria-current=\"true\">𝐀𝐋𝐋</a>",
                 "<a class=tab href=\"/?topic=insight\">𝐀𝐈</a>",
-                "<a class=tab href=\"/?topic=equity-insight\">股市</a>",
                 "<a class=tab href=\"/culture\" data-last=\"/culture/movie\">文娱</a>",
                 "<a class=tab href=\"/?topic=odd\">A&amp;B &quot;&lt;/template&gt;</a>",
                 "<a class=tab href=\"/articles\">分享</a><a class=tab href=\"/learn\">学习</a>",
@@ -772,15 +753,10 @@ mod tests {
             preloads(&topics(), "insight", false),
             link("/insight", true)
         );
-        assert_eq!(
-            preloads(&topics(), "equity-insight", false),
-            link("/equity-insight", true)
-        );
         // Dated addresses, pages of their own, and topics readers can't see.
         for (topic, dated) in [
             ("", true),
             ("x", true),
-            ("equity-insight", true),
             ("reads", false),
             ("movie", false),
             ("articles", false),

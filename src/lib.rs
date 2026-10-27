@@ -7,7 +7,6 @@ mod catalog;
 pub mod config;
 mod digest;
 mod email;
-mod equity;
 pub mod error;
 mod fetch;
 mod gallery;
