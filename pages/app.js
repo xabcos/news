@@ -28,6 +28,8 @@ const PHOTO_DWELL = 6000;
 const TRAVEL_TOPIC = "travel";
 // Fashion stories are picture cards like 𝑷's, framed upright.
 const FASHION_TOPIC = "fashion";
+// Topics whose stories are pictures, shown as picture cards.
+const CARD_TOPICS = new Set(["p", FASHION_TOPIC, "creations"]);
 const storage = (() => {
   try {
     const store = window.localStorage;
@@ -624,7 +626,7 @@ function setStatus(message) {
 function renderTabs() {
   // Picture topics fill the window with cards that flow across their days; text, ALL included,
   // keeps the reading column, where a list reads best.
-  document.body.classList.toggle("card-topic", state.topic === "p" || state.topic === FASHION_TOPIC);
+  document.body.classList.toggle("card-topic", CARD_TOPICS.has(state.topic));
   document.body.classList.toggle("w-topic", state.topic === PHOTO_TOPIC);
   document.body.classList.toggle("travel-topic", state.topic === TRAVEL_TOPIC);
   renderTravelMap();
@@ -1057,7 +1059,7 @@ function renderGroups(digest) {
     const section = document.createElement("section");
     section.className = "group";
     // Picture cards tile under their heading; text stays a list.
-    section.classList.toggle("image-news-group", group.id === "p" || group.id === FASHION_TOPIC || Boolean(sectionOf(group.id)));
+    section.classList.toggle("image-news-group", CARD_TOPICS.has(group.id) || Boolean(sectionOf(group.id)));
     section.classList.toggle("fashion-group", group.id === FASHION_TOPIC);
     section.classList.toggle("photo-group", group.id === PHOTO_TOPIC);
     section.classList.toggle("catalog-book-group", group.id === "book");
@@ -1114,7 +1116,7 @@ function renderGroupItem(group, item) {
     article.classList.add("fashion-card");
     return article;
   }
-  return group.id === "p" ? imageNewsCard(item) : card(item, group.id === "reads");
+  return CARD_TOPICS.has(group.id) ? imageNewsCard(item) : card(item, group.id === "reads");
 }
 
 // Photographs of one row share a height; each keeps its own ratio, so none is cropped.
