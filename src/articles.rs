@@ -34,13 +34,14 @@ const DAILY_ARTICLES: i16 = 10;
 /// Pictures an author may upload in a day.
 const DAILY_IMAGES: i16 = 64;
 /// Pictures one article may show, its cover included.
-const ARTICLE_IMAGES: usize = 32;
+const ARTICLE_IMAGES: usize = 128;
 /// The largest picture: nginx lets ten megabytes through (`client_max_body_size 10m`).
 const IMAGE_BYTES: usize = 10 * 1024 * 1024;
 const TITLE_CHARS: usize = 100;
-const BODY_CHARS: usize = 50_000;
-/// A save carries the body as JSON, which stays far below this even at four bytes a character.
-const SAVE_BYTES: usize = 512 * 1024;
+const BODY_CHARS: usize = 320_000;
+/// A save carries the body as JSON, which stays below this even at four bytes a character;
+/// nginx lets as much through (`client_max_body_size 2m`).
+const SAVE_BYTES: usize = 2 * 1024 * 1024;
 const EXCERPT_CHARS: usize = 120;
 /// How the body names one of the article's pictures: `![…](image:<id>)`.
 const IMAGE: &str = "image:";

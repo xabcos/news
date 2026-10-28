@@ -56,7 +56,7 @@ fn pen_names_are_trimmed_and_bounded() {
 
 #[test]
 fn an_article_shows_at_most_its_allowance_of_pictures_with_the_cover_counted_once() {
-    let ids: Vec<Uuid> = (1..=33).map(Uuid::from_u128).collect();
+    let ids: Vec<Uuid> = (0..=ARTICLE_IMAGES as u128).map(Uuid::from_u128).collect();
     let body = |count: usize| {
         ids[..count]
             .iter()
@@ -64,10 +64,11 @@ fn an_article_shows_at_most_its_allowance_of_pictures_with_the_cover_counted_onc
             .collect::<Vec<_>>()
             .join("\n\n")
     };
-    let shown = checked("Title", &body(32), Some(ids[0])).unwrap();
-    assert_eq!(pictures(&shown.body).len(), 32);
-    assert!(checked("Title", &body(32), Some(ids[32])).is_err());
-    assert!(checked("Title", &body(31), Some(ids[32])).is_ok());
+    let all = ARTICLE_IMAGES;
+    let shown = checked("Title", &body(all), Some(ids[0])).unwrap();
+    assert_eq!(pictures(&shown.body).len(), all);
+    assert!(checked("Title", &body(all), Some(ids[all])).is_err());
+    assert!(checked("Title", &body(all - 1), Some(ids[all])).is_ok());
     // Addresses that aren't the article's own pictures don't count.
     assert!(pictures("![](https://example.com/a.png) ![](image:nope)").is_empty());
     assert_eq!(checked("  标题  ", "", None).unwrap().title, "标题");

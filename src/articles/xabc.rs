@@ -53,7 +53,8 @@ const PICTURES: usize = ARTICLE_IMAGES - 1;
 /// Articles carry JPEG, PNG, WebP or GIF, so AVIF is not asked for.
 const ACCEPT: &str = "image/webp,image/jpeg,image/png,image/gif";
 const SEARCH_TIME: Duration = Duration::from_secs(15 * 60);
-const WRITE_TIME: Duration = Duration::from_secs(25 * 60);
+/// As long as the HTTP client waits for an answer (`NEWS_FETCH_TIMEOUT_SECS`, 30 minutes at most).
+const WRITE_TIME: Duration = Duration::from_secs(30 * 60);
 /// Characters of text an article needs before it is worth publishing.
 const MIN_TEXT: usize = 400;
 /// Rounds of link checks before an article whose rewriting keeps forming new links is given up.
@@ -1375,9 +1376,11 @@ mod tests {
             | a |\n|---|\n| ![](img:4) |\n\n[![](img:5)](https://known.example/a)\n\n\
             ## ![](img:6)\n\n![](img:9)\n\n![](image:abc)\n\n![](img:x)";
         assert_eq!(placed(body, 6, PICTURES), [2, 1]);
-        let many: String = (1..=40).map(|n| format!("![](img:{n})\n\n")).collect();
+        // More than an article may show: the first ones it has room for.
+        let count = PICTURES + 9;
+        let many: String = (1..=count).map(|n| format!("![](img:{n})\n\n")).collect();
         assert_eq!(
-            placed(&many, 40, PICTURES),
+            placed(&many, count, PICTURES),
             (1..=PICTURES).collect::<Vec<_>>()
         );
     }
