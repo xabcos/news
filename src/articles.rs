@@ -2,7 +2,7 @@
 //! public once an administrator gives it a ❤️, and an author's edit takes it back to review.
 //! Pictures go to tmpfile as they were uploaded; their links appear only on public pages, and
 //! until then the author sees them through this server. A read counts once a day per browser,
-//! never the author's own. XABC, the site's own pen name, publishes one every quarter of an hour (`xabc`).
+//! never the author's own. XABC, the site's own pen name, publishes one every hour (`xabc`).
 mod pages;
 pub(crate) mod xabc;
 
