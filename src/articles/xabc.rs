@@ -2,7 +2,7 @@
 //! looks through X and the web, and the briefing model through the web, for things worth
 //! sharing; the writing model picks one subject from both sets of finds, reads further where it
 //! needs to and writes it up its own way. For 文娱 · 解说, every four hours, it explains the work
-//! 影视 discusses most, or revises its explanation (`film`). For 时代, every two hours, it
+//! 影视 discusses most, or revises its explanation (`film`). For 时代, every hour, it
 //! profiles the person talked about most, or brings their profile up to date (`people`).
 //! Articles go out at once under the pen name XABC. Their pictures come from the pages the
 //! models cite or are drawn by an image model, and they link only to addresses the models found.
@@ -88,7 +88,7 @@ impl Line {
         match self {
             Self::Share => chrono::Duration::minutes(15),
             Self::Film => chrono::Duration::hours(4),
-            Self::People => chrono::Duration::hours(2),
+            Self::People => chrono::Duration::hours(1),
         }
     }
 
