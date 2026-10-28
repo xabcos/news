@@ -33,6 +33,8 @@ pub struct Config {
     pub(crate) ai_api_key: String,
     pub(crate) ai_default_model: String,
     pub(crate) ai_insight_model: String,
+    /// The model that writes XABC's 分享 and 解说 from what the searches found.
+    pub(crate) ai_writing_model: String,
     pub(crate) ai_image_model: String,
     pub(crate) timezone: Tz,
     pub(crate) briefing_time: NaiveTime,
@@ -205,6 +207,7 @@ impl Config {
             ai_api_key,
             ai_default_model: env_value("AI_DEFAULT_MODEL", "grok-4.7"),
             ai_insight_model: env_value("AI_INSIGHT_MODEL", "gpt-6-astra"),
+            ai_writing_model: env_value("AI_WRITING_MODEL", "gpt-6.1-terra"),
             ai_image_model: env_value("AI_IMAGE_MODEL", "gpt-image-2.5-flare"),
             timezone,
             briefing_time,

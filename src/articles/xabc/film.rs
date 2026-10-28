@@ -1,20 +1,18 @@
-//! 文娱 · 解说: XABC explains a film or series in an article of its own. A work has one article,
-//! which XABC revises once 影视 has gathered enough new about the work; when none is due, a new
-//! one alternates between the work 影视 discusses most and an acclaimed classic. Searching,
-//! writing and pictures are 分享's (`super`).
+//! 文娱 · 解说: XABC explains a film or series in an article of its own. A work has one article.
+//! Each time XABC takes the work 影视 discusses most beyond what XABC has written about it: a
+//! work without an article gets one, and an article whose work 影视 keeps gathering news about
+//! is revised. Searching, writing and pictures are 分享's (`super`).
 use super::{
     Finished, KEPT, Line, MARKDOWN, apply, draft, finish, identity, linked, listed, look, publish,
-    revise, written_lately,
+    revise,
 };
 use crate::{
-    ai, catalog,
     error::{AppError, Result},
     state::AppState,
 };
 use chrono::{DateTime, Utc};
 use pulldown_cmark::{Event, Parser, Tag};
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{collections::HashSet, fmt::Write};
 use uuid::Uuid;
 
@@ -22,8 +20,6 @@ use uuid::Uuid;
 /// passed since it last was.
 const FRESH_STORIES: i64 = 5;
 const REVISE_AFTER_DAYS: i32 = 3;
-/// 影视's kinds of work.
-const KINDS: [&str; 3] = ["movie", "series", "animation"];
 
 /// A work an article explains.
 #[derive(sqlx::FromRow)]
@@ -34,17 +30,14 @@ struct Work {
     name: String,
     name_en: String,
     creator: String,
-    #[sqlx(default)]
-    year: Option<i32>,
     /// The guide 影视 wrote from the sources it read, when it knows the work.
     guide: Option<Value>,
 }
 
 impl Work {
-    /// The work as the models are told it: `《教父》（The Godfather，1972，电影，主创 …）`.
+    /// The work as the models are told it: `《教父》（The Godfather，电影，主创 …）`.
     fn describe(&self) -> String {
         let mut notes = vec![self.name_en.clone()];
-        notes.extend(self.year.map(|year| year.to_string()));
         notes.push(
             match self.kind.as_str() {
                 "series" => "剧集",
@@ -81,7 +74,7 @@ impl Work {
     }
 }
 
-/// An article whose work 影视 has gathered enough new about, as it reads now.
+/// An article to revise, as it reads now, with its work.
 #[derive(sqlx::FromRow)]
 struct Due {
     id: Uuid,
@@ -95,23 +88,28 @@ struct Due {
     work: Work,
 }
 
-/// Revises the article that is due, or else explains a new work.
+/// What `next` chose: 影视's entry for the work, and its article with the revision read, if any.
+#[derive(sqlx::FromRow)]
+struct Next {
+    entry: Uuid,
+    article: Option<Uuid>,
+    revision: Option<i32>,
+}
+
+/// Explains the work 影视 discusses most, or revises its explanation.
 pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -> Result<Uuid> {
-    if let Some(due) = due(state, author).await? {
-        return revised(state, due).await;
+    let next = next(state, author)
+        .await?
+        .ok_or_else(|| AppError::Internal("影视最近没有待解说的作品".into()))?;
+    if let (Some(article), Some(revision)) = (next.article, next.revision) {
+        return revised(state, due(state, article, revision).await?).await;
     }
-    let written: i64 = sqlx::query_scalar("SELECT count(*) FROM articles WHERE film IS NOT NULL")
-        .fetch_one(&state.pool)
-        .await?;
-    let hot = if written % 2 == 0 {
-        hot(state).await?
-    } else {
-        None
-    };
-    let work = match hot {
-        Some(work) => work,
-        None => classic(state).await?,
-    };
+    let work: Work = sqlx::query_as(
+        "SELECT key, kind, name, name_en, creator, guide FROM catalog_entries WHERE id = $1",
+    )
+    .bind(next.entry)
+    .fetch_one(&state.pool)
+    .await?;
     let mut found = look(state, Line::Film, &work.describe(), &HashSet::new()).await;
     if found.finds.is_empty() {
         return Err(AppError::Internal("两路检索都没有找到资料".into()));
@@ -126,22 +124,26 @@ pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -
     Ok(id)
 }
 
-/// The article longest waiting among those whose work 影视 has `FRESH_STORIES` new stories about
-/// since its last revision, `REVISE_AFTER_DAYS` ago at least.
-async fn due(state: &AppState, author: i64) -> Result<Option<Due>> {
+/// The work 影视 discusses most beyond what XABC has written about it, and its article if it has
+/// one: a work without an article once it has a review or a post in the last 30 days, a work
+/// with one once `FRESH_STORIES` new stories came after the article's last revision,
+/// `REVISE_AFTER_DAYS` ago at least. The most stories go first, then the most reviews and posts.
+async fn next(state: &AppState, author: i64) -> Result<Option<Next>> {
     Ok(sqlx::query_as(
-        "SELECT a.id, a.title, a.body, a.revision, a.cover, a.updated_at, e.id AS entry,
-                e.key, e.kind, e.name, e.name_en, e.creator, e.guide
-         FROM articles a
-         JOIN catalog_entries e ON e.topic_id = 'movie' AND e.key = a.film
+        "SELECT e.id AS entry, a.id AS article, a.revision FROM catalog_entries e
          JOIN catalog_items c ON c.entry_id = e.id
-         JOIN items i ON i.id = c.item_id
-         WHERE a.author_id = $1 AND a.status = 'published'
-           AND a.updated_at <= now() - make_interval(days => $2)
-           AND NOT i.hidden AND i.first_seen_at > a.updated_at
-         GROUP BY a.id, e.id
-         HAVING count(*) >= $3
-         ORDER BY a.updated_at
+         JOIN items i ON i.id = c.item_id AND NOT i.hidden
+         LEFT JOIN articles a ON a.film = e.key
+         WHERE e.topic_id = 'movie'
+           AND i.first_seen_at > COALESCE(a.updated_at, now() - INTERVAL '30 days')
+           AND (a.id IS NULL
+                OR (a.author_id = $1 AND a.status = 'published'
+                    AND a.updated_at <= now() - make_interval(days => $2)))
+         GROUP BY e.id, a.id
+         HAVING CASE WHEN a.id IS NULL THEN count(*) FILTER (WHERE c.role <> 'news') > 0
+                     ELSE count(*) >= $3 END
+         ORDER BY count(*) DESC, count(*) FILTER (WHERE c.role <> 'news') DESC,
+                  max(i.first_seen_at) DESC
          LIMIT 1",
     )
     .bind(author)
@@ -151,109 +153,19 @@ async fn due(state: &AppState, author: i64) -> Result<Option<Due>> {
     .await?)
 }
 
-/// The work 影视 discussed most in the last 30 days that has no article yet: it must have been
-/// reviewed or posted about, and reviews and posts count before news.
-async fn hot(state: &AppState) -> Result<Option<Work>> {
-    Ok(sqlx::query_as(
-        "SELECT e.key, e.kind, e.name, e.name_en, e.creator, e.guide
-         FROM catalog_entries e
-         JOIN catalog_items c ON c.entry_id = e.id
-         JOIN items i ON i.id = c.item_id
-         WHERE e.topic_id = 'movie' AND NOT i.hidden AND i.first_seen_at >= now() - INTERVAL '30 days'
-           AND NOT EXISTS (SELECT 1 FROM articles a WHERE a.film = e.key)
-         GROUP BY e.id
-         HAVING count(*) FILTER (WHERE c.role <> 'news') > 0
-         ORDER BY count(*) FILTER (WHERE c.role <> 'news') DESC, count(*) DESC, max(i.first_seen_at) DESC
-         LIMIT 1",
+/// The article `next` chose, unless it was saved since.
+async fn due(state: &AppState, id: Uuid, revision: i32) -> Result<Due> {
+    sqlx::query_as(
+        "SELECT a.id, a.title, a.body, a.revision, a.cover, a.updated_at, e.id AS entry,
+                e.key, e.kind, e.name, e.name_en, e.creator, e.guide
+         FROM articles a JOIN catalog_entries e ON e.topic_id = 'movie' AND e.key = a.film
+         WHERE a.id = $1 AND a.revision = $2",
     )
-    .fetch_optional(&state.pool)
-    .await?)
-}
-
-#[derive(Deserialize)]
-struct Classics {
-    works: Vec<Classic>,
-}
-
-#[derive(Deserialize)]
-struct Classic {
-    kind: String,
-    name: String,
-    name_en: String,
-    year: i32,
-}
-
-/// An acclaimed classic without an article: the briefing model suggests several, avoiding those
-/// written about lately, and the first without an article is taken.
-async fn classic(state: &AppState) -> Result<Work> {
-    let recent: Vec<String> = sqlx::query_scalar(
-        "SELECT title FROM articles WHERE film IS NOT NULL ORDER BY published_at DESC LIMIT 60",
-    )
-    .fetch_all(&state.pool)
-    .await?;
-    let work = ai::object(json!({
-        "kind": { "type": "string", "enum": KINDS },
-        "name": { "type": "string" },
-        "name_en": { "type": "string" },
-        "year": { "type": "integer" },
-    }));
-    let reply = ai::request(
-        state,
-        json!({
-            "model": state.config.ai_insight_model,
-            "reasoning": { "effort": "low" },
-            "store": false,
-            "instructions": CLASSICS,
-            "input": [{ "role": "user", "content": written_lately(recent.iter().map(String::as_str)) }],
-            "text": { "format": {
-                "type": "json_schema", "name": "classics", "strict": true,
-                "schema": ai::object(json!({ "works": { "type": "array", "items": work } })),
-            } },
-        }),
-    )
-    .await?;
-    let classics: Classics = serde_json::from_value(ai::parse_payload(&reply)?)
-        .map_err(|_| AppError::Internal("经典推荐不符合约定的结构".into()))?;
-    let keys: Vec<String> = classics
-        .works
-        .iter()
-        .map(|work| catalog::work_key(&work.kind, &work.name_en))
-        .collect();
-    let taken: HashSet<String> =
-        sqlx::query_scalar("SELECT film FROM articles WHERE film = ANY($1)")
-            .bind(&keys)
-            .fetch_all(&state.pool)
-            .await?
-            .into_iter()
-            .collect();
-    let (classic, key) = classics
-        .works
-        .into_iter()
-        .zip(keys)
-        .find(|(work, key)| {
-            KINDS.contains(&work.kind.as_str())
-                && !work.name.trim().is_empty()
-                && work.name_en.chars().any(char::is_alphanumeric)
-                && !taken.contains(key)
-        })
-        .ok_or_else(|| AppError::Internal("推荐的经典都写过了".into()))?;
-    // 影视 may know it too.
-    let guide: Option<Value> = sqlx::query_scalar(
-        "SELECT guide FROM catalog_entries WHERE topic_id = 'movie' AND key = $1",
-    )
-    .bind(&key)
+    .bind(id)
+    .bind(revision)
     .fetch_optional(&state.pool)
     .await?
-    .flatten();
-    Ok(Work {
-        key,
-        kind: classic.kind,
-        name: classic.name.trim().to_owned(),
-        name_en: classic.name_en.trim().to_owned(),
-        creator: String::new(),
-        year: Some(classic.year),
-        guide,
-    })
+    .ok_or_else(|| AppError::Conflict("解说刚被改过".into()))
 }
 
 /// The article revised with what came out since: 影视's new stories about the work, and both
@@ -369,11 +281,10 @@ const WRITING: &str = "你是 XABC，在 xabcnews.com 的「文娱 · 解说」�
 const REVISING: &str = "- 这次是修订：输入里有这篇解说的现有全文、影视栏目在上次修订之后收到的内容和新的线索。在现有全文的基础上把它改得更好：补上以前查不到的剧情和结局，修正不准确的地方，把新的评价、幕后、奖项和讨论自然地写进去，删掉过时的说法，交回修订后的完整全文。现有配图写作 ![](keep:1)、![](keep:2)……，单独成段，可以保留、挪动或删掉，不要改写，下面也不要加图注；新图照常用 ![](img:N)。
 ";
 
-const CLASSICS: &str = "你为 xabcnews.com 的「文娱 · 解说」挑选下一部要解说的作品。推荐 8 部影史公认的好电影或好剧（动画也可以），年代、国家和地区、类型尽量分散，名作和不那么出名的佳作都可以，避开输入里最近写过的。kind 从 movie、series、animation 选；name 是通行的中文名；name_en 是通行的英文正式名称，没有英文名时用原名的通行罗马字写法；year 是首映年份。严格按 JSON Schema 输出。";
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::collections::HashMap;
 
     #[test]
@@ -416,7 +327,6 @@ mod tests {
             name: "教父".into(),
             name_en: "The Godfather".into(),
             creator: "Francis Ford Coppola".into(),
-            year: Some(1972),
             guide: Some(json!({
                 "intro": "黑帮家族的故事。",
                 "facts": [{ "label": "片长", "text": "175 分钟" }],
@@ -424,12 +334,11 @@ mod tests {
         };
         assert_eq!(
             work.material(),
-            "作品：《教父》（The Godfather，1972，电影，主创 Francis Ford Coppola）\n影视栏目核实过的资料：黑帮家族的故事。\n- 片长：175 分钟\n"
+            "作品：《教父》（The Godfather，电影，主创 Francis Ford Coppola）\n影视栏目核实过的资料：黑帮家族的故事。\n- 片长：175 分钟\n"
         );
         let series = Work {
             kind: "series".into(),
             creator: String::new(),
-            year: None,
             guide: None,
             ..work
         };

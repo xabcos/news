@@ -1,10 +1,10 @@
-//! XABC, the site's own pen name, writes on two lines, each every quarter of an hour. For 分享, grok looks
-//! through X and the web, and the briefing model through the web, for things worth sharing; the
-//! briefing model picks one subject from both sets of finds, reads further where it needs to
-//! and writes it up its own way. For 文娱 · 解说 it explains a film or series, or revises an
-//! explanation (`film`). Articles go out at once under the pen name XABC. Their
-//! pictures come from the pages the models cite or are drawn by an image model, and they link
-//! only to addresses the models found.
+//! XABC, the site's own pen name, writes on two lines. For 分享, every quarter of an hour, grok
+//! looks through X and the web, and the briefing model through the web, for things worth
+//! sharing; the writing model picks one subject from both sets of finds, reads further where it
+//! needs to and writes it up its own way. For 文娱 · 解说, every four hours, it explains the work
+//! 影视 discusses most, or revises its explanation (`film`). Articles go out at once under the
+//! pen name XABC. Their pictures come from the pages the models cite or are drawn by an image
+//! model, and they link only to addresses the models found.
 mod film;
 
 use super::{ARTICLE_IMAGES, MARKDOWN, checked, kind, words};
@@ -33,8 +33,6 @@ use uuid::Uuid;
 
 /// XABC's account, which the schema makes.
 pub(super) const EMAIL: &str = "xabc@xabcnews.invalid";
-/// Each line writes again a quarter of an hour after its last article.
-const INTERVAL: chrono::Duration = chrono::Duration::minutes(15);
 /// After a failure XABC waits half an hour, twice as long after each failure in a row, eight
 /// hours at most: a lasting fault costs a few tries a day, not one every half hour.
 const RETRY_SECONDS: i64 = 30 * 60;
@@ -79,6 +77,15 @@ impl Line {
         }
     }
 
+    /// How long after its last article the line writes again: 解说 follows what 影视 gathers
+    /// through the day.
+    fn interval(self) -> chrono::Duration {
+        match self {
+            Self::Share => chrono::Duration::minutes(15),
+            Self::Film => chrono::Duration::hours(4),
+        }
+    }
+
     /// What the line's searches look for; `{scope}` is what each scout looks through.
     fn brief(self) -> &'static str {
         match self {
@@ -95,9 +102,9 @@ struct Progress {
 }
 
 impl Progress {
-    fn wrote(&mut self, now: DateTime<Utc>) {
+    fn wrote(&mut self, line: Line, now: DateTime<Utc>) {
         self.failures = 0;
-        self.next = now + INTERVAL;
+        self.next = now + line.interval();
     }
 
     fn failed(&mut self, now: DateTime<Utc>) {
@@ -138,8 +145,8 @@ async fn start(state: &AppState, line: Line) {
         return;
     }
     match last(state, line).await {
-        Ok(Some(at)) if at + INTERVAL > now => {
-            return progress(line, |progress| progress.next = at + INTERVAL);
+        Ok(Some(at)) if at + line.interval() > now => {
+            return progress(line, |progress| progress.next = at + line.interval());
         }
         Ok(_) => {}
         Err(error) => {
@@ -150,7 +157,7 @@ async fn start(state: &AppState, line: Line) {
     if !state.in_flight().insert(line.job().to_owned()) {
         return;
     }
-    let since = now - INTERVAL;
+    let since = now - line.interval();
     let worker = state.clone();
     state.spawn_worker(async move {
         let outcome = tokio::select! {
@@ -160,7 +167,7 @@ async fn start(state: &AppState, line: Line) {
         match outcome {
             Ok(id) => {
                 tracing::info!(%id, ?line, "XABC published an article");
-                progress(line, |progress| progress.wrote(Utc::now()));
+                progress(line, |progress| progress.wrote(line, Utc::now()));
             }
             Err(error) => {
                 tracing::warn!(%error, ?line, "XABC's article failed");
@@ -526,7 +533,7 @@ struct Drafted {
     usage: Usage,
 }
 
-/// The briefing model writes from `material`, following the line's `instructions` and then the
+/// The writing model writes from `material`, following the line's `instructions` and then the
 /// rules every XABC article keeps.
 async fn draft(state: &AppState, instructions: &str, material: &str) -> Result<Drafted> {
     let picture = ai::object(json!({
@@ -535,7 +542,7 @@ async fn draft(state: &AppState, instructions: &str, material: &str) -> Result<D
         "caption": { "type": "string" },
     }));
     let body = json!({
-        "model": state.config.ai_insight_model,
+        "model": state.config.ai_writing_model,
         "reasoning": { "effort": "high" },
         "store": false,
         "tools": [{ "type": "web_search" }],
@@ -1206,7 +1213,7 @@ mod tests {
     }
 
     #[test]
-    fn a_line_writes_again_a_quarter_hour_after_and_failures_wait_longer_each_time() {
+    fn a_line_writes_again_its_interval_after_and_failures_wait_longer_each_time() {
         let now = DateTime::parse_from_rfc3339("2026-10-16T05:00:00+08:00")
             .unwrap()
             .to_utc();
@@ -1220,11 +1227,13 @@ mod tests {
             waits.push((progress.next - now).num_minutes());
         }
         assert_eq!(waits, [30, 60, 120, 240, 480, 480]);
-        progress.wrote(now);
+        progress.wrote(Line::Share, now);
         assert_eq!(
             (progress.failures, progress.next - now),
             (0, chrono::Duration::minutes(15))
         );
+        progress.wrote(Line::Film, now);
+        assert_eq!(progress.next - now, chrono::Duration::hours(4));
         progress.failed(now);
         assert_eq!(progress.next - now, chrono::Duration::minutes(30));
     }

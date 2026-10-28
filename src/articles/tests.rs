@@ -915,7 +915,7 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
 
 /// XABC's two lines from start to finish against stand-ins for the AI service and tmpfile: a 分享
 /// article's searches, writing, drawn pictures, publication and pages; then 解说 explaining a
-/// work 影视 discusses and a classic, revising the first, and listing them under Culture.
+/// work 影视 discusses and then another, revising the first, and listing them under Culture.
 #[tokio::test]
 #[ignore = "requires NEWS_XABC_TEST_DATABASE_URL and local test configuration"]
 async fn postgres_xabc_shares_and_explains_films() {
@@ -967,19 +967,6 @@ async fn postgres_xabc_shares_and_explains_films() {
                         asked.lock().unwrap().push(request.clone());
                         let instructions = request["instructions"].as_str().unwrap_or_default();
                         let film = instructions.contains("文娱 · 解说");
-                        if request["text"]["format"]["name"] == "classics" {
-                            // The first is written about already.
-                            return (
-                                StatusCode::OK,
-                                Json(reply(
-                                    json!({ "works": [
-                                        { "kind": "movie", "name": "测试片", "name_en": "Test Film", "year": 2026 },
-                                        { "kind": "movie", "name": "经典片", "name_en": "A Classic", "year": 1972 },
-                                    ] }),
-                                    "https://cited.example/classics",
-                                )),
-                            );
-                        }
                         if request["text"]["format"]["name"] == "finds" && film {
                             return (
                                 StatusCode::OK,
@@ -1073,6 +1060,7 @@ async fn postgres_xabc_shares_and_explains_films() {
     config.scheduler_enabled = false;
     config.ai_base_url = ai_base.parse().unwrap();
     config.ai_api_key = "fixture".into();
+    config.ai_writing_model = "writer-fixture".into();
     let (media, client, _) = tmpfile(jpeg(400, 300)).await;
     config.tmpfile_base_url = media.parse().unwrap();
     config.tmpfile_api_key = "fixture".into();
@@ -1134,7 +1122,7 @@ async fn postgres_xabc_shares_and_explains_films() {
     assert!(body.contains(&format!("![一只猫](image:{shown})\n*一只猫（AI 生成）*")));
     assert!(!body.contains("img:") && !body.contains("出自那个页面的图"));
 
-    // Grok's search failed, so the briefing model wrote from its own finds alone.
+    // Grok's search failed, so the writing model wrote from the briefing model's finds alone.
     let asked_log = asked.clone();
     let asked = asked.lock().unwrap().clone();
     assert_eq!(asked.len(), 3);
@@ -1154,7 +1142,7 @@ async fn postgres_xabc_shares_and_explains_films() {
         .iter()
         .find(|request| request["text"]["format"]["name"] == "article")
         .unwrap();
-    assert_eq!(writing["model"], state.config.ai_insight_model.as_str());
+    assert_eq!(writing["model"], state.config.ai_writing_model.as_str());
     let material = writing["input"][0]["content"].as_str().unwrap();
     assert!(material.contains("1.【全网】一个好玩的工具"));
     assert!(!material.contains("【X 与全网】"));
@@ -1303,7 +1291,7 @@ async fn postgres_xabc_shares_and_explains_films() {
     .execute(&state.pool)
     .await
     .unwrap();
-    let story = |role: &'static str, age: &'static str| {
+    let story = |entry: Uuid, role: &'static str, age: &'static str| {
         let state = state.clone();
         async move {
             let item = Uuid::new_v4();
@@ -1327,7 +1315,7 @@ async fn postgres_xabc_shares_and_explains_films() {
                 .unwrap();
         }
     };
-    story("review", "2 days").await;
+    story(entry, "review", "2 days").await;
     let explained = xabc::write(&state, xabc::Line::Film, Utc::now())
         .await
         .unwrap();
@@ -1350,14 +1338,13 @@ async fn postgres_xabc_shares_and_explains_films() {
     assert!(figure.ends_with("*旧图（AI 生成）*"), "{body}");
     assert!(body.contains("[影评](https://film.example/review)"));
     let writing = |asked: &[Value]| {
-        asked
+        let request = asked
             .iter()
             .rev()
             .find(|request| request["text"]["format"]["name"] == "article")
-            .unwrap()["input"][0]["content"]
-            .as_str()
-            .unwrap()
-            .to_owned()
+            .unwrap();
+        assert_eq!(request["model"], state.config.ai_writing_model.as_str());
+        request["input"][0]["content"].as_str().unwrap().to_owned()
     };
     let material = writing(&asked_log.lock().unwrap());
     assert!(material.contains("作品：《测试片》（Test Film，电影，主创 导演甲）"));
@@ -1369,27 +1356,85 @@ async fn postgres_xabc_shares_and_explains_films() {
             .is_some()
     );
 
-    // The next is a classic the model suggests, the first it names that has no article.
-    let classic = xabc::write(&state, xabc::Line::Film, Utc::now())
+    // The next is another work 影视 has a review of; then there is nothing to write.
+    let work = |key: &'static str, name: &'static str| {
+        let state = state.clone();
+        async move {
+            let id = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO catalog_entries (id, topic_id, slug, name, name_en, creator, kind, key, source_urls)
+                 VALUES ($1, 'movie', $2, $3, $3, '导演乙', 'movie', 'movie:' || $2, '[]')",
+            )
+            .bind(id)
+            .bind(key)
+            .bind(name)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+            id
+        }
+    };
+    let other = work("otherfilm", "Other Film").await;
+    story(other, "review", "1 day").await;
+    let second = xabc::write(&state, xabc::Line::Film, Utc::now())
         .await
         .unwrap();
     let film: Option<String> = sqlx::query_scalar("SELECT film FROM articles WHERE id = $1")
-        .bind(classic)
+        .bind(second)
         .fetch_one(&state.pool)
         .await
         .unwrap();
-    assert_eq!(film.as_deref(), Some("movie:aclassic"));
+    assert_eq!(film.as_deref(), Some("movie:otherfilm"));
+    assert!(matches!(
+        xabc::write(&state, xabc::Line::Film, Utc::now()).await,
+        Err(AppError::Internal(message)) if message == "影视最近没有待解说的作品"
+    ));
 
-    // Five new stories about the work, three days after its article, have the article revised:
-    // its figure and cover stay, and a new picture joins them.
+    // Three days after its article, four new stories about the work (the review from before it
+    // counts) are not enough; a fifth makes the article due.
     sqlx::query("UPDATE articles SET updated_at = now() - INTERVAL '4 days' WHERE id = $1")
         .bind(explained)
         .execute(&state.pool)
         .await
         .unwrap();
-    for _ in 0..5 {
-        story("news", "1 day").await;
+    for _ in 0..3 {
+        story(entry, "news", "1 day").await;
     }
+    assert!(matches!(
+        xabc::write(&state, xabc::Line::Film, Utc::now()).await,
+        Err(AppError::Internal(message)) if message == "影视最近没有待解说的作品"
+    ));
+    story(entry, "news", "1 day").await;
+
+    // The most new stories go first, written about or not: a work with seven before the article
+    // with five, and that before a work with two reviews. Within four hours of the last 解说,
+    // the scheduler's cutoff refuses another.
+    let louder = work("louderfilm", "Louder Film").await;
+    story(louder, "review", "1 day").await;
+    for _ in 0..6 {
+        story(louder, "news", "1 day").await;
+    }
+    let quieter = work("quietfilm", "Quiet Film").await;
+    for _ in 0..2 {
+        story(quieter, "review", "1 day").await;
+    }
+    assert!(matches!(
+        xabc::write(&state, xabc::Line::Film, Utc::now() - chrono::Duration::hours(4)).await,
+        Err(AppError::Conflict(message)) if message == "XABC 刚发过一篇文章"
+    ));
+    let loudest = xabc::write(&state, xabc::Line::Film, Utc::now())
+        .await
+        .unwrap();
+    let film: Option<String> = sqlx::query_scalar("SELECT film FROM articles WHERE id = $1")
+        .bind(loudest)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(film.as_deref(), Some("movie:louderfilm"));
+
+    // The article is revised: its figure and cover stay, a new picture joins them, and the line's
+    // clock moves on.
+    let last = xabc::last(&state, xabc::Line::Film).await.unwrap().unwrap();
     let drawn_before = drawings_log.lock().unwrap().len();
     assert_eq!(
         xabc::write(&state, xabc::Line::Film, Utc::now())
@@ -1397,6 +1442,7 @@ async fn postgres_xabc_shares_and_explains_films() {
             .unwrap(),
         explained
     );
+    assert!(xabc::last(&state, xabc::Line::Film).await.unwrap().unwrap() > last);
     let material = writing(&asked_log.lock().unwrap());
     assert!(material.contains("\n\n![](keep:1)\n\n") && !material.contains("image:"));
     assert!(material.contains(
@@ -1478,11 +1524,15 @@ async fn postgres_xabc_shares_and_explains_films() {
             )
         })
         .collect();
-    assert_eq!(ranked.len(), 4);
+    assert_eq!(ranked.len(), 5);
     assert_eq!(ranked[0], (id.to_string(), false));
     assert!(!ranked[1].1);
     assert_eq!(
         ranked[2..],
-        [(explained.to_string(), true), (classic.to_string(), true)]
+        [
+            (explained.to_string(), true),
+            (loudest.to_string(), true),
+            (second.to_string(), true)
+        ]
     );
 }
