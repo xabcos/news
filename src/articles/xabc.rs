@@ -457,9 +457,11 @@ impl Scout {
                 "用 web_search 查维基百科等资料里的完整剧情与结局，以及创作背景、主创访谈和专业影评"
             }
             (Line::People, Self::X) => {
-                "用 x_search 看 X 上此刻被大量讨论、转发和引用的人物，以及他们本人最近的发言，也用 web_search 查全网的新闻"
+                "用 x_search 看 X 上各种语言里此刻被大量讨论、转发和引用的人物，以及他们本人最近的发言，也用 web_search 查全网的新闻"
             }
-            (Line::People, Self::Web) => "用 web_search 检索全网最近的新闻、访谈、演讲、论文和发布",
+            (Line::People, Self::Web) => {
+                "用 web_search 检索全球中英文网络最近的新闻、访谈、演讲、论文和发布"
+            }
         }
     }
 
