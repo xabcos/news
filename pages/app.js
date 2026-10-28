@@ -998,12 +998,14 @@ function renderWorth() {
     const href = `/articles/${article.id}${lang}`;
     const card = document.createElement("article");
     card.className = "image-news-card worth-card";
-    const media = Object.assign(document.createElement("a"), { className: "image-news-media", href, tabIndex: -1 });
-    media.setAttribute("aria-hidden", "true");
+    // Without a cover the card is words alone, as the server-drawn cards are.
     if (article.cover) {
+      const media = Object.assign(document.createElement("a"), { className: "image-news-media", href, tabIndex: -1 });
+      media.setAttribute("aria-hidden", "true");
       media.append(Object.assign(new Image(article.width || undefined, article.height || undefined), {
         src: article.cover, alt: "", loading: "lazy", decoding: "async", referrerPolicy: "no-referrer",
       }));
+      card.append(media);
     }
     const meta = document.createElement("p");
     meta.className = "item-meta";
@@ -1018,7 +1020,7 @@ function renderWorth() {
     const name = document.createElement("h3");
     name.className = "item-title";
     name.append(link(article.title, `/articles/${article.id}`));
-    card.append(media, meta, name);
+    card.append(meta, name);
     return card;
   }));
   el.worth.replaceChildren(heading, cards);

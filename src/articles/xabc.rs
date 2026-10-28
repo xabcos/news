@@ -1028,8 +1028,13 @@ pub(super) async fn publish(
     film: Option<&str>,
     article: &Finished,
 ) -> Result<Uuid> {
-    let cover = article.cover.as_ref();
-    let content = checked(&article.title, &article.body, cover.map(|cover| cover.id))?;
+    // Without a drawn cover, the first picture the body shows stands for the article.
+    let cover = article
+        .cover
+        .as_ref()
+        .map(|cover| cover.id)
+        .or_else(|| super::pictures(&article.body).first().copied());
+    let content = checked(&article.title, &article.body, cover)?;
     let mut tx = state.pool.begin().await?;
     sqlx::query("SELECT 1 FROM authors WHERE user_id = $1 FOR UPDATE")
         .bind(author)
@@ -1060,7 +1065,7 @@ pub(super) async fn publish(
     .bind(film)
     .execute(&mut *tx)
     .await?;
-    keep(&mut tx, id, article.pictures.iter().chain(cover)).await?;
+    keep(&mut tx, id, article.pictures.iter().chain(&article.cover)).await?;
     // The cover must be one of the article's pictures, which exist only now.
     if let Some(cover) = content.cover {
         sqlx::query("UPDATE articles SET cover = $2 WHERE id = $1")

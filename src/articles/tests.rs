@@ -922,13 +922,18 @@ async fn postgres_xabc_shares_and_explains_films() {
     use crate::config::Config;
     use axum::{http::StatusCode, routing::post};
     use base64::Engine;
-    use std::sync::{Mutex, atomic::AtomicU8};
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicU8},
+    };
     let database_url =
         std::env::var("NEWS_XABC_TEST_DATABASE_URL").expect("disposable database URL");
     let asked: Arc<Mutex<Vec<Value>>> = Arc::default();
     let drawings: Arc<Mutex<Vec<Value>>> = Arc::default();
     // 0: both searches answer; 1: grok's fails; 2: both fail.
     let failing = Arc::new(AtomicU8::new(1));
+    // Whether the image model fails to draw covers.
+    let covers_fail = Arc::new(AtomicBool::new(false));
     let mut seed = 0x9e37_79b9_u32;
     let noise = image::RgbImage::from_fn(640, 400, |_, _| {
         seed ^= seed << 13;
@@ -1041,12 +1046,22 @@ async fn postgres_xabc_shares_and_explains_films() {
         .route(
             "/v1/images/generations",
             post({
-                let drawings = drawings.clone();
+                let (drawings, covers_fail) = (drawings.clone(), covers_fail.clone());
                 move |Json(request): Json<Value>| {
-                    let (drawings, drawn) = (drawings.clone(), drawn.clone());
+                    let (drawings, drawn, covers_fail) =
+                        (drawings.clone(), drawn.clone(), covers_fail.clone());
                     async move {
+                        let cover = request["prompt"]
+                            .as_str()
+                            .is_some_and(|prompt| prompt.contains("封面插画"));
                         drawings.lock().unwrap().push(request);
-                        Json(json!({ "data": [{ "b64_json": drawn }] }))
+                        if cover && covers_fail.load(Ordering::SeqCst) {
+                            return (StatusCode::BAD_GATEWAY, Json(json!({})));
+                        }
+                        (
+                            StatusCode::OK,
+                            Json(json!({ "data": [{ "b64_json": drawn }] })),
+                        )
                     }
                 }
             }),
@@ -1374,17 +1389,23 @@ async fn postgres_xabc_shares_and_explains_films() {
             id
         }
     };
+    // Its cover can't be drawn, so the picture the body shows stands for it.
     let other = work("otherfilm", "Other Film").await;
     story(other, "review", "1 day").await;
+    covers_fail.store(true, Ordering::SeqCst);
     let second = xabc::write(&state, xabc::Line::Film, Utc::now())
         .await
         .unwrap();
-    let film: Option<String> = sqlx::query_scalar("SELECT film FROM articles WHERE id = $1")
-        .bind(second)
-        .fetch_one(&state.pool)
-        .await
-        .unwrap();
+    covers_fail.store(false, Ordering::SeqCst);
+    let (film, body, standing): (Option<String>, String, Option<Uuid>) =
+        sqlx::query_as("SELECT film, body, cover FROM articles WHERE id = $1")
+            .bind(second)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
     assert_eq!(film.as_deref(), Some("movie:otherfilm"));
+    let standing = standing.expect("the body's picture as the cover");
+    assert!(body.contains(&format!("](image:{standing})")), "{body}");
     assert!(matches!(
         xabc::write(&state, xabc::Line::Film, Utc::now()).await,
         Err(AppError::Internal(message)) if message == "影视最近没有待解说的作品"
