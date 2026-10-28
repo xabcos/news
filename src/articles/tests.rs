@@ -31,6 +31,13 @@ fn excerpts_are_one_line_of_the_body_without_markup_or_picture_descriptions() {
         )),
         "开头 Hello world, code and a link. 一起玩。把 two"
     );
+    // A caption under a picture is not the body's words; italics elsewhere are.
+    assert_eq!(
+        excerpt(&format!(
+            "![甲](image:{id})\n*甲的照片（图：[example.com](<https://example.com/a>)）*\n\n*开头*的话。"
+        )),
+        "开头的话。"
+    );
     let long = "字".repeat(EXCERPT_CHARS + 30);
     let cut = excerpt(&long);
     assert_eq!(cut.chars().count(), EXCERPT_CHARS + 1);
@@ -918,7 +925,7 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
 /// work 影视 discusses and then another, revising the first, and listing them under Culture.
 #[tokio::test]
 #[ignore = "requires NEWS_XABC_TEST_DATABASE_URL and local test configuration"]
-async fn postgres_xabc_shares_and_explains_films() {
+async fn postgres_xabc_shares_explains_films_and_profiles_people() {
     use crate::config::Config;
     use axum::{http::StatusCode, routing::post};
     use base64::Engine;
@@ -1001,6 +1008,58 @@ async fn postgres_xabc_shares_and_explains_films() {
                                         "cover": "封面插画",
                                     }),
                                     "https://cited.example/film",
+                                )),
+                            );
+                        }
+                        // 时代: grok names two people, the briefing model one of them.
+                        let people = instructions.contains("「时代」");
+                        if request["text"]["format"]["name"] == "finds" && people {
+                            let grok = request["tools"].as_array().unwrap().len() == 2;
+                            let named = if grok {
+                                vec!["Jensen Huang", "Lisa Su"]
+                            } else {
+                                vec!["lisa su"]
+                            };
+                            let finds: Vec<Value> = named
+                                .into_iter()
+                                .map(|person| json!({
+                                    "title": format!("{person} 的近况"), "why": "大家都在谈",
+                                    "points": "发布了新芯片", "sources": ["https://people.example/news"],
+                                    "pictures": [], "person": person,
+                                }))
+                                .collect();
+                            return (
+                                StatusCode::OK,
+                                Json(reply(json!({ "finds": finds }), "https://cited.example/people")),
+                            );
+                        }
+                        if request["text"]["format"]["name"] == "article" && people {
+                            let material = request["input"][0]["content"].as_str().unwrap_or_default();
+                            let name = material
+                                .lines()
+                                .find_map(|line| line.strip_prefix("人物："))
+                                .unwrap_or_default();
+                            let revising = instructions.contains("这次是更新");
+                            let (title, body) = if revising {
+                                (
+                                    format!("{name} 的人物介绍（更新）"),
+                                    format!("{}\n\n![](keep:1)\n\n![](img:1)\n\n近况更新。", "更新后的人物，".repeat(80)),
+                                )
+                            } else {
+                                (
+                                    format!("{name} 的人物介绍"),
+                                    format!("{}\n\n![](img:1)\n\n看[报道](https://people.example/news)。", "一个人的经历，".repeat(80)),
+                                )
+                            };
+                            return (
+                                StatusCode::OK,
+                                Json(reply(
+                                    json!({
+                                        "title": title, "body": body,
+                                        "pictures": [{ "page": "", "prompt": "一张人像", "caption": "人像" }],
+                                        "cover": "封面插画",
+                                    }),
+                                    "https://cited.example/people",
                                 )),
                             );
                         }
@@ -1556,4 +1615,170 @@ async fn postgres_xabc_shares_and_explains_films() {
             (second.to_string(), true)
         ]
     );
+
+    // 时代: the person both scouts name goes first, and their profile shows no drawn picture.
+    let drawn_before = drawings_log.lock().unwrap().len();
+    let profile = xabc::write(&state, xabc::Line::People, Utc::now())
+        .await
+        .unwrap();
+    let (person, title, cover): (Option<String>, String, Option<Uuid>) =
+        sqlx::query_as("SELECT person, title, cover FROM articles WHERE id = $1")
+            .bind(profile)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (person.as_deref(), title.as_str(), cover),
+        (Some("lisa-su"), "Lisa Su 的人物介绍", None)
+    );
+    assert_eq!(drawings_log.lock().unwrap().len(), drawn_before);
+    let material = writing(&asked_log.lock().unwrap());
+    assert!(material.contains("人物：Lisa Su\n线索：\n1.【X 与全网】Lisa Su 的近况"));
+    assert!(material.contains("2.【全网】lisa su 的近况"));
+
+    // Then the one grok named first; the scouts hear who was profiled lately.
+    let other = xabc::write(&state, xabc::Line::People, Utc::now())
+        .await
+        .unwrap();
+    let person: Option<String> = sqlx::query_scalar("SELECT person FROM articles WHERE id = $1")
+        .bind(other)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(person.as_deref(), Some("jensen-huang"));
+    let searched = asked_log
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|request| request["text"]["format"]["name"] == "finds")
+        .unwrap()["input"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(searched.contains("这些人物最近写过，这次不要选：\n- Lisa Su 的人物介绍\n"));
+
+    // Days later the first is brought up to date; a profile an administrator took back waits,
+    // and then nobody is left. The cover follows the photograph the profile opens with now.
+    let (photo, old) = (Uuid::new_v4(), Uuid::new_v4());
+    for (image, name) in [(photo, "lisa"), (old, "old")] {
+        sqlx::query(
+            "INSERT INTO article_images (id, article_id, url, content_type, width, height, expires_at)
+             VALUES ($1, $2, 'https://media.example/files/' || $3 || '.jpg', 'image/jpeg', 800, 600,
+                     now() + INTERVAL '1 day')",
+        )
+        .bind(image)
+        .bind(profile)
+        .bind(name)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query(
+        "UPDATE articles SET updated_at = now() - INTERVAL '4 days',
+           body = CASE WHEN id = $1 THEN body || $3 ELSE body END,
+           cover = CASE WHEN id = $1 THEN $4 ELSE cover END,
+           status = CASE WHEN id = $2 THEN 'pending' ELSE status END
+         WHERE id IN ($1, $2)",
+    )
+    .bind(profile)
+    .bind(other)
+    .bind(format!("\n\n![人像](image:{photo})\n*人像（例）*"))
+    .bind(old)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        xabc::write(&state, xabc::Line::People, Utc::now())
+            .await
+            .unwrap(),
+        profile
+    );
+    let (title, revision, cover): (String, i32, Option<Uuid>) =
+        sqlx::query_as("SELECT title, revision, cover FROM articles WHERE id = $1")
+            .bind(profile)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (title.as_str(), revision, cover),
+        ("Lisa Su 的人物介绍（更新）", 2, Some(photo))
+    );
+    let material = writing(&asked_log.lock().unwrap());
+    assert!(material.contains("现有全文：\n标题：Lisa Su 的人物介绍\n\n一个人的经历，"));
+    assert!(material.contains("他最近受关注的线索：\n1.【X 与全网】Lisa Su 的近况"));
+    assert!(matches!(
+        xabc::write(&state, xabc::Line::People, Utc::now()).await,
+        Err(AppError::Internal(message)) if message == "两路检索都没有找到可写的人物"
+    ));
+    // A profile taken back while it was being rewritten keeps its words.
+    let rewritten = xabc::Finished {
+        title: "改写".into(),
+        body: "字".repeat(500),
+        pictures: Vec::new(),
+        cover: None,
+    };
+    assert!(matches!(
+        xabc::revise(&state, other, 1, None, &rewritten).await,
+        Err(AppError::Conflict(_))
+    ));
+
+    // 时代 lists its profiles under a tab of its own, the one brought up to date last first and
+    // without an author; a profile leads back there and opens with its words, its photograph
+    // standing for it only on the lists.
+    sqlx::query("UPDATE articles SET status = 'published' WHERE id = $1")
+        .bind(other)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    let people = page(format!("{base}/people")).await;
+    assert!(people.contains("<img src=\"https://media.example/files/lisa.jpg\""));
+    assert!(people.contains("<body class=\"public reads articles article-cards people\">"));
+    assert!(people.contains("<a class=tab href=\"/people\" aria-current=\"true\">时代</a>"));
+    let latest = people.find("Lisa Su 的人物介绍（更新）").unwrap();
+    assert!(latest < people.find("Jensen Huang 的人物介绍").unwrap());
+    assert!(!people.contains("XABC</a>"));
+    assert!(
+        page(format!("{base}/people?q=Jensen"))
+            .await
+            .contains("「Jensen」找到 1 篇")
+    );
+    // Read or not, profiles stay off 分享's list, 热读 and XABC's page.
+    sqlx::query("UPDATE articles SET views = 50 WHERE id = $1")
+        .bind(profile)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    for list in [
+        "/articles",
+        "/articles?view=hot",
+        &format!("/articles?by={author}"),
+    ] {
+        assert!(
+            !page(format!("{base}{list}")).await.contains("人物介绍"),
+            "{list}"
+        );
+    }
+    let article = page(format!("{base}/articles/{profile}")).await;
+    assert!(article.contains("<a href=\"/people\">← 时代</a>"));
+    // It shows when it was brought up to date, and its data still tells when it first went out.
+    let (published, updated): (DateTime<Utc>, DateTime<Utc>) =
+        sqlx::query_as("SELECT published_at, updated_at FROM articles WHERE id = $1")
+            .bind(profile)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert!(published < updated);
+    assert!(article.contains(&format!("<time datetime=\"{}\">", updated.to_rfc3339())));
+    assert!(article.contains(&format!("\"datePublished\":\"{}\"", published.to_rfc3339())));
+    assert!(article.contains("<a class=tab href=\"/people\" aria-current=\"true\">时代</a>"));
+    assert!(!article.contains("class=article-cover"));
+    // 值得读 ranks profiles with the rest.
+    let worth: Value =
+        serde_json::from_str(&page(format!("{base}/articles/worth.json")).await).unwrap();
+    assert!(worth["articles"].as_array().unwrap().iter().any(|article| {
+        article["id"] == profile.to_string()
+            && article["person"] == true
+            && article["film"] == false
+    }));
 }

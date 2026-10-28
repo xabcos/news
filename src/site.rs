@@ -113,7 +113,7 @@ async fn home(
   <script src="{STATS_SCRIPT}" data-track-url="{track_url}" defer></script>
   <script src="{PUBLIC_SCRIPT}" defer></script>
   <script src="/travel.js?v=12" defer></script>
-  <script src="/app.js?v=46" defer></script>
+  <script src="/app.js?v=47" defer></script>
   <!-- async: a slow third-party banner must not hold back DOMContentLoaded, which starts app.js. -->
   <script src="https://broadcast.xairouter.com/embed.js" async></script>
 </body>
@@ -474,12 +474,15 @@ pub(crate) fn tabs(topics: &[TopicMeta], current: &str, en: bool) -> String {
         escape(&localized("/?topic=insight", en)),
         marked("insight")
     );
-    // 分享 is not a topic: readers write it. Its tab follows 开源.
+    // 分享 is not a topic: readers write it. Its tab follows 开源, and XABC's 时代 follows it.
     let articles_tab = format!(
-        "<a class=tab href=\"{}\"{}>{}</a>",
+        "<a class=tab href=\"{}\"{}>{}</a><a class=tab href=\"{}\"{}>{}</a>",
         localized("/articles", en),
         marked("articles"),
-        crate::articles::label(en)
+        crate::articles::label(en),
+        localized(crate::articles::PEOPLE, en),
+        marked("people"),
+        crate::articles::people_label(en)
     );
     // A catalogue section's topics share one tab; swiping back into it enters the last
     // (public.js).
@@ -677,6 +680,7 @@ mod tests {
                 "<a class=tab href=\"/?topic=overseas-ai\">海外 AI</a>",
                 "<a class=tab href=\"/?topic=github\">开源</a>",
                 "<a class=tab href=\"/articles\">分享</a>",
+                "<a class=tab href=\"/people\">时代</a>",
                 "<a class=tab href=\"/culture\" data-last=\"/culture/book\">文娱</a>",
                 "<a class=tab href=\"/reads\">精读</a>",
             )
@@ -686,12 +690,14 @@ mod tests {
         for tab in [
             "<a class=tab href=\"/?topic=x&amp;lang=en\" aria-current=\"true\">𝐗</a>",
             "<a class=tab href=\"/culture?lang=en\" data-last=\"/culture/book?lang=en\">𝑪𝒖𝒍𝒕𝒖𝒓𝒆</a>",
+            "<a class=tab href=\"/people?lang=en\">𝑷𝒆𝒐𝒑𝒍𝒆</a>",
         ] {
             assert!(english.contains(tab), "{tab}");
         }
         for (current, tab) in [
             ("insight", ">𝐀𝐈</a>"),
             ("movie", ">文娱</a>"),
+            ("people", ">时代</a>"),
             ("reads", ">精读</a>"),
         ] {
             let html = tabs(&topics(), current, false);
@@ -705,8 +711,8 @@ mod tests {
 
     #[test]
     fn tabs_keep_their_places_without_their_neighbours() {
-        // Without 开源, 分享 comes last; without 图书, swiping back into 文娱 enters 影视. Names
-        // are escaped in both languages.
+        // Without 开源, 分享 and 时代 come last; without 图书, swiping back into 文娱 enters 影视.
+        // Names are escaped in both languages.
         let topics = [
             topic("movie", "影视", "𝑴𝒐𝒗𝒊𝒆"),
             topic("odd", "A&B \"</template>", "<b>"),
@@ -719,6 +725,7 @@ mod tests {
                 "<a class=tab href=\"/culture\" data-last=\"/culture/movie\">文娱</a>",
                 "<a class=tab href=\"/?topic=odd\">A&amp;B &quot;&lt;/template&gt;</a>",
                 "<a class=tab href=\"/articles\">分享</a>",
+                "<a class=tab href=\"/people\">时代</a>",
             )
         );
         assert!(

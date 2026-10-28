@@ -51,6 +51,8 @@
 .article-cards .item-title { font-size: 1.05rem; line-height: 1.5; font-weight: 650; }
 .article-cards .item-summary { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 .article-cards .read-rank { width: auto; padding: 0; }
+/* 时代's cards show people: the crop keeps their faces. */
+.people .image-news-media img { object-position: 50% 20%; }
 .article .read-title { margin: 0 0 .7rem; }
 .article-cover { display: block; width: 100%; height: auto; aspect-ratio: 5 / 2; object-fit: cover; margin-bottom: 1.8rem; border-radius: var(--radius-l); background: var(--surface-soft); }
 /* A line in italics right after a picture is its caption: XABC credits each picture so. */

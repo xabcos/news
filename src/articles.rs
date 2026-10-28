@@ -49,10 +49,17 @@ const MARKDOWN: Options = Options::ENABLE_STRIKETHROUGH.union(Options::ENABLE_TA
 
 /// Where 文娱 · 解说 lists XABC's articles on films and series, under Culture.
 const COMMENTARY: &str = "/culture/commentary";
+/// Where 时代 lists XABC's profiles of the people this age talks about.
+pub(crate) const PEOPLE: &str = "/people";
 
 /// 文娱 · 解说's name, in the page's language.
 pub(crate) fn commentary_label(en: bool) -> &'static str {
     crate::site::choose(en, "解说", "𝑬𝒙𝒑𝒍𝒂𝒊𝒏𝒆𝒅")
+}
+
+/// 时代's name, in the page's language.
+pub(crate) fn people_label(en: bool) -> &'static str {
+    crate::site::choose(en, "时代", "𝑷𝒆𝒐𝒑𝒍𝒆")
 }
 
 /// The section's name, in the page's language.
@@ -102,13 +109,15 @@ struct Listed {
     published_at: Option<DateTime<Utc>>,
     /// Whether it is a 解说.
     film: bool,
+    /// Whether it is a 时代 profile.
+    person: bool,
 }
 
-const LISTED: &str = "SELECT a.id, a.title, w.name AS author, a.status, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film
+const LISTED: &str = "SELECT a.id, a.title, w.name AS author, a.status, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person
     FROM articles a JOIN authors w ON w.user_id = a.author_id JOIN users u ON u.id = a.author_id";
 
-/// A search of 分享 or 解说: its words, as the page shows them, and the patterns each of which an
-/// article's title or opening must hold.
+/// A search of 分享, 解说 or 时代: its words, as the page shows them, and the patterns each of
+/// which an article's title or opening must hold.
 struct Search {
     words: String,
     patterns: Vec<String>,
@@ -128,8 +137,8 @@ impl Search {
         self.patterns.is_empty()
     }
 
-    /// Orders a list newest first, after the articles whose titles hold every word.
-    fn order(&self, query: &mut sqlx::QueryBuilder<sqlx::Postgres>) {
+    /// Orders a list newest first by `newest`, after the articles whose titles hold every word.
+    fn order(&self, query: &mut sqlx::QueryBuilder<sqlx::Postgres>, newest: &str) {
         query.push(" ORDER BY ");
         if !self.is_empty() {
             query
@@ -137,7 +146,7 @@ impl Search {
                 .push_bind(self.patterns.clone())
                 .push(") DESC, ");
         }
-        query.push("a.published_at DESC, a.id DESC");
+        query.push(newest).push(" DESC, a.id DESC");
     }
 
     /// Narrows `query`, already filtering, to the articles holding every word.
@@ -790,18 +799,28 @@ fn image_id(destination: &str) -> Option<Uuid> {
         .and_then(|id| Uuid::parse_str(id).ok())
 }
 
-/// The body's words as one line of plain text: no markup and no picture descriptions.
+/// The body's words as one line of plain text: no markup, no picture descriptions and no
+/// captions, the italic line right under a picture (`reads.css` sets it apart as `img + em`).
 fn words(body: &str) -> String {
     let mut text = String::new();
-    let mut picture = false;
+    // Inside a picture or its caption, and whether a picture just ended, a line break apart.
+    let (mut picture, mut caption, mut pictured) = (false, false, false);
     for event in crate::site::bolded(Parser::new_ext(body, MARKDOWN)) {
         match event {
             Event::Start(Tag::Image { .. }) => picture = true,
-            Event::End(TagEnd::Image) => picture = false,
-            Event::Text(part) | Event::Code(part) if !picture => text.push_str(&part),
-            Event::SoftBreak
-            | Event::HardBreak
-            | Event::End(
+            Event::End(TagEnd::Image) => {
+                picture = false;
+                pictured = true;
+                continue;
+            }
+            Event::Start(Tag::Emphasis) if pictured => caption = true,
+            Event::End(TagEnd::Emphasis) if caption => caption = false,
+            Event::Text(part) | Event::Code(part) if !picture && !caption => text.push_str(&part),
+            Event::SoftBreak | Event::HardBreak => {
+                text.push(' ');
+                continue;
+            }
+            Event::End(
                 TagEnd::Paragraph
                 | TagEnd::Heading(_)
                 | TagEnd::BlockQuote(_)
@@ -811,6 +830,7 @@ fn words(body: &str) -> String {
             ) => text.push(' '),
             _ => {}
         }
+        pictured = false;
     }
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
