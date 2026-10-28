@@ -476,7 +476,7 @@ struct Worth {
     height: Option<i32>,
 }
 
-/// 值得读, which opens ALL: XABC's four newest 分享, newest first, then the twelve hottest of the
+/// 值得读, which opens ALL: XABC's four newest 分享, newest first, then the four hottest of the
 /// last 30 days of 分享 and 解说 together, ranked as 热读 is, each article once; while few are
 /// read, the newest fill the places.
 async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
@@ -498,7 +498,7 @@ async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Resp
          ORDER BY n.published_at DESC NULLS LAST, ",
     )
     .push(HOT)
-    .push(" DESC, a.published_at DESC, a.id DESC LIMIT 16")
+    .push(" DESC, a.published_at DESC, a.id DESC LIMIT 8")
     .build_query_as()
     .fetch_all(&state.pool)
     .await?;
