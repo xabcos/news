@@ -32,7 +32,7 @@ const FASHION_TOPIC = "fashion";
 const MEMES_TOPIC = "memes";
 const CARD_TOPICS = new Set(["p", FASHION_TOPIC, "creations", MEMES_TOPIC]);
 // Fashion photographs stand upright, and a meme shows whole.
-const CARD_SHAPES = { [FASHION_TOPIC]: "fashion-card", [MEMES_TOPIC]: "meme-card" };
+const CARD_SHAPES = new Map([[FASHION_TOPIC, "fashion-card"], [MEMES_TOPIC, "meme-card"]]);
 const storage = (() => {
   try {
     const store = window.localStorage;
@@ -966,7 +966,8 @@ function sourceList(sources) {
   return list;
 }
 
-// 值得读 opens ALL's latest day: the hottest 分享, 解说 and 时代, which the server ranks as 热读.
+// 值得读 opens ALL's latest day: XABC's newest 分享, then the hottest 分享, 解说 and 时代, ranked
+// by the server as 热读.
 async function loadWorth() {
   if (!worthShown()) {
     el.worth.hidden = true;
@@ -1114,9 +1115,9 @@ function renderGroupItem(group, item) {
     article.append(body);
     return article;
   }
-  if (CARD_SHAPES[group.id]) {
+  if (CARD_SHAPES.has(group.id)) {
     const article = imageNewsCard(item);
-    article.classList.add(CARD_SHAPES[group.id]);
+    article.classList.add(CARD_SHAPES.get(group.id));
     return article;
   }
   return CARD_TOPICS.has(group.id) ? imageNewsCard(item) : card(item, group.id === "reads");

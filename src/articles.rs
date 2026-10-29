@@ -804,8 +804,9 @@ fn image_id(destination: &str) -> Option<Uuid> {
 /// captions, the italic line right under a picture (`reads.css` sets it apart as `img + em`).
 fn words(body: &str) -> String {
     let mut text = String::new();
-    // Inside a picture or its caption, and whether a picture just ended, a line break apart.
-    let (mut picture, mut caption, mut pictured) = (false, false, false);
+    // Inside a picture, how deep inside its caption's emphasis, and whether a picture just ended,
+    // a line break apart.
+    let (mut picture, mut caption, mut pictured) = (false, 0, false);
     for event in crate::site::bolded(Parser::new_ext(body, MARKDOWN)) {
         match event {
             Event::Start(Tag::Image { .. }) => picture = true,
@@ -814,9 +815,11 @@ fn words(body: &str) -> String {
                 pictured = true;
                 continue;
             }
-            Event::Start(Tag::Emphasis) if pictured => caption = true,
-            Event::End(TagEnd::Emphasis) if caption => caption = false,
-            Event::Text(part) | Event::Code(part) if !picture && !caption => text.push_str(&part),
+            Event::Start(Tag::Emphasis) if pictured || caption > 0 => caption += 1,
+            Event::End(TagEnd::Emphasis) if caption > 0 => caption -= 1,
+            Event::Text(part) | Event::Code(part) if !picture && caption == 0 => {
+                text.push_str(&part)
+            }
             Event::SoftBreak | Event::HardBreak => {
                 text.push(' ');
                 continue;

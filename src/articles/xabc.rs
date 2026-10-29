@@ -87,9 +87,8 @@ impl Line {
     /// through the day, and 时代 who is talked about.
     fn interval(self) -> chrono::Duration {
         match self {
-            Self::Share => chrono::Duration::hours(1),
+            Self::Share | Self::People => chrono::Duration::hours(1),
             Self::Film => chrono::Duration::hours(4),
-            Self::People => chrono::Duration::hours(1),
         }
     }
 
@@ -1089,7 +1088,6 @@ fn plain(text: &str) -> String {
 
 /// What a 解说 or a 时代 profile is about: a work by its key in 影视, or a person by theirs. Each
 /// has one article at most.
-#[derive(Clone, Copy)]
 pub(super) enum Subject<'a> {
     Work(&'a str),
     Person(&'a str),
@@ -1109,7 +1107,7 @@ pub(super) async fn publish(
         Some(Subject::Person(key)) => (None, Some(key)),
         None => (None, None),
     };
-    // Without a drawn cover, the first picture the body shows stands for the article.
+    // Without a cover of its own, the first picture the body shows stands for the article.
     let cover = article
         .cover
         .as_ref()

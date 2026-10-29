@@ -563,19 +563,16 @@ async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Resp
     ))
 }
 
-/// 文娱 · 解说: XABC's articles on films and series, newest first, as picture cards under
-/// Culture's tabs.
-async fn commentary(
-    State(state): State<AppState>,
-    reader: Reader,
-    Query(params): Query<Params>,
-    headers: HeaderMap,
-) -> Result<Response> {
-    let en = params.english();
-    let page = page(&params)?;
-    let search = Search::new(params.q.as_deref());
-    let mut query = listed(CARD, Shelf::Explained, None, &search);
-    search.order(&mut query, Shelf::Explained.dated());
+/// A page of `shelf`'s public articles holding the words searched, newest first, and whether
+/// more follow; a page past the last is not found.
+async fn shelved(
+    state: &AppState,
+    shelf: Shelf,
+    search: &Search,
+    page: u32,
+) -> Result<(Vec<Card>, bool)> {
+    let mut query = listed(CARD, shelf, None, search);
+    search.order(&mut query, shelf.dated());
     let mut rows: Vec<Card> = query
         .push(" LIMIT ")
         .push_bind(PAGE_SIZE + 1)
@@ -589,6 +586,21 @@ async fn commentary(
     }
     let more = rows.len() > PAGE_SIZE as usize;
     rows.truncate(PAGE_SIZE as usize);
+    Ok((rows, more))
+}
+
+/// 文娱 · 解说: XABC's articles on films and series, newest first, as picture cards under
+/// Culture's tabs.
+async fn commentary(
+    State(state): State<AppState>,
+    reader: Reader,
+    Query(params): Query<Params>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    let en = params.english();
+    let page = page(&params)?;
+    let search = Search::new(params.q.as_deref());
+    let (rows, more) = shelved(&state, Shelf::Explained, &search, page).await?;
     let found = found(
         &search,
         page,
@@ -672,21 +684,7 @@ async fn people(
     let en = params.english();
     let page = page(&params)?;
     let search = Search::new(params.q.as_deref());
-    let mut query = listed(CARD, Shelf::People, None, &search);
-    search.order(&mut query, Shelf::People.dated());
-    let mut rows: Vec<Card> = query
-        .push(" LIMIT ")
-        .push_bind(PAGE_SIZE + 1)
-        .push(" OFFSET ")
-        .push_bind(i64::from(page - 1) * PAGE_SIZE)
-        .build_query_as()
-        .fetch_all(&state.pool)
-        .await?;
-    if page > 1 && rows.is_empty() {
-        return Err(AppError::NotFound("页面不存在".into()));
-    }
-    let more = rows.len() > PAGE_SIZE as usize;
-    rows.truncate(PAGE_SIZE as usize);
+    let (rows, more) = shelved(&state, Shelf::People, &search, page).await?;
     let description = choose(
         en,
         "这个时代最受关注的人物：他们是谁，做成了什么，现在怎样",

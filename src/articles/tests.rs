@@ -34,7 +34,7 @@ fn excerpts_are_one_line_of_the_body_without_markup_or_picture_descriptions() {
     // A caption under a picture is not the body's words; italics elsewhere are.
     assert_eq!(
         excerpt(&format!(
-            "![甲](image:{id})\n*甲的照片（图：[example.com](<https://example.com/a>)）*\n\n*开头*的话。"
+            "![甲](image:{id})\n*甲的 _旧_ 照片（图：[example.com](<https://example.com/a>)）*\n\n*开头*的话。"
         )),
         "开头的话。"
     );

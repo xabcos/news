@@ -57,9 +57,9 @@ pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -
     }
     let mut found = look(state, Line::People, &input, &HashSet::new()).await;
     let passed: HashSet<String> = waiting.into_iter().map(|(person, _)| person).collect();
-    let (person, finds) = pick(std::mem::take(&mut found.finds), &passed)
+    let (person, finds) = pick(found.finds, &passed)
         .ok_or_else(|| AppError::Internal("两路检索都没有找到可写的人物".into()))?;
-    let name = finds[0].1.person.trim().to_owned();
+    let name = finds[0].1.person.trim();
     let material = format!("今天是 {today}。\n人物：{name}\n");
     let due: Option<Due> = sqlx::query_as(
         "SELECT id, title, body, revision, cover, updated_at FROM articles WHERE person = $1",
@@ -73,7 +73,7 @@ pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -
         found.usage += drafted.usage;
         found.known.extend(drafted.cited);
         let mut article = finish(state, drafted.article, found.known, &[], false).await?;
-        article.cover = portrait(state, &name).await;
+        article.cover = portrait(state, name).await;
         let id = publish(
             state,
             author,
@@ -103,7 +103,7 @@ pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -
     found.known.extend(drafted.cited);
     let mut article = finish(state, drafted.article, found.known, &kept, false).await?;
     // The cover is the portrait, or else the picture the profile opens with now.
-    article.cover = portrait(state, &name).await;
+    article.cover = portrait(state, name).await;
     let cover = article
         .cover
         .as_ref()
