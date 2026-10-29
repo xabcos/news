@@ -24,7 +24,7 @@ use uuid::Uuid;
 const PAGE_TOPICS: [&str; 2] = ["reads", "llm"];
 
 /// What every public page loads, with the versions that refresh caches.
-const STYLES: &str = "/styles.css?v=tabs";
+const STYLES: &str = "/styles.css?v=memes";
 const PUBLIC_SCRIPT: &str = "/public.js?v=12";
 const STATS_SCRIPT: &str = "/stats.js?v=3";
 /// app.js's first page of 𝐀𝐋𝐋 and of one topic, and the days it lists, which its preloads repeat.
@@ -113,7 +113,7 @@ async fn home(
   <script src="{STATS_SCRIPT}" data-track-url="{track_url}" defer></script>
   <script src="{PUBLIC_SCRIPT}" defer></script>
   <script src="/travel.js?v=12" defer></script>
-  <script src="/app.js?v=47" defer></script>
+  <script src="/app.js?v=48" defer></script>
   <!-- async: a slow third-party banner must not hold back DOMContentLoaded, which starts app.js. -->
   <script src="https://broadcast.xairouter.com/embed.js" async></script>
 </body>

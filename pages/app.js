@@ -29,7 +29,10 @@ const TRAVEL_TOPIC = "travel";
 // Fashion stories are picture cards like 𝑷's, framed upright.
 const FASHION_TOPIC = "fashion";
 // Topics whose stories are pictures, shown as picture cards.
-const CARD_TOPICS = new Set(["p", FASHION_TOPIC, "creations"]);
+const MEMES_TOPIC = "memes";
+const CARD_TOPICS = new Set(["p", FASHION_TOPIC, "creations", MEMES_TOPIC]);
+// Fashion photographs stand upright, and a meme shows whole.
+const CARD_SHAPES = { [FASHION_TOPIC]: "fashion-card", [MEMES_TOPIC]: "meme-card" };
 const storage = (() => {
   try {
     const store = window.localStorage;
@@ -1111,9 +1114,9 @@ function renderGroupItem(group, item) {
     article.append(body);
     return article;
   }
-  if (group.id === FASHION_TOPIC) {
+  if (CARD_SHAPES[group.id]) {
     const article = imageNewsCard(item);
-    article.classList.add("fashion-card");
+    article.classList.add(CARD_SHAPES[group.id]);
     return article;
   }
   return CARD_TOPICS.has(group.id) ? imageNewsCard(item) : card(item, group.id === "reads");

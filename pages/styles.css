@@ -432,6 +432,9 @@ p { margin-top: 0; }
 /* Fashion photographs stand upright; a crop keeps the face in frame. */
 .fashion-card .image-news-media { aspect-ratio: 3 / 4; }
 .fashion-card .image-news-media img { object-position: 50% 0; }
+/* A meme's words are part of the joke: it shows whole, at its own ratio up to a screenful. */
+.meme-card .image-news-media { aspect-ratio: auto; }
+.meme-card .image-news-media img { height: auto; max-height: 36rem; object-fit: contain; }
 
 @media (hover: hover) {
   .image-news-card { transition: transform .2s ease, box-shadow .2s ease; }

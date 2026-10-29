@@ -22,6 +22,10 @@ const IMAGE_TOPIC_ID: &str = "x";
 pub(crate) const FASHION_TOPIC_ID: &str = "fashion";
 /// AI 创作: works made with AI, each shown by a picture of the work.
 pub(crate) const CREATIONS_TOPIC_ID: &str = "creations";
+/// 梗图: the memes the web passes around, each shown whole and explained.
+pub(crate) const MEMES_TOPIC_ID: &str = "memes";
+/// Topics whose stories are pictures: one without a picture is not collected.
+pub(crate) const PICTURE_TOPICS: [&str; 3] = ["p", CREATIONS_TOPIC_ID, MEMES_TOPIC_ID];
 
 #[derive(Debug, Clone, Copy)]
 pub struct NewsWindow {
@@ -381,7 +385,7 @@ pub(crate) fn request_body(
     if topic.owner_user_id.is_none()
         && (matches!(
             topic.id.as_str(),
-            IMAGE_TOPIC_ID | "p" | FASHION_TOPIC_ID | CREATIONS_TOPIC_ID
+            IMAGE_TOPIC_ID | "p" | FASHION_TOPIC_ID | CREATIONS_TOPIC_ID | MEMES_TOPIC_ID
         ) || crate::catalog::section(topic).is_some())
     {
         web_search["enable_image_search"] = json!(true);
@@ -409,9 +413,10 @@ pub(crate) fn request_body(
         // 𝑾 and 𝑻𝒓𝒂𝒗𝒆𝒍 read X only, and the model looks at the photographs while it chooses.
         json!([{ "type": "x_search", "enable_image_understanding": true }])
     } else if crate::catalog::section(topic).is_some()
-        || (topic.owner_user_id.is_none() && topic.id == CREATIONS_TOPIC_ID)
+        || (topic.owner_user_id.is_none()
+            && matches!(topic.id.as_str(), CREATIONS_TOPIC_ID | MEMES_TOPIC_ID))
     {
-        // The catalogues and AI 创作 look at the pictures in X posts too.
+        // The catalogues, AI 创作 and 梗图 look at the pictures in X posts too.
         json!([web_search, { "type": "x_search", "enable_image_understanding": true }])
     } else {
         json!([web_search, { "type": "x_search" }])
@@ -472,6 +477,8 @@ fn instructions(topic: &Topic) -> String {
         "image 写一张与内容直接相关的照片，优先竖构图：秀场用首套或最有代表性的造型，明星穿搭与红毯用本人这次造型的全身或半身照，美妆用妆容、发型或美甲的特写，潮流单品用上身照。只使用搜索/浏览结果中实际出现、可直接加载的 HTTPS 图片地址，找不到合适的就把 image 设为 null，不要因此舍弃内容；image.source_url 必须复制对应 items 的 url；caption/caption_en 用一句话说明画面中的人物、品牌与季度或场合，credit 写图片署名（摄影师或图片社，没有署名时写发布媒体）。排除 logo、拼图、商品白底图、广告和截图。cover 返回 null。"
     } else if topic.owner_user_id.is_none() && topic.id == CREATIONS_TOPIC_ID {
         "image 写这件作品本身的画面：帖子里视频的封面，或成片中最有代表性的一帧；音乐作品用作者发布的封面或配套画面。只使用搜索/浏览结果中实际出现、可直接加载的 HTTPS 图片地址；image.source_url 必须复制对应 items 的 X 帖子 URL；caption/caption_en 用一句话说明画面里是什么，credit 写作者的 X 账号。排除头像、logo、广告、拼图和纯文字截图；找不到作品画面的内容不要返回。cover 返回 null。"
+    } else if topic.owner_user_id.is_none() && topic.id == MEMES_TOPIC_ID {
+        "image 写这张梗图本身：帖子里的原图，完整的一张，不截取局部，也不换成别的图。只使用搜索/浏览结果中实际出现、可直接加载的 HTTPS 图片地址；image.source_url 必须复制对应 items 的帖子 URL；caption/caption_en 用一句话说明图里是什么，credit 写原作者的账号。先看过这张图再写：summary/summary_en 讲清图里有什么、图上的文字说了什么（外文译成中文）、笑点在哪，再讲它背后的出处、事件或梗，以及为什么现在在传，可以写三到五句；只依据看过的图和帖文，不编造出处。排除头像、logo 和广告；找不到原图的梗不要返回。cover 返回 null。"
     } else if topic.owner_user_id.is_none() && topic.id == IMAGE_TOPIC_ID {
         "cover 最多选一张与本次 items 中重要热点直接相关的真实照片，可来自新闻原文或 X 帖子。只使用搜索/浏览结果中实际出现、可直接加载的 HTTPS 图片地址；优先官方、媒体发布且有近期报道或互动证据的照片，不臆造图片链接、热度数字、全球排名或摄影师。source_url 必须复制对应 items 的文章/帖子 URL；caption/caption_en 只用一句话说明已核实的画面与事件，credit 保留摄影者或发布机构/账号。排除商标占位、广告、拼图、AI 生成图和血腥画面，旧图须明确其背景；找不到合适照片就返回 null，不凑图。不为每条新闻找图。"
     } else {
@@ -691,8 +698,8 @@ fn clip(value: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CREATIONS_TOPIC_ID, Candidate, NewsImage, NewsWindow, canonical_url, clean_url,
-        normalize_title, parse_reply, parse_time, request_body, similar_title, validate,
+        CREATIONS_TOPIC_ID, Candidate, MEMES_TOPIC_ID, NewsImage, NewsWindow, canonical_url,
+        clean_url, normalize_title, parse_reply, parse_time, request_body, similar_title, validate,
     };
     use crate::topics::Topic;
     use chrono::{Duration, TimeZone, Utc};
@@ -730,7 +737,7 @@ mod tests {
     }
 
     #[test]
-    fn ai_creations_asks_for_a_picture_of_each_work() {
+    fn ai_creations_and_memes_ask_for_a_picture_of_each_work() {
         let now = Utc::now();
         let window = NewsWindow {
             start: now - Duration::hours(48),
@@ -756,6 +763,11 @@ mod tests {
         );
         assert_eq!(creations["tools"][1]["enable_image_understanding"], true);
         assert!(creations.to_string().contains("image 写这件作品本身的画面"));
+        // 梗图 looks at the memes the same way and explains each, shown whole.
+        let memes = asked(MEMES_TOPIC_ID);
+        assert_eq!(memes["tools"][0]["enable_image_search"], true);
+        assert_eq!(memes["tools"][1]["enable_image_understanding"], true);
+        assert!(memes.to_string().contains("image 写这张梗图本身"));
         // An ordinary topic is not asked for pictures.
         let launches = asked("launches");
         assert!(launches["tools"][0].get("enable_image_search").is_none());

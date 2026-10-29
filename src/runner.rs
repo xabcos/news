@@ -639,8 +639,9 @@ async fn execute(
     let catalog = crate::catalog::section(topic);
     let is_catalog = catalog.is_some();
     let is_fashion = topic.id == fetch::FASHION_TOPIC_ID;
-    // 𝑷's, 𝑭𝒂𝒔𝒉𝒊𝒐𝒏's and AI 创作's cards are pictures; a story without one is not collected.
-    let pictured = is_fashion || matches!(topic.id.as_str(), "p" | fetch::CREATIONS_TOPIC_ID);
+    // 𝑭𝒂𝒔𝒉𝒊𝒐𝒏's cards are pictures, and so are the picture topics', whose stories need one.
+    let picture_topic = fetch::PICTURE_TOPICS.contains(&topic.id.as_str());
+    let pictured = is_fashion || picture_topic;
     let window = if is_reads {
         NewsWindow {
             start: window.end - ChronoDuration::days(30),
@@ -711,9 +712,7 @@ async fn execute(
         if is_fashion && let Some(image) = &mut item.image {
             fetch::upright(&mut image.url);
         }
-        if (matches!(topic.id.as_str(), "p" | fetch::CREATIONS_TOPIC_ID) && item.image.is_none())
-            || (is_catalog && item.published_at.is_none())
-        {
+        if (picture_topic && item.image.is_none()) || (is_catalog && item.published_at.is_none()) {
             dropped += 1;
             continue;
         }
