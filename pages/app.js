@@ -31,7 +31,7 @@ const FASHION_TOPIC = "fashion";
 // Topics whose stories are pictures, shown as picture cards.
 const MEMES_TOPIC = "memes";
 const CARD_TOPICS = new Set(["p", FASHION_TOPIC, "creations", MEMES_TOPIC]);
-// Fashion photographs stand upright, and a meme shows whole.
+// Fashion photographs stand upright, and 趣图's pictures show whole.
 const CARD_SHAPES = new Map([[FASHION_TOPIC, "fashion-card"], [MEMES_TOPIC, "meme-card"]]);
 const storage = (() => {
   try {

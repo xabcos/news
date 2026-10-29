@@ -22,7 +22,7 @@ const IMAGE_TOPIC_ID: &str = "x";
 pub(crate) const FASHION_TOPIC_ID: &str = "fashion";
 /// AI 创作: works made with AI, each shown by a picture of the work.
 pub(crate) const CREATIONS_TOPIC_ID: &str = "creations";
-/// 梗图: the memes the web passes around, each shown whole and explained.
+/// 趣图: the fun pictures the web passes around, memes among them, each shown whole and explained.
 pub(crate) const MEMES_TOPIC_ID: &str = "memes";
 /// Topics whose stories are pictures: one without a picture is not collected.
 pub(crate) const PICTURE_TOPICS: [&str; 3] = ["p", CREATIONS_TOPIC_ID, MEMES_TOPIC_ID];
@@ -416,7 +416,7 @@ pub(crate) fn request_body(
         || (topic.owner_user_id.is_none()
             && matches!(topic.id.as_str(), CREATIONS_TOPIC_ID | MEMES_TOPIC_ID))
     {
-        // The catalogues, AI 创作 and 梗图 look at the pictures in X posts too.
+        // The catalogues, AI 创作 and 趣图 look at the pictures in X posts too.
         json!([web_search, { "type": "x_search", "enable_image_understanding": true }])
     } else {
         json!([web_search, { "type": "x_search" }])
@@ -478,7 +478,7 @@ fn instructions(topic: &Topic) -> String {
     } else if topic.owner_user_id.is_none() && topic.id == CREATIONS_TOPIC_ID {
         "image 写这件作品本身的画面：帖子里视频的封面，或成片中最有代表性的一帧；音乐作品用作者发布的封面或配套画面。只使用搜索/浏览结果中实际出现、可直接加载的 HTTPS 图片地址；image.source_url 必须复制对应 items 的 X 帖子 URL；caption/caption_en 用一句话说明画面里是什么，credit 写作者的 X 账号。排除头像、logo、广告、拼图和纯文字截图；找不到作品画面的内容不要返回。cover 返回 null。"
     } else if topic.owner_user_id.is_none() && topic.id == MEMES_TOPIC_ID {
-        "image 写这张梗图本身：帖子里的原图，完整的一张，不截取局部，也不换成别的图。只使用搜索/浏览结果中实际出现、可直接加载的 HTTPS 图片地址；image.source_url 必须复制对应 items 的帖子 URL；caption/caption_en 用一句话说明图里是什么，credit 写原作者的账号。先看过这张图再写：summary/summary_en 讲清图里有什么、图上的文字说了什么（外文译成中文）、笑点在哪，再讲它背后的出处、事件或梗，以及为什么现在在传，可以写三到五句；只依据看过的图和帖文，不编造出处。排除头像、logo 和广告；找不到原图的梗不要返回。cover 返回 null。"
+        "image 写这张图本身：帖子里的原图，完整的一张，不截取局部，也不换成别的图。只使用搜索/浏览结果中实际出现、可直接加载的 HTTPS 图片地址；image.source_url 必须复制对应 items 的帖子 URL；caption/caption_en 用一句话说明图里是什么，credit 写原作者的账号。先看过这张图再写：summary/summary_en 讲清图里有什么、有趣在哪（笑点、看点或妙处），图上有字就说清写了什么（外文译成中文），再讲它背后的出处、故事或梗，以及为什么现在在传，可以写三到五句；只依据看过的图和帖文，不编造出处。排除头像、logo 和广告；找不到原图的不要返回。cover 返回 null。"
     } else if topic.owner_user_id.is_none() && topic.id == IMAGE_TOPIC_ID {
         "cover 最多选一张与本次 items 中重要热点直接相关的真实照片，可来自新闻原文或 X 帖子。只使用搜索/浏览结果中实际出现、可直接加载的 HTTPS 图片地址；优先官方、媒体发布且有近期报道或互动证据的照片，不臆造图片链接、热度数字、全球排名或摄影师。source_url 必须复制对应 items 的文章/帖子 URL；caption/caption_en 只用一句话说明已核实的画面与事件，credit 保留摄影者或发布机构/账号。排除商标占位、广告、拼图、AI 生成图和血腥画面，旧图须明确其背景；找不到合适照片就返回 null，不凑图。不为每条新闻找图。"
     } else {
@@ -763,11 +763,11 @@ mod tests {
         );
         assert_eq!(creations["tools"][1]["enable_image_understanding"], true);
         assert!(creations.to_string().contains("image 写这件作品本身的画面"));
-        // 梗图 looks at the memes the same way and explains each, shown whole.
+        // 趣图 looks at its pictures the same way and explains each, shown whole.
         let memes = asked(MEMES_TOPIC_ID);
         assert_eq!(memes["tools"][0]["enable_image_search"], true);
         assert_eq!(memes["tools"][1]["enable_image_understanding"], true);
-        assert!(memes.to_string().contains("image 写这张梗图本身"));
+        assert!(memes.to_string().contains("image 写这张图本身"));
         // An ordinary topic is not asked for pictures.
         let launches = asked("launches");
         assert!(launches["tools"][0].get("enable_image_search").is_none());

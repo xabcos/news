@@ -38,7 +38,7 @@ const MAX_FAILED_ATTEMPTS: i64 = 3;
 const FINISH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 const STAT_TOPICS: [&str; 6] = ["x", "p", "china-ai", "overseas-ai", "gossip", "cases"];
 
-/// The photograph collections, fashion, AI 创作, 梗图 and the catalogues stay outside the AI
+/// The photograph collections, fashion, AI 创作, 趣图 and the catalogues stay outside the AI
 /// briefing.
 pub(crate) fn outside_briefing() -> Vec<&'static str> {
     [
