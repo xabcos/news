@@ -433,14 +433,14 @@ p { margin-top: 0; }
 .fashion-card .image-news-media { aspect-ratio: 3 / 4; }
 .fashion-card .image-news-media img { object-position: 50% 0; }
 /* 趣图's pictures show whole, at their own ratio: a meme's words are part of the joke. */
-.meme-card .image-news-media { aspect-ratio: auto; }
-.meme-card .image-news-media img { height: auto; }
+.fun-card .image-news-media { aspect-ratio: auto; }
+.fun-card .image-news-media img { height: auto; }
 
 @media (hover: hover) {
   .image-news-card { transition: transform .2s ease, box-shadow .2s ease; }
   .image-news-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-small), 0 0 0 1px var(--line-strong); }
   .image-news-card .image-news-media:hover img { transform: scale(1.03); }
-  .meme-card .image-news-media:hover img { transform: none; }
+  .fun-card .image-news-media:hover img { transform: none; }
 }
 
 @media (max-width: 560px) {
@@ -572,11 +572,11 @@ p { margin-top: 0; }
 
 /* ---------- travel (𝑻𝒓𝒂𝒗𝒆𝒍) ---------- */
 
-/* Rows are 4px tall and each postcard or meme spans the rows its height needs (travel.js), so
+/* Rows are 4px tall and each postcard or 趣图 picture spans the rows its height needs (travel.js), so
    pictures at their own ratio pack into columns while the cards keep reading order. In ALL the
-   cards have a grid below their group's heading; the travel and meme tabs join them all. */
+   cards have a grid below their group's heading; the travel and 趣图 tabs join them all. */
 .postcards,
-.public:is(.travel-topic, .meme-topic) .digest {
+.public:is(.travel-topic, .fun-topic) .digest {
   --postcard-gap: clamp(.9rem, 1.4vw, 1.3rem);
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(var(--tile), 100%), 1fr));
@@ -586,7 +586,7 @@ p { margin-top: 0; }
 }
 .public.travel-topic .day-block,
 .public.travel-topic .postcard-group,
-.public:is(.travel-topic, .meme-topic) .postcards { display: contents; }
+.public:is(.travel-topic, .fun-topic) .postcards { display: contents; }
 .public.travel-topic .day-divider,
 .public.travel-topic .group-title { display: none; }
 .postcard-group > .group-title { margin-bottom: .75rem; }
@@ -594,7 +594,7 @@ p { margin-top: 0; }
 .public.travel-topic .group-more,
 .public.travel-topic .empty { grid-column: 1 / -1; }
 .postcard,
-.postcards > .meme-card { margin: 0 0 var(--postcard-gap); overflow: hidden; }
+.postcards > .fun-card { margin: 0 0 var(--postcard-gap); overflow: hidden; }
 .postcard-media {
   position: relative;
   display: block;

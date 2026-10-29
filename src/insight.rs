@@ -46,7 +46,7 @@ pub(crate) fn outside_briefing() -> Vec<&'static str> {
         crate::travel::TOPIC_ID,
         crate::fetch::FASHION_TOPIC_ID,
         crate::fetch::CREATIONS_TOPIC_ID,
-        crate::fetch::MEMES_TOPIC_ID,
+        crate::fetch::FUN_TOPIC_ID,
     ]
     .into_iter()
     .chain(

@@ -133,7 +133,7 @@
     return pack(card);
   }
 
-  // A card that packs into the rows of its grid (`span`): a postcard, or a meme (app.js).
+  // A card that packs into the rows of its grid (`span`): a postcard, or a 趣图 picture (app.js).
   function pack(card) {
     spans ||= new ResizeObserver(span);
     spans.observe(card);

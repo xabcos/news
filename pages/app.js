@@ -29,10 +29,10 @@ const TRAVEL_TOPIC = "travel";
 // Fashion stories are picture cards like 𝑷's, framed upright.
 const FASHION_TOPIC = "fashion";
 // Topics whose stories are pictures, shown as picture cards.
-const MEMES_TOPIC = "memes";
-const CARD_TOPICS = new Set(["p", FASHION_TOPIC, "creations", MEMES_TOPIC]);
+const FUN_TOPIC = "fun";
+const CARD_TOPICS = new Set(["p", FASHION_TOPIC, "creations", FUN_TOPIC]);
 // Fashion photographs stand upright, and 趣图's pictures show whole.
-const CARD_SHAPES = new Map([[FASHION_TOPIC, "fashion-card"], [MEMES_TOPIC, "meme-card"]]);
+const CARD_SHAPES = new Map([[FASHION_TOPIC, "fashion-card"], [FUN_TOPIC, "fun-card"]]);
 const storage = (() => {
   try {
     const store = window.localStorage;
@@ -632,7 +632,7 @@ function renderTabs() {
   document.body.classList.toggle("card-topic", CARD_TOPICS.has(state.topic));
   document.body.classList.toggle("w-topic", state.topic === PHOTO_TOPIC);
   document.body.classList.toggle("travel-topic", state.topic === TRAVEL_TOPIC);
-  document.body.classList.toggle("meme-topic", state.topic === MEMES_TOPIC);
+  document.body.classList.toggle("fun-topic", state.topic === FUN_TOPIC);
   renderTravelMap();
   document.title = state.topic === INSIGHT_ID
     ? `𝑵𝒆𝒘𝒔 · ${state.lang === "en" ? "XAI Daily" : "XAI 日报"}`
@@ -1080,8 +1080,8 @@ function renderGroups(digest) {
       heading.append(title, count);
       section.append(heading);
     }
-    // Postcards and memes pack in a grid of their own, below the group's heading.
-    const packed = group.id === TRAVEL_TOPIC || group.id === MEMES_TOPIC;
+    // Postcards and 趣图's pictures pack in a grid of their own, below the group's heading.
+    const packed = group.id === TRAVEL_TOPIC || group.id === FUN_TOPIC;
     const cards = packed ? document.createElement("div") : section;
     if (packed) {
       cards.className = "postcards";
@@ -1120,7 +1120,7 @@ function renderGroupItem(group, item) {
   if (CARD_SHAPES.has(group.id)) {
     const article = imageNewsCard(item);
     article.classList.add(CARD_SHAPES.get(group.id));
-    return group.id === MEMES_TOPIC ? TravelUI.pack(article) : article;
+    return group.id === FUN_TOPIC ? TravelUI.pack(article) : article;
   }
   return CARD_TOPICS.has(group.id) ? imageNewsCard(item) : card(item, group.id === "reads");
 }
