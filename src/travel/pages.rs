@@ -32,7 +32,7 @@ const CHROME: Chrome<'static> = Chrome {
     current: TOPIC_ID,
     section: "travel",
     stylesheet: "/travel.css?v=6",
-    script: "/travel.js?v=12",
+    script: "/travel.js?v=13",
     feed: ("𝑻𝒓𝒂𝒗𝒆𝒍", "/feed.xml?topic=travel"),
 };
 /// Map pins of destinations with moments from this many recent days stand out, and the most

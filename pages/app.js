@@ -632,6 +632,7 @@ function renderTabs() {
   document.body.classList.toggle("card-topic", CARD_TOPICS.has(state.topic));
   document.body.classList.toggle("w-topic", state.topic === PHOTO_TOPIC);
   document.body.classList.toggle("travel-topic", state.topic === TRAVEL_TOPIC);
+  document.body.classList.toggle("meme-topic", state.topic === MEMES_TOPIC);
   renderTravelMap();
   document.title = state.topic === INSIGHT_ID
     ? `𝑵𝒆𝒘𝒔 · ${state.lang === "en" ? "XAI Daily" : "XAI 日报"}`
@@ -1079,9 +1080,10 @@ function renderGroups(digest) {
       heading.append(title, count);
       section.append(heading);
     }
-    // Postcards pack in a grid of their own, below the group's heading.
-    const cards = group.id === TRAVEL_TOPIC ? document.createElement("div") : section;
-    if (cards !== section) {
+    // Postcards and memes pack in a grid of their own, below the group's heading.
+    const packed = group.id === TRAVEL_TOPIC || group.id === MEMES_TOPIC;
+    const cards = packed ? document.createElement("div") : section;
+    if (packed) {
       cards.className = "postcards";
       section.append(cards);
     }
@@ -1118,7 +1120,7 @@ function renderGroupItem(group, item) {
   if (CARD_SHAPES.has(group.id)) {
     const article = imageNewsCard(item);
     article.classList.add(CARD_SHAPES.get(group.id));
-    return article;
+    return group.id === MEMES_TOPIC ? TravelUI.pack(article) : article;
   }
   return CARD_TOPICS.has(group.id) ? imageNewsCard(item) : card(item, group.id === "reads");
 }

@@ -130,6 +130,11 @@
     if (place?.slug) body.append(link(destination(place.slug), "postcard-more", text().more(pick(place, "name"))));
     card.append(media, body);
     items.set(card, item);
+    return pack(card);
+  }
+
+  // A card that packs into the rows of its grid (`span`): a postcard, or a meme (app.js).
+  function pack(card) {
     spans ||= new ResizeObserver(span);
     spans.observe(card);
     return card;
@@ -408,7 +413,7 @@
     }
   }
 
-  window.TravelUI = { postcard, map };
+  window.TravelUI = { postcard, map, pack };
 
   // A destination page: its first moments arrive as JSON beside the server-rendered guide, and
   // scrolling to the end fetches the older ones a page at a time.

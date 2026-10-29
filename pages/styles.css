@@ -382,7 +382,7 @@ p { margin-top: 0; }
 }
 .public.card-topic :is(.day-block, .group) { display: contents; }
 .public.card-topic :is(.day-divider, .group-title) { display: none; }
-:is(.public.card-topic, .image-news-group) :is(.group-title, .group-more, .empty) { grid-column: 1 / -1; }
+:is(.public.card-topic, .image-news-group) :is(.group-title, .group-more, .empty, .postcards) { grid-column: 1 / -1; }
 /* Fashion's upright photographs stand three to a row. */
 .fashion-group { --tile: 13rem; }
 /* Picture and travel cards share one look; a photograph runs to its card's edges. */
@@ -432,9 +432,9 @@ p { margin-top: 0; }
 /* Fashion photographs stand upright; a crop keeps the face in frame. */
 .fashion-card .image-news-media { aspect-ratio: 3 / 4; }
 .fashion-card .image-news-media img { object-position: 50% 0; }
-/* A meme's words are part of the joke: it shows whole, at its own ratio up to a screenful. */
+/* A meme's words are part of the joke: it shows whole, at its own ratio. */
 .meme-card .image-news-media { aspect-ratio: auto; }
-.meme-card .image-news-media img { height: auto; max-height: 36rem; object-fit: contain; }
+.meme-card .image-news-media img { height: auto; }
 
 @media (hover: hover) {
   .image-news-card { transition: transform .2s ease, box-shadow .2s ease; }
@@ -572,28 +572,29 @@ p { margin-top: 0; }
 
 /* ---------- travel (𝑻𝒓𝒂𝒗𝒆𝒍) ---------- */
 
-/* Rows are 4px tall and each postcard spans the rows its height needs (travel.js), so
-   photographs at their own ratio pack into columns while the cards keep reading order. In
-   ALL the cards have a grid below their group's heading; the travel tab joins them all. */
+/* Rows are 4px tall and each postcard or meme spans the rows its height needs (travel.js), so
+   pictures at their own ratio pack into columns while the cards keep reading order. In ALL the
+   cards have a grid below their group's heading; the travel and meme tabs join them all. */
 .postcards,
-.public.travel-topic .digest {
+.public:is(.travel-topic, .meme-topic) .digest {
   --postcard-gap: clamp(.9rem, 1.4vw, 1.3rem);
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(var(--tile), 100%), 1fr));
   grid-auto-rows: 4px;
   align-items: start;
-  column-gap: var(--postcard-gap);
+  gap: 0 var(--postcard-gap);
 }
 .public.travel-topic .day-block,
 .public.travel-topic .postcard-group,
-.public.travel-topic .postcard-group > .postcards { display: contents; }
+.public:is(.travel-topic, .meme-topic) .postcards { display: contents; }
 .public.travel-topic .day-divider,
 .public.travel-topic .group-title { display: none; }
 .postcard-group > .group-title { margin-bottom: .75rem; }
 .postcards > .group-more,
 .public.travel-topic .group-more,
 .public.travel-topic .empty { grid-column: 1 / -1; }
-.postcard { margin: 0 0 var(--postcard-gap); overflow: hidden; }
+.postcard,
+.postcards > .meme-card { margin: 0 0 var(--postcard-gap); overflow: hidden; }
 .postcard-media {
   position: relative;
   display: block;
