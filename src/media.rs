@@ -475,6 +475,31 @@ const USER_AGENT: &str = "XABCNEWS/1.0 (xabcnews.com)";
 /// the plain name, Wikidata refused most of a Travel run's lookups.
 const WIKIMEDIA_AGENT: &str = "XABCNEWS/1.0 (+https://xabcnews.com)";
 
+/// Wikimedia asks automated clients to send API requests one after another rather than in
+/// parallel; two at a time for the whole process keeps Travel's guides and place lookups and
+/// 时代's portraits moving without the bursts it refuses with 429.
+static WIKIMEDIA: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+
+/// A JSON response from a Wikimedia API; a refusal for too many requests is retried after a
+/// pause.
+pub(crate) async fn wikimedia(state: &AppState, url: Url) -> Result<Vec<u8>> {
+    use crate::reads::{Content, download};
+    let _turn = WIKIMEDIA.acquire().await.expect("never closed");
+    for pause in [5, 20] {
+        match download(state, url.clone(), Content::Json).await {
+            Err(AppError::Http(error))
+                if error.status() == Some(reqwest::StatusCode::TOO_MANY_REQUESTS) =>
+            {
+                tokio::time::sleep(Duration::from_secs(pause)).await
+            }
+            result => return result.map(|(_, bytes)| bytes),
+        }
+    }
+    download(state, url, Content::Json)
+        .await
+        .map(|(_, bytes)| bytes)
+}
+
 /// A GET on `origin_http`, the way every read of another site starts. Wikimedia's sites are
 /// told how to reach us; the others get the plain name.
 pub(crate) fn get(state: &AppState, url: &str) -> reqwest::RequestBuilder {

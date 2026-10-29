@@ -453,7 +453,7 @@ async fn extract(state: &AppState, host: &str, title: &str) -> Result<String> {
     if host.starts_with("zh.") {
         url.query_pairs_mut().append_pair("variant", "zh-cn");
     }
-    let bytes = super::wikimedia(state, url).await?;
+    let bytes = crate::media::wikimedia(state, url).await?;
     let value = serde_json::from_slice::<Value>(&bytes)?;
     Ok(value["query"]["pages"][0]["extract"]
         .as_str()

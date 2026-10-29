@@ -1,19 +1,22 @@
 //! 时代: XABC profiles the people this age talks about, one article a person. Each time both
 //! scouts name the people talked about most now, and one of them is written about (`pick`):
 //! anew, or once their profile is `REVISE_AFTER_DAYS` days old brought up to date. Searching,
-//! writing and pictures are 分享's (`super`), but a profile shows only pictures from pages, the
-//! first standing for it on the lists.
+//! writing and pictures are 分享's (`super`), but a profile shows only pictures from pages, and
+//! the lists show the person: its cover is their portrait on Wikipedia (`portrait`).
 use super::{
-    Drafted, Find, Finished, KEEPING, Line, Scout, Subject, draft, figures, finish, linked, listed,
-    look, publish, revise,
+    ACCEPT, Drafted, Find, Finished, KEEPING, Line, Picture, Scout, Subject, draft, figures,
+    finish, linked, listed, look, publish, revise, uploaded,
 };
 use crate::{
     error::{AppError, Result},
     fetch::Usage,
+    media,
     state::AppState,
 };
 use chrono::{DateTime, Utc};
+use serde_json::Value;
 use std::{cmp::Reverse, collections::HashSet, fmt::Write};
+use url::Url;
 use uuid::Uuid;
 
 /// A profile is brought up to date once this many days have passed since it last was.
@@ -56,7 +59,8 @@ pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -
     let passed: HashSet<String> = waiting.into_iter().map(|(person, _)| person).collect();
     let (person, finds) = pick(std::mem::take(&mut found.finds), &passed)
         .ok_or_else(|| AppError::Internal("两路检索都没有找到可写的人物".into()))?;
-    let material = format!("今天是 {today}。\n人物：{}\n", finds[0].1.person.trim());
+    let name = finds[0].1.person.trim().to_owned();
+    let material = format!("今天是 {today}。\n人物：{name}\n");
     let due: Option<Due> = sqlx::query_as(
         "SELECT id, title, body, revision, cover, updated_at FROM articles WHERE person = $1",
     )
@@ -68,7 +72,8 @@ pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -
         let drafted = photographed(draft(state, WRITING, &material).await?);
         found.usage += drafted.usage;
         found.known.extend(drafted.cited);
-        let article = finish(state, drafted.article, found.known, &[], false).await?;
+        let mut article = finish(state, drafted.article, found.known, &[], false).await?;
+        article.cover = portrait(state, &name).await;
         let id = publish(
             state,
             author,
@@ -96,11 +101,14 @@ pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -
         photographed(draft(state, &format!("{WRITING}{REVISING}{KEEPING}"), &material).await?);
     found.usage += drafted.usage;
     found.known.extend(drafted.cited);
-    let article = finish(state, drafted.article, found.known, &kept, false).await?;
-    // The cover follows the picture the profile opens with now.
-    let cover = crate::articles::pictures(&article.body)
-        .first()
-        .copied()
+    let mut article = finish(state, drafted.article, found.known, &kept, false).await?;
+    // The cover is the portrait, or else the picture the profile opens with now.
+    article.cover = portrait(state, &name).await;
+    let cover = article
+        .cover
+        .as_ref()
+        .map(|cover| cover.id)
+        .or_else(|| crate::articles::pictures(&article.body).first().copied())
         .or(due.cover);
     revise(state, due.id, due.revision, cover, &article).await?;
     log(
@@ -155,6 +163,41 @@ fn pick(
         .filter(|(_, find)| key(&find.person) == chosen)
         .collect();
     Some((chosen, finds))
+}
+
+/// The photograph that leads the person's article on English Wikipedia, which shows the person:
+/// none for a page without one, or for a disambiguation page, which names several people. A small
+/// portrait still beats any other picture, so only its type is checked, not its size.
+async fn portrait(state: &AppState, name: &str) -> Option<Picture> {
+    let mut url = Url::parse("https://en.wikipedia.org/w/api.php").expect("wiki API URL");
+    url.query_pairs_mut().extend_pairs([
+        ("action", "query"),
+        ("prop", "pageimages|pageprops"),
+        ("piprop", "thumbnail"),
+        ("pithumbsize", "960"),
+        ("redirects", "1"),
+        ("format", "json"),
+        ("formatversion", "2"),
+        ("titles", name),
+    ]);
+    let reply: Value = match media::wikimedia(state, url).await {
+        Ok(bytes) => serde_json::from_slice(&bytes).ok()?,
+        Err(error) => {
+            tracing::warn!(%error, name, "Wikipedia was not asked for a portrait");
+            return None;
+        }
+    };
+    let page = &reply["query"]["pages"][0];
+    if !page["pageprops"]["disambiguation"].is_null() {
+        return None;
+    }
+    let (bytes, _) =
+        media::download_image(state, page["thumbnail"]["source"].as_str()?, ACCEPT).await?;
+    let source = format!(
+        "https://en.wikipedia.org/wiki/{}",
+        page["title"].as_str()?.replace(' ', "_")
+    );
+    uploaded(state, bytes, Some(("en.wikipedia.org".into(), source))).await
 }
 
 /// How a person is told apart: their English name in lower case, its words joined by hyphens,

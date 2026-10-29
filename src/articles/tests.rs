@@ -135,11 +135,17 @@ fn an_article_renders_only_its_own_pictures_and_no_markup() {
 }
 
 /// A local tmpfile over HTTPS: uploads get a link under its origin, and every file is `picture`.
-/// While the returned switch is on, it refuses uploads.
+/// While the returned switch is on, it refuses uploads. The same server plays English Wikipedia,
+/// where only Jensen Huang's article leads with a photograph.
 async fn tmpfile(picture: Vec<u8>) -> (String, reqwest::Client, Arc<AtomicBool>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_rustls::{TlsAcceptor, rustls};
-    let cert = rcgen::generate_simple_self_signed(vec!["media.example".into()]).unwrap();
+    let cert = rcgen::generate_simple_self_signed(vec![
+        "media.example".into(),
+        "en.wikipedia.org".into(),
+        "upload.wikimedia.org".into(),
+    ])
+    .unwrap();
     let root = reqwest::Certificate::from_der(cert.cert.der()).unwrap();
     let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
         rustls::crypto::aws_lc_rs::default_provider(),
@@ -206,6 +212,19 @@ async fn tmpfile(picture: Vec<u8>) -> (String, reqwest::Client, Arc<AtomicBool>)
                 let refused = refused && path == "/upload";
                 let (kind, body) = if refused {
                     ("text/plain", b"full".to_vec())
+                } else if let Some(query) = path.strip_prefix("/w/api.php?") {
+                    let titles = url::form_urlencoded::parse(query.as_bytes())
+                        .find(|(key, _)| key == "titles")
+                        .map(|(_, value)| value.into_owned())
+                        .unwrap_or_default();
+                    let mut page = json!({ "title": titles });
+                    if titles == "Jensen Huang" {
+                        page["thumbnail"] = json!({
+                            "source": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/Jensen.jpg/960px-Jensen.jpg",
+                        });
+                    }
+                    let reply = json!({ "query": { "pages": [page] } });
+                    ("application/json", reply.to_string().into_bytes())
                 } else if path == "/upload" {
                     let link = json!({
                         "direct_link": format!("https://media.example/files/{}.jpg", Uuid::new_v4()),
@@ -1140,6 +1159,8 @@ async fn postgres_xabc_shares_explains_films_and_profiles_people() {
     config.tmpfile_base_url = media.parse().unwrap();
     config.tmpfile_api_key = "fixture".into();
     let mut state = AppState::new(config).await.unwrap();
+    // Wikipedia and the pages pictures come from are read through the same local server.
+    state.origin_http = client.clone();
     state.http = client;
     let database: String = sqlx::query_scalar("SELECT current_database()")
         .fetch_one(&state.pool)
@@ -1637,16 +1658,24 @@ async fn postgres_xabc_shares_explains_films_and_profiles_people() {
     assert!(material.contains("人物：Lisa Su\n线索：\n1.【X 与全网】Lisa Su 的近况"));
     assert!(material.contains("2.【全网】lisa su 的近况"));
 
-    // Then the one grok named first; the scouts hear who was profiled lately.
+    // Then the one grok named first; the scouts hear who was profiled lately. His article on
+    // Wikipedia leads with a photograph, so that is his cover, though his body shows no picture.
     let other = xabc::write(&state, xabc::Line::People, Utc::now())
         .await
         .unwrap();
-    let person: Option<String> = sqlx::query_scalar("SELECT person FROM articles WHERE id = $1")
-        .bind(other)
-        .fetch_one(&state.pool)
-        .await
-        .unwrap();
-    assert_eq!(person.as_deref(), Some("jensen-huang"));
+    let (person, body, portrait): (Option<String>, String, Option<i32>) = sqlx::query_as(
+        "SELECT a.person, a.body, i.width FROM articles a
+         LEFT JOIN article_images i ON i.id = a.cover WHERE a.id = $1",
+    )
+    .bind(other)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (person.as_deref(), portrait),
+        (Some("jensen-huang"), Some(400))
+    );
+    assert!(!body.contains("](image:"));
     let searched = asked_log
         .lock()
         .unwrap()
@@ -1782,4 +1811,25 @@ async fn postgres_xabc_shares_explains_films_and_profiles_people() {
             && article["person"] == true
             && article["film"] == false
     }));
+
+    // Brought up to date, a profile asks Wikipedia for its portrait again.
+    let before: Option<Uuid> = sqlx::query_scalar(
+        "UPDATE articles SET updated_at = now() - INTERVAL '4 days' WHERE id = $1 RETURNING cover",
+    )
+    .bind(other)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        xabc::write(&state, xabc::Line::People, Utc::now())
+            .await
+            .unwrap(),
+        other
+    );
+    let after: Option<Uuid> = sqlx::query_scalar("SELECT cover FROM articles WHERE id = $1")
+        .bind(other)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert!(before.is_some() && after.is_some() && after != before);
 }

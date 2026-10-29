@@ -975,7 +975,8 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
     };
     let mut content = format!(
         "{notice}<article class=\"read article\">{}<header class=read-heading><div class=read-title><h1>{}</h1></div><div class=item-meta><a href=\"{}\">{}</a> · <time datetime=\"{}\">{}</time> · {views}</div></header><div class=read-body>{body}</div></article>",
-        // A profile opens with its subject's photograph, which stands for it on the lists.
+        // A profile's cover, its subject's portrait, stands for it on the lists; the page opens
+        // with the writer's own pictures.
         cover
             .as_ref()
             .filter(|_| shelf != Shelf::People)

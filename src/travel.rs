@@ -11,32 +11,13 @@ mod guide;
 mod pages;
 mod place;
 
-/// A JSON response from a Wikimedia API; a refusal for too many requests is retried after a
-/// pause.
-async fn wikimedia(state: &AppState, url: Url) -> Result<Vec<u8>> {
-    let _turn = WIKIMEDIA.acquire().await.expect("never closed");
-    for pause in [5, 20] {
-        match reads::download(state, url.clone(), reads::Content::Json).await {
-            Err(AppError::Http(error))
-                if error.status() == Some(reqwest::StatusCode::TOO_MANY_REQUESTS) =>
-            {
-                tokio::time::sleep(Duration::from_secs(pause)).await
-            }
-            result => return result.map(|(_, bytes)| bytes),
-        }
-    }
-    reads::download(state, url, reads::Content::Json)
-        .await
-        .map(|(_, bytes)| bytes)
-}
-
 #[cfg(test)]
 mod tests;
 
 pub(crate) use pages::{listed, router};
 
 use crate::{
-    error::{AppError, Result},
+    error::Result,
     fetch::{Fetched, NewItem, NewsImage, NewsWindow},
     media, reads,
     state::AppState,
@@ -57,17 +38,13 @@ use url::Url;
 use uuid::Uuid;
 
 pub(crate) const TOPIC_ID: &str = "travel";
-/// Wikimedia asks automated clients to send API requests one after another rather than in
-/// parallel; two at a time for the whole process keeps guides and place lookups moving without
-/// the bursts it refuses with 429.
-static WIKIMEDIA: Semaphore = Semaphore::const_new(2);
 /// The photographs of a moment, in the traveler's order.
 const MAX_PHOTOS: usize = 4;
 /// A destination adds at most this many moments a day, and a country this many in one run.
 const DESTINATION_DAILY_LIMIT: usize = 32;
 const COUNTRY_RUN_LIMIT: usize = 8;
-/// Place lookups at a time, as many as Wikimedia takes (`WIKIMEDIA`), so a lookup's minute is
-/// not spent waiting for a turn.
+/// Place lookups at a time, as many as Wikimedia takes (`media::wikimedia`), so a lookup's
+/// minute is not spent waiting for a turn.
 const LOOKUPS: usize = 2;
 /// One place's lookups may take this long.
 const LOCATE_TIME: Duration = Duration::from_secs(60);

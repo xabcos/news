@@ -465,7 +465,7 @@ async fn api(state: &AppState, query: &[(&str, &str)]) -> Result<Response> {
     url.query_pairs_mut()
         .extend_pairs(query)
         .append_pair("format", "json");
-    let bytes = super::wikimedia(state, url).await?;
+    let bytes = crate::media::wikimedia(state, url).await?;
     let response = serde_json::from_slice::<Response>(&bytes)?;
     if let Some(error) = response.error {
         return Err(AppError::Internal(

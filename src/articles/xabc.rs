@@ -800,6 +800,15 @@ async fn picture(state: &AppState, wanted: &Wanted, slot: OwnedSemaphorePermit) 
     } else {
         return None;
     };
+    uploaded(state, bytes, credit).await
+}
+
+/// A picture's bytes kept on tmpfile for an article.
+async fn uploaded(
+    state: &AppState,
+    bytes: Vec<u8>,
+    credit: Option<(String, String)>,
+) -> Option<Picture> {
     let (content_type, (width, height)) = kind(&bytes).ok()?;
     let stored = media::upload_image(state, bytes, content_type).await?;
     Some(Picture {
@@ -1154,7 +1163,7 @@ pub(super) async fn publish(
 }
 
 /// Saves a revised 解说 or profile with `cover` over the revision XABC read, unless an
-/// administrator saved it or took it back meanwhile.
+/// administrator saved it or took it back meanwhile; a new cover picture comes with it.
 pub(super) async fn revise(
     state: &AppState,
     id: Uuid,
@@ -1165,7 +1174,7 @@ pub(super) async fn revise(
     let content = checked(&article.title, &article.body, cover)?;
     let mut tx = state.pool.begin().await?;
     // The pictures go in first: the cover may be one of them.
-    keep(&mut tx, id, article.pictures.iter()).await?;
+    keep(&mut tx, id, article.pictures.iter().chain(&article.cover)).await?;
     let saved = sqlx::query(
         "UPDATE articles SET title = $3, body = $4, excerpt = $5, cover = $6,
            revision = revision + 1, updated_at = now()
