@@ -24,7 +24,7 @@ use uuid::Uuid;
 const PAGE_TOPICS: [&str; 2] = ["reads", "llm"];
 
 /// What every public page loads, with the versions that refresh caches.
-const STYLES: &str = "/styles.css?v=fun";
+const STYLES: &str = "/styles.css?v=worth";
 const PUBLIC_SCRIPT: &str = "/public.js?v=12";
 const STATS_SCRIPT: &str = "/stats.js?v=3";
 /// app.js's first page of 𝐀𝐋𝐋 and of one topic, and the days it lists, which its preloads repeat.
