@@ -132,7 +132,6 @@ async fn select_pending(
         Err(error) => {
             tracing::warn!(%error, "Reads search unavailable; reviewing subscription candidates");
             Fetched {
-                response_id: None,
                 usage: Default::default(),
                 candidates: Vec::new(),
                 payload: json!({"items": [], "cover": null, "search_error": error.to_string()}),
@@ -194,7 +193,6 @@ async fn select_pending(
         fetched.usage += Usage::from_reply(&reply);
         let selection: Selection = serde_json::from_value(crate::ai::parse_payload(&reply)?)?;
         fetched.payload["selection_reason"] = json!(selection.reason);
-        fetched.payload["selection_response_id"] = reply["id"].clone();
         fetched.candidates = selected_candidates(&seeds, &selection.selected);
         fetched.candidates = prioritize(fetched.candidates, fresh_start);
     }
@@ -552,7 +550,6 @@ async fn check_independent_selection(state: &AppState, window: NewsWindow) {
         .await
         .unwrap();
     let empty_search = || Fetched {
-        response_id: Some("search-test".into()),
         usage: Default::default(),
         candidates: vec![],
         payload: json!({"items": [], "cover": null}),

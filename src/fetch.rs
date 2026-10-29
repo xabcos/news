@@ -324,7 +324,6 @@ fn shared(html: &str, base: &Url) -> Option<String> {
 }
 
 pub struct Fetched {
-    pub response_id: Option<String>,
     pub usage: Usage,
     pub candidates: Vec<Candidate>,
     /// The model's JSON as returned, kept on the run for troubleshooting.
@@ -551,7 +550,6 @@ pub(crate) fn parse_reply(reply: Value) -> Result<Fetched> {
         .filter(|image| digest.items.iter().any(|item| image.belongs_to(&item.url)));
     payload["cover"] = serde_json::to_value(cover)?;
     Ok(Fetched {
-        response_id: reply["id"].as_str().map(str::to_owned),
         usage: Usage::from_reply(&reply),
         candidates: digest.items,
         payload,
@@ -811,7 +809,6 @@ mod tests {
             8
         );
         assert_eq!(fetched.usage.cost_in_usd_ticks, 556_403_400);
-        assert!(fetched.response_id.is_some());
         assert!(fetched.payload["items"].is_array());
     }
 

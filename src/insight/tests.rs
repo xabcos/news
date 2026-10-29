@@ -16,7 +16,6 @@ fn analysis() -> InsightAnalysis {
 fn source(index: usize, topic: &str, current: bool) -> InsightSource {
     serde_json::from_value(json!({
         "index": index, "current": current, "topic_id": topic, "topic": topic, "topic_en": topic,
-        "last_seen_at": Utc::now(), "seen_count": 1,
         "title": format!("新闻{index}"), "title_en": "News", "summary": "内容", "summary_en": "Summary",
         "url": format!("https://example.com/{index}"), "source": "来源", "tags": [],
         "importance": 3, "first_seen_at": Utc::now(), "published_at": Utc::now(),
@@ -69,14 +68,7 @@ fn analysis_input_keeps_facts_and_dates_without_storage_metadata() {
     assert_eq!(input[0]["url"], source.url);
     assert_eq!(input[0]["published_at"], Value::Null);
     assert_eq!(input[0]["first_seen_at"], json!(source.first_seen_at));
-    for key in [
-        "title_en",
-        "summary_en",
-        "topic_en",
-        "image",
-        "last_seen_at",
-        "seen_count",
-    ] {
+    for key in ["title_en", "summary_en", "topic_en", "image"] {
         assert!(
             input[0].get(key).is_none(),
             "unexpected storage field {key}"
@@ -814,7 +806,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
             .fetch_all(&state.pool)
             .await
             .unwrap();
-    assert_eq!(migrations, [1, 2, 3]);
+    assert_eq!(migrations, [1, 2, 3, 4]);
     sqlx::query("INSERT INTO topics (id,name,brief,enabled) VALUES ('inactive','Inactive','Inactive',false)")
         .execute(&state.pool).await.unwrap();
     sqlx::query("TRUNCATE items, runs, ai_insights CASCADE")
@@ -963,7 +955,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     .unwrap()
     .unwrap();
     let completed = execute(&state, window.start, window.end).await.unwrap();
-    let stored: StoredInsight = serde_json::from_value(completed.payload.clone()).unwrap();
+    let stored: StoredInsight = serde_json::from_value(completed).unwrap();
     assert_eq!(stored.stats.current_items, 8);
     assert_eq!(stored.stats.seven_day_items, 10);
     let articles = render_articles(&stored, day);
@@ -1094,7 +1086,7 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     let before = call_count();
     *citation_mode.lock().unwrap() = CitationReply::InvalidImages;
     let without_images = execute(&state, window.start, window.end).await.unwrap();
-    let stored: StoredInsight = serde_json::from_value(without_images.payload).unwrap();
+    let stored: StoredInsight = serde_json::from_value(without_images).unwrap();
     assert_eq!(stored.analysis.hotspots.len(), 1);
     assert!(stored.analysis.cover_source_index.is_none());
     assert!(stored.analysis.picture_source_indexes.is_empty());
@@ -1103,24 +1095,11 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     assert_eq!(call_count() - before, 1);
 
     // Citation errors receive exactly one targeted correction with the original
-    // context, while both requests' usage and verified research citations survive.
+    // context, while verified research citations from both requests survive.
     let before = call_count();
     *citation_mode.lock().unwrap() = CitationReply::InvalidThenCorrected;
     let corrected = execute(&state, window.start, window.end).await.unwrap();
-    assert_eq!(corrected.response_id.as_deref(), Some("test-correction"));
-    assert_eq!(corrected.usage.input_tokens, 20);
-    assert_eq!(corrected.usage.input_tokens_details.cached_tokens, 6);
-    assert_eq!(corrected.usage.output_tokens, 40);
-    assert_eq!(corrected.usage.output_tokens_details.reasoning_tokens, 10);
-    assert_eq!(corrected.usage.cost_in_usd_ticks, 200);
-    assert_eq!(
-        corrected
-            .usage
-            .server_side_tool_usage_details
-            .web_search_calls,
-        1
-    );
-    let stored: StoredInsight = serde_json::from_value(corrected.payload).unwrap();
+    let stored: StoredInsight = serde_json::from_value(corrected).unwrap();
     assert_eq!(stored.research_sources.len(), 1);
     assert_eq!(
         stored.research_sources[0].url,

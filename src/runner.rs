@@ -600,7 +600,6 @@ async fn interrupt_run(
 }
 
 struct Completed {
-    response_id: Option<String>,
     usage: fetch::Usage,
     payload: Value,
     day: NaiveDate,
@@ -623,7 +622,6 @@ async fn execute(
         // The catalogue keeps its own records; the run counts providers and changes.
         let outcome = crate::llm::execute(state, topic).await?;
         return Ok(Completed {
-            response_id: None,
             usage: outcome.usage,
             payload: outcome.payload,
             day: today,
@@ -652,7 +650,6 @@ async fn execute(
     };
     if is_reads && reads::daily_count(state, today).await? >= reads::DAILY_LIMIT {
         return Ok(Completed {
-            response_id: None,
             usage: fetch::Usage::default(),
             payload: serde_json::json!({"items": [], "skip": "reads_daily_limit"}),
             day: today,
@@ -908,7 +905,6 @@ async fn execute(
         }
     }
     Ok(Completed {
-        response_id: fetched.response_id,
         usage: fetched.usage,
         payload: fetched.payload,
         day: today,
@@ -1001,7 +997,7 @@ pub(crate) async fn persist_items(
     // updates the row that was just inserted, matching the previous per-item ordering.
     for fingerprint in duplicate_fingerprints {
         sqlx::query(
-            "UPDATE items SET last_seen_at = NOW(), seen_count = seen_count + 1 WHERE topic_id = $1 AND fingerprint = $2 AND ($4 OR day >= $3)",
+            "UPDATE items SET seen_count = seen_count + 1 WHERE topic_id = $1 AND fingerprint = $2 AND ($4 OR day >= $3)",
         )
         .bind(&topic.id)
         .bind(fingerprint)
@@ -1033,12 +1029,11 @@ async fn finish(
         Ok(done) => {
             let usage = &done.usage;
             if let Err(error) = sqlx::query(
-                "UPDATE runs SET status = 'ok', finished_at = NOW(), response_id = $2, input_tokens = $3, cached_tokens = $4, \
-                 output_tokens = $5, reasoning_tokens = $6, web_search_calls = $7, x_search_calls = $8, cost_ticks = $9, \
-                 returned_count = $10, new_count = $11, dup_count = $12, dropped_count = $13, payload = $14 WHERE id = $1",
+                "UPDATE runs SET status = 'ok', finished_at = NOW(), input_tokens = $2, cached_tokens = $3, \
+                 output_tokens = $4, reasoning_tokens = $5, web_search_calls = $6, x_search_calls = $7, cost_ticks = $8, \
+                 returned_count = $9, new_count = $10, dup_count = $11, dropped_count = $12, payload = $13 WHERE id = $1",
             )
             .bind(run_id)
-            .bind(&done.response_id)
             .bind(usage.input_tokens)
             .bind(usage.input_tokens_details.cached_tokens)
             .bind(usage.output_tokens)

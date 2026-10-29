@@ -5,7 +5,6 @@ WITH deduplicated AS (
            t.id AS topic_id, t.name AS topic, t.name_en AS topic_en,
            i.title, i.title_en, i.summary, i.summary_en, i.url, i.source,
            i.tags, i.importance, i.first_seen_at, i.published_at,
-           i.last_seen_at, i.seen_count,
            COALESCE(i.published_at, i.first_seen_at) AS event_at,
            COALESCE(NULLIF(i.image, 'null'::jsonb),
                CASE WHEN r.payload->'cover'->>'source_url' = i.url
@@ -35,8 +34,7 @@ WITH deduplicated AS (
     WHERE topic_day_rank <= CASE WHEN event_at >= $2 THEN 12 ELSE 3 END
 )
 SELECT topic_id, topic, topic_en, title, title_en, summary, summary_en, url,
-       source, tags, importance, first_seen_at, published_at, last_seen_at,
-       seen_count, cover
+       source, tags, importance, first_seen_at, published_at, cover
 FROM balanced
 ORDER BY window_rank, (event_at >= $2) DESC
 LIMIT $4

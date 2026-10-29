@@ -493,7 +493,7 @@ async fn postgres_gallery_keeps_confirmed_photographs_until_their_copies_expire(
     );
 
     // A pinned photograph stays first; then a later run's photograph leads, though its post is
-    // the oldest, and pages agree.
+    // the oldest.
     sqlx::query("UPDATE items SET pinned = true WHERE url = $1")
         .bind(&alice_url)
         .execute(&state.pool)
@@ -524,11 +524,6 @@ async fn postgres_gallery_keeps_confirmed_photographs_until_their_copies_expire(
     assert_eq!(
         urls,
         [&alice_url, "https://x.com/later/status/1", &erin_url]
-    );
-    assert!(
-        snapshot.preview.is_sorted_by_key(|item| {
-            std::cmp::Reverse(crate::digest::Cursor::of(TOPIC_ID, item))
-        })
     );
 
     // The briefing neither collects nor reads the gallery.

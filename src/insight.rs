@@ -2,7 +2,7 @@ use crate::{
     auth,
     digest::Rendered,
     error::{AppError, Result},
-    fetch::{NewsImage, NewsWindow, Usage},
+    fetch::{NewsImage, NewsWindow},
     media, runner,
     state::AppState,
 };
@@ -139,8 +139,6 @@ pub(crate) struct InsightSource {
     pub importance: i16,
     pub first_seen_at: DateTime<Utc>,
     pub published_at: Option<DateTime<Utc>>,
-    pub last_seen_at: DateTime<Utc>,
-    pub seen_count: i32,
     pub image: Option<NewsImage>,
 }
 
@@ -208,8 +206,6 @@ struct SourceRow {
     importance: i16,
     first_seen_at: DateTime<Utc>,
     published_at: Option<DateTime<Utc>>,
-    last_seen_at: DateTime<Utc>,
-    seen_count: i32,
     cover: Option<Value>,
 }
 
@@ -248,19 +244,6 @@ struct InsightArticles {
     x: String,
     x_html: String,
     images: Vec<InsightArticleImage>,
-}
-
-struct Completed {
-    response_id: Option<String>,
-    usage: Usage,
-    payload: Value,
-}
-
-struct GeneratedAnalysis {
-    analysis: InsightAnalysis,
-    research_sources: Vec<InsightResearchSource>,
-    usage: Usage,
-    response_id: Option<String>,
 }
 
 /// The `/insight` body, rendered once per published briefing instead of on every request.
@@ -625,7 +608,7 @@ async fn execute(
     state: &AppState,
     window_start: DateTime<Utc>,
     window_end: DateTime<Utc>,
-) -> Result<Completed> {
+) -> Result<Value> {
     let window = NewsWindow {
         start: window_start,
         end: window_end,
@@ -665,8 +648,6 @@ async fn execute(
                 importance: row.importance,
                 first_seen_at: row.first_seen_at,
                 published_at: row.published_at,
-                last_seen_at: row.last_seen_at,
-                seen_count: row.seen_count,
                 image,
             }
         })
@@ -768,23 +749,14 @@ async fn execute(
             "type": "json_schema", "name": "news_insight", "strict": true, "schema": schema(&sources, &candidates),
         } },
     });
-    let GeneratedAnalysis {
-        analysis,
-        research_sources,
-        usage,
-        response_id,
-    } = generate_analysis(state, body, &sources, &candidates).await?;
-    let stored = json!({
+    let (analysis, research_sources) =
+        generate_analysis(state, body, &sources, &candidates).await?;
+    Ok(json!({
         "analysis": analysis,
         "sources": sources,
         "research_sources": research_sources,
         "stats": stats,
-    });
-    Ok(Completed {
-        response_id,
-        usage,
-        payload: stored,
-    })
+    }))
 }
 
 /// Generate a draft and correct citation errors at most once, under the caller's deadline.
@@ -793,20 +765,19 @@ async fn generate_analysis(
     mut body: Value,
     sources: &[InsightSource],
     images: &[usize],
-) -> Result<GeneratedAnalysis> {
-    let mut usage = Usage::default();
+) -> Result<(InsightAnalysis, Vec<InsightResearchSource>)> {
     let mut citations = Vec::new();
     let mut correcting = false;
-    let (mut analysis, response_id) = loop {
+    let mut analysis = loop {
         let reply = crate::ai::request(state, body.clone()).await?;
         citations.extend(research_citations(&reply));
-        let (mut analysis, used, response_id) = parse_reply(&reply)?;
-        usage += used;
+        let mut analysis = parse_reply(&reply)?;
         normalize_images(&mut analysis, images);
         normalize_figures(&mut analysis, sources);
         match validate_selection(&analysis, sources) {
-            Ok(()) => break (analysis, response_id),
+            Ok(()) => break analysis,
             Err(error) => {
+                let response_id = reply["id"].as_str();
                 tracing::warn!(%error, ?response_id, source_count = sources.len(), correcting,
                     "AI insight citation validation failed");
                 if correcting {
@@ -827,12 +798,7 @@ async fn generate_analysis(
         }
     };
     let research_sources = selected_research_sources(&mut analysis, citations);
-    Ok(GeneratedAnalysis {
-        analysis,
-        research_sources,
-        response_id,
-        usage,
-    })
+    Ok((analysis, research_sources))
 }
 
 fn research_citations(reply: &Value) -> Vec<InsightResearchSource> {
@@ -1190,43 +1156,26 @@ fn schema(sources: &[InsightSource], images: &[usize]) -> Value {
     schema
 }
 
-fn parse_reply(reply: &Value) -> Result<(InsightAnalysis, Usage, Option<String>)> {
+fn parse_reply(reply: &Value) -> Result<InsightAnalysis> {
     let payload = crate::ai::parse_payload(reply)?;
-    let analysis: InsightAnalysis = serde_json::from_value(payload)
-        .map_err(|_| AppError::Internal("AI 响应不符合约定的结构".into()))?;
-    Ok((
-        analysis,
-        Usage::from_reply(reply),
-        reply["id"].as_str().map(str::to_owned),
-    ))
+    serde_json::from_value(payload)
+        .map_err(|_| AppError::Internal("AI 响应不符合约定的结构".into()))
 }
 
 async fn finish(
     state: &AppState,
     run_id: Uuid,
     started_at: DateTime<Utc>,
-    outcome: &Result<Completed>,
+    outcome: &Result<Value>,
 ) -> Result<()> {
     match outcome {
-        Ok(done) => {
-            let usage = &done.usage;
+        Ok(payload) => {
             let mut transaction = state.pool.begin().await?;
             sqlx::query(
-                "UPDATE ai_insights SET status = 'ok', finished_at = NOW(), response_id = $2,
-                 input_tokens = $3, cached_tokens = $4, output_tokens = $5, reasoning_tokens = $6,
-                 web_search_calls = $7, x_search_calls = $8, cost_ticks = $9, payload = $10
-                 WHERE id = $1",
+                "UPDATE ai_insights SET status = 'ok', finished_at = NOW(), payload = $2 WHERE id = $1",
             )
             .bind(run_id)
-            .bind(&done.response_id)
-            .bind(usage.input_tokens)
-            .bind(usage.input_tokens_details.cached_tokens)
-            .bind(usage.output_tokens)
-            .bind(usage.output_tokens_details.reasoning_tokens)
-            .bind(usage.server_side_tool_usage_details.web_search_calls)
-            .bind(usage.server_side_tool_usage_details.x_search_calls)
-            .bind(usage.cost_in_usd_ticks)
-            .bind(&done.payload)
+            .bind(payload)
             .execute(&mut *transaction)
             .await?;
             // A manual regeneration replaces the successful result for the same

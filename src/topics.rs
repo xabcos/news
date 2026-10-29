@@ -145,7 +145,6 @@ struct Item {
     tags_en: Vec<String>,
     importance: i16,
     first_seen_at: DateTime<Utc>,
-    last_seen_at: DateTime<Utc>,
     seen_count: i32,
     hidden: bool,
     pinned: bool,
@@ -907,7 +906,7 @@ async fn list_items(
     };
     let items = sqlx::query_as::<_, Item>(
         "SELECT id, topic_id, day, title, summary, title_en, summary_en, url, source,
-                published_at, tags, tags_en, importance, first_seen_at, last_seen_at,
+                published_at, tags, tags_en, importance, first_seen_at,
                 seen_count, hidden, pinned
          FROM items WHERE topic_id = $1 AND day = $2
          ORDER BY pinned DESC, published_at DESC NULLS LAST, first_seen_at DESC",
@@ -933,7 +932,7 @@ async fn update_item(
              AND (($4 AND topics.owner_user_id IS NULL) OR (NOT $4 AND topics.owner_user_id = $5))
          )
          RETURNING id, topic_id, day, title, summary, title_en, summary_en, url, source,
-                   published_at, tags, tags_en, importance, first_seen_at, last_seen_at,
+                   published_at, tags, tags_en, importance, first_seen_at,
                    seen_count, hidden, pinned",
     )
     .bind(id)

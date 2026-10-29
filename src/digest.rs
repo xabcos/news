@@ -91,8 +91,8 @@ pub struct PublicItem {
     pub hidden: bool,
 }
 
-/// One topic on one day: the visible items in display order, as PostgreSQL returned them.
-/// Today and yesterday stay in memory.
+/// One topic on one day: the visible items in display order (`Cursor`). Today and yesterday
+/// stay in memory.
 #[derive(Debug, Default)]
 pub struct Snapshot {
     pub updated_at: Option<DateTime<Utc>>,
@@ -119,14 +119,22 @@ fn newest(items: &[PublicItem]) -> Option<DateTime<Utc>> {
     items.iter().map(|item| item.first_seen_at).max()
 }
 
+/// Topics whose pictures are new when they arrive: they pick by heat and often collect a post
+/// a day after it went up, so a day lists their newest run first.
+const BY_ARRIVAL: [&str; 3] = [
+    crate::gallery::TOPIC_ID,
+    crate::fetch::CREATIONS_TOPIC_ID,
+    crate::fetch::FUN_TOPIC_ID,
+];
+
 /// The display-order key of one item: `pinned DESC, published_at DESC NULLS LAST,
 /// first_seen_at DESC, id DESC`. Deriving `Ord` over the fields in this order and comparing
 /// descending yields exactly that order; `None` sorting before `Some` is what puts undated
-/// items last. 𝑾's key leaves the post time out, so the newest run's photographs lead: an
-/// old story found late shouldn't top a news feed, but a photograph is new to the gallery
-/// when it arrives. A page starts strictly after a key, so the cursor remains unambiguous
-/// while these sort keys stay stable; callers should refresh and de-duplicate when the feed
-/// changes.
+/// items last. The `BY_ARRIVAL` topics' keys leave the post time out: an old story found late
+/// shouldn't top a news feed, but a picture is new to its topic when it arrives. Snapshots
+/// are sorted by this key, so it alone defines the order. A page starts strictly after a key,
+/// so the cursor remains unambiguous while these sort keys stay stable; callers should refresh
+/// and de-duplicate when the feed changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Cursor {
     #[serde(rename = "p")]
@@ -143,9 +151,7 @@ impl Cursor {
     pub fn of(topic: &str, item: &PublicItem) -> Self {
         Self {
             pinned: item.pinned,
-            published_at: item
-                .published_at
-                .filter(|_| topic != crate::gallery::TOPIC_ID),
+            published_at: item.published_at.filter(|_| !BY_ARRIVAL.contains(&topic)),
             first_seen_at: item.first_seen_at,
             id: item.id,
         }
@@ -666,17 +672,15 @@ async fn load(state: &AppState, topic: &str, day: NaiveDate) -> Result<Snapshot>
         .push(" AND items.day = ")
         .push_bind(day)
         .push(" AND topics.enabled AND topics.owner_user_id IS NULL");
-    // 𝑾's hidden photographs are read for the administrator's preview (`gallery`), and its
-    // order leaves the post time out (`Cursor`).
-    query.push(if topic == crate::gallery::TOPIC_ID {
-        " ORDER BY items.pinned DESC, items.first_seen_at DESC, items.id DESC"
-    } else {
-        " AND NOT items.hidden ORDER BY items.pinned DESC, items.published_at DESC NULLS LAST, items.first_seen_at DESC, items.id DESC"
-    });
+    // 𝑾's hidden photographs are read for the administrator's preview (`gallery`).
+    if topic != crate::gallery::TOPIC_ID {
+        query.push(" AND NOT items.hidden");
+    }
     let mut items = query
         .build_query_as::<PublicItem>()
         .fetch_all(&state.pool)
         .await?;
+    items.sort_unstable_by_key(|item| std::cmp::Reverse(Cursor::of(topic, item)));
     for item in &mut items {
         item.image = public_image(item.image.take());
     }
@@ -1508,7 +1512,7 @@ mod tests {
     }
 
     #[test]
-    fn the_gallery_leads_with_its_newest_run_whatever_the_post_times() {
+    fn pictures_lead_with_their_newest_run_whatever_the_post_times() {
         // 1 and 2 came in one run, 1 with the newest post; 0, the oldest post, came in the
         // next run.
         let mut items = (0..3).map(|n| item(n, false)).collect::<Vec<_>>();
@@ -1519,17 +1523,22 @@ mod tests {
             items.sort_by_key(|item| std::cmp::Reverse(Cursor::of(topic, item)));
             items
         };
-        assert_eq!(marks(&order(NEWS)), vec![1, 2, 0]);
-        // 𝑾 counts no post time, not even within a run, where the id settles it.
-        let gallery = order(crate::gallery::TOPIC_ID);
-        assert_eq!(marks(&gallery), vec![0, 2, 1]);
+        // News pictures (𝑷) keep the post time.
+        for news in [NEWS, "p"] {
+            assert_eq!(marks(&order(news)), vec![1, 2, 0]);
+        }
+        // 𝑾, AI 创作 and 趣图 count no post time, not even within a run, where the id settles it.
+        for topic in ["w", "creations", "fun"] {
+            let pictures = order(topic);
+            assert_eq!(marks(&pictures), vec![0, 2, 1]);
 
-        let (first, next) = page(crate::gallery::TOPIC_ID, &gallery, None, 2);
-        assert_eq!(marks(first), vec![0, 2]);
-        let cursor = Cursor::decode(next.as_deref().expect("one more page")).expect("valid");
-        let (second, next) = page(crate::gallery::TOPIC_ID, &gallery, Some(cursor), 2);
-        assert_eq!(marks(second), vec![1]);
-        assert!(next.is_none());
+            let (first, next) = page(topic, &pictures, None, 2);
+            assert_eq!(marks(first), vec![0, 2]);
+            let cursor = Cursor::decode(next.as_deref().expect("one more page")).expect("valid");
+            let (second, next) = page(topic, &pictures, Some(cursor), 2);
+            assert_eq!(marks(second), vec![1]);
+            assert!(next.is_none());
+        }
     }
 
     #[test]
