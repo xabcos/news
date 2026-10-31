@@ -180,17 +180,32 @@ fn tabs(section: Section, topics: &[(String, String)], current: &str, en: bool) 
             tab(COMMENTARY, crate::articles::commentary_label(en));
         }
     }
+    // 评测 reviews the products all of 数码's topics collect.
+    if section == Section::Gadgets {
+        tab(REVIEWS, crate::articles::reviews_label(en));
+    }
     html.push_str("</nav>");
     html
 }
 
-/// Where 文娱 · 解说 lists its articles, under Culture's path.
+/// Where 文娱 · 解说 and 数码 · 评测 list their articles, under their sections' paths.
 const COMMENTARY: &str = "commentary";
+const REVIEWS: &str = "reviews";
 
-/// Culture's tabs over 解说, whose page `articles` renders.
-pub(crate) fn commentary_tabs(state: &AppState, reader: Reader, en: bool) -> String {
-    let topics = catalogue(state, Section::Culture, reader, en);
-    tabs(Section::Culture, &topics, COMMENTARY, en)
+/// A section's tabs over the list of XABC's articles it holds, 解说 or 评测, whose page
+/// `articles` renders.
+pub(crate) fn articles_tabs(
+    state: &AppState,
+    section: Section,
+    reader: Reader,
+    en: bool,
+) -> String {
+    let topics = catalogue(state, section, reader, en);
+    let current = match section {
+        Section::Culture => COMMENTARY,
+        Section::Gadgets => REVIEWS,
+    };
+    tabs(section, &topics, current, en)
 }
 fn description(section: Section, topic: &str, en: bool) -> &'static str {
     match section {

@@ -59,7 +59,7 @@ const storage = (() => {
 
 const TEXT = {
   zh: {
-    locale: "zh-CN", articles: "分享", commentary: "解说", people: "时代", tracker: "追踪", worth: "值得读", today: "今天", top: "重要",
+    locale: "zh-CN", articles: "分享", commentary: "解说", people: "时代", tracker: "追踪", reviews: "评测", worth: "值得读", today: "今天", top: "重要",
     fresh: "NEW", failed: "加载失败", retry: "重试",
     empty: "这一天还没有内容", latest: "查看最近有内容的一天",
     personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
@@ -71,7 +71,7 @@ const TEXT = {
     publish: "公开", unpublish: "取消公开",
   },
   en: {
-    locale: "en", articles: "𝑨𝒓𝒕𝒊𝒄𝒍𝒆𝒔", commentary: "𝑬𝒙𝒑𝒍𝒂𝒊𝒏𝒆𝒅", people: "𝑷𝒆𝒐𝒑𝒍𝒆", tracker: "𝑻𝒓𝒂𝒄𝒌𝒆𝒓", worth: "Worth reading", today: "Today", top: "Top",
+    locale: "en", articles: "𝑨𝒓𝒕𝒊𝒄𝒍𝒆𝒔", commentary: "𝑬𝒙𝒑𝒍𝒂𝒊𝒏𝒆𝒅", people: "𝑷𝒆𝒐𝒑𝒍𝒆", tracker: "𝑻𝒓𝒂𝒄𝒌𝒆𝒓", reviews: "𝑹𝒆𝒗𝒊𝒆𝒘𝒔", worth: "Worth reading", today: "Today", top: "Top",
     fresh: "NEW", failed: "Failed to load", retry: "Retry",
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
     personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
@@ -131,7 +131,7 @@ const CATALOG = {
     roles: { zh: { review: "评论", share: "大家说" }, en: { review: "Review", share: "On X" } },
   },
   gadgets: {
-    topics: ["eink", "ai-hardware", "digital"],
+    topics: ["eink", "ai-hardware", "robots", "digital"],
     roles: { zh: { review: "评测", share: "分享" }, en: { review: "Review", share: "Shared" } },
   },
 };
@@ -967,7 +967,7 @@ function sourceList(sources) {
   return list;
 }
 
-// 值得读 opens ALL's latest day: XABC's newest 分享, then the hottest 分享, 解说, 时代 and 追踪,
+// 值得读 opens ALL's latest day: XABC's newest 分享, then the hottest 分享, 解说, 时代, 追踪 and 评测,
 // ranked by the server as 热读.
 async function loadWorth() {
   if (!worthShown()) {
@@ -997,7 +997,7 @@ function renderWorth() {
   title.textContent = t().worth;
   const lists = document.createElement("p");
   lists.className = "muted small";
-  lists.append(link(t().articles, "/articles"), " · ", link(t().commentary, "/culture/commentary"), " · ", link(t().people, "/people"), " · ", link(t().tracker, "/tracker"));
+  lists.append(link(t().articles, "/articles"), " · ", link(t().commentary, "/culture/commentary"), " · ", link(t().people, "/people"), " · ", link(t().tracker, "/tracker"), " · ", link(t().reviews, "/gadgets/reviews"));
   heading.append(title, lists);
   const cards = document.createElement("div");
   cards.className = "worth-cards";
@@ -1016,7 +1016,7 @@ function renderWorth() {
     }
     const meta = document.createElement("p");
     meta.className = "item-meta";
-    meta.textContent = article.film ? t().commentary : article.person ? t().people : article.event ? t().tracker : t().articles;
+    meta.textContent = article.film ? t().commentary : article.person ? t().people : article.event ? t().tracker : article.product ? t().reviews : t().articles;
     if (article.views > 0) {
       const views = document.createElement("span");
       views.className = "read-views";

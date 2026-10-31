@@ -1119,6 +1119,40 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                                 )),
                             );
                         }
+                        // 评测: both scouts find a review; the writer places 数码's official
+                        // photograph and a review's.
+                        let review = instructions.contains("「数码 · 评测」");
+                        if request["text"]["format"]["name"] == "finds" && review {
+                            return (
+                                StatusCode::OK,
+                                Json(reply(
+                                    json!({ "finds": [{
+                                        "title": "一篇上手评测", "why": "测得细", "points": "续航一天半",
+                                        "sources": ["https://reviews.example/duo"], "pictures": [],
+                                    }] }),
+                                    "https://cited.example/review",
+                                )),
+                            );
+                        }
+                        if request["text"]["format"]["name"] == "article" && review {
+                            let revising = instructions.contains("这次是更新");
+                            let (title, body) = if revising {
+                                ("iPhone Duo 综合评测（更新）", format!("{}\n\n![](keep:1)\n\n长期使用之后。", "更新后的评测，".repeat(80)))
+                            } else {
+                                ("iPhone Duo 综合评测", format!("![](keep:1)\n\n{}\n\n看[上手评测](https://reviews.example/duo)。", "各家评测这么说，".repeat(80)))
+                            };
+                            return (
+                                StatusCode::OK,
+                                Json(reply(
+                                    json!({
+                                        "title": title, "body": body,
+                                        "pictures": [{ "page": "", "prompt": "一台手机", "caption": "手机" }],
+                                        "cover": "封面插画",
+                                    }),
+                                    "https://cited.example/review",
+                                )),
+                            );
+                        }
                         // grok looks for a photograph of a person or a company, and finds one
                         // while it may.
                         if request["text"]["format"]["name"] == "photo" {
@@ -2307,7 +2341,8 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     let event = Some(xabc::Subject::Event("guard-2026-10"));
     xabc::publish(&state, author, shared, event, &finished("戊"))
         .await
-        .unwrap(); // 分享 times itself by its own articles alone.
+        .unwrap();
+    // 分享 times itself by its own articles alone.
     let shared: DateTime<Utc> =
         sqlx::query_scalar("SELECT published_at FROM articles WHERE title = '丙'")
             .fetch_one(&state.pool)
@@ -2317,4 +2352,193 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         xabc::last(&state, xabc::Line::Share).await.unwrap(),
         Some(shared)
     );
+
+    // 数码 · 评测: a product 数码 checked and two owners' posts discuss is reviewed. Its official
+    // photograph, which 数码 keeps, goes into the review where the writer places it, read but not
+    // copied, and stands for it on the lists.
+    let product = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO catalog_entries (id, topic_id, slug, name, name_en, creator, kind, key, source_urls, guide, images)
+         VALUES ($1, 'digital', 'iphone-duo', 'iPhone Duo', 'iPhone Duo', 'Apple', 'phone', 'apple:iphoneduo', '[]',
+                 '{\"intro\": \"首款可折叠 iPhone。\", \"facts\": [{\"label\": \"芯片\", \"text\": \"A20 Pro\"}]}',
+                 jsonb_build_array(jsonb_build_object(
+                     'url', 'https://media.example/files/scene.jpg', 'source_url', 'https://media.example/news/duo',
+                     'caption', 'iPhone Duo', 'caption_en', 'iPhone Duo', 'credit', 'Apple',
+                     'expires_at', now() + INTERVAL '30 days')))",
+    )
+    .bind(product)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    let gadget = |role: &'static str| {
+        let state = state.clone();
+        async move {
+            let item = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO items (id, topic_id, day, fingerprint, title, summary, url)
+                 VALUES ($1, 'digital', CURRENT_DATE, sha256(convert_to($1::text, 'UTF8')), '一位用户的实拍', '折痕几乎看不见', $2)",
+            )
+            .bind(item)
+            .bind(format!("https://x.com/owner/status/{}", item.as_u128() % 1_000_000_000))
+            .execute(&state.pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO catalog_items (item_id, entry_id, role) VALUES ($1, $2, $3)")
+                .bind(item)
+                .bind(product)
+                .bind(role)
+                .execute(&state.pool)
+                .await
+                .unwrap();
+        }
+    };
+    gadget("share").await;
+    // AI 硬件 files the same product too, without a guide, and collected the same post: one
+    // owner's post, counted once, is not enough yet.
+    let twin = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO catalog_entries (id, topic_id, slug, name, name_en, creator, kind, key, source_urls)
+         VALUES ($1, 'ai-hardware', 'iphone-duo', 'iPhone Duo', 'iPhone Duo', 'Apple', 'computer', 'apple:iphoneduo', '[]')",
+    )
+    .bind(twin)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    let copied = |role: &'static str, fingerprint: Option<Vec<u8>>| {
+        let state = state.clone();
+        async move {
+            let item = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO items (id, topic_id, day, fingerprint, title, summary, url)
+                 VALUES ($1, 'ai-hardware', CURRENT_DATE, COALESCE($2, sha256(convert_to($1::text, 'UTF8'))),
+                         '另一栏收的内容', '同一款手机', 'https://reviews.example/' || $1::text)",
+            )
+            .bind(item)
+            .bind(fingerprint)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO catalog_items (item_id, entry_id, role) VALUES ($1, $2, $3)")
+                .bind(item)
+                .bind(twin)
+                .bind(role)
+                .execute(&state.pool)
+                .await
+                .unwrap();
+        }
+    };
+    let post: Vec<u8> =
+        sqlx::query_scalar("SELECT fingerprint FROM items WHERE topic_id = 'digital'")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    copied("share", Some(post)).await;
+    assert!(matches!(
+        xabc::write(&state, xabc::Line::Review, Utc::now()).await,
+        Err(AppError::Internal(message)) if message == "数码最近没有待评测的产品"
+    ));
+    // A review AI 硬件 collected makes two. Only AI 硬件's stories are recent now, and the guide
+    // is still found in 数码's entry.
+    sqlx::query(
+        "UPDATE items SET first_seen_at = now() - INTERVAL '20 days' WHERE topic_id = 'digital'",
+    )
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    copied("review", None).await;
+    let reviewed = xabc::write(&state, xabc::Line::Review, Utc::now())
+        .await
+        .unwrap()
+        .unwrap();
+    let (key, title, body, cover): (Option<String>, String, String, Option<Uuid>) =
+        sqlx::query_as("SELECT product, title, body, cover FROM articles WHERE id = $1")
+            .bind(reviewed)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (key.as_deref(), title.as_str()),
+        (Some("apple:iphoneduo"), "iPhone Duo 综合评测")
+    );
+    let official: (Uuid, String, i32) =
+        sqlx::query_as("SELECT id, url, width FROM article_images WHERE article_id = $1")
+            .bind(reviewed)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (official.1.as_str(), official.2, cover),
+        (
+            "https://media.example/files/scene.jpg",
+            640,
+            Some(official.0)
+        )
+    );
+    assert!(body.starts_with(&format!(
+        "![iPhone Duo](image:{})\n*iPhone Duo（图：[Apple](<https://media.example/news/duo>)）*",
+        official.0
+    )));
+    assert!(body.contains("[上手评测](https://reviews.example/duo)"));
+    let material = writing(&asked_log.lock().unwrap());
+    assert!(material.contains("产品：iPhone Duo（iPhone Duo，Apple）\n数码栏目核实过的官方介绍：首款可折叠 iPhone。\n官方参数：\n- 芯片：A20 Pro\n官方图片：\n1. iPhone Duo（Apple）\n"));
+    assert!(material.contains("【评测】另一栏收的内容：同一款手机"));
+    assert_eq!(material.matches("【用户分享】").count(), 1);
+    // Reviewed once, it waits for more news.
+    assert!(matches!(
+        xabc::write(&state, xabc::Line::Review, Utc::now()).await,
+        Err(AppError::Internal(message)) if message == "数码最近没有待评测的产品"
+    ));
+    // Days later, four new reviews and posts are not enough and the fifth brings it up to date,
+    // its photograph kept; what came before the last update doesn't count.
+    sqlx::query(
+        "UPDATE items SET first_seen_at = now() - INTERVAL '5 days' WHERE topic_id IN ('digital', 'ai-hardware')",
+    )
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE articles SET updated_at = now() - INTERVAL '4 days' WHERE id = $1")
+        .bind(reviewed)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    for role in ["review", "share", "review", "share"] {
+        gadget(role).await;
+    }
+    assert!(matches!(
+        xabc::write(&state, xabc::Line::Review, Utc::now()).await,
+        Err(AppError::Internal(message)) if message == "数码最近没有待评测的产品"
+    ));
+    gadget("review").await;
+    assert_eq!(
+        xabc::write(&state, xabc::Line::Review, Utc::now())
+            .await
+            .unwrap(),
+        Some(reviewed)
+    );
+    let (title, body, revision): (String, String, i32) =
+        sqlx::query_as("SELECT title, body, revision FROM articles WHERE id = $1")
+            .bind(reviewed)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (title.as_str(), revision),
+        ("iPhone Duo 综合评测（更新）", 2)
+    );
+    assert!(body.contains(&format!("![iPhone Duo](image:{})", official.0)));
+    assert!(
+        writing(&asked_log.lock().unwrap())
+            .contains("数码栏目在上次更新之后收到的评测和用户分享：")
+    );
+
+    // 评测 lists its reviews under 数码's tabs, after its topics, and a review leads back there;
+    // 分享's list keeps out of it.
+    let list = page(format!("{base}/gadgets/reviews")).await;
+    assert!(list.contains("<a href=\"/gadgets/reviews\" aria-current=\"true\">评测</a></nav>"));
+    assert!(list.contains("<body class=\"public catalog gadgets catalog-commentary\">"));
+    assert!(list.contains("iPhone Duo 综合评测（更新）"));
+    let article = page(format!("{base}/articles/{reviewed}")).await;
+    assert!(article.contains("<a href=\"/gadgets/reviews\">← 评测</a>"));
+    assert!(!article.contains("class=article-cover"));
+    assert!(!page(format!("{base}/articles")).await.contains("综合评测"));
 }

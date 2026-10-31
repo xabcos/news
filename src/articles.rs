@@ -54,6 +54,8 @@ const COMMENTARY: &str = "/culture/commentary";
 pub(crate) const PEOPLE: &str = "/people";
 /// Where 追踪 lists XABC's articles following the events the whole web talks about.
 pub(crate) const TRACKER: &str = "/tracker";
+/// Where 数码 · 评测 lists XABC's reviews of the products 数码 collects, under 数码.
+const REVIEWS: &str = "/gadgets/reviews";
 
 /// 文娱 · 解说's name, in the page's language.
 pub(crate) fn commentary_label(en: bool) -> &'static str {
@@ -68,6 +70,11 @@ pub(crate) fn people_label(en: bool) -> &'static str {
 /// 追踪's name, in the page's language.
 pub(crate) fn tracker_label(en: bool) -> &'static str {
     crate::site::choose(en, "追踪", "𝑻𝒓𝒂𝒄𝒌𝒆𝒓")
+}
+
+/// 数码 · 评测's name, in the page's language.
+pub(crate) fn reviews_label(en: bool) -> &'static str {
+    crate::site::choose(en, "评测", "𝑹𝒆𝒗𝒊𝒆𝒘𝒔")
 }
 
 /// The section's name, in the page's language.
@@ -121,12 +128,14 @@ struct Listed {
     person: bool,
     /// Whether it follows an event for 追踪.
     event: bool,
+    /// Whether it reviews a product for 评测.
+    product: bool,
 }
 
-const LISTED: &str = "SELECT a.id, a.title, w.name AS author, a.status, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person, a.event IS NOT NULL AS event
+const LISTED: &str = "SELECT a.id, a.title, w.name AS author, a.status, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person, a.event IS NOT NULL AS event, a.product IS NOT NULL AS product
     FROM articles a JOIN authors w ON w.user_id = a.author_id JOIN users u ON u.id = a.author_id";
 
-/// A search of 分享, 解说, 时代 or 追踪: its words, as the page shows them, and the patterns each of
+/// A search of 分享 or one of XABC's lists: its words, as the page shows them, and the patterns each of
 /// which an article's title or opening must hold.
 struct Search {
     words: String,

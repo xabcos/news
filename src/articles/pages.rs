@@ -2,8 +2,8 @@
 //! previews its author and an administrator read before readers do. 解说, 时代 and 追踪 read on
 //! the same article page, and 时代's and 追踪's lists are 分享's.
 use super::{
-    COMMENTARY, MARKDOWN, PEOPLE, Search, TRACKER, commentary_label, image_id, label, missing,
-    parse, people_label, tracker_label,
+    COMMENTARY, MARKDOWN, PEOPLE, REVIEWS, Search, TRACKER, commentary_label, image_id, label,
+    missing, parse, people_label, reviews_label, tracker_label,
 };
 use crate::{
     auth::User,
@@ -81,22 +81,36 @@ const TRACKING: Chrome<'static> = Chrome {
     current: "tracker",
     ..ARTICLE
 };
+/// 数码 · 评测 belongs to 数码, whose tab it marks, and lists its reviews as 解说 lists its
+/// articles.
+const REVIEWED: Chrome<'static> = Chrome {
+    current: "digital",
+    section: "catalog gadgets catalog-commentary",
+    ..EXPLAINED
+};
+const REVIEW: Chrome<'static> = Chrome {
+    current: "digital",
+    ..ARTICLE
+};
 
-/// The lists articles are on: 分享, which readers and XABC write, and XABC's 解说, 时代 and 追踪.
+/// The lists articles are on: 分享, which readers and XABC write, and XABC's 解说, 时代, 追踪 and
+/// 评测.
 #[derive(Clone, Copy, PartialEq)]
 enum Shelf {
     Shared,
     Explained,
     People,
     Tracked,
+    Reviewed,
 }
 
 impl Shelf {
-    fn of(film: bool, person: bool, event: bool) -> Self {
-        match (film, person, event) {
+    fn of(film: bool, person: bool, event: bool, product: bool) -> Self {
+        match (film, person, event, product) {
             (true, ..) => Self::Explained,
-            (_, true, _) => Self::People,
-            (.., true) => Self::Tracked,
+            (_, true, ..) => Self::People,
+            (_, _, true, _) => Self::Tracked,
+            (.., true) => Self::Reviewed,
             _ => Self::Shared,
         }
     }
@@ -104,17 +118,20 @@ impl Shelf {
     /// The condition keeping to the shelf's articles.
     fn articles(self) -> &'static str {
         match self {
-            Self::Shared => " AND a.film IS NULL AND a.person IS NULL AND a.event IS NULL",
+            Self::Shared => {
+                " AND a.film IS NULL AND a.person IS NULL AND a.event IS NULL AND a.product IS NULL"
+            }
             Self::Explained => " AND a.film IS NOT NULL",
             Self::People => " AND a.person IS NOT NULL",
             Self::Tracked => " AND a.event IS NOT NULL",
+            Self::Reviewed => " AND a.product IS NOT NULL",
         }
     }
 
-    /// Whether an article on the shelf is as new as its last update: XABC brings profiles and
-    /// events up to date as they move.
+    /// Whether an article on the shelf is as new as its last update: XABC brings profiles,
+    /// events and reviews up to date as they move.
     fn updated(self) -> bool {
-        matches!(self, Self::People | Self::Tracked)
+        matches!(self, Self::People | Self::Tracked | Self::Reviewed)
     }
 
     /// What dates an article on the shelf, and orders its list.
@@ -131,7 +148,7 @@ impl Shelf {
     fn stamp(self) -> &'static str {
         match self {
             Self::Tracked => "%Y-%m-%d %H:%M",
-            Self::Shared | Self::Explained | Self::People => "%Y-%m-%d",
+            Self::Shared | Self::Explained | Self::People | Self::Reviewed => "%Y-%m-%d",
         }
     }
 }
@@ -143,7 +160,8 @@ pub(super) fn router() -> Router<AppState> {
             .route("/articles/{id}", get(detail))
             .route(COMMENTARY, get(commentary))
             .route(PEOPLE, get(people))
-            .route(TRACKER, get(tracker)),
+            .route(TRACKER, get(tracker))
+            .route(REVIEWS, get(reviews)),
     )
     .route("/articles/sitemap.xml", get(sitemap))
     .route("/articles/worth.json", get(worth))
@@ -163,7 +181,7 @@ async fn sitemap(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
             .fetch_all(&state.pool)
             .await?;
     let mut xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">".to_owned();
-    for list in ["/articles", COMMENTARY, PEOPLE, TRACKER] {
+    for list in ["/articles", COMMENTARY, PEOPLE, TRACKER, REVIEWS] {
         let _ = write!(
             xml,
             "<url><loc>{}</loc></url>",
@@ -260,6 +278,8 @@ struct Article {
     person: bool,
     /// Whether it follows an event for 追踪.
     event: bool,
+    /// Whether it reviews a product for 评测.
+    product: bool,
 }
 
 #[derive(FromRow)]
@@ -559,14 +579,15 @@ struct Worth {
     film: bool,
     person: bool,
     event: bool,
+    product: bool,
     cover: Option<String>,
     width: Option<i32>,
     height: Option<i32>,
 }
 
 /// 值得读, which opens ALL: XABC's four newest 分享, newest first, then the four hottest of the
-/// last 30 days of 分享, 解说, 时代 and 追踪 together, ranked as 热读 is, each article once; while
-/// few are read, the newest fill the places.
+/// last 30 days of 分享 and XABC's other lists together, ranked as 热读 is, each article once;
+/// while few are read, the newest fill the places.
 async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
     let articles: Vec<Worth> = QueryBuilder::<Postgres>::new(
         "WITH newest AS (
@@ -576,9 +597,10 @@ async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Resp
     .push_bind(super::xabc::EMAIL)
     .push(
         " AND a.status = 'published' AND a.film IS NULL AND a.person IS NULL AND a.event IS NULL
+               AND a.product IS NULL
              ORDER BY a.published_at DESC, a.id DESC LIMIT 4)
          SELECT a.id, a.title, a.views, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person,
-                a.event IS NOT NULL AS event,
+                a.event IS NOT NULL AS event, a.product IS NOT NULL AS product,
                 CASE WHEN i.expires_at > now() THEN i.url END AS cover, i.width, i.height
          FROM articles a JOIN users u ON u.id = a.author_id
          LEFT JOIN article_images i ON i.id = a.cover
@@ -624,32 +646,105 @@ async fn shelved(
     Ok((rows, more))
 }
 
-/// 文娱 · 解说: XABC's articles on films and series, newest first, as picture cards under
-/// Culture's tabs.
+/// A list of XABC's articles under a catalogue section, as picture cards under the section's
+/// tabs: 文娱 · 解说 and 数码 · 评测. Its words are in Chinese and English.
+struct Catalogued {
+    shelf: Shelf,
+    section: crate::catalog::Section,
+    path: &'static str,
+    name: fn(bool) -> &'static str,
+    chrome: &'static Chrome<'static>,
+    description: (&'static str, &'static str),
+    /// What the search box asks for.
+    search: (&'static str, &'static str),
+    /// What the list says while it is empty.
+    first: (&'static str, &'static str),
+    /// What it says when a search finds nothing.
+    nothing: (&'static str, &'static str),
+}
+
+/// 文娱 · 解说: XABC's articles on films and series.
+const EXPLANATIONS: Catalogued = Catalogued {
+    shelf: Shelf::Explained,
+    section: crate::catalog::Section::Culture,
+    path: COMMENTARY,
+    name: commentary_label,
+    chrome: &EXPLAINED,
+    description: (
+        "好电影、好剧的完整解说：剧情、结局与幕后",
+        "Good films and series explained: story, ending and the making",
+    ),
+    search: ("搜索解说的片名和内容", "Search titles and openings"),
+    first: ("第一篇解说正在写。", "The first one is being written."),
+    nothing: (
+        "没有找到相关解说，换个词试试。",
+        "Nothing explained matches these words. Try others.",
+    ),
+};
+
+/// 数码 · 评测: XABC's reviews of the products 数码 collects.
+const REVIEWS_LIST: Catalogued = Catalogued {
+    shelf: Shelf::Reviewed,
+    section: crate::catalog::Section::Gadgets,
+    path: REVIEWS,
+    name: reviews_label,
+    chrome: &REVIEWED,
+    description: (
+        "热门数码产品的综合评测：官方参数、各家评测与真实用户的体验",
+        "Popular gadgets reviewed from their specifications, reviewers and owners",
+    ),
+    search: ("搜索评测的产品和内容", "Search products and openings"),
+    first: ("第一篇评测正在写。", "The first review is being written."),
+    nothing: (
+        "没有找到相关评测，换个词试试。",
+        "No reviews match these words. Try others.",
+    ),
+};
+
 async fn commentary(
     State(state): State<AppState>,
     reader: Reader,
     Query(params): Query<Params>,
     headers: HeaderMap,
 ) -> Result<Response> {
+    catalogued(&state, reader, &EXPLANATIONS, &params, &headers).await
+}
+
+async fn reviews(
+    State(state): State<AppState>,
+    reader: Reader,
+    Query(params): Query<Params>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    catalogued(&state, reader, &REVIEWS_LIST, &params, &headers).await
+}
+
+async fn catalogued(
+    state: &AppState,
+    reader: Reader,
+    list: &Catalogued,
+    params: &Params,
+    headers: &HeaderMap,
+) -> Result<Response> {
     let en = params.english();
-    let page = page(&params)?;
+    let say = |(zh, english): (&'static str, &'static str)| choose(en, zh, english);
+    let page = page(params)?;
     let search = Search::new(params.q.as_deref());
-    let (rows, more) = shelved(&state, Shelf::Explained, &search, page).await?;
+    let (rows, more) = shelved(state, list.shelf, &search, page).await?;
     let found = found(
         &search,
         page,
         en,
-        listed("SELECT count(*)", Shelf::Explained, None, &search).build_query_scalar(),
-        &state,
+        listed("SELECT count(*)", list.shelf, None, &search).build_query_scalar(),
+        state,
     )
     .await?;
-    let mut content = crate::catalog::commentary_tabs(&state, reader, en);
+    let mut content = crate::catalog::articles_tabs(state, list.section, reader, en);
     content.push_str(&search_box(
         "catalog-search",
-        COMMENTARY,
+        list.path,
         &search.words,
-        choose(en, "搜索解说的片名和内容", "Search titles and openings"),
+        say(list.search),
         en,
     ));
     if let Some(found) = found {
@@ -657,54 +752,37 @@ async fn commentary(
     }
     content.push_str("<div class=\"reads-list catalog-grid\">");
     for row in &rows {
-        content.push_str(&card(
-            row,
-            en,
-            None,
-            Shelf::Explained,
-            state.config.timezone,
-        ));
+        content.push_str(&card(row, en, None, list.shelf, state.config.timezone));
     }
     content.push_str("</div>");
     if rows.is_empty() {
         let _ = write!(
             content,
             "<p class=empty>{}</p>",
-            if search.is_empty() {
-                choose(en, "第一篇解说正在写。", "The first one is being written.")
+            say(if search.is_empty() {
+                list.first
             } else {
-                choose(
-                    en,
-                    "没有找到相关解说，换个词试试。",
-                    "Nothing explained matches these words. Try others.",
-                )
-            }
+                list.nothing
+            })
         );
     }
-    content.push_str(&pagination(COMMENTARY, page, more, en, None, &search.words));
-    let label = commentary_label(en);
+    content.push_str(&pagination(list.path, page, more, en, None, &search.words));
+    let (name, section) = ((list.name)(en), list.section.label(en));
     let title = match page {
-        1 => format!("{label} · {}", crate::catalog::Section::Culture.label(en)),
-        page => format!(
-            "{label} · {page} · {}",
-            crate::catalog::Section::Culture.label(en)
-        ),
+        1 => format!("{name} · {section}"),
+        page => format!("{name} · {page} · {section}"),
     };
     let html = crate::site::layout(
-        &state,
+        state,
         en,
-        &listing(COMMENTARY, page, false, None, &search.words),
+        &listing(list.path, page, false, None, &search.words),
         &title,
-        choose(
-            en,
-            "好电影、好剧的完整解说：剧情、结局与幕后",
-            "Good films and series explained: story, ending and the making",
-        ),
+        say(list.description),
         &content,
         None,
-        &EXPLAINED,
+        list.chrome,
     );
-    Ok(listed_page(&headers, html, &search))
+    Ok(listed_page(headers, html, &search))
 }
 
 /// A list of XABC's articles that it brings up to date as their subjects move, the one brought
@@ -949,7 +1027,7 @@ async fn preview(
 
 async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<String> {
     let mut query = QueryBuilder::<Postgres>::new(
-        "SELECT a.id, a.author_id, w.name AS author, a.title, a.body, a.excerpt, a.cover, a.status, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person, a.event IS NOT NULL AS event",
+        "SELECT a.id, a.author_id, w.name AS author, a.title, a.body, a.excerpt, a.cover, a.status, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person, a.event IS NOT NULL AS event, a.product IS NOT NULL AS product",
     );
     query.push(FROM).push(" AND a.id = ").push_bind(id);
     match mode {
@@ -993,7 +1071,7 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
     } else {
         &article.title
     };
-    let shelf = Shelf::of(article.film, article.person, article.event);
+    let shelf = Shelf::of(article.film, article.person, article.event, article.product);
     // A profile or an event is as new as its last update.
     let date = if shelf.updated() {
         article.updated_at
@@ -1056,7 +1134,7 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
             },
         ),
     };
-    // 解说, 时代 and 追踪 lead back to their lists, whose articles are all XABC's.
+    // XABC's own lists lead back to themselves: all their articles are XABC's.
     let (list, name, by) = match shelf {
         Shelf::Shared => (
             "/articles",
@@ -1066,6 +1144,7 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
         Shelf::Explained => (COMMENTARY, commentary_label(en), localized(COMMENTARY, en)),
         Shelf::People => (PEOPLE, people_label(en), localized(PEOPLE, en)),
         Shelf::Tracked => (TRACKER, tracker_label(en), localized(TRACKER, en)),
+        Shelf::Reviewed => (REVIEWS, reviews_label(en), localized(REVIEWS, en)),
     };
     let mut content = format!(
         "{notice}<article class=\"read article\">{}<header class=read-heading><div class=read-title><h1>{}</h1></div><div class=item-meta><a href=\"{}\">{}</a> · <time datetime=\"{}\">{}</time> · {views}</div></header><div class=read-body>{body}</div></article>",
@@ -1125,6 +1204,7 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
             Shelf::Explained => &EXPLANATION,
             Shelf::People => &PROFILE,
             Shelf::Tracked => &TRACKING,
+            Shelf::Reviewed => &REVIEW,
         },
     ))
 }

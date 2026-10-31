@@ -1,11 +1,12 @@
-//! 𝑮𝒂𝒅𝒈𝒆𝒕𝒔: e-ink devices, AI hardware and everyday electronics. Real reviews and readers'
-//! posts on X accumulate under products whose specifications come from official sources only.
+//! 𝑮𝒂𝒅𝒈𝒆𝒕𝒔: e-ink devices, AI hardware, robots and everyday electronics. Real reviews and
+//! readers' posts on X accumulate under products whose specifications come from official sources
+//! only.
 use super::source::fold;
 use crate::{site::choose, topics::Topic};
 use serde_json::{Value, json};
 use url::Url;
 
-pub(super) const TOPICS: [&str; 3] = ["eink", "ai-hardware", "digital"];
+pub(super) const TOPICS: [&str; 4] = ["eink", "ai-hardware", "robots", "digital"];
 
 /// A product's kind, its label and the specifications its guide lists, in order.
 struct Kind {
@@ -18,7 +19,7 @@ struct Kind {
 const READER: &str = "屏幕尺寸、分辨率与 PPI、面板型号、前光与色温、手写笔与书写、翻页键、防水、处理器与内存、存储、系统与应用、续航、尺寸与重量、接口与无线、价格与上市时间";
 const AI: &str = "形态、AI 助手与模型（端侧或云端）、芯片与算力、摄像头与传感器、显示、麦克风与扬声器、续航与充电、尺寸与重量、连接、隐私设计、订阅费用、价格与上市时间";
 
-const KINDS: [(&str, &[Kind]); 3] = [
+const KINDS: [(&str, &[Kind]); 4] = [
     (
         "eink",
         &[
@@ -76,16 +77,57 @@ const KINDS: [(&str, &[Kind]); 3] = [
                 specs: AI,
             },
             Kind {
-                id: "robot",
-                zh: "机器人",
-                en: "Robots",
-                specs: AI,
-            },
-            Kind {
                 id: "computer",
                 zh: "端侧主机",
                 en: "Edge computers",
                 specs: AI,
+            },
+        ],
+    ),
+    (
+        "robots",
+        &[
+            Kind {
+                id: "humanoid",
+                zh: "人形",
+                en: "Humanoids",
+                specs: "身高与体重、自由度与关节、灵巧手、负载与行走速度、续航与充电、传感器与感知、芯片与算力、AI 模型与开发平台、应用场景、价格与上市时间",
+            },
+            Kind {
+                id: "quadruped",
+                zh: "四足",
+                en: "Quadrupeds",
+                specs: "尺寸与重量、负载、速度与越障、续航与充电、防护等级、传感器与感知、芯片与算力、开发与扩展接口、价格与上市时间",
+            },
+            Kind {
+                id: "home",
+                zh: "家用",
+                en: "Home robots",
+                specs: "类型、清洁或作业能力、导航与避障、基站功能、续航与充电、噪音、尺寸、连接与生态、价格与上市时间",
+            },
+            Kind {
+                id: "companion",
+                zh: "陪伴",
+                en: "Companions",
+                specs: "形态与尺寸、互动方式与情感功能、AI 模型（端侧或云端）、传感器、续航与充电、连接、隐私设计、订阅费用、价格与上市时间",
+            },
+            Kind {
+                id: "service",
+                zh: "商用",
+                en: "Service robots",
+                specs: "用途、负载与速度、导航与避障、续航与充电、尺寸与重量、部署与调度、价格与上市时间",
+            },
+            Kind {
+                id: "industrial",
+                zh: "工业",
+                en: "Industrial",
+                specs: "类型、负载、工作半径、重复定位精度、自由度、速度、防护等级、控制器与编程、协作安全、尺寸与重量、价格与上市时间",
+            },
+            Kind {
+                id: "component",
+                zh: "部件",
+                en: "Components",
+                specs: "类型、自由度或通道、扭矩或力、精度、尺寸与重量、接口与通信、适配平台、价格与上市时间",
             },
         ],
     ),
@@ -366,6 +408,11 @@ pub(super) fn description(topic: &str, en: bool) -> &'static str {
             en,
             "AI 眼镜与头显、录音卡片与助手设备：真实测评与用户分享。",
             "AI glasses and headsets, recorders and assistants: real reviews and users' posts.",
+        ),
+        "robots" => choose(
+            en,
+            "人形机器人、机器狗、家用与陪伴机器人、商用与工业机器人和核心部件：真实测评与用户分享。",
+            "Humanoids, robot dogs, home and companion robots, service and industrial robots and their parts: real reviews and users' posts.",
         ),
         _ => choose(
             en,

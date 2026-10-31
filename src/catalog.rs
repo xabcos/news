@@ -19,7 +19,7 @@ use crate::{
     topics::Topic,
 };
 pub(crate) use images::{from_page as page_pictures, prepare as prepare_images};
-pub(crate) use pages::{commentary_tabs, listed, router};
+pub(crate) use pages::{articles_tabs, listed, router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -130,7 +130,7 @@ pub(crate) fn section(topic: &Topic) -> Option<Section> {
 
 /// The topics whose reviews and posts outlive news retention: 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 builds up its product
 /// pages from them, while Culture's leave with the news.
-pub(crate) const KEPT_TOPICS: [&str; 3] = gadgets::TOPICS;
+pub(crate) const KEPT_TOPICS: [&str; 4] = gadgets::TOPICS;
 
 pub(crate) const ITEM_JOIN: &str = "LEFT JOIN catalog_items ci ON ci.item_id = items.id LEFT JOIN catalog_entries ce ON ce.id = ci.entry_id";
 

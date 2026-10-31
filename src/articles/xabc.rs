@@ -1,15 +1,18 @@
-//! XABC, the site's own pen name, writes on four lines. For 分享, every hour, grok
+//! XABC, the site's own pen name, writes on five lines. For 分享, every hour, grok
 //! looks through X and the web, and the briefing model through the web, for things worth
 //! sharing; the writing model picks one subject from both sets of finds, reads further where it
 //! needs to and writes it up its own way. For 文娱 · 解说, every four hours, it explains the work
 //! 影视 discusses most, or revises its explanation (`film`). For 时代, every hour, it
 //! profiles a person or a company, or brings a profile up to date (`people`). For
 //! 追踪, every two hours, it follows the hottest event with something new, anew or in the
-//! article it already has (`tracker`).
+//! article it already has (`tracker`). For 数码 · 评测, every two hours, it reviews the product
+//! 数码 discusses most from what reviewers and owners report, or brings its review up to date
+//! (`review`).
 //! Articles go out at once under the pen name XABC. Their pictures come from the pages the
 //! models cite or are drawn by an image model, and they link only to addresses the models found.
 mod film;
 mod people;
+mod review;
 mod tracker;
 
 use super::{ARTICLE_IMAGES, MARKDOWN, checked, kind, words};
@@ -75,10 +78,18 @@ pub(super) enum Line {
     People,
     /// An event followed for 追踪, anew or brought up to date.
     Tracker,
+    /// A product reviewed for 数码 · 评测, anew or brought up to date.
+    Review,
 }
 
 impl Line {
-    const ALL: [Self; 4] = [Self::Share, Self::Film, Self::People, Self::Tracker];
+    const ALL: [Self; 5] = [
+        Self::Share,
+        Self::Film,
+        Self::People,
+        Self::Tracker,
+        Self::Review,
+    ];
 
     /// The line's mark among the jobs in flight.
     fn job(self) -> &'static str {
@@ -87,15 +98,16 @@ impl Line {
             Self::Film => "__xabc_film__",
             Self::People => "__xabc_people__",
             Self::Tracker => "__xabc_tracker__",
+            Self::Review => "__xabc_review__",
         }
     }
 
-    /// How long after its last article the line writes again: 解说 follows what 影视 gathers
-    /// through the day, 时代 who is talked about and 追踪 how events move.
+    /// How long after its last article the line writes again: 解说 and 评测 follow what 影视
+    /// and 数码 gather through the day, 时代 who is talked about and 追踪 how events move.
     fn interval(self) -> chrono::Duration {
         match self {
             Self::Share | Self::People => chrono::Duration::hours(1),
-            Self::Tracker => chrono::Duration::hours(2),
+            Self::Tracker | Self::Review => chrono::Duration::hours(2),
             Self::Film => chrono::Duration::hours(4),
         }
     }
@@ -107,6 +119,7 @@ impl Line {
             Self::Film => film::SEARCHING,
             Self::People => people::SEARCHING,
             Self::Tracker => tracker::SEARCHING,
+            Self::Review => review::SEARCHING,
         }
     }
 
@@ -116,7 +129,7 @@ impl Line {
         match self {
             Self::People => Some("name"),
             Self::Tracker => Some("event"),
-            Self::Share | Self::Film => None,
+            Self::Share | Self::Film | Self::Review => None,
         }
     }
 }
@@ -214,7 +227,8 @@ pub(super) async fn last(state: &AppState, line: Line) -> Result<Option<DateTime
     Ok(sqlx::query_scalar(match line {
         Line::Share => {
             "SELECT max(a.published_at) FROM articles a JOIN users u ON u.id = a.author_id
-             WHERE u.email = $1 AND a.film IS NULL AND a.person IS NULL AND a.event IS NULL"
+             WHERE u.email = $1 AND a.film IS NULL AND a.person IS NULL AND a.event IS NULL
+               AND a.product IS NULL"
         }
         Line::Film => {
             "SELECT max(a.updated_at) FROM articles a JOIN users u ON u.id = a.author_id
@@ -227,6 +241,10 @@ pub(super) async fn last(state: &AppState, line: Line) -> Result<Option<DateTime
         Line::Tracker => {
             "SELECT max(a.updated_at) FROM articles a JOIN users u ON u.id = a.author_id
              WHERE u.email = $1 AND a.event IS NOT NULL"
+        }
+        Line::Review => {
+            "SELECT max(a.updated_at) FROM articles a JOIN users u ON u.id = a.author_id
+             WHERE u.email = $1 AND a.product IS NOT NULL"
         }
     })
     .bind(EMAIL)
@@ -265,6 +283,7 @@ pub(super) async fn write(
         Line::Film => film::write(state, author, since).await.map(Some),
         Line::People => people::write(state, author, since).await.map(Some),
         Line::Tracker => tracker::write(state, author, since).await,
+        Line::Review => review::write(state, author, since).await.map(Some),
     }
 }
 
@@ -274,7 +293,7 @@ async fn share(state: &AppState, author: i64, since: DateTime<Utc>) -> Result<Uu
     // page those articles linked to is left out.
     let lately: Vec<(String, String)> = sqlx::query_as(
         "SELECT title, body FROM articles WHERE author_id = $1 AND film IS NULL AND person IS NULL
-           AND event IS NULL AND published_at >= NOW() - INTERVAL '7 days'
+           AND event IS NULL AND product IS NULL AND published_at >= NOW() - INTERVAL '7 days'
          ORDER BY published_at DESC",
     )
     .bind(author)
@@ -502,6 +521,12 @@ impl Scout {
             }
             (Line::Tracker, Self::X) => {
                 "用 x_search 看 X 上各种语言里此刻被大量讨论、转发和引用的事件，以及当事方、调查者和权威媒体的最新发言，也用 web_search 查全网的新闻"
+            }
+            (Line::Review, Self::X) => {
+                "用 x_search 看 X 上用户亲自拍摄的开箱、实拍和长期使用体验，以及评测作者的帖子，也用 web_search 查全网"
+            }
+            (Line::Review, Self::Web) => {
+                "用 web_search 检索中英文、日文和韩文的专业评测、视频评测的文字版、横评、长期使用报告，以及固件更新和已知问题"
             }
             (Line::Tracker, Self::Web) => {
                 "用 web_search 检索全球中英文新闻媒体和通讯社的报道与跟进，以及当事方的公告、官方通报、监管和法院文件"
@@ -1214,12 +1239,14 @@ fn plain(text: &str) -> String {
     plain
 }
 
-/// What a 解说, a 时代 profile or a 追踪 article is about: a work by its key in 影视, a person,
-/// a company or an event by theirs. Each has one article at most.
+/// What a 解说, a 时代 profile, a 追踪 article or a 评测 is about: a work by its key in 影视, a
+/// person, a company or an event by theirs, a product by its key in 数码. Each has one article at
+/// most.
 pub(super) enum Subject<'a> {
     Work(&'a str),
     Profile(&'a str),
     Event(&'a str),
+    Product(&'a str),
 }
 
 /// Publishes the article with its pictures, unless XABC published one on the line since `since`
@@ -1231,11 +1258,12 @@ pub(super) async fn publish(
     subject: Option<Subject<'_>>,
     article: &Finished,
 ) -> Result<Uuid> {
-    let (film, person, event) = match subject {
-        Some(Subject::Work(key)) => (Some(key), None, None),
-        Some(Subject::Profile(key)) => (None, Some(key), None),
-        Some(Subject::Event(key)) => (None, None, Some(key)),
-        None => (None, None, None),
+    let (film, person, event, product) = match subject {
+        Some(Subject::Work(key)) => (Some(key), None, None, None),
+        Some(Subject::Profile(key)) => (None, Some(key), None, None),
+        Some(Subject::Event(key)) => (None, None, Some(key), None),
+        Some(Subject::Product(key)) => (None, None, None, Some(key)),
+        None => (None, None, None, None),
     };
     // Without a cover of its own, the first picture the body shows stands for the article.
     let cover = article
@@ -1252,13 +1280,14 @@ pub(super) async fn publish(
     if sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS (SELECT 1 FROM articles
            WHERE author_id = $1 AND published_at >= $2 AND (film IS NULL) = $3
-             AND (person IS NULL) = $4 AND (event IS NULL) = $5)",
+             AND (person IS NULL) = $4 AND (event IS NULL) = $5 AND (product IS NULL) = $6)",
     )
     .bind(author)
     .bind(since)
     .bind(film.is_none())
     .bind(person.is_none())
     .bind(event.is_none())
+    .bind(product.is_none())
     .fetch_one(&mut *tx)
     .await?
     {
@@ -1266,8 +1295,8 @@ pub(super) async fn publish(
     }
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO articles (id, author_id, title, body, excerpt, status, published_at, film, person, event)
-         VALUES ($1, $2, $3, $4, $5, 'published', now(), $6, $7, $8)",
+        "INSERT INTO articles (id, author_id, title, body, excerpt, status, published_at, film, person, event, product)
+         VALUES ($1, $2, $3, $4, $5, 'published', now(), $6, $7, $8, $9)",
     )
     .bind(id)
     .bind(author)
@@ -1277,6 +1306,7 @@ pub(super) async fn publish(
     .bind(film)
     .bind(person)
     .bind(event)
+    .bind(product)
     .execute(&mut *tx)
     .await?;
     keep(&mut tx, id, article.pictures.iter().chain(&article.cover)).await?;
@@ -1292,7 +1322,7 @@ pub(super) async fn publish(
     Ok(id)
 }
 
-/// Saves a revised 解说, profile or 追踪 article with `cover` over the revision XABC read, unless
+/// Saves a revised 解说, profile, 追踪 article or 评测 with `cover` over the revision XABC read, unless
 /// an administrator saved it or took it back meanwhile; a new cover picture comes with it.
 pub(super) async fn revise(
     state: &AppState,
