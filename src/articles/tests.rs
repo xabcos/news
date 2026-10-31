@@ -377,6 +377,7 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
         (created["status"].as_str(), created["revision"].as_i64()),
         (Some("draft"), Some(1))
     );
+    assert_eq!(created["images"], json!({}));
     // A writing page opened for another account doesn't write under this one.
     let response = send(reqwest::Method::POST, "/api/articles", &author)
         .json(&json!({ "author": writer + 1, "title": "", "body": "" }))
@@ -402,7 +403,18 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
         (image["width"].as_i64(), image["height"].as_i64()),
         (Some(400), Some(300))
     );
+    let url = image["url"].as_str().unwrap().to_owned();
+    assert!(url.starts_with("https://media.example/"));
     let image = image["id"].as_str().unwrap().to_owned();
+    // The editor opens knowing where each picture is stored, for text copied out of it.
+    let opened: Value = get(&format!("/api/articles/{id}"), &author)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(opened["images"], json!({ image.as_str(): url }));
     assert_eq!(
         status(upload(&author, b"<svg/>".to_vec()).send().await.unwrap()),
         415
@@ -497,6 +509,56 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
             "{path}"
         );
     }
+
+    // The writing page renders what it holds now, unsaved, as the article page will: the author's
+    // own pictures through this server, not another article's, nothing that runs. An administrator
+    // may ask, another reader can't.
+    let render = |cookie: &str, body: &str| {
+        send(
+            reqwest::Method::POST,
+            &format!("/api/articles/{id}/render"),
+            cookie,
+        )
+        .json(&json!({ "body": body }))
+    };
+    let unsaved = format!(
+        "## 还没保存\n\n**粗体**\n\n![图](image:{image})\n\n![别人的](image:{})\n\n<script>alert(1)</script>",
+        elsewhere["id"].as_str().unwrap()
+    );
+    let rendered: Value = render(&author, &unsaved)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let html = rendered["html"].as_str().unwrap();
+    assert!(html.contains("<h2>还没保存</h2>") && html.contains("<strong>粗体</strong>"));
+    assert!(html.contains(&format!("src=\"/api/articles/{id}/images/{image}\"")));
+    assert_eq!(html.matches("<img").count(), 1);
+    assert!(!html.contains("<script>"));
+    // The editor knows only the article's own pictures, for the administrator as for the author.
+    for cookie in [&author, &admin] {
+        let opened: Value = get(&format!("/api/articles/{id}"), cookie)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(opened["images"], json!({ image.as_str(): url }));
+    }
+    assert_eq!(status(render(&admin, &unsaved).send().await.unwrap()), 200);
+    // A long article renders as it saves, up to the same size.
+    assert_eq!(
+        status(render(&author, &"长".repeat(100_000)).send().await.unwrap()),
+        200
+    );
+    assert_eq!(
+        status(render(&author, &"长".repeat(800_000)).send().await.unwrap()),
+        413
+    );
+    assert_eq!(status(render(&reader, &unsaved).send().await.unwrap()), 404);
 
     // The author previews it with pictures read through this server.
     let response = get(&format!("/api/articles/{id}/preview"), &author)
@@ -1758,7 +1820,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         "<a class=tab href=\"/culture\" data-last=\"/culture/book\" aria-current=\"true\">文娱</a>"
     ));
 
-    // 值得读 opens with XABC's newest 分享, newest first, however well a 解说 is read; the rest
+    // 精选 opens with XABC's newest 分享, newest first, however well a 解说 is read; the rest
     // rank 分享 and 解说 together as 热读 does, unread ones following newest first.
     sqlx::query("UPDATE articles SET views = 100 WHERE id = $1")
         .bind(explained)
@@ -2010,7 +2072,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     assert!(article.contains(&format!("\"datePublished\":\"{}\"", published.to_rfc3339())));
     assert!(article.contains("<a class=tab href=\"/people\" aria-current=\"true\">时代</a>"));
     assert!(!article.contains("class=article-cover"));
-    // 值得读 ranks profiles with the rest.
+    // 精选 ranks profiles with the rest.
     let worth: Value =
         serde_json::from_str(&page(format!("{base}/articles/worth.json")).await).unwrap();
     assert!(worth["articles"].as_array().unwrap().iter().any(|article| {
@@ -2307,7 +2369,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
             .await
             .contains("/tracker</loc>")
     );
-    // 值得读 ranks 追踪 with the rest, but opens with XABC's 分享 alone.
+    // 精选 ranks 追踪 with the rest, but opens with XABC's 分享 alone.
     sqlx::query("UPDATE articles SET views = 80 WHERE id = $1")
         .bind(selloff)
         .execute(&state.pool)

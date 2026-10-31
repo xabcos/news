@@ -29,7 +29,7 @@ use std::{collections::HashMap, fmt::Write};
 use uuid::Uuid;
 
 const PAGE_SIZE: i64 = 24;
-/// How 热读 and 值得读 rank articles: by reads, halving with each week since publication.
+/// How 热读 and 精选 rank articles: by reads, halving with each week since publication.
 const HOT: &str = "ln(1 + a.views::float8) * power(2, -extract(epoch FROM NOW() - a.published_at)::float8 / 604800)";
 /// The most addresses one sitemap may list.
 const SITEMAP_SIZE: i64 = 50_000;
@@ -570,7 +570,7 @@ fn listed_page(headers: &HeaderMap, html: String, search: &Search) -> Response {
     response
 }
 
-/// One of 值得读's articles, as the home page script lays it out.
+/// One of 精选's articles, as the home page script lays it out.
 #[derive(FromRow, Serialize)]
 struct Worth {
     id: Uuid,
@@ -585,7 +585,7 @@ struct Worth {
     height: Option<i32>,
 }
 
-/// 值得读, which opens ALL: XABC's four newest 分享, newest first, then the four hottest of the
+/// 精选, which opens ALL: XABC's four newest 分享, newest first, then the four hottest of the
 /// last 30 days of 分享 and XABC's other lists together, ranked as 热读 is, each article once;
 /// while few are read, the newest fill the places.
 async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {

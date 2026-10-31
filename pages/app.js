@@ -59,7 +59,7 @@ const storage = (() => {
 
 const TEXT = {
   zh: {
-    locale: "zh-CN", articles: "分享", commentary: "解说", people: "时代", tracker: "追踪", reviews: "评测", worth: "值得读", today: "今天", top: "重要",
+    locale: "zh-CN", articles: "分享", commentary: "解说", people: "时代", tracker: "追踪", reviews: "评测", worth: "精选", today: "今天", top: "重要",
     fresh: "NEW", failed: "加载失败", retry: "重试",
     empty: "这一天还没有内容", latest: "查看最近有内容的一天",
     personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
@@ -71,7 +71,7 @@ const TEXT = {
     publish: "公开", unpublish: "取消公开",
   },
   en: {
-    locale: "en", articles: "𝑨𝒓𝒕𝒊𝒄𝒍𝒆𝒔", commentary: "𝑬𝒙𝒑𝒍𝒂𝒊𝒏𝒆𝒅", people: "𝑷𝒆𝒐𝒑𝒍𝒆", tracker: "𝑻𝒓𝒂𝒄𝒌𝒆𝒓", reviews: "𝑹𝒆𝒗𝒊𝒆𝒘𝒔", worth: "Worth reading", today: "Today", top: "Top",
+    locale: "en", articles: "𝑨𝒓𝒕𝒊𝒄𝒍𝒆𝒔", commentary: "𝑬𝒙𝒑𝒍𝒂𝒊𝒏𝒆𝒅", people: "𝑷𝒆𝒐𝒑𝒍𝒆", tracker: "𝑻𝒓𝒂𝒄𝒌𝒆𝒓", reviews: "𝑹𝒆𝒗𝒊𝒆𝒘𝒔", worth: "Featured", today: "Today", top: "Top",
     fresh: "NEW", failed: "Failed to load", retry: "Retry",
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
     personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
@@ -95,7 +95,7 @@ const state = {
   timeline: [],
   insight: null,
   insightEtag: null,
-  // 值得读's articles, kept so a refresh that brings the same ones leaves the cards alone.
+  // 精选's articles, kept so a refresh that brings the same ones leaves the cards alone.
   worth: [],
   personal: false,
   historyLoading: false,
@@ -967,7 +967,7 @@ function sourceList(sources) {
   return list;
 }
 
-// 值得读 opens ALL's latest day: XABC's newest 分享, then the hottest 分享, 解说, 时代, 追踪 and 评测,
+// 精选 opens ALL's latest day: XABC's newest 分享, then the hottest 分享, 解说, 时代, 追踪 and 评测,
 // ranked by the server as 热读.
 async function loadWorth() {
   if (!worthShown()) {

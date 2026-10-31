@@ -164,6 +164,16 @@ fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
 .writer-toolbar { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: .2rem; margin: .5rem 0; padding: .4rem 0; border-bottom: 1px solid var(--line); background: var(--bg); }
 .writer-toolbar button { min-width: 2.2rem; padding: .3rem .5rem; border: 0; border-radius: var(--radius-m); background: none; color: var(--muted); cursor: pointer; font: inherit; font-size: .9rem; }
 .writer-toolbar button:hover { background: var(--surface-soft); color: var(--text); }
+/* The article as it will read: in the editor's place on narrow screens, beside it on wide ones,
+   where write.js never sets .previewing; faded while it may be behind the editor. */
+.writer-preview, .writer-panes.previewing .writer-edit { display: none; }
+.writer-panes.previewing .writer-preview { display: block; }
+.writer-preview .stale { opacity: .45; }
+@media (min-width: 1180px) {
+  .writer { width: min(96rem, calc(100% - 3rem)); }
+  .writer-panes { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 3rem; align-items: start; }
+  .writer-preview { display: block; position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow: auto; padding-left: 3rem; border-left: 1px solid var(--line); }
+}
 @media (max-width: 700px) {
   .review-lists { grid-template-columns: 1fr; }
   .writer { width: calc(100% - 1.5rem); }

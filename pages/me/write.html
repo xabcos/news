@@ -10,7 +10,8 @@
   <title>𝑵𝒆𝒘𝒔 · 写文章</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
   <link rel="stylesheet" href="/styles.css?v=sides">
-  <link rel="stylesheet" href="/me/styles.css?v=lean">
+  <link rel="stylesheet" href="/me/styles.css?v=preview">
+  <link rel="stylesheet" href="/reads.css?v=20">
 </head>
 <body>
   <main class="workspace-shell writer">
@@ -22,34 +23,42 @@
         <button id="publishButton" class="button button-primary button-small" type="button" disabled>提交审核</button>
       </div>
     </header>
-    <div id="writer" class="hidden">
-      <p id="notice" class="writer-notice hidden" role="status"></p>
-      <div class="writer-cover">
-        <img id="coverImage" class="hidden" alt="封面">
-        <div class="inline">
-          <button id="coverButton" class="button button-quiet button-small" type="button">添加封面</button>
-          <button id="removeCover" class="button button-quiet button-small hidden" type="button">移除封面</button>
+    <div id="writer" class="writer-panes hidden">
+      <div class="writer-edit">
+        <p id="notice" class="writer-notice hidden" role="status"></p>
+        <div class="writer-cover">
+          <img id="coverImage" class="hidden" alt="封面">
+          <div class="inline">
+            <button id="coverButton" class="button button-quiet button-small" type="button">添加封面</button>
+            <button id="removeCover" class="button button-quiet button-small hidden" type="button">移除封面</button>
+          </div>
         </div>
+        <input id="title" class="writer-title" maxlength="100" placeholder="标题" aria-label="标题" autocomplete="off">
+        <div id="toolbar" class="writer-toolbar" role="toolbar" aria-label="格式">
+          <button type="button" data-line="## " title="小标题">H</button>
+          <button type="button" data-before="**" data-after="**" title="粗体（⌘/Ctrl + B）"><b>B</b></button>
+          <button type="button" data-before="*" data-after="*" title="斜体（⌘/Ctrl + I）"><i>I</i></button>
+          <button type="button" data-before="~~" data-after="~~" title="删除线"><s>S</s></button>
+          <button type="button" data-line="> " title="引用">“</button>
+          <button type="button" data-line="- " title="列表">•</button>
+          <button type="button" data-before="[" data-after="](https://)" title="链接（⌘/Ctrl + K）">🔗</button>
+          <button type="button" data-action="image" title="图片">🖼</button>
+          <button type="button" data-text="&#10;&#10;---&#10;&#10;" title="分割线">—</button>
+          <button type="button" data-before="`" data-after="`" title="代码">&lt;/&gt;</button>
+        </div>
+        <textarea id="body" class="writer-body" placeholder="写点有趣好玩的东西……" aria-label="正文"></textarea>
+        <p class="field-hint muted">正文用 Markdown，⌘/Ctrl + S 立刻保存草稿。粘贴、拖入或点 🖼 上传图片：原图上传，每张不超过 10 MB。</p>
+        <input id="fileInput" type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden>
       </div>
-      <input id="title" class="writer-title" maxlength="100" placeholder="标题" aria-label="标题" autocomplete="off">
-      <div id="toolbar" class="writer-toolbar" role="toolbar" aria-label="格式">
-        <button type="button" data-line="## " title="小标题">H</button>
-        <button type="button" data-before="**" data-after="**" title="粗体"><b>B</b></button>
-        <button type="button" data-before="*" data-after="*" title="斜体"><i>I</i></button>
-        <button type="button" data-before="~~" data-after="~~" title="删除线"><s>S</s></button>
-        <button type="button" data-line="> " title="引用">“</button>
-        <button type="button" data-line="- " title="列表">•</button>
-        <button type="button" data-before="[" data-after="](https://)" title="链接">🔗</button>
-        <button type="button" data-action="image" title="图片">🖼</button>
-        <button type="button" data-text="&#10;&#10;---&#10;&#10;" title="分割线">—</button>
-        <button type="button" data-before="`" data-after="`" title="代码">&lt;/&gt;</button>
-      </div>
-      <textarea id="body" class="writer-body" placeholder="写点有趣好玩的东西……" aria-label="正文"></textarea>
-      <p class="field-hint muted">正文用 Markdown。粘贴、拖入或点 🖼 上传图片：原图上传，每张不超过 10 MB。</p>
-      <input id="fileInput" type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden>
+      <section class="writer-preview" aria-label="预览">
+        <article class="read article">
+          <header class="read-heading"><div class="read-title"><h1 id="previewTitle"></h1></div></header>
+          <div id="previewBody" class="read-body"></div>
+        </article>
+      </section>
     </div>
   </main>
   <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
-  <script src="/me/write.js?v=1" type="module"></script>
+  <script src="/me/write.js?v=2" type="module"></script>
 </body>
 </html>

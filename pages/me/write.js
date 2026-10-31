@@ -18,6 +18,12 @@ let stopped = ""; // Why this page can't save any more; reloading picks up the l
 let ready = false;
 let busy = false; // A submit or an update is on its way, and the editor holds still until it lands.
 let pickingCover = false;
+// Wide screens show the article beside the editor; narrow ones put it in the editor's place.
+const wide = matchMedia("(min-width: 1180px)");
+let previewing = false;
+let previewTimer = 0;
+let previewed = null; // The body the preview shows, so the same one isn't asked for again.
+let rendering = null; // The render in flight, which a newer one cancels.
 
 void start();
 
@@ -41,6 +47,7 @@ async function start() {
     $("#writer").classList.remove("hidden");
     ready = true;
     update();
+    void render();
     (article ? body : title).focus();
   } catch (error) {
     if (error.status === 401) location.replace("/me/");
@@ -55,6 +62,7 @@ function update(note = "") {
     : status === "published" ? "更新" : status === "pending" ? "审核中" : admin ? "发布" : "提交审核";
   button.disabled = !ready || busy || Boolean(stopped) || (status !== "draft" && !dirty);
   $("#previewButton").disabled = !ready || busy;
+  $("#previewButton").textContent = previewing ? "写作" : "预览";
   $("#saveState").textContent = note || stopped || (dirty
     ? (status === "published" ? "有未更新的修改" : "未保存")
     : article ? `${statusText[status]} · 已保存` : "");
@@ -69,6 +77,33 @@ function changed() {
   clearTimeout(timer);
   if (article?.status !== "published") timer = setTimeout(() => void save().catch(reportError), 1500);
   update();
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(() => void render(), 400);
+}
+
+// The preview shows the body as the article page will, rendered by the server the page uses;
+// a new article shows only its title until its first save. Each render answers for the editor
+// as it is now, so the one before it is dropped; one that fails leaves the preview faded until
+// the next change.
+async function render() {
+  clearTimeout(previewTimer);
+  rendering?.abort();
+  $("#previewTitle").textContent = title.value;
+  if (!article || !(wide.matches || previewing) || body.value === previewed) return;
+  const text = body.value;
+  const request = rendering = new AbortController();
+  try {
+    const { html } = await api(`/api/articles/${article.id}/render`, {
+      method: "POST", body: { body: text }, signal: request.signal,
+    });
+    $("#previewBody").innerHTML = html;
+    $("#previewBody").classList.remove("stale");
+    previewed = text;
+  } catch (error) {
+    if (error.name === "AbortError") return;
+    previewed = null;
+    $("#previewBody").classList.add("stale");
+  }
 }
 
 // A save that matches nothing means the article changed elsewhere or the account did.
@@ -109,6 +144,7 @@ async function save() {
     } finally {
       saving = null;
       update();
+      void render();
     }
   })();
   return saving;
@@ -188,12 +224,13 @@ async function uploadNow(files, cover) {
       }
       update(`正在上传 ${index + 1}/${pictures.length}…`);
       const image = await send(file);
+      article.images[image.id] = image.url;
       if (cover) {
         article.cover = image.id;
         showCover();
         changed();
       } else {
-        insert(`\n![](image:${image.id})\n`);
+        type(`\n![](image:${image.id})\n`);
       }
     }
   } catch (error) {
@@ -222,10 +259,36 @@ async function send(file) {
   return data;
 }
 
-function insert(text) {
-  body.setRangeText(text, body.selectionStart, body.selectionEnd, "end");
+// Puts text over a range the way typing does, so ⌘Z takes it back; the input it raises is a
+// change like any other.
+function type(text, start = body.selectionStart, end = body.selectionEnd) {
   body.focus();
-  changed();
+  body.setSelectionRange(start, end);
+  if (!document.execCommand("insertText", false, text)) {
+    body.setRangeText(text, start, end, "end");
+    changed();
+  }
+}
+
+// A toolbar button's marks: a line's opening, a divider after the line, or marks around the
+// selection, which stays selected inside them.
+function format({ before = "", after = "", line, text }) {
+  const start = body.selectionStart;
+  const end = body.selectionEnd;
+  if (line !== undefined) {
+    const lineStart = body.value.lastIndexOf("\n", start - 1) + 1;
+    type(line, lineStart, lineStart);
+    body.setSelectionRange(start + line.length, end + line.length);
+  } else if (text !== undefined) {
+    // Blank lines around a divider keep the line above it text.
+    const lineEnd = body.value.indexOf("\n", end);
+    const at = lineEnd < 0 ? body.value.length : lineEnd;
+    type(text, at, at);
+  } else {
+    const selected = body.value.slice(start, end);
+    type(`${before}${selected}${after}`, start, end);
+    body.setSelectionRange(start + before.length, start + before.length + selected.length);
+  }
 }
 
 function showCover() {
@@ -250,7 +313,21 @@ $("#publishButton").addEventListener("click", async () => {
     hold(false);
   }
 });
-$("#previewButton").addEventListener("click", () => withBusy($("#previewButton"), null, preview));
+// Beside a wide editor the preview is always there, so the button opens the whole page; on a
+// narrow screen it swaps the editor and the preview.
+$("#previewButton").addEventListener("click", () => {
+  if (wide.matches) return void withBusy($("#previewButton"), null, preview);
+  previewing = !previewing;
+  $("#writer").classList.toggle("previewing", previewing);
+  update();
+  void render();
+});
+wide.addEventListener("change", () => {
+  previewing = false;
+  $("#writer").classList.remove("previewing");
+  update();
+  void render();
+});
 $("#coverButton").addEventListener("click", () => {
   if (busy) return;
   pickingCover = true;
@@ -276,30 +353,52 @@ $("#toolbar").addEventListener("click", (event) => {
     $("#fileInput").click();
     return;
   }
-  const { before = "", after = "", line, text } = control.dataset;
-  const start = body.selectionStart;
-  const end = body.selectionEnd;
-  body.focus();
-  if (line !== undefined) {
-    const lineStart = body.value.lastIndexOf("\n", start - 1) + 1;
-    body.setRangeText(line, lineStart, lineStart, "preserve");
-  } else if (text !== undefined) {
-    // A divider goes after the line, with blank lines around it so the line above stays text.
-    const lineEnd = body.value.indexOf("\n", end);
-    const at = lineEnd < 0 ? body.value.length : lineEnd;
-    body.setRangeText(text, at, at, "end");
-  } else {
-    // The marks go around the selection, which stays selected inside them.
-    body.setRangeText(`${before}${body.value.slice(start, end)}${after}`, start, end);
-    body.setSelectionRange(start + before.length, end + before.length);
-  }
-  changed();
+  format(control.dataset);
 });
+// ⌘ or Ctrl with B, I or K marks the body as the toolbar does; with S a draft saves at once.
+const shortcuts = {
+  b: { before: "**", after: "**" },
+  i: { before: "*", after: "*" },
+  k: { before: "[", after: "](https://)" },
+};
+document.addEventListener("keydown", (event) => {
+  if (event.isComposing || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
+  if (busy || !ready) return;
+  const key = event.key.toLowerCase();
+  if (key === "s") {
+    event.preventDefault();
+    if (article?.status === "published") toast("已公开的文章点「更新」保存修改");
+    else void save().catch(reportError);
+  } else if (shortcuts[key] && document.activeElement === body) {
+    event.preventDefault();
+    format(shortcuts[key]);
+  }
+});
+// Text copied out of the body carries where its pictures are stored, so it shows them wherever
+// it is pasted; pasted back, those addresses are the article's own pictures again.
+for (const kind of ["copy", "cut"]) {
+  body.addEventListener(kind, (event) => {
+    const text = body.value.slice(body.selectionStart, body.selectionEnd);
+    const copied = text.replace(/image:([0-9a-f-]{36})/g, (name, id) => article?.images[id] ?? name);
+    if (copied === text) return;
+    event.preventDefault();
+    event.clipboardData.setData("text/plain", copied);
+    if (kind === "cut" && !body.readOnly) type("");
+  });
+}
 body.addEventListener("paste", (event) => {
   const files = [...event.clipboardData.files];
-  if (!files.length) return;
+  if (files.length) {
+    event.preventDefault();
+    upload(files);
+    return;
+  }
+  const text = event.clipboardData.getData("text/plain");
+  const own = Object.fromEntries(Object.entries(article?.images ?? {}).map(([id, url]) => [url, id]));
+  const pasted = text.replace(/https:\/\/[^\s()<>"']+/g, (url) => own[url] ? `image:${own[url]}` : url);
+  if (pasted === text || body.readOnly) return;
   event.preventDefault();
-  upload(files);
+  type(pasted);
 });
 body.addEventListener("dragover", (event) => {
   if (event.dataTransfer.types.includes("Files")) event.preventDefault();

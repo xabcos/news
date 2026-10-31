@@ -302,7 +302,7 @@ p { margin-top: 0; }
 .day-divider h2 { margin: 0; font-size: 1rem; font-weight: 750; letter-spacing: .01em; }
 .day-block.day-heading-hidden > .group:first-of-type .group-title { margin-top: .5rem; }
 .day-block:not(:first-child) > .group:first-of-type .group-title { margin-top: .8rem; }
-/* 值得读 opens ALL: picture cards four to a row, two on phones. */
+/* 精选 opens ALL: picture cards four to a row, two on phones. */
 .worth-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .9rem; margin: 1rem 0 1.6rem; }
 .worth .group-title a { color: inherit; text-decoration: none; }
 .worth-card .item-meta { margin-top: .6rem; font-size: .75rem; }

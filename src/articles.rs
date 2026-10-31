@@ -1,7 +1,8 @@
 //! 分享: articles readers write in the workspace. Authors write under a pen name. An article is
 //! public once an administrator gives it a ❤️, and an author's edit takes it back to review.
 //! Pictures go to tmpfile as they were uploaded; their links appear only on public pages, and
-//! until then the author sees them through this server. A read counts once a day per browser,
+//! until then the author sees them through this server, the links reaching only the author's
+//! clipboard, in text copied out of the editor. A read counts once a day per browser,
 //! never the author's own. XABC, the site's own pen name, publishes one every hour (`xabc`).
 mod pages;
 pub(crate) mod xabc;
@@ -27,6 +28,7 @@ use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{FromRow, PgPool};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 /// Articles an author may start in a day, by the site's date.
@@ -104,6 +106,10 @@ pub(crate) fn router() -> Router<AppState> {
             post(upload).layer(DefaultBodyLimit::max(IMAGE_BYTES)),
         )
         .route("/api/articles/{id}/images/{image}", get(picture))
+        .route(
+            "/api/articles/{id}/render",
+            post(rendered).layer(DefaultBodyLimit::max(SAVE_BYTES)),
+        )
         .route("/api/articles/{id}/views", post(view))
         .route("/api/articles/views", get(views))
         .route("/api/admin/articles", get(queue))
@@ -191,11 +197,16 @@ struct Draft {
     views: i64,
     updated_at: DateTime<Utc>,
     published_at: Option<DateTime<Utc>>,
+    /// Where each of its pictures is stored, which text copied out of the editor carries; read
+    /// only when the editor opens it.
+    #[sqlx(skip)]
+    images: HashMap<Uuid, String>,
 }
 
 #[derive(FromRow, Serialize)]
 struct Uploaded {
     id: Uuid,
+    url: String,
     width: i32,
     height: i32,
 }
@@ -321,7 +332,16 @@ async fn edit(
     user: User,
     Path(id): Path<String>,
 ) -> Result<Json<Draft>> {
-    Ok(Json(owned(&state, &user, &id).await?))
+    let mut article = owned(&state, &user, &id).await?;
+    article.images = sqlx::query_as::<_, (Uuid, String)>(
+        "SELECT id, url FROM article_images WHERE article_id = $1",
+    )
+    .bind(article.id)
+    .fetch_all(&state.pool)
+    .await?
+    .into_iter()
+    .collect();
+    Ok(Json(article))
 }
 
 /// Saves the revision the editor holds. An author's edit takes a pending article back to being
@@ -464,7 +484,7 @@ async fn upload(
     };
     let image: Uploaded = sqlx::query_as(
         "INSERT INTO article_images (id, article_id, url, content_type, width, height, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, width, height",
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, url, width, height",
     )
     .bind(Uuid::new_v4())
     .bind(article)
@@ -476,6 +496,42 @@ async fn upload(
     .fetch_one(&state.pool)
     .await?;
     Ok((StatusCode::CREATED, Json(image)))
+}
+
+/// What the writing page shows beside the editor: the body it holds now, as the article page
+/// renders it, with the article's pictures through this server. Only its author or an
+/// administrator may ask.
+async fn rendered(
+    State(state): State<AppState>,
+    user: User,
+    Path(id): Path<String>,
+    ApiJson(text): ApiJson<Text>,
+) -> Result<Json<Value>> {
+    let article = owned(&state, &user, &id).await?;
+    let images: HashMap<Uuid, (i32, i32)> = sqlx::query_as::<_, (Uuid, i32, i32)>(
+        "SELECT id, width, height FROM article_images WHERE article_id = $1",
+    )
+    .bind(article.id)
+    .fetch_all(&state.pool)
+    .await?
+    .into_iter()
+    .map(|(image, width, height)| (image, (width, height)))
+    .collect();
+    let html = crate::site::markdown(Parser::new_ext(&text.body, MARKDOWN), |destination| {
+        let image = image_id(destination)?;
+        Some(crate::site::Picture {
+            src: format!("/api/articles/{}/images/{image}", article.id),
+            size: Some(*images.get(&image)?),
+        })
+    });
+    Ok(Json(json!({ "html": html })))
+}
+
+/// A body the writing page wants rendered.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Text {
+    body: String,
 }
 
 /// A picture of the author's own article, read through this server so its tmpfile link stays
