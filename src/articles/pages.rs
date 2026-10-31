@@ -724,20 +724,20 @@ struct Followed {
     nothing: (&'static str, &'static str),
 }
 
-/// 时代: XABC's profiles of the people this age talks about.
+/// 时代: XABC's profiles of the people and the companies of this age.
 const PROFILES: Followed = Followed {
     shelf: Shelf::People,
     path: PEOPLE,
     name: people_label,
     chrome: &PEOPLE_LIST,
     description: (
-        "这个时代最受关注的人物：他们是谁，做成了什么，现在怎样",
-        "The people of our time: who they are, what they did, where they stand now",
+        "这个时代的人物和企业：他们是谁，做成了什么，现在怎样",
+        "The people and companies of our time: who they are, what they did, where they stand now",
     ),
-    search: ("搜索人物和内容", "Search names and openings"),
-    first: ("第一篇人物正在写。", "The first profile is being written."),
+    search: ("搜索人物、企业和内容", "Search names and openings"),
+    first: ("第一篇文章正在写。", "The first profile is being written."),
     nothing: (
-        "没有找到相关人物，换个词试试。",
+        "没有找到相关的人物或企业，换个词试试。",
         "No profiles match these words. Try others.",
     ),
 };

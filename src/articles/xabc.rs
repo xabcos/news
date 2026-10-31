@@ -3,7 +3,7 @@
 //! sharing; the writing model picks one subject from both sets of finds, reads further where it
 //! needs to and writes it up its own way. For 文娱 · 解说, every four hours, it explains the work
 //! 影视 discusses most, or revises its explanation (`film`). For 时代, every hour, it
-//! profiles the person talked about most, or brings their profile up to date (`people`). For
+//! profiles a person or a company, or brings a profile up to date (`people`). For
 //! 追踪, every two hours, it follows the hottest event with something new, anew or in the
 //! article it already has (`tracker`).
 //! Articles go out at once under the pen name XABC. Their pictures come from the pages the
@@ -71,7 +71,7 @@ pub(super) enum Line {
     Share,
     /// A film or series explained for 文娱 · 解说, anew or revised.
     Film,
-    /// A person profiled for 时代, anew or brought up to date.
+    /// A person or a company profiled for 时代, anew or brought up to date.
     People,
     /// An event followed for 追踪, anew or brought up to date.
     Tracker,
@@ -114,7 +114,7 @@ impl Line {
     /// person and 追踪's event. The other lines' finds name nothing.
     fn subject(self) -> Option<&'static str> {
         match self {
-            Self::People => Some("person"),
+            Self::People => Some("name"),
             Self::Tracker => Some("event"),
             Self::Share | Self::Film => None,
         }
@@ -495,10 +495,10 @@ impl Scout {
                 "用 web_search 查维基百科等资料里的完整剧情与结局，以及创作背景、主创访谈和专业影评"
             }
             (Line::People, Self::X) => {
-                "用 x_search 看 X 上各种语言里此刻被大量讨论、转发和引用的人物，以及他们本人最近的发言，也用 web_search 查全网的新闻"
+                "用 x_search 看 X 上各种语言的讨论、本人和企业的发言，也用 web_search 查全网"
             }
             (Line::People, Self::Web) => {
-                "用 web_search 检索全球中英文网络最近的新闻、访谈、演讲、论文和发布"
+                "用 web_search 检索全球中英文网络的新闻、百科、官方介绍、访谈、演讲、论文、财报和行业榜单"
             }
             (Line::Tracker, Self::X) => {
                 "用 x_search 看 X 上各种语言里此刻被大量讨论、转发和引用的事件，以及当事方、调查者和权威媒体的最新发言，也用 web_search 查全网的新闻"
@@ -526,8 +526,9 @@ struct Find {
     sources: Vec<String>,
     pictures: Vec<String>,
     /// What the find is about, under the name its line gives it (`Line::subject`): for 时代 the
-    /// person by their English name, for 追踪 the event by its slug. Other finds name nothing.
-    #[serde(default, alias = "person", alias = "event")]
+    /// person or the company by its English name, for 追踪 the event by its slug. Other finds
+    /// name nothing.
+    #[serde(default, alias = "name", alias = "event")]
     subject: String,
 }
 
@@ -1213,11 +1214,11 @@ fn plain(text: &str) -> String {
     plain
 }
 
-/// What a 解说, a 时代 profile or a 追踪 article is about: a work by its key in 影视, a person or an
-/// event by theirs. Each has one article at most.
+/// What a 解说, a 时代 profile or a 追踪 article is about: a work by its key in 影视, a person,
+/// a company or an event by theirs. Each has one article at most.
 pub(super) enum Subject<'a> {
     Work(&'a str),
-    Person(&'a str),
+    Profile(&'a str),
     Event(&'a str),
 }
 
@@ -1232,7 +1233,7 @@ pub(super) async fn publish(
 ) -> Result<Uuid> {
     let (film, person, event) = match subject {
         Some(Subject::Work(key)) => (Some(key), None, None),
-        Some(Subject::Person(key)) => (None, Some(key), None),
+        Some(Subject::Profile(key)) => (None, Some(key), None),
         Some(Subject::Event(key)) => (None, None, Some(key)),
         None => (None, None, None),
     };

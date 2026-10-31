@@ -50,7 +50,7 @@ const MARKDOWN: Options = Options::ENABLE_STRIKETHROUGH.union(Options::ENABLE_TA
 
 /// Where 文娱 · 解说 lists XABC's articles on films and series, under Culture.
 const COMMENTARY: &str = "/culture/commentary";
-/// Where 时代 lists XABC's profiles of the people this age talks about.
+/// Where 时代 lists XABC's profiles of the people and the companies of this age.
 pub(crate) const PEOPLE: &str = "/people";
 /// Where 追踪 lists XABC's articles following the events the whole web talks about.
 pub(crate) const TRACKER: &str = "/tracker";

@@ -970,6 +970,8 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     let covers_fail = Arc::new(AtomicBool::new(false));
     // Whether 追踪's writer finds anything new for the article it brings up to date.
     let news = Arc::new(AtomicBool::new(true));
+    // Whether grok finds a photograph of a person or a company for 时代.
+    let sighting = Arc::new(AtomicBool::new(true));
     // Whether an administrator saves the Binance article while 追踪's scouts search.
     let saving = Arc::new(AtomicBool::new(false));
     let admin = sqlx::PgPool::connect_lazy(&database_url).unwrap();
@@ -1004,14 +1006,20 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         .route(
             "/v1/responses",
             post({
-                let (asked, failing, news, saving) =
-                    (asked.clone(), failing.clone(), news.clone(), saving.clone());
+                let (asked, failing, news, saving, sighting) = (
+                    asked.clone(),
+                    failing.clone(),
+                    news.clone(),
+                    saving.clone(),
+                    sighting.clone(),
+                );
                 move |Json(request): Json<Value>| {
-                    let (asked, failing, news, saving, admin, body) = (
+                    let (asked, failing, news, saving, sighting, admin, body) = (
                         asked.clone(),
                         failing.clone(),
                         news.clone(),
                         saving.clone(),
+                        sighting.clone(),
                         admin.clone(),
                         body.clone(),
                     );
@@ -1051,11 +1059,18 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                                 )),
                             );
                         }
-                        // 时代: grok names two people, the briefing model one of them.
+                        // 时代: in a round of people talked about now, grok names two people and
+                        // the briefing model one of them; a round of leaders names Ren Zhengfei,
+                        // and a round of companies Huawei.
                         let people = instructions.contains("「时代」");
                         if request["text"]["format"]["name"] == "finds" && people {
+                            let input = request["input"][0]["content"].as_str().unwrap_or_default();
                             let grok = request["tools"].as_array().unwrap().len() == 2;
-                            let named = if grok {
+                            let named = if input.contains("有头有脸") {
+                                vec!["Lisa Su", if grok { "Ren Zhengfei" } else { "ren zhengfei" }]
+                            } else if input.contains("举足轻重的企业") {
+                                vec![if grok { "Huawei" } else { "huawei" }]
+                            } else if grok {
                                 vec!["Jensen Huang", "Lisa Su"]
                             } else {
                                 vec!["lisa su"]
@@ -1065,7 +1080,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                                 .map(|person| json!({
                                     "title": format!("{person} 的近况"), "why": "大家都在谈",
                                     "points": "发布了新芯片", "sources": ["https://people.example/news"],
-                                    "pictures": [], "person": person,
+                                    "pictures": [], "name": person,
                                 }))
                                 .collect();
                             return (
@@ -1077,8 +1092,9 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                             let material = request["input"][0]["content"].as_str().unwrap_or_default();
                             let name = material
                                 .lines()
-                                .find_map(|line| line.strip_prefix("人物："))
+                                .find_map(|line| line.strip_prefix("人物：").or_else(|| line.strip_prefix("企业：")))
                                 .unwrap_or_default();
+                            let kind = if instructions.contains("栏目写企业") { "企业" } else { "人物" };
                             let revising = instructions.contains("这次是更新");
                             let (title, body) = if revising {
                                 (
@@ -1087,7 +1103,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                                 )
                             } else {
                                 (
-                                    format!("{name} 的人物介绍"),
+                                    format!("{name} 的{kind}介绍"),
                                     format!("{}\n\n![](img:1)\n\n看[报道](https://people.example/news)。", "一个人的经历，".repeat(80)),
                                 )
                             };
@@ -1101,6 +1117,19 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                                     }),
                                     "https://cited.example/people",
                                 )),
+                            );
+                        }
+                        // grok looks for a photograph of a person or a company, and finds one
+                        // while it may.
+                        if request["text"]["format"]["name"] == "photo" {
+                            let (image, page) = if sighting.load(Ordering::SeqCst) {
+                                ("https://media.example/files/scene.jpg", "https://media.example/news/photo")
+                            } else {
+                                ("", "")
+                            };
+                            return (
+                                StatusCode::OK,
+                                Json(reply(json!({ "image": image, "page": page }), "https://cited.example/photo")),
                             );
                         }
                         // 追踪: grok names two events, the first by a slug in other words, and
@@ -1727,33 +1756,84 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         ]
     );
 
+    // 时代's round goes by the hour it starts, an hour after `since`: at midnight it looks for
+    // people talked about now, at one for leaders, at five for a company. The rounds start in
+    // two days, so nothing published in the test is within an interval of them.
+    let round = |hour: u32| {
+        let zone = state.config.timezone;
+        let start = (Utc::now().with_timezone(&zone).date_naive() + chrono::Days::new(2))
+            .and_hms_opt(hour, 0, 0)
+            .unwrap()
+            .and_local_timezone(zone)
+            .earliest()
+            .unwrap();
+        start.to_utc() - chrono::Duration::hours(1)
+    };
+    let (hot, leaders, company) = (round(0), round(1), round(5));
+    let photo_asked = || {
+        asked_log
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|request| request["text"]["format"]["name"] == "photo")
+            .cloned()
+            .unwrap()
+    };
+
     // 时代: the person both scouts name goes first, and their profile shows no drawn picture.
+    // Wikipedia has no portrait of her, so her cover is the photograph grok found and looked at.
     let drawn_before = drawings_log.lock().unwrap().len();
-    let profile = xabc::write(&state, xabc::Line::People, Utc::now())
+    let profile = xabc::write(&state, xabc::Line::People, hot)
         .await
         .unwrap()
         .unwrap();
-    let (person, title, cover): (Option<String>, String, Option<Uuid>) =
-        sqlx::query_as("SELECT person, title, cover FROM articles WHERE id = $1")
-            .bind(profile)
-            .fetch_one(&state.pool)
-            .await
-            .unwrap();
+    let (person, title, cover): (Option<String>, String, Option<i32>) = sqlx::query_as(
+        "SELECT a.person, a.title, i.width FROM articles a
+         LEFT JOIN article_images i ON i.id = a.cover WHERE a.id = $1",
+    )
+    .bind(profile)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
     assert_eq!(
         (person.as_deref(), title.as_str(), cover),
-        (Some("lisa-su"), "Lisa Su 的人物介绍", None)
+        (Some("lisa-su"), "Lisa Su 的人物介绍", Some(640))
     );
     assert_eq!(drawings_log.lock().unwrap().len(), drawn_before);
+    let photo = photo_asked();
+    assert!(
+        photo["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("人物长文找一张封面照片")
+    );
+    assert_eq!(
+        photo["input"][0]["content"],
+        "Lisa Su\n文章标题：Lisa Su 的人物介绍"
+    );
+    assert_eq!(photo["tools"][0]["enable_image_understanding"], true);
     let material = writing(&asked_log.lock().unwrap());
     assert!(material.contains("人物：Lisa Su\n线索：\n1.【X 与全网】Lisa Su 的近况"));
     assert!(material.contains("2.【全网】lisa su 的近况"));
 
     // Then the one grok named first; the scouts hear who was profiled lately. His article on
-    // Wikipedia leads with a photograph, so that is his cover, though his body shows no picture.
-    let other = xabc::write(&state, xabc::Line::People, Utc::now())
+    // Wikipedia leads with a photograph, so that is his cover, though his body shows no picture,
+    // and grok isn't asked for one.
+    let photos = || {
+        asked_log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request["text"]["format"]["name"] == "photo")
+            .count()
+    };
+    let photos_before = photos();
+    let other = xabc::write(&state, xabc::Line::People, hot)
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(photos(), photos_before);
     let (person, body, portrait): (Option<String>, String, Option<i32>) = sqlx::query_as(
         "SELECT a.person, a.body, i.width FROM articles a
          LEFT JOIN article_images i ON i.id = a.cover WHERE a.id = $1",
@@ -1777,10 +1857,12 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         .as_str()
         .unwrap()
         .to_owned();
-    assert!(searched.contains("这些人物最近写过，这次不要选：\n- Lisa Su 的人物介绍\n"));
+    assert!(searched.contains("这一轮找此刻最受关注的人物"));
+    assert!(searched.contains("这些人物最近写过，这次不要选：lisa-su\n"));
 
     // Days later the first is brought up to date; a profile an administrator took back waits,
-    // and then nobody is left. The cover follows the photograph the profile opens with now.
+    // and then nobody is left. With no portrait on Wikipedia and no photograph grok finds, the
+    // cover follows the picture the profile opens with now.
     let (photo, old) = (Uuid::new_v4(), Uuid::new_v4());
     for (image, name) in [(photo, "lisa"), (old, "old")] {
         sqlx::query(
@@ -1809,12 +1891,12 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     .execute(&state.pool)
     .await
     .unwrap();
+    sighting.store(false, Ordering::SeqCst);
     assert_eq!(
-        xabc::write(&state, xabc::Line::People, Utc::now())
-            .await
-            .unwrap(),
+        xabc::write(&state, xabc::Line::People, hot).await.unwrap(),
         Some(profile)
     );
+    sighting.store(true, Ordering::SeqCst);
     let (title, revision, cover): (String, i32, Option<Uuid>) =
         sqlx::query_as("SELECT title, revision, cover FROM articles WHERE id = $1")
             .bind(profile)
@@ -1829,7 +1911,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     assert!(material.contains("现有全文：\n标题：Lisa Su 的人物介绍\n\n一个人的经历，"));
     assert!(material.contains("他最近受关注的线索：\n1.【X 与全网】Lisa Su 的近况"));
     assert!(matches!(
-        xabc::write(&state, xabc::Line::People, Utc::now()).await,
+        xabc::write(&state, xabc::Line::People, hot).await,
         Err(AppError::Internal(message)) if message == "两路检索都没有找到可写的人物"
     ));
     // A profile taken back while it was being rewritten keeps its words.
@@ -1912,9 +1994,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     .await
     .unwrap();
     assert_eq!(
-        xabc::write(&state, xabc::Line::People, Utc::now())
-            .await
-            .unwrap(),
+        xabc::write(&state, xabc::Line::People, hot).await.unwrap(),
         Some(other)
     );
     let after: Option<Uuid> = sqlx::query_scalar("SELECT cover FROM articles WHERE id = $1")
@@ -1923,6 +2003,87 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         .await
         .unwrap();
     assert!(before.is_some() && after.is_some() && after != before);
+
+    let searched = || {
+        asked_log
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|request| request["text"]["format"]["name"] == "finds")
+            .unwrap()["input"][0]["content"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+
+    // A round of leaders passes over every person profiled, however long ago; a round of
+    // companies writes up a company under a key of its own, shown by a photograph grok looked
+    // at, and only once.
+    sqlx::query(
+        "UPDATE articles SET updated_at = now() - INTERVAL '4 days' WHERE person IS NOT NULL",
+    )
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    let leader = xabc::write(&state, xabc::Line::People, leaders)
+        .await
+        .unwrap()
+        .unwrap();
+    let person: Option<String> = sqlx::query_scalar("SELECT person FROM articles WHERE id = $1")
+        .bind(leader)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(person.as_deref(), Some("ren-zhengfei"));
+    let heard = searched();
+    assert!(heard.contains("这一轮不看热度，找各行各业有头有脸的人物"));
+    let passed = heard
+        .lines()
+        .find_map(|line| line.strip_prefix("这些人物已经写过，这次不要选："))
+        .unwrap();
+    assert!(
+        passed.contains("lisa-su") && passed.contains("jensen-huang"),
+        "{passed}"
+    );
+    let firm = xabc::write(&state, xabc::Line::People, company)
+        .await
+        .unwrap()
+        .unwrap();
+    let (person, title, cover): (Option<String>, String, Option<i32>) = sqlx::query_as(
+        "SELECT a.person, a.title, i.width FROM articles a
+         LEFT JOIN article_images i ON i.id = a.cover WHERE a.id = $1",
+    )
+    .bind(firm)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (person.as_deref(), title.as_str(), cover),
+        (Some("company:huawei"), "Huawei 的企业介绍", Some(640))
+    );
+    assert!(searched().contains("这一轮找各行各业举足轻重的企业"));
+    assert!(
+        photo_asked()["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("企业长文找一张封面照片")
+    );
+    sqlx::query("UPDATE articles SET updated_at = now() - INTERVAL '4 days' WHERE id = $1")
+        .bind(firm)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        xabc::write(&state, xabc::Line::People, company).await,
+        Err(AppError::Internal(message)) if message == "两路检索都没有找到可写的企业"
+    ));
+    assert!(searched().contains("这些企业已经写过，这次不要选：huawei\n"));
+    assert!(
+        page(format!("{base}/people"))
+            .await
+            .contains("Huawei 的企业介绍")
+    );
 
     // 追踪: the event both scouts name goes first, under the key its slug makes, in an article that
     // shows no drawn picture. Showing none at all, it takes for the lists the picture the finds'
@@ -1963,18 +2124,6 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         .unwrap();
     assert_eq!(event.as_deref(), Some("ai-capex-selloff-2026-10"));
     assert_eq!(tracker(state.clone()).await.unwrap(), None);
-    let searched = || {
-        asked_log
-            .lock()
-            .unwrap()
-            .iter()
-            .rev()
-            .find(|request| request["text"]["format"]["name"] == "finds")
-            .unwrap()["input"][0]["content"]
-            .as_str()
-            .unwrap()
-            .to_owned()
-    };
     let heard = searched();
     assert!(heard.contains("正在追踪的事件（标识｜标题｜上次更新）：\n- ai-capex-selloff-2026-10｜ai-capex-selloff-2026-10 的追踪｜"));
     assert!(heard.contains("\n- binance-hack-2026-10｜binance-hack-2026-10 的追踪｜"));
