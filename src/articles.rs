@@ -52,6 +52,8 @@ const MARKDOWN: Options = Options::ENABLE_STRIKETHROUGH.union(Options::ENABLE_TA
 const COMMENTARY: &str = "/culture/commentary";
 /// Where 时代 lists XABC's profiles of the people this age talks about.
 pub(crate) const PEOPLE: &str = "/people";
+/// Where 追踪 lists XABC's articles following the events the whole web talks about.
+pub(crate) const TRACKER: &str = "/tracker";
 
 /// 文娱 · 解说's name, in the page's language.
 pub(crate) fn commentary_label(en: bool) -> &'static str {
@@ -61,6 +63,11 @@ pub(crate) fn commentary_label(en: bool) -> &'static str {
 /// 时代's name, in the page's language.
 pub(crate) fn people_label(en: bool) -> &'static str {
     crate::site::choose(en, "时代", "𝑷𝒆𝒐𝒑𝒍𝒆")
+}
+
+/// 追踪's name, in the page's language.
+pub(crate) fn tracker_label(en: bool) -> &'static str {
+    crate::site::choose(en, "追踪", "𝑻𝒓𝒂𝒄𝒌𝒆𝒓")
 }
 
 /// The section's name, in the page's language.
@@ -112,12 +119,14 @@ struct Listed {
     film: bool,
     /// Whether it is a 时代 profile.
     person: bool,
+    /// Whether it follows an event for 追踪.
+    event: bool,
 }
 
-const LISTED: &str = "SELECT a.id, a.title, w.name AS author, a.status, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person
+const LISTED: &str = "SELECT a.id, a.title, w.name AS author, a.status, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person, a.event IS NOT NULL AS event
     FROM articles a JOIN authors w ON w.user_id = a.author_id JOIN users u ON u.id = a.author_id";
 
-/// A search of 分享, 解说 or 时代: its words, as the page shows them, and the patterns each of
+/// A search of 分享, 解说, 时代 or 追踪: its words, as the page shows them, and the patterns each of
 /// which an article's title or opening must hold.
 struct Search {
     words: String,

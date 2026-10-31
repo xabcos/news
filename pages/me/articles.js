@@ -102,7 +102,7 @@ export function createArticles(session) {
     };
     const finding = Boolean(find.day || find.q);
     const recent = section(finding ? `找到 ${published.length} 篇` : "最近公开", published, finding ? "没有找到。" : "还没有公开的文章。",
-      (article) => `${article.film ? "解说" : article.person ? "时代" : "分享"} · 阅读 ${article.views} · 公开于 ${formatTime(article.published_at, session.timezone)}`);
+      (article) => `${article.film ? "解说" : article.person ? "时代" : article.event ? "追踪" : "分享"} · 阅读 ${article.views} · 公开于 ${formatTime(article.published_at, session.timezone)}`);
     recent.querySelector("h3").after(finder());
     lists.replaceChildren(
       section(`待审（${pending.length}）`, pending, "没有等待审核的文章。", (article) => `更新于 ${formatTime(article.updated_at, session.timezone)}`),

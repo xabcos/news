@@ -136,7 +136,8 @@ fn an_article_renders_only_its_own_pictures_and_no_markup() {
 
 /// A local tmpfile over HTTPS: uploads get a link under its origin, and every file is `picture`.
 /// While the returned switch is on, it refuses uploads. The same server plays English Wikipedia,
-/// where only Jensen Huang's article leads with a photograph.
+/// where only Jensen Huang's article leads with a photograph, and news pages under `/news/`, each
+/// sharing the scene photograph as its picture, a file large enough to show.
 async fn tmpfile(picture: Vec<u8>) -> (String, reqwest::Client, Arc<AtomicBool>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_rustls::{TlsAcceptor, rustls};
@@ -225,6 +226,11 @@ async fn tmpfile(picture: Vec<u8>) -> (String, reqwest::Client, Arc<AtomicBool>)
                     }
                     let reply = json!({ "query": { "pages": [page] } });
                     ("application/json", reply.to_string().into_bytes())
+                } else if path == "/files/scene.jpg" {
+                    ("image/jpeg", jpeg(640, 400))
+                } else if path.starts_with("/news/") {
+                    let page = "<html><head><meta property=\"og:image\" content=\"https://media.example/files/scene.jpg\"></head></html>";
+                    ("text/html", page.as_bytes().to_vec())
                 } else if path == "/upload" {
                     let link = json!({
                         "direct_link": format!("https://media.example/files/{}.jpg", Uuid::new_v4()),
@@ -940,12 +946,13 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
     assert_eq!(counts().await, (tomorrow, 0, 1));
 }
 
-/// XABC's two lines from start to finish against stand-ins for the AI service and tmpfile: a 分享
+/// XABC's lines from start to finish against stand-ins for the AI service and tmpfile: a 分享
 /// article's searches, writing, drawn pictures, publication and pages; then 解说 explaining a
-/// work 影视 discusses and then another, revising the first, and listing them under Culture.
+/// work 影视 discusses and then another, revising the first, and listing them under Culture;
+/// then 时代's profiles and 追踪's events, written, brought up to date and listed.
 #[tokio::test]
 #[ignore = "requires NEWS_XABC_TEST_DATABASE_URL and local test configuration"]
-async fn postgres_xabc_shares_explains_films_and_profiles_people() {
+async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     use crate::config::Config;
     use axum::{http::StatusCode, routing::post};
     use base64::Engine;
@@ -961,6 +968,11 @@ async fn postgres_xabc_shares_explains_films_and_profiles_people() {
     let failing = Arc::new(AtomicU8::new(1));
     // Whether the image model fails to draw covers.
     let covers_fail = Arc::new(AtomicBool::new(false));
+    // Whether 追踪's writer finds anything new for the article it brings up to date.
+    let news = Arc::new(AtomicBool::new(true));
+    // Whether an administrator saves the Binance article while 追踪's scouts search.
+    let saving = Arc::new(AtomicBool::new(false));
+    let admin = sqlx::PgPool::connect_lazy(&database_url).unwrap();
     let mut seed = 0x9e37_79b9_u32;
     let noise = image::RgbImage::from_fn(640, 400, |_, _| {
         seed ^= seed << 13;
@@ -992,9 +1004,17 @@ async fn postgres_xabc_shares_explains_films_and_profiles_people() {
         .route(
             "/v1/responses",
             post({
-                let (asked, failing) = (asked.clone(), failing.clone());
+                let (asked, failing, news, saving) =
+                    (asked.clone(), failing.clone(), news.clone(), saving.clone());
                 move |Json(request): Json<Value>| {
-                    let (asked, failing, body) = (asked.clone(), failing.clone(), body.clone());
+                    let (asked, failing, news, saving, admin, body) = (
+                        asked.clone(),
+                        failing.clone(),
+                        news.clone(),
+                        saving.clone(),
+                        admin.clone(),
+                        body.clone(),
+                    );
                     async move {
                         asked.lock().unwrap().push(request.clone());
                         let instructions = request["instructions"].as_str().unwrap_or_default();
@@ -1080,6 +1100,69 @@ async fn postgres_xabc_shares_explains_films_and_profiles_people() {
                                         "cover": "封面插画",
                                     }),
                                     "https://cited.example/people",
+                                )),
+                            );
+                        }
+                        // 追踪: grok names two events, the first by a slug in other words, and
+                        // the briefing model the first.
+                        let tracker = instructions.contains("「追踪」");
+                        if request["text"]["format"]["name"] == "finds" && tracker {
+                            if saving.load(Ordering::SeqCst) {
+                                sqlx::query("UPDATE articles SET updated_at = now() WHERE event = 'binance-hack-2026-10'")
+                                    .execute(&admin)
+                                    .await
+                                    .unwrap();
+                            }
+                            if failing.load(Ordering::SeqCst) == 2 {
+                                return (StatusCode::BAD_REQUEST, Json(json!({})));
+                            }
+                            let grok = request["tools"].as_array().unwrap().len() == 2;
+                            let named = if grok {
+                                vec![("Binance hack 2026-10", "被盗约 63 亿美元"), ("ai-capex-selloff-2026-10", "科技股下跌")]
+                            } else {
+                                vec![("binance-hack-2026-10", "币安称全额赔付")]
+                            };
+                            let finds: Vec<Value> = named
+                                .into_iter()
+                                .map(|(event, points)| json!({
+                                    "title": format!("{event} 的进展"), "why": "全网都在谈",
+                                    "points": points, "sources": ["https://events.example/news"],
+                                    "pictures": ["https://media.example/news/scene"], "event": event,
+                                }))
+                                .collect();
+                            return (
+                                StatusCode::OK,
+                                Json(reply(json!({ "finds": finds }), "https://cited.example/events")),
+                            );
+                        }
+                        if request["text"]["format"]["name"] == "article" && tracker {
+                            let material = request["input"][0]["content"].as_str().unwrap_or_default();
+                            let event = material
+                                .lines()
+                                .find_map(|line| line.strip_prefix("事件："))
+                                .unwrap_or_default();
+                            let (title, body) = if !instructions.contains("这次是更新") {
+                                (
+                                    format!("{event} 的追踪"),
+                                    format!("{}\n\n![](img:1)\n\n看[报道](https://events.example/news)。", "事情的经过，".repeat(80)),
+                                )
+                            } else if news.load(Ordering::SeqCst) {
+                                (
+                                    format!("{event} 的追踪（更新）"),
+                                    format!("{}\n\n![](keep:1)\n\n![](img:1)\n\n最新进展。", "更新后的追踪，".repeat(80)),
+                                )
+                            } else {
+                                (format!("{event} 的追踪"), String::new())
+                            };
+                            return (
+                                StatusCode::OK,
+                                Json(reply(
+                                    json!({
+                                        "title": title, "body": body,
+                                        "pictures": [{ "page": "", "prompt": "现场", "caption": "现场" }],
+                                        "cover": "封面插画",
+                                    }),
+                                    "https://cited.example/events",
                                 )),
                             );
                         }
@@ -1174,7 +1257,10 @@ async fn postgres_xabc_shares_explains_films_and_profiles_people() {
     // The migration made XABC's account, which takes the pen name before any reader can.
     let author = xabc::author(&state).await.unwrap();
     let since = Utc::now() - chrono::Duration::minutes(1);
-    let id = xabc::write(&state, xabc::Line::Share, since).await.unwrap();
+    let id = xabc::write(&state, xabc::Line::Share, since)
+        .await
+        .unwrap()
+        .unwrap();
 
     let (title, body, cover, status, name): (String, String, Option<Uuid>, String, String) =
         sqlx::query_as(
@@ -1414,6 +1500,7 @@ async fn postgres_xabc_shares_explains_films_and_profiles_people() {
     story(entry, "review", "2 days").await;
     let explained = xabc::write(&state, xabc::Line::Film, Utc::now())
         .await
+        .unwrap()
         .unwrap();
     let (film, title, body, cover, revision): (Option<String>, String, String, Option<Uuid>, i32) =
         sqlx::query_as("SELECT film, title, body, cover, revision FROM articles WHERE id = $1")
@@ -1476,6 +1563,7 @@ async fn postgres_xabc_shares_explains_films_and_profiles_people() {
     covers_fail.store(true, Ordering::SeqCst);
     let second = xabc::write(&state, xabc::Line::Film, Utc::now())
         .await
+        .unwrap()
         .unwrap();
     covers_fail.store(false, Ordering::SeqCst);
     let (film, body, standing): (Option<String>, String, Option<Uuid>) =
@@ -1526,6 +1614,7 @@ async fn postgres_xabc_shares_explains_films_and_profiles_people() {
     ));
     let loudest = xabc::write(&state, xabc::Line::Film, Utc::now())
         .await
+        .unwrap()
         .unwrap();
     let film: Option<String> = sqlx::query_scalar("SELECT film FROM articles WHERE id = $1")
         .bind(loudest)
@@ -1542,7 +1631,7 @@ async fn postgres_xabc_shares_explains_films_and_profiles_people() {
         xabc::write(&state, xabc::Line::Film, Utc::now())
             .await
             .unwrap(),
-        explained
+        Some(explained)
     );
     assert!(xabc::last(&state, xabc::Line::Film).await.unwrap().unwrap() > last);
     let material = writing(&asked_log.lock().unwrap());
@@ -1642,6 +1731,7 @@ async fn postgres_xabc_shares_explains_films_and_profiles_people() {
     let drawn_before = drawings_log.lock().unwrap().len();
     let profile = xabc::write(&state, xabc::Line::People, Utc::now())
         .await
+        .unwrap()
         .unwrap();
     let (person, title, cover): (Option<String>, String, Option<Uuid>) =
         sqlx::query_as("SELECT person, title, cover FROM articles WHERE id = $1")
@@ -1662,6 +1752,7 @@ async fn postgres_xabc_shares_explains_films_and_profiles_people() {
     // Wikipedia leads with a photograph, so that is his cover, though his body shows no picture.
     let other = xabc::write(&state, xabc::Line::People, Utc::now())
         .await
+        .unwrap()
         .unwrap();
     let (person, body, portrait): (Option<String>, String, Option<i32>) = sqlx::query_as(
         "SELECT a.person, a.body, i.width FROM articles a
@@ -1722,7 +1813,7 @@ async fn postgres_xabc_shares_explains_films_and_profiles_people() {
         xabc::write(&state, xabc::Line::People, Utc::now())
             .await
             .unwrap(),
-        profile
+        Some(profile)
     );
     let (title, revision, cover): (String, i32, Option<Uuid>) =
         sqlx::query_as("SELECT title, revision, cover FROM articles WHERE id = $1")
@@ -1824,7 +1915,7 @@ async fn postgres_xabc_shares_explains_films_and_profiles_people() {
         xabc::write(&state, xabc::Line::People, Utc::now())
             .await
             .unwrap(),
-        other
+        Some(other)
     );
     let after: Option<Uuid> = sqlx::query_scalar("SELECT cover FROM articles WHERE id = $1")
         .bind(other)
@@ -1832,4 +1923,249 @@ async fn postgres_xabc_shares_explains_films_and_profiles_people() {
         .await
         .unwrap();
     assert!(before.is_some() && after.is_some() && after != before);
+
+    // 追踪: the event both scouts name goes first, under the key its slug makes, in an article that
+    // shows no drawn picture. Showing none at all, it takes for the lists the picture the finds'
+    // page shares.
+    let tracker =
+        |state: AppState| async move { xabc::write(&state, xabc::Line::Tracker, Utc::now()).await };
+    let drawn_before = drawings_log.lock().unwrap().len();
+    let followed = tracker(state.clone()).await.unwrap().unwrap();
+    let (event, title, body, cover): (Option<String>, String, String, Option<String>) =
+        sqlx::query_as(
+            "SELECT a.event, a.title, a.body, i.url FROM articles a
+             LEFT JOIN article_images i ON i.id = a.cover WHERE a.id = $1",
+        )
+        .bind(followed)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        (event.as_deref(), title.as_str()),
+        (Some("binance-hack-2026-10"), "binance-hack-2026-10 的追踪")
+    );
+    assert!(cover.is_some() && !body.contains("](image:"), "{body}");
+    assert_eq!(drawings_log.lock().unwrap().len(), drawn_before);
+    let material = writing(&asked_log.lock().unwrap());
+    assert!(
+        material.contains(
+            "事件：binance-hack-2026-10\n线索：\n1.【X 与全网】Binance hack 2026-10 的进展"
+        )
+    );
+    assert!(material.contains("2.【全网】binance-hack-2026-10 的进展"));
+    // Then the other one grok named, while the first waits; then neither may be written about,
+    // which is no failure. The scouts hear of the events followed by their keys.
+    let selloff = tracker(state.clone()).await.unwrap().unwrap();
+    let event: Option<String> = sqlx::query_scalar("SELECT event FROM articles WHERE id = $1")
+        .bind(selloff)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(event.as_deref(), Some("ai-capex-selloff-2026-10"));
+    assert_eq!(tracker(state.clone()).await.unwrap(), None);
+    let searched = || {
+        asked_log
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|request| request["text"]["format"]["name"] == "finds")
+            .unwrap()["input"][0]["content"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let heard = searched();
+    assert!(heard.contains("正在追踪的事件（标识｜标题｜上次更新）：\n- ai-capex-selloff-2026-10｜ai-capex-selloff-2026-10 的追踪｜"));
+    assert!(heard.contains("\n- binance-hack-2026-10｜binance-hack-2026-10 的追踪｜"));
+    // Both searches failing is a failure.
+    failing.store(2, Ordering::SeqCst);
+    assert!(matches!(
+        tracker(state.clone()).await,
+        Err(AppError::Internal(message)) if message == "两路检索都失败了"
+    ));
+    failing.store(0, Ordering::SeqCst);
+
+    // Saved by an administrator while the scouts search, an article waits like one just brought
+    // up to date.
+    sqlx::query("UPDATE articles SET updated_at = now() - INTERVAL '7 hours' WHERE id = $1")
+        .bind(followed)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    saving.store(true, Ordering::SeqCst);
+    assert_eq!(tracker(state.clone()).await.unwrap(), None);
+    saving.store(false, Ordering::SeqCst);
+
+    // Hours later the first is brought up to date: its figure stays, and its cover is the
+    // picture it opens with now.
+    let scene = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO article_images (id, article_id, url, content_type, width, height, expires_at)
+         VALUES ($1, $2, 'https://media.example/files/scene.jpg', 'image/jpeg', 800, 600,
+                 now() + INTERVAL '1 day')",
+    )
+    .bind(scene)
+    .bind(followed)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    let figure = format!("![现场](image:{scene})\n*现场（例）*");
+    sqlx::query(
+        "UPDATE articles SET updated_at = now() - INTERVAL '7 hours', body = $2 || body
+         WHERE id = $1",
+    )
+    .bind(followed)
+    .bind(format!("{figure}\n\n"))
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(tracker(state.clone()).await.unwrap(), Some(followed));
+    let (title, body, revision, cover): (String, String, i32, Option<Uuid>) =
+        sqlx::query_as("SELECT title, body, revision, cover FROM articles WHERE id = $1")
+            .bind(followed)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (title.as_str(), revision, cover),
+        ("binance-hack-2026-10 的追踪（更新）", 2, Some(scene))
+    );
+    assert!(body.contains(&figure), "{body}");
+    let material = writing(&asked_log.lock().unwrap());
+    assert!(material.contains("这篇追踪上次更新于 "));
+    assert!(
+        material.contains(
+            "现有全文：\n标题：binance-hack-2026-10 的追踪\n\n![](keep:1)\n\n事情的经过，"
+        )
+    );
+    assert!(material.contains("最新的线索：\n1.【X 与全网】Binance hack 2026-10 的进展"));
+
+    // An event whose article was taken back stays out, though both scouts name it; they hear it
+    // is no longer followed.
+    sqlx::query(
+        "UPDATE articles SET updated_at = now() - INTERVAL '7 hours',
+           status = CASE WHEN id = $1 THEN 'pending' ELSE status END
+         WHERE event IS NOT NULL",
+    )
+    .bind(followed)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(tracker(state.clone()).await.unwrap(), Some(selloff));
+    assert!(searched().contains(
+        "不再追踪的事件（标识｜标题）：\n- binance-hack-2026-10｜binance-hack-2026-10 的追踪（更新）\n"
+    ));
+
+    // Back again, it has nothing new to take: the article stays as it was, and the event waits
+    // as if brought up to date, so the other one goes next.
+    sqlx::query(
+        "UPDATE articles SET status = 'published', updated_at = now() - INTERVAL '7 hours'
+         WHERE event IS NOT NULL",
+    )
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    let standing = || {
+        let state = state.clone();
+        async move {
+            sqlx::query_as::<_, (i32, DateTime<Utc>)>(
+                "SELECT revision, updated_at FROM articles WHERE id = $1",
+            )
+            .bind(followed)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap()
+        }
+    };
+    let before = standing().await;
+    news.store(false, Ordering::SeqCst);
+    assert_eq!(tracker(state.clone()).await.unwrap(), None);
+    assert_eq!(standing().await, before);
+    news.store(true, Ordering::SeqCst);
+    assert_eq!(tracker(state.clone()).await.unwrap(), Some(selloff));
+
+    // 追踪 lists its articles under a tab of its own, the one brought up to date last first and
+    // dated to the minute; an article leads back there, opens with its words and stays off
+    // 分享's list.
+    let events = page(format!("{base}/tracker")).await;
+    assert!(events.contains("<body class=\"public reads articles article-cards\">"));
+    assert_eq!(events.matches("<a class=image-news-media").count(), 2);
+    assert!(events.contains("<a class=tab href=\"/tracker\" aria-current=\"true\">追踪</a>"));
+    let latest = events
+        .find("ai-capex-selloff-2026-10 的追踪（更新）")
+        .unwrap();
+    assert!(latest < events.find("binance-hack-2026-10 的追踪（更新）").unwrap());
+    let updated: DateTime<Utc> =
+        sqlx::query_scalar("SELECT updated_at FROM articles WHERE id = $1")
+            .bind(selloff)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert!(events.contains(&format!(
+        "<time datetime=\"{}\">{}</time>",
+        updated.to_rfc3339(),
+        updated
+            .with_timezone(&state.config.timezone)
+            .format("%Y-%m-%d %H:%M")
+    )));
+    assert!(
+        page(format!("{base}/tracker?q=selloff"))
+            .await
+            .contains("「selloff」找到 1 篇")
+    );
+    assert!(!page(format!("{base}/articles")).await.contains("的追踪"));
+    let article = page(format!("{base}/articles/{followed}")).await;
+    assert!(article.contains("<a href=\"/tracker\">← 追踪</a>"));
+    assert!(article.contains("<a class=tab href=\"/tracker\" aria-current=\"true\">追踪</a>"));
+    assert!(!article.contains("class=article-cover"));
+    assert!(
+        page(format!("{base}/articles/sitemap.xml"))
+            .await
+            .contains("/tracker</loc>")
+    );
+    // 值得读 ranks 追踪 with the rest, but opens with XABC's 分享 alone.
+    sqlx::query("UPDATE articles SET views = 80 WHERE id = $1")
+        .bind(selloff)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    let worth: Value =
+        serde_json::from_str(&page(format!("{base}/articles/worth.json")).await).unwrap();
+    let worth = worth["articles"].as_array().unwrap();
+    assert_eq!(worth[0]["id"], id.to_string());
+    assert!(worth.iter().any(|article| {
+        article["id"] == selloff.to_string()
+            && article["event"] == true
+            && article["person"] == false
+    }));
+
+    // Each line waits for its own articles: a 分享 just out keeps another 分享 back, not 追踪.
+    let finished = |title: &str| xabc::Finished {
+        title: title.into(),
+        body: "字".repeat(500),
+        pictures: Vec::new(),
+        cover: None,
+    };
+    let shared = Utc::now();
+    xabc::publish(&state, author, shared, None, &finished("丙"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        xabc::publish(&state, author, shared, None, &finished("丁")).await,
+        Err(AppError::Conflict(_))
+    ));
+    let event = Some(xabc::Subject::Event("guard-2026-10"));
+    xabc::publish(&state, author, shared, event, &finished("戊"))
+        .await
+        .unwrap(); // 分享 times itself by its own articles alone.
+    let shared: DateTime<Utc> =
+        sqlx::query_scalar("SELECT published_at FROM articles WHERE title = '丙'")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        xabc::last(&state, xabc::Line::Share).await.unwrap(),
+        Some(shared)
+    );
 }

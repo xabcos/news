@@ -1,13 +1,16 @@
-//! XABC, the site's own pen name, writes on three lines. For 分享, every hour, grok
+//! XABC, the site's own pen name, writes on four lines. For 分享, every hour, grok
 //! looks through X and the web, and the briefing model through the web, for things worth
 //! sharing; the writing model picks one subject from both sets of finds, reads further where it
 //! needs to and writes it up its own way. For 文娱 · 解说, every four hours, it explains the work
 //! 影视 discusses most, or revises its explanation (`film`). For 时代, every hour, it
-//! profiles the person talked about most, or brings their profile up to date (`people`).
+//! profiles the person talked about most, or brings their profile up to date (`people`). For
+//! 追踪, every two hours, it follows the hottest event with something new, anew or in the
+//! article it already has (`tracker`).
 //! Articles go out at once under the pen name XABC. Their pictures come from the pages the
 //! models cite or are drawn by an image model, and they link only to addresses the models found.
 mod film;
 mod people;
+mod tracker;
 
 use super::{ARTICLE_IMAGES, MARKDOWN, checked, kind, words};
 use crate::{
@@ -23,6 +26,7 @@ use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
+    cmp::Reverse,
     collections::{HashMap, HashSet},
     fmt::Write,
     ops::Range,
@@ -69,10 +73,12 @@ pub(super) enum Line {
     Film,
     /// A person profiled for 时代, anew or brought up to date.
     People,
+    /// An event followed for 追踪, anew or brought up to date.
+    Tracker,
 }
 
 impl Line {
-    const ALL: [Self; 3] = [Self::Share, Self::Film, Self::People];
+    const ALL: [Self; 4] = [Self::Share, Self::Film, Self::People, Self::Tracker];
 
     /// The line's mark among the jobs in flight.
     fn job(self) -> &'static str {
@@ -80,14 +86,16 @@ impl Line {
             Self::Share => "__xabc_article__",
             Self::Film => "__xabc_film__",
             Self::People => "__xabc_people__",
+            Self::Tracker => "__xabc_tracker__",
         }
     }
 
     /// How long after its last article the line writes again: 解说 follows what 影视 gathers
-    /// through the day, and 时代 who is talked about.
+    /// through the day, 时代 who is talked about and 追踪 how events move.
     fn interval(self) -> chrono::Duration {
         match self {
             Self::Share | Self::People => chrono::Duration::hours(1),
+            Self::Tracker => chrono::Duration::hours(2),
             Self::Film => chrono::Duration::hours(4),
         }
     }
@@ -98,6 +106,17 @@ impl Line {
             Self::Share => SEARCHING,
             Self::Film => film::SEARCHING,
             Self::People => people::SEARCHING,
+            Self::Tracker => tracker::SEARCHING,
+        }
+    }
+
+    /// What each find names for the line's `pick`, as the search schema calls it: 时代's
+    /// person and 追踪's event. The other lines' finds name nothing.
+    fn subject(self) -> Option<&'static str> {
+        match self {
+            Self::People => Some("person"),
+            Self::Tracker => Some("event"),
+            Self::Share | Self::Film => None,
         }
     }
 }
@@ -109,7 +128,8 @@ struct Progress {
 }
 
 impl Progress {
-    fn wrote(&mut self, line: Line, now: DateTime<Utc>) {
+    /// A round ended, with an article or with nothing new to write: the line waits its interval.
+    fn finished(&mut self, line: Line, now: DateTime<Utc>) {
         self.failures = 0;
         self.next = now + line.interval();
     }
@@ -172,9 +192,12 @@ async fn start(state: &AppState, line: Line) {
             outcome = write(&worker, line, since) => outcome,
         };
         match outcome {
-            Ok(id) => {
-                tracing::info!(%id, ?line, "XABC published an article");
-                progress(line, |progress| progress.wrote(line, Utc::now()));
+            Ok(written) => {
+                match written {
+                    Some(id) => tracing::info!(%id, ?line, "XABC published an article"),
+                    None => tracing::info!(?line, "XABC found nothing new to write"),
+                }
+                progress(line, |progress| progress.finished(line, Utc::now()));
             }
             Err(error) => {
                 tracing::warn!(%error, ?line, "XABC's article failed");
@@ -185,13 +208,13 @@ async fn start(state: &AppState, line: Line) {
     });
 }
 
-/// When XABC last published on the line, or for 解说 and 时代 last revised. An article an
+/// When XABC last published on the line, or for 解说, 时代 and 追踪 last revised. An article an
 /// administrator takes back keeps its time.
 pub(super) async fn last(state: &AppState, line: Line) -> Result<Option<DateTime<Utc>>> {
     Ok(sqlx::query_scalar(match line {
         Line::Share => {
             "SELECT max(a.published_at) FROM articles a JOIN users u ON u.id = a.author_id
-             WHERE u.email = $1 AND a.film IS NULL AND a.person IS NULL"
+             WHERE u.email = $1 AND a.film IS NULL AND a.person IS NULL AND a.event IS NULL"
         }
         Line::Film => {
             "SELECT max(a.updated_at) FROM articles a JOIN users u ON u.id = a.author_id
@@ -200,6 +223,10 @@ pub(super) async fn last(state: &AppState, line: Line) -> Result<Option<DateTime
         Line::People => {
             "SELECT max(a.updated_at) FROM articles a JOIN users u ON u.id = a.author_id
              WHERE u.email = $1 AND a.person IS NOT NULL"
+        }
+        Line::Tracker => {
+            "SELECT max(a.updated_at) FROM articles a JOIN users u ON u.id = a.author_id
+             WHERE u.email = $1 AND a.event IS NOT NULL"
         }
     })
     .bind(EMAIL)
@@ -219,8 +246,13 @@ pub(super) async fn author(state: &AppState) -> Result<i64> {
     .ok_or_else(|| AppError::Conflict("XABC 的账户不存在或已停用".into()))
 }
 
-/// Writes the line's next article and publishes it; for 解说 and 时代 this may revise one instead.
-pub(super) async fn write(state: &AppState, line: Line, since: DateTime<Utc>) -> Result<Uuid> {
+/// Writes the line's next article and publishes it; for 解说, 时代 and 追踪 this may revise one
+/// instead. 追踪 writes nothing when no event it may write about has anything new.
+pub(super) async fn write(
+    state: &AppState,
+    line: Line,
+    since: DateTime<Utc>,
+) -> Result<Option<Uuid>> {
     let _slot = state
         .run_slots
         .clone()
@@ -229,9 +261,10 @@ pub(super) async fn write(state: &AppState, line: Line, since: DateTime<Utc>) ->
         .map_err(|_| AppError::Internal("调度器已关闭".into()))?;
     let author = author(state).await?;
     match line {
-        Line::Share => share(state, author, since).await,
-        Line::Film => film::write(state, author, since).await,
-        Line::People => people::write(state, author, since).await,
+        Line::Share => share(state, author, since).await.map(Some),
+        Line::Film => film::write(state, author, since).await.map(Some),
+        Line::People => people::write(state, author, since).await.map(Some),
+        Line::Tracker => tracker::write(state, author, since).await,
     }
 }
 
@@ -241,7 +274,8 @@ async fn share(state: &AppState, author: i64, since: DateTime<Utc>) -> Result<Uu
     // page those articles linked to is left out.
     let lately: Vec<(String, String)> = sqlx::query_as(
         "SELECT title, body FROM articles WHERE author_id = $1 AND film IS NULL AND person IS NULL
-           AND published_at >= NOW() - INTERVAL '7 days' ORDER BY published_at DESC",
+           AND event IS NULL AND published_at >= NOW() - INTERVAL '7 days'
+         ORDER BY published_at DESC",
     )
     .bind(author)
     .fetch_all(&state.pool)
@@ -284,11 +318,13 @@ async fn share(state: &AppState, author: i64, since: DateTime<Utc>) -> Result<Uu
 }
 
 /// What the two searches found: the finds, every address they cited or a find names, the finds
-/// left out because they are about a page already covered, and what it cost.
+/// left out because they are about a page already covered, how many searches answered and
+/// what it cost.
 struct Found {
     finds: Vec<(Scout, Find)>,
     known: HashSet<String>,
     repeated: usize,
+    answered: usize,
     usage: Usage,
 }
 
@@ -302,6 +338,7 @@ async fn look(state: &AppState, line: Line, input: &str, covered: &HashSet<Strin
         finds: Vec::new(),
         known: HashSet::new(),
         repeated: 0,
+        answered: 0,
         usage: Usage::default(),
     };
     for (scout, searched) in [(Scout::X, x), (Scout::Web, web)] {
@@ -312,6 +349,7 @@ async fn look(state: &AppState, line: Line, input: &str, covered: &HashSet<Strin
                 continue;
             }
         };
+        found.answered += 1;
         found.usage += searched.usage;
         found.known.extend(searched.cited);
         for find in searched.finds {
@@ -462,6 +500,12 @@ impl Scout {
             (Line::People, Self::Web) => {
                 "用 web_search 检索全球中英文网络最近的新闻、访谈、演讲、论文和发布"
             }
+            (Line::Tracker, Self::X) => {
+                "用 x_search 看 X 上各种语言里此刻被大量讨论、转发和引用的事件，以及当事方、调查者和权威媒体的最新发言，也用 web_search 查全网的新闻"
+            }
+            (Line::Tracker, Self::Web) => {
+                "用 web_search 检索全球中英文新闻媒体和通讯社的报道与跟进，以及当事方的公告、官方通报、监管和法院文件"
+            }
         }
     }
 
@@ -481,9 +525,10 @@ struct Find {
     points: String,
     sources: Vec<String>,
     pictures: Vec<String>,
-    /// For 时代, the person the find is about, by their English name; other finds name nobody.
-    #[serde(default)]
-    person: String,
+    /// What the find is about, under the name its line gives it (`Line::subject`): for 时代 the
+    /// person by their English name, for 追踪 the event by its slug. Other finds name nothing.
+    #[serde(default, alias = "person", alias = "event")]
+    subject: String,
 }
 
 #[derive(Deserialize)]
@@ -505,8 +550,8 @@ async fn search(state: &AppState, line: Line, scout: Scout, input: &str) -> Resu
         "sources": { "type": "array", "items": { "type": "string" } },
         "pictures": { "type": "array", "items": { "type": "string" } },
     });
-    if let Line::People = line {
-        find["person"] = json!({ "type": "string" });
+    if let Some(subject) = line.subject() {
+        find[subject] = json!({ "type": "string" });
     }
     let find = ai::object(find);
     let body = json!({
@@ -631,6 +676,88 @@ fn written_lately<'a>(titles: impl IntoIterator<Item = &'a str>) -> String {
     } else {
         "XABC 还没有写过文章。".into()
     }
+}
+
+/// What to write about for 时代 or 追踪, and every find about it: of the subjects the finds name,
+/// leaving out `passed`, the one most scouts named, then the one placed highest on either
+/// scout's list, then the one met first; only one placed above `within` on some list, and that
+/// some find tells something about. Each scout lists the most talked about first, and a find
+/// left out keeps its place: nothing below moves up into it.
+fn pick(
+    finds: Vec<(Scout, Find)>,
+    passed: &HashSet<String>,
+    within: usize,
+) -> Option<(String, Vec<(Scout, Find)>)> {
+    // Each subject once, in the order it was first named, with the scouts that named it, the best
+    // place it was given and whether any find tells something about it.
+    let mut named: Vec<(String, [bool; 2], usize, bool)> = Vec::new();
+    let mut places = [0; 2];
+    for (scout, find) in &finds {
+        let by = *scout as usize;
+        let place = places[by];
+        places[by] += 1;
+        let subject = key(&find.subject);
+        if subject.is_empty() || passed.contains(&subject) {
+            continue;
+        }
+        let tells = !find.points.trim().is_empty();
+        match named.iter_mut().find(|(known, ..)| *known == subject) {
+            Some((_, scouts, best, told)) => {
+                scouts[by] = true;
+                *best = (*best).min(place);
+                *told |= tells;
+            }
+            None => {
+                let mut scouts = [false; 2];
+                scouts[by] = true;
+                named.push((subject, scouts, place, tells));
+            }
+        }
+    }
+    let (chosen, ..) = named
+        .into_iter()
+        .filter(|(.., best, told)| *told && *best < within)
+        .min_by_key(|(_, scouts, best, _)| {
+            (
+                Reverse(scouts.iter().filter(|named| **named).count()),
+                *best,
+            )
+        })?;
+    let finds = finds
+        .into_iter()
+        .filter(|(_, find)| key(&find.subject) == chosen)
+        .collect();
+    Some((chosen, finds))
+}
+
+/// How a subject is told apart: its words in lower case, joined by hyphens, so `Sam Altman` and
+/// `sam altman.` are one person and `Binance hack 2026-10` is the event `binance-hack-2026-10`.
+fn key(name: &str) -> String {
+    name.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// A draft that shows only pictures from pages, as 时代's and 追踪's do: none is drawn.
+fn photographed(mut drafted: Drafted) -> Drafted {
+    for picture in &mut drafted.article.pictures {
+        picture.prompt.clear();
+    }
+    drafted
+}
+
+/// Logs an article written or brought up to date about a person or an event, and its cost.
+fn log(id: Uuid, done: &str, subject: &str, article: &Finished, usage: Usage) {
+    tracing::info!(
+        %id, subject, title = article.title, pictures = article.pictures.len(),
+        input_tokens = usage.input_tokens, output_tokens = usage.output_tokens,
+        web_searches = usage.server_side_tool_usage_details.web_search_calls,
+        x_searches = usage.server_side_tool_usage_details.x_search_calls,
+        cost_ticks = usage.cost_in_usd_ticks,
+        "{done}"
+    );
 }
 
 /// The pages a reply cites from its searches.
@@ -1086,11 +1213,12 @@ fn plain(text: &str) -> String {
     plain
 }
 
-/// What a 解说 or a 时代 profile is about: a work by its key in 影视, or a person by theirs. Each
-/// has one article at most.
+/// What a 解说, a 时代 profile or a 追踪 article is about: a work by its key in 影视, a person or an
+/// event by theirs. Each has one article at most.
 pub(super) enum Subject<'a> {
     Work(&'a str),
     Person(&'a str),
+    Event(&'a str),
 }
 
 /// Publishes the article with its pictures, unless XABC published one on the line since `since`
@@ -1102,10 +1230,11 @@ pub(super) async fn publish(
     subject: Option<Subject<'_>>,
     article: &Finished,
 ) -> Result<Uuid> {
-    let (film, person) = match subject {
-        Some(Subject::Work(key)) => (Some(key), None),
-        Some(Subject::Person(key)) => (None, Some(key)),
-        None => (None, None),
+    let (film, person, event) = match subject {
+        Some(Subject::Work(key)) => (Some(key), None, None),
+        Some(Subject::Person(key)) => (None, Some(key), None),
+        Some(Subject::Event(key)) => (None, None, Some(key)),
+        None => (None, None, None),
     };
     // Without a cover of its own, the first picture the body shows stands for the article.
     let cover = article
@@ -1122,12 +1251,13 @@ pub(super) async fn publish(
     if sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS (SELECT 1 FROM articles
            WHERE author_id = $1 AND published_at >= $2 AND (film IS NULL) = $3
-             AND (person IS NULL) = $4)",
+             AND (person IS NULL) = $4 AND (event IS NULL) = $5)",
     )
     .bind(author)
     .bind(since)
     .bind(film.is_none())
     .bind(person.is_none())
+    .bind(event.is_none())
     .fetch_one(&mut *tx)
     .await?
     {
@@ -1135,8 +1265,8 @@ pub(super) async fn publish(
     }
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO articles (id, author_id, title, body, excerpt, status, published_at, film, person)
-         VALUES ($1, $2, $3, $4, $5, 'published', now(), $6, $7)",
+        "INSERT INTO articles (id, author_id, title, body, excerpt, status, published_at, film, person, event)
+         VALUES ($1, $2, $3, $4, $5, 'published', now(), $6, $7, $8)",
     )
     .bind(id)
     .bind(author)
@@ -1145,6 +1275,7 @@ pub(super) async fn publish(
     .bind(&content.excerpt)
     .bind(film)
     .bind(person)
+    .bind(event)
     .execute(&mut *tx)
     .await?;
     keep(&mut tx, id, article.pictures.iter().chain(&article.cover)).await?;
@@ -1160,8 +1291,8 @@ pub(super) async fn publish(
     Ok(id)
 }
 
-/// Saves a revised 解说 or profile with `cover` over the revision XABC read, unless an
-/// administrator saved it or took it back meanwhile; a new cover picture comes with it.
+/// Saves a revised 解说, profile or 追踪 article with `cover` over the revision XABC read, unless
+/// an administrator saved it or took it back meanwhile; a new cover picture comes with it.
 pub(super) async fn revise(
     state: &AppState,
     id: Uuid,
@@ -1265,6 +1396,70 @@ const RULES: &str = "- 不用套话：不写「在当今……」「值得一提
 mod tests {
     use super::*;
 
+    fn find(scout: Scout, person: &str) -> (Scout, Find) {
+        (
+            scout,
+            Find {
+                title: format!("{person} 的事"),
+                why: String::new(),
+                points: "近况".into(),
+                sources: Vec::new(),
+                pictures: Vec::new(),
+                subject: person.into(),
+            },
+        )
+    }
+
+    #[test]
+    fn a_person_is_told_apart_by_the_words_of_their_english_name() {
+        assert_eq!(key(" Sam  Altman. "), "sam-altman");
+        assert_eq!(key("Yann LeCun"), "yann-lecun");
+        assert_eq!(key("Kurt Gödel"), "kurt-gödel");
+        assert_eq!(key("（）"), "");
+    }
+
+    #[test]
+    fn the_person_most_scouts_name_goes_first_then_the_one_named_first() {
+        let named = |finds: Vec<(Scout, Find)>, passed: &[&str]| {
+            let passed = passed.iter().map(|person| person.to_string()).collect();
+            pick(finds, &passed, usize::MAX).map(|(person, finds)| (person, finds.len()))
+        };
+        // Both scouts named Hassabis, the web's first; grok's first and second only grok did.
+        let finds = || {
+            vec![
+                find(Scout::X, "Jensen Huang"),
+                find(Scout::X, "Lisa Su"),
+                find(Scout::X, "demis hassabis"),
+                find(Scout::Web, "Demis Hassabis"),
+                find(Scout::Web, "Terence Tao"),
+            ]
+        };
+        assert_eq!(named(finds(), &[]), Some(("demis-hassabis".into(), 2)));
+        // Without him, the best place: grok's first, ahead of both second places.
+        assert_eq!(
+            named(finds(), &["demis-hassabis"]),
+            Some(("jensen-huang".into(), 1))
+        );
+        // Two second places: the one named first, grok's.
+        assert_eq!(
+            named(finds(), &["demis-hassabis", "jensen-huang"]),
+            Some(("lisa-su".into(), 1))
+        );
+        // The web's first place beats grok's second.
+        assert_eq!(
+            named(
+                vec![
+                    find(Scout::X, "Jensen Huang"),
+                    find(Scout::X, "Lisa Su"),
+                    find(Scout::Web, "Terence Tao"),
+                ],
+                &["jensen-huang"]
+            ),
+            Some(("terence-tao".into(), 1))
+        );
+        assert_eq!(named(vec![find(Scout::X, " ")], &[]), None);
+    }
+
     #[test]
     fn a_revision_keeps_the_figures_it_moves_and_drops_the_rest() {
         let figure = |id: u128, caption: &str| {
@@ -1354,13 +1549,15 @@ mod tests {
             waits.push((progress.next - now).num_minutes());
         }
         assert_eq!(waits, [30, 60, 120, 240, 480, 480]);
-        progress.wrote(Line::Share, now);
+        progress.finished(Line::Share, now);
         assert_eq!(
             (progress.failures, progress.next - now),
             (0, chrono::Duration::hours(1))
         );
-        progress.wrote(Line::Film, now);
+        progress.finished(Line::Film, now);
         assert_eq!(progress.next - now, chrono::Duration::hours(4));
+        progress.finished(Line::Tracker, now);
+        assert_eq!(progress.next - now, chrono::Duration::hours(2));
         progress.failed(now);
         assert_eq!(progress.next - now, chrono::Duration::minutes(30));
     }

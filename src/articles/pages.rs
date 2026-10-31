@@ -1,9 +1,9 @@
 //! The 分享 pages: public articles newest first, one author's articles, an article, and the
-//! previews its author and an administrator read before readers do. 解说 and 时代 read on the
-//! same article page, and 时代's list is 分享's.
+//! previews its author and an administrator read before readers do. 解说, 时代 and 追踪 read on
+//! the same article page, and 时代's and 追踪's lists are 分享's.
 use super::{
-    COMMENTARY, MARKDOWN, PEOPLE, Search, commentary_label, image_id, label, missing, parse,
-    people_label,
+    COMMENTARY, MARKDOWN, PEOPLE, Search, TRACKER, commentary_label, image_id, label, missing,
+    parse, people_label, tracker_label,
 };
 use crate::{
     auth::User,
@@ -72,20 +72,31 @@ const PROFILE: Chrome<'static> = Chrome {
     current: "people",
     ..ARTICLE
 };
+/// 追踪 has a tab of its own after 时代's.
+const TRACKER_LIST: Chrome<'static> = Chrome {
+    current: "tracker",
+    ..LIST
+};
+const TRACKING: Chrome<'static> = Chrome {
+    current: "tracker",
+    ..ARTICLE
+};
 
-/// The lists articles are on: 分享, which readers and XABC write, and XABC's 解说 and 时代.
+/// The lists articles are on: 分享, which readers and XABC write, and XABC's 解说, 时代 and 追踪.
 #[derive(Clone, Copy, PartialEq)]
 enum Shelf {
     Shared,
     Explained,
     People,
+    Tracked,
 }
 
 impl Shelf {
-    fn of(film: bool, person: bool) -> Self {
-        match (film, person) {
-            (true, _) => Self::Explained,
-            (_, true) => Self::People,
+    fn of(film: bool, person: bool, event: bool) -> Self {
+        match (film, person, event) {
+            (true, ..) => Self::Explained,
+            (_, true, _) => Self::People,
+            (.., true) => Self::Tracked,
             _ => Self::Shared,
         }
     }
@@ -93,17 +104,34 @@ impl Shelf {
     /// The condition keeping to the shelf's articles.
     fn articles(self) -> &'static str {
         match self {
-            Self::Shared => " AND a.film IS NULL AND a.person IS NULL",
+            Self::Shared => " AND a.film IS NULL AND a.person IS NULL AND a.event IS NULL",
             Self::Explained => " AND a.film IS NOT NULL",
             Self::People => " AND a.person IS NOT NULL",
+            Self::Tracked => " AND a.event IS NOT NULL",
         }
     }
 
-    /// What dates an article on the shelf, and orders its list: a profile's last update.
+    /// Whether an article on the shelf is as new as its last update: XABC brings profiles and
+    /// events up to date as they move.
+    fn updated(self) -> bool {
+        matches!(self, Self::People | Self::Tracked)
+    }
+
+    /// What dates an article on the shelf, and orders its list.
     fn dated(self) -> &'static str {
+        if self.updated() {
+            "a.updated_at"
+        } else {
+            "a.published_at"
+        }
+    }
+
+    /// How an article on the shelf shows its date: 追踪's to the minute, as events move by the
+    /// hour.
+    fn stamp(self) -> &'static str {
         match self {
-            Self::People => "a.updated_at",
-            Self::Shared | Self::Explained => "a.published_at",
+            Self::Tracked => "%Y-%m-%d %H:%M",
+            Self::Shared | Self::Explained | Self::People => "%Y-%m-%d",
         }
     }
 }
@@ -114,7 +142,8 @@ pub(super) fn router() -> Router<AppState> {
             .route("/articles", get(index))
             .route("/articles/{id}", get(detail))
             .route(COMMENTARY, get(commentary))
-            .route(PEOPLE, get(people)),
+            .route(PEOPLE, get(people))
+            .route(TRACKER, get(tracker)),
     )
     .route("/articles/sitemap.xml", get(sitemap))
     .route("/articles/worth.json", get(worth))
@@ -133,12 +162,14 @@ async fn sitemap(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
             .build_query_as()
             .fetch_all(&state.pool)
             .await?;
-    let mut xml = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\"><url><loc>{}</loc></url><url><loc>{}</loc></url><url><loc>{}</loc></url>",
-        escape(&absolute(&state, "/articles")),
-        escape(&absolute(&state, COMMENTARY)),
-        escape(&absolute(&state, PEOPLE))
-    );
+    let mut xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">".to_owned();
+    for list in ["/articles", COMMENTARY, PEOPLE, TRACKER] {
+        let _ = write!(
+            xml,
+            "<url><loc>{}</loc></url>",
+            escape(&absolute(&state, list))
+        );
+    }
     for (id, updated_at) in rows {
         let _ = write!(
             xml,
@@ -227,6 +258,8 @@ struct Article {
     film: bool,
     /// Whether it is a 时代 profile.
     person: bool,
+    /// Whether it follows an event for 追踪.
+    event: bool,
 }
 
 #[derive(FromRow)]
@@ -525,14 +558,15 @@ struct Worth {
     views: i64,
     film: bool,
     person: bool,
+    event: bool,
     cover: Option<String>,
     width: Option<i32>,
     height: Option<i32>,
 }
 
 /// 值得读, which opens ALL: XABC's four newest 分享, newest first, then the four hottest of the
-/// last 30 days of 分享, 解说 and 时代 together, ranked as 热读 is, each article once; while few
-/// are read, the newest fill the places.
+/// last 30 days of 分享, 解说, 时代 and 追踪 together, ranked as 热读 is, each article once; while
+/// few are read, the newest fill the places.
 async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
     let articles: Vec<Worth> = QueryBuilder::<Postgres>::new(
         "WITH newest AS (
@@ -541,9 +575,10 @@ async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Resp
     )
     .push_bind(super::xabc::EMAIL)
     .push(
-        " AND a.status = 'published' AND a.film IS NULL AND a.person IS NULL
+        " AND a.status = 'published' AND a.film IS NULL AND a.person IS NULL AND a.event IS NULL
              ORDER BY a.published_at DESC, a.id DESC LIMIT 4)
          SELECT a.id, a.title, a.views, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person,
+                a.event IS NOT NULL AS event,
                 CASE WHEN i.expires_at > now() THEN i.url END AS cover, i.width, i.height
          FROM articles a JOIN users u ON u.id = a.author_id
          LEFT JOIN article_images i ON i.id = a.cover
@@ -672,8 +707,59 @@ async fn commentary(
     Ok(listed_page(&headers, html, &search))
 }
 
-/// 时代: XABC's profiles of the people this age talks about, the one brought up to date last
-/// first, tiled as 分享's cards.
+/// A list of XABC's articles that it brings up to date as their subjects move, the one brought
+/// up to date last first, tiled as 分享's cards: 时代's profiles and 追踪's events. Its words are
+/// in Chinese and English.
+struct Followed {
+    shelf: Shelf,
+    path: &'static str,
+    name: fn(bool) -> &'static str,
+    chrome: &'static Chrome<'static>,
+    description: (&'static str, &'static str),
+    /// What the search box asks for.
+    search: (&'static str, &'static str),
+    /// What the list says while it is empty.
+    first: (&'static str, &'static str),
+    /// What it says when a search finds nothing.
+    nothing: (&'static str, &'static str),
+}
+
+/// 时代: XABC's profiles of the people this age talks about.
+const PROFILES: Followed = Followed {
+    shelf: Shelf::People,
+    path: PEOPLE,
+    name: people_label,
+    chrome: &PEOPLE_LIST,
+    description: (
+        "这个时代最受关注的人物：他们是谁，做成了什么，现在怎样",
+        "The people of our time: who they are, what they did, where they stand now",
+    ),
+    search: ("搜索人物和内容", "Search names and openings"),
+    first: ("第一篇人物正在写。", "The first profile is being written."),
+    nothing: (
+        "没有找到相关人物，换个词试试。",
+        "No profiles match these words. Try others.",
+    ),
+};
+
+/// 追踪: XABC's articles following the events the whole web talks about.
+const EVENTS: Followed = Followed {
+    shelf: Shelf::Tracked,
+    path: TRACKER,
+    name: tracker_label,
+    chrome: &TRACKER_LIST,
+    description: (
+        "全网最受关注的热点事件：怎么发生的，到了哪一步，接下来会怎样",
+        "The events the world is talking about: how they began, where they stand, what comes next",
+    ),
+    search: ("搜索事件和内容", "Search events and openings"),
+    first: ("第一篇追踪正在写。", "The first one is being written."),
+    nothing: (
+        "没有找到相关事件，换个词试试。",
+        "No events match these words. Try others.",
+    ),
+};
+
 async fn people(
     State(state): State<AppState>,
     // The page is the same for everyone, but a preview of it still needs an administrator.
@@ -681,74 +767,82 @@ async fn people(
     Query(params): Query<Params>,
     headers: HeaderMap,
 ) -> Result<Response> {
+    followed(&state, &PROFILES, &params, &headers).await
+}
+
+async fn tracker(
+    State(state): State<AppState>,
+    // The page is the same for everyone, but a preview of it still needs an administrator.
+    _: Reader,
+    Query(params): Query<Params>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    followed(&state, &EVENTS, &params, &headers).await
+}
+
+async fn followed(
+    state: &AppState,
+    list: &Followed,
+    params: &Params,
+    headers: &HeaderMap,
+) -> Result<Response> {
     let en = params.english();
-    let page = page(&params)?;
+    let say = |(zh, english): (&'static str, &'static str)| choose(en, zh, english);
+    let page = page(params)?;
     let search = Search::new(params.q.as_deref());
-    let (rows, more) = shelved(&state, Shelf::People, &search, page).await?;
-    let description = choose(
-        en,
-        "这个时代最受关注的人物：他们是谁，做成了什么，现在怎样",
-        "The people of our time: who they are, what they did, where they stand now",
-    );
+    let (rows, more) = shelved(state, list.shelf, &search, page).await?;
+    let description = say(list.description);
     let found = found(
         &search,
         page,
         en,
-        listed("SELECT count(*)", Shelf::People, None, &search).build_query_scalar(),
-        &state,
+        listed("SELECT count(*)", list.shelf, None, &search).build_query_scalar(),
+        state,
     )
     .await?;
     let mut content = format!(
         "<header class=reads-heading><h1>{}</h1><p>{}</p><div class=reads-tools>{}</div></header><div class=reads-list>",
-        people_label(en),
+        (list.name)(en),
         found.unwrap_or_else(|| escape(description)),
         search_box(
             "reads-search",
-            PEOPLE,
+            list.path,
             &search.words,
-            choose(en, "搜索人物和内容", "Search names and openings"),
+            say(list.search),
             en
         ),
     );
     for row in &rows {
-        content.push_str(&card(row, en, None, Shelf::People, state.config.timezone));
+        content.push_str(&card(row, en, None, list.shelf, state.config.timezone));
     }
     content.push_str("</div>");
     if rows.is_empty() {
         let _ = write!(
             content,
             "<p class=muted>{}</p>",
-            if search.is_empty() {
-                choose(
-                    en,
-                    "第一篇人物正在写。",
-                    "The first profile is being written.",
-                )
+            say(if search.is_empty() {
+                list.first
             } else {
-                choose(
-                    en,
-                    "没有找到相关人物，换个词试试。",
-                    "No profiles match these words. Try others.",
-                )
-            }
+                list.nothing
+            })
         );
     }
-    content.push_str(&pagination(PEOPLE, page, more, en, None, &search.words));
+    content.push_str(&pagination(list.path, page, more, en, None, &search.words));
     let title = match page {
-        1 => format!("{} · 𝑵𝒆𝒘𝒔", people_label(en)),
-        page => format!("{} · {page} · 𝑵𝒆𝒘𝒔", people_label(en)),
+        1 => format!("{} · 𝑵𝒆𝒘𝒔", (list.name)(en)),
+        page => format!("{} · {page} · 𝑵𝒆𝒘𝒔", (list.name)(en)),
     };
     let html = crate::site::layout(
-        &state,
+        state,
         en,
-        &listing(PEOPLE, page, false, None, &search.words),
+        &listing(list.path, page, false, None, &search.words),
         &title,
         description,
         &content,
         None,
-        &PEOPLE_LIST,
+        list.chrome,
     );
-    Ok(listed_page(&headers, html, &search))
+    Ok(listed_page(headers, html, &search))
 }
 
 /// A card's reads, whose place stays hidden while nobody has read it: the page script brings
@@ -795,7 +889,7 @@ fn card(
     } else {
         String::new()
     };
-    let date = if shelf == Shelf::People {
+    let date = if shelf.updated() {
         item.updated_at
     } else {
         item.published_at
@@ -803,7 +897,7 @@ fn card(
     format!(
         "<article class=\"item image-news-card catalog-card\">{cover}<div class=catalog-card-body><p class=item-meta>{rank}{author}<time datetime=\"{}\">{}</time>{}</p><h2 class=item-title><a href=\"{href}\">{}</a></h2><p class=item-summary>{}</p></div></article>",
         date.to_rfc3339(),
-        date.with_timezone(&timezone).format("%Y-%m-%d"),
+        date.with_timezone(&timezone).format(shelf.stamp()),
         reads(item.id, item.views, en),
         escape(&item.title),
         escape(&item.excerpt)
@@ -855,7 +949,7 @@ async fn preview(
 
 async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<String> {
     let mut query = QueryBuilder::<Postgres>::new(
-        "SELECT a.id, a.author_id, w.name AS author, a.title, a.body, a.excerpt, a.cover, a.status, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person",
+        "SELECT a.id, a.author_id, w.name AS author, a.title, a.body, a.excerpt, a.cover, a.status, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person, a.event IS NOT NULL AS event",
     );
     query.push(FROM).push(" AND a.id = ").push_bind(id);
     match mode {
@@ -899,11 +993,12 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
     } else {
         &article.title
     };
-    let shelf = Shelf::of(article.film, article.person);
-    // A profile is as new as its last update.
-    let date = match shelf {
-        Shelf::People => article.updated_at,
-        Shelf::Shared | Shelf::Explained => article.published_at.unwrap_or(article.updated_at),
+    let shelf = Shelf::of(article.film, article.person, article.event);
+    // A profile or an event is as new as its last update.
+    let date = if shelf.updated() {
+        article.updated_at
+    } else {
+        article.published_at.unwrap_or(article.updated_at)
     };
     // Readers' copy of the page counts their read; previews only show the number.
     let views = format!(
@@ -961,7 +1056,7 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
             },
         ),
     };
-    // 解说 and 时代 lead back to their lists, whose articles are all XABC's.
+    // 解说, 时代 and 追踪 lead back to their lists, whose articles are all XABC's.
     let (list, name, by) = match shelf {
         Shelf::Shared => (
             "/articles",
@@ -970,14 +1065,15 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
         ),
         Shelf::Explained => (COMMENTARY, commentary_label(en), localized(COMMENTARY, en)),
         Shelf::People => (PEOPLE, people_label(en), localized(PEOPLE, en)),
+        Shelf::Tracked => (TRACKER, tracker_label(en), localized(TRACKER, en)),
     };
     let mut content = format!(
         "{notice}<article class=\"read article\">{}<header class=read-heading><div class=read-title><h1>{}</h1></div><div class=item-meta><a href=\"{}\">{}</a> · <time datetime=\"{}\">{}</time> · {views}</div></header><div class=read-body>{body}</div></article>",
-        // A profile's cover, its subject's portrait, stands for it on the lists; the page opens
-        // with the writer's own pictures.
+        // A profile's cover, its subject's portrait, stands for it on the lists, and so does an
+        // event's, the first picture it shows; the page opens with the writer's own pictures.
         cover
             .as_ref()
-            .filter(|_| shelf != Shelf::People)
+            .filter(|_| !shelf.updated())
             .map(|cover| {
                 let (width, height) = cover.size.unwrap_or_default();
                 format!(
@@ -990,7 +1086,7 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
         escape(&by),
         escape(&article.author),
         date.to_rfc3339(),
-        date.with_timezone(&state.config.timezone).format("%Y-%m-%d"),
+        date.with_timezone(&state.config.timezone).format(shelf.stamp()),
     );
     let _ = write!(
         content,
@@ -1028,6 +1124,7 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
             Shelf::Shared => &ARTICLE,
             Shelf::Explained => &EXPLANATION,
             Shelf::People => &PROFILE,
+            Shelf::Tracked => &TRACKING,
         },
     ))
 }
