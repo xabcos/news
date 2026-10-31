@@ -1,8 +1,8 @@
 //! 分享: articles readers write in the workspace. Authors write under a pen name. An article is
 //! public once an administrator gives it a ❤️, and an author's edit takes it back to review.
-//! Pictures go to tmpfile as they were uploaded; their links appear only on public pages, and
-//! until then the author sees them through this server, the links reaching only the author's
-//! clipboard, in text copied out of the editor. A read counts once a day per browser,
+//! Pictures go to tmpfile as they were uploaded, which can't delete them, so their links go only
+//! to public pages, administrators' previews and text the author copies out of the editor; the
+//! author's own pages show them through this server. A read counts once a day per browser,
 //! never the author's own. XABC, the site's own pen name, publishes one every hour (`xabc`).
 mod pages;
 pub(crate) mod xabc;
