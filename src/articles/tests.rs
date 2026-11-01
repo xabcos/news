@@ -1173,7 +1173,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                             } else {
                                 (
                                     format!("{name} 的{kind}介绍"),
-                                    format!("{}\n\n![](img:1)\n\n![](img:2)\n\n看[报道](https://people.example/news)。", "一个人的经历，".repeat(80)),
+                                    format!("{}\n\n![](img:2)\n\n![](img:1)\n\n看[报道](https://people.example/news)。", "一个人的经历，".repeat(80)),
                                 )
                             };
                             return (
@@ -1182,7 +1182,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                                     json!({
                                         "title": title, "body": body,
                                         "pictures": [
-                                            { "page": "", "prompt": "四格：他的一生", "caption": "四个时刻" },
+                                            { "page": "", "prompt": "四格漫画：他的一生", "caption": "四个时刻" },
                                             { "page": "", "prompt": "一幅插图", "caption": "插图" },
                                         ],
                                         "cover": "封面插画",
@@ -1887,9 +1887,10 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
             .unwrap()
     };
 
-    // 时代: the person both scouts name goes first. Of the two pictures the writer asks to be
-    // drawn, her profile shows the first, the comic, drawn in 时代's style. Wikipedia has no
-    // portrait of her, so her cover is the photograph grok found and looked at.
+    // 时代: the person both scouts name goes first. Her profile shows the illustration the writer
+    // asks for, drawn as 分享's are, and her comic, drawn in 时代's style under a caption naming
+    // it. Wikipedia has no portrait of her, so her cover is the photograph grok found and looked
+    // at.
     let drawn_before = drawings_log.lock().unwrap().len();
     let profile = xabc::write(&state, xabc::Line::People, hot)
         .await
@@ -1911,15 +1912,24 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     );
     // The comic, as wide as the photograph, isn't the cover.
     assert!(!body.contains(&cover.unwrap().to_string()));
-    let comics = drawings_log.lock().unwrap()[drawn_before..].to_vec();
-    assert_eq!(comics.len(), 1);
-    let prompt = comics[0]["prompt"].as_str().unwrap();
+    let mut prompts: Vec<String> = drawings_log.lock().unwrap()[drawn_before..]
+        .iter()
+        .map(|drawing| drawing["prompt"].as_str().unwrap().to_owned())
+        .collect();
+    prompts.sort();
+    assert_eq!(prompts.len(), 2);
     assert!(
-        prompt.starts_with("四格：他的一生\n画成一张四格漫画"),
-        "{prompt}"
+        prompts[0].starts_with("一幅插图\n画面中不要出现"),
+        "{prompts:?}"
     );
     assert!(
-        body.contains("*四个时刻（AI 生成）*") && !body.contains("插图"),
+        prompts[1].starts_with("四格漫画：他的一生\n画成一张四格漫画")
+            && !prompts[1].contains("画面里没有主角"),
+        "{prompts:?}"
+    );
+    assert!(
+        body.contains("*插图（AI 生成）*\n\n![四格漫画：四个时刻](image:")
+            && body.contains("*四格漫画：四个时刻（AI 生成）*"),
         "{body}"
     );
     let photo = photo_asked();
@@ -1967,8 +1977,8 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         (person.as_deref(), portrait),
         (Some("jensen-huang"), Some(400))
     );
-    assert_eq!(body.matches("](image:").count(), 1);
-    assert!(body.contains("*四个时刻（AI 生成）*"));
+    assert_eq!(body.matches("](image:").count(), 2);
+    assert!(body.contains("*四格漫画：四个时刻（AI 生成）*"));
     let searched = asked_log
         .lock()
         .unwrap()
@@ -2036,7 +2046,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         ("Lisa Su 的人物介绍（更新）", 2, Some(photo))
     );
     assert!(
-        body.contains("*人像（例）*\n\n![四个时刻](image:"),
+        body.contains("*人像（例）*\n\n![四格漫画：四个时刻](image:"),
         "{body}"
     );
     let material = writing(&asked_log.lock().unwrap());
@@ -2119,7 +2129,8 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     }));
 
     // Brought up to date, a profile asks Wikipedia for its portrait again. It shows a photograph
-    // and then its comic, which the writer hears to keep, so nothing is drawn.
+    // whose caption names a comic, an illustration and then its comic, drawn and captioned as
+    // one, which the writer hears to keep, so nothing is drawn.
     let talk = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO article_images (id, article_id, url, content_type, width, height, expires_at)
@@ -2136,11 +2147,13 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
          WHERE id = $1 RETURNING cover, body",
     )
     .bind(other)
-    .bind(format!("![演讲](image:{talk})\n*演讲（例）*\n\n"))
+    .bind(format!(
+        "![四格漫画：展览现场](image:{talk})\n*四格漫画：展览现场（例）*\n\n"
+    ))
     .fetch_one(&state.pool)
     .await
     .unwrap();
-    let comic = crate::articles::pictures(&shown)[1];
+    let comic = crate::articles::pictures(&shown)[2];
     let drawn_before = drawings_log.lock().unwrap().len();
     assert_eq!(
         xabc::write(&state, xabc::Line::People, hot).await.unwrap(),
@@ -2149,7 +2162,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     assert_eq!(drawings_log.lock().unwrap().len(), drawn_before);
     assert!(
         writing(&asked_log.lock().unwrap())
-            .contains("其中 ![](keep:2) 是四格漫画，留在「你可能不知道」后面，不再画新的。")
+            .contains("其中 ![](keep:3) 是四格漫画，留在「你可能不知道」后面，不再画新的。")
     );
     let (_, _, body, after, _) = profiled(other).await.unwrap();
     assert!(before.is_some() && after.is_some() && after != before);
@@ -2207,8 +2220,17 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         (person.as_deref(), title.as_str(), width),
         (Some("company:huawei"), "Huawei 的企业介绍", Some(640))
     );
-    assert_eq!(drawings_log.lock().unwrap().len(), drawn_before + 1);
-    assert!(body.contains("*四个时刻（AI 生成）*") && !body.contains(&cover.unwrap().to_string()));
+    let drawn = drawings_log.lock().unwrap()[drawn_before..].to_vec();
+    assert_eq!(drawn.len(), 2);
+    // A company's comic has nobody at its centre.
+    assert!(drawn.iter().any(|drawing| {
+        let prompt = drawing["prompt"].as_str().unwrap();
+        prompt.starts_with("四格漫画") && prompt.contains("画面里没有主角")
+    }));
+    assert!(
+        body.contains("*四格漫画：四个时刻（AI 生成）*")
+            && !body.contains(&cover.unwrap().to_string())
+    );
     assert!(searched().contains("这一轮找各行各业举足轻重的企业"));
     assert!(
         photo_asked()["instructions"]
