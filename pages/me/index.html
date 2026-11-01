@@ -108,7 +108,7 @@
     <form id="topicForm">
       <div class="panel-heading"><h2 id="topicDialogTitle">新建主题</h2><button class="button button-quiet button-small" type="button" data-close-dialog aria-label="关闭">关闭</button></div>
       <div class="field"><label for="topicName">名称</label><input id="topicName" name="name" maxlength="60" placeholder="例如：AI 行业动态" required></div>
-      <div class="field"><label for="topicBrief">关注方向</label><textarea id="topicBrief" name="brief" maxlength="2000" rows="4" placeholder="关注的领域、地区、来源偏好或排除项……" required></textarea></div>
+      <div class="field"><label for="topicBrief">关注方向</label><textarea id="topicBrief" name="brief" maxlength="8192" rows="4" placeholder="关注的领域、地区、来源偏好或排除项……" required></textarea></div>
       <div class="form-row">
         <div class="field"><label for="topicInterval">抓取间隔（分钟）</label><input id="topicInterval" name="interval_minutes" type="number" min="15" max="1440" step="1" required><p id="intervalHint" class="field-hint muted"></p></div>
         <div class="topic-switches"><label class="switch"><input id="topicEnabled" name="enabled" type="checkbox" checked> 启用抓取</label>

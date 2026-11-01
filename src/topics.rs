@@ -1005,7 +1005,7 @@ fn map_db_error(error: sqlx::Error) -> AppError {
                 Some("topics_name_valid") => "名称不能为空且不超过 60 字",
                 Some("topics_name_en_valid") => "英文名称不超过 60 字",
                 Some("topics_description_valid") => "说明不超过 200 字",
-                Some("topics_brief_valid") => "方向描述不能为空且不超过 2000 字",
+                Some("topics_brief_valid") => "方向描述不能为空且不超过 8192 字",
                 Some("topics_interval_valid") => "间隔必须在 15 到 1440 分钟之间",
                 Some("topics_window_minute_valid") => "开始分钟必须在 0 到 59 之间",
                 Some("topics_window_valid") => {
