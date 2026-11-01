@@ -1159,14 +1159,21 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                             let kind = if instructions.contains("栏目写企业") { "企业" } else { "人物" };
                             let revising = instructions.contains("这次是更新");
                             let (title, body) = if revising {
+                                // The writer keeps the first figure and the comic the material
+                                // names, and asks for a comic all the same.
+                                let comic = material
+                                    .split_once("其中 ")
+                                    .and_then(|(_, rest)| rest.split_once(" 是四格漫画"))
+                                    .map(|(comic, _)| format!("{comic}\n\n"))
+                                    .unwrap_or_default();
                                 (
                                     format!("{name} 的人物介绍（更新）"),
-                                    format!("{}\n\n![](keep:1)\n\n![](img:1)\n\n近况更新。", "更新后的人物，".repeat(80)),
+                                    format!("{}\n\n![](keep:1)\n\n{comic}![](img:1)\n\n近况更新。", "更新后的人物，".repeat(80)),
                                 )
                             } else {
                                 (
                                     format!("{name} 的{kind}介绍"),
-                                    format!("{}\n\n![](img:1)\n\n看[报道](https://people.example/news)。", "一个人的经历，".repeat(80)),
+                                    format!("{}\n\n![](img:1)\n\n![](img:2)\n\n看[报道](https://people.example/news)。", "一个人的经历，".repeat(80)),
                                 )
                             };
                             return (
@@ -1174,7 +1181,10 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                                 Json(reply(
                                     json!({
                                         "title": title, "body": body,
-                                        "pictures": [{ "page": "", "prompt": "一张人像", "caption": "人像" }],
+                                        "pictures": [
+                                            { "page": "", "prompt": "四格：他的一生", "caption": "四个时刻" },
+                                            { "page": "", "prompt": "一幅插图", "caption": "插图" },
+                                        ],
                                         "cover": "封面插画",
                                     }),
                                     "https://cited.example/people",
@@ -1877,26 +1887,41 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
             .unwrap()
     };
 
-    // 时代: the person both scouts name goes first, and their profile shows no drawn picture.
-    // Wikipedia has no portrait of her, so her cover is the photograph grok found and looked at.
+    // 时代: the person both scouts name goes first. Of the two pictures the writer asks to be
+    // drawn, her profile shows the first, the comic, drawn in 时代's style. Wikipedia has no
+    // portrait of her, so her cover is the photograph grok found and looked at.
     let drawn_before = drawings_log.lock().unwrap().len();
     let profile = xabc::write(&state, xabc::Line::People, hot)
         .await
         .unwrap()
         .unwrap();
-    let (person, title, cover): (Option<String>, String, Option<i32>) = sqlx::query_as(
-        "SELECT a.person, a.title, i.width FROM articles a
-         LEFT JOIN article_images i ON i.id = a.cover WHERE a.id = $1",
-    )
-    .bind(profile)
-    .fetch_one(&state.pool)
-    .await
-    .unwrap();
+    type Profile = (Option<String>, String, String, Option<Uuid>, Option<i32>);
+    let profiled = |id: Uuid| {
+        sqlx::query_as::<_, Profile>(
+            "SELECT a.person, a.title, a.body, a.cover, i.width FROM articles a
+             LEFT JOIN article_images i ON i.id = a.cover WHERE a.id = $1",
+        )
+        .bind(id)
+        .fetch_one(&state.pool)
+    };
+    let (person, title, body, cover, width) = profiled(profile).await.unwrap();
     assert_eq!(
-        (person.as_deref(), title.as_str(), cover),
+        (person.as_deref(), title.as_str(), width),
         (Some("lisa-su"), "Lisa Su 的人物介绍", Some(640))
     );
-    assert_eq!(drawings_log.lock().unwrap().len(), drawn_before);
+    // The comic, as wide as the photograph, isn't the cover.
+    assert!(!body.contains(&cover.unwrap().to_string()));
+    let comics = drawings_log.lock().unwrap()[drawn_before..].to_vec();
+    assert_eq!(comics.len(), 1);
+    let prompt = comics[0]["prompt"].as_str().unwrap();
+    assert!(
+        prompt.starts_with("四格：他的一生\n画成一张四格漫画"),
+        "{prompt}"
+    );
+    assert!(
+        body.contains("*四个时刻（AI 生成）*") && !body.contains("插图"),
+        "{body}"
+    );
     let photo = photo_asked();
     assert!(
         photo["instructions"]
@@ -1914,8 +1939,8 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     assert!(material.contains("2.【全网】lisa su 的近况"));
 
     // Then the one grok named first; the scouts hear who was profiled lately. His article on
-    // Wikipedia leads with a photograph, so that is his cover, though his body shows no picture,
-    // and grok isn't asked for one.
+    // Wikipedia leads with a photograph, so that is his cover, though his body shows only his
+    // comic, and grok isn't asked for one.
     let photos = || {
         asked_log
             .lock()
@@ -1942,7 +1967,8 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         (person.as_deref(), portrait),
         (Some("jensen-huang"), Some(400))
     );
-    assert!(!body.contains("](image:"));
+    assert_eq!(body.matches("](image:").count(), 1);
+    assert!(body.contains("*四个时刻（AI 生成）*"));
     let searched = asked_log
         .lock()
         .unwrap()
@@ -1957,8 +1983,9 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     assert!(searched.contains("这些人物最近写过，这次不要选：lisa-su\n"));
 
     // Days later the first is brought up to date; a profile an administrator took back waits,
-    // and then nobody is left. With no portrait on Wikipedia and no photograph grok finds, the
-    // cover follows the picture the profile opens with now.
+    // and then nobody is left. Hers now reads like one written before 时代 drew comics, a
+    // photograph and no comic, so it gets one. With no portrait on Wikipedia and no photograph
+    // grok finds, the cover follows the picture the profile opens with now.
     let (photo, old) = (Uuid::new_v4(), Uuid::new_v4());
     for (image, name) in [(photo, "lisa"), (old, "old")] {
         sqlx::query(
@@ -1975,26 +2002,31 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     }
     sqlx::query(
         "UPDATE articles SET updated_at = now() - INTERVAL '4 days',
-           body = CASE WHEN id = $1 THEN body || $3 ELSE body END,
+           body = CASE WHEN id = $1 THEN $3 ELSE body END,
            cover = CASE WHEN id = $1 THEN $4 ELSE cover END,
            status = CASE WHEN id = $2 THEN 'pending' ELSE status END
          WHERE id IN ($1, $2)",
     )
     .bind(profile)
     .bind(other)
-    .bind(format!("\n\n![人像](image:{photo})\n*人像（例）*"))
+    .bind(format!(
+        "{}\n\n![人像](image:{photo})\n*人像（例）*",
+        "一个人的经历，".repeat(80)
+    ))
     .bind(old)
     .execute(&state.pool)
     .await
     .unwrap();
     sighting.store(false, Ordering::SeqCst);
+    let drawn_before = drawings_log.lock().unwrap().len();
     assert_eq!(
         xabc::write(&state, xabc::Line::People, hot).await.unwrap(),
         Some(profile)
     );
     sighting.store(true, Ordering::SeqCst);
-    let (title, revision, cover): (String, i32, Option<Uuid>) =
-        sqlx::query_as("SELECT title, revision, cover FROM articles WHERE id = $1")
+    assert_eq!(drawings_log.lock().unwrap().len(), drawn_before + 1);
+    let (title, revision, body, cover): (String, i32, String, Option<Uuid>) =
+        sqlx::query_as("SELECT title, revision, body, cover FROM articles WHERE id = $1")
             .bind(profile)
             .fetch_one(&state.pool)
             .await
@@ -2003,9 +2035,14 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         (title.as_str(), revision, cover),
         ("Lisa Su 的人物介绍（更新）", 2, Some(photo))
     );
+    assert!(
+        body.contains("*人像（例）*\n\n![四个时刻](image:"),
+        "{body}"
+    );
     let material = writing(&asked_log.lock().unwrap());
     assert!(material.contains("现有全文：\n标题：Lisa Su 的人物介绍\n\n一个人的经历，"));
     assert!(material.contains("他最近受关注的线索：\n1.【X 与全网】Lisa Su 的近况"));
+    assert!(!material.contains("是四格漫画"));
     assert!(matches!(
         xabc::write(&state, xabc::Line::People, hot).await,
         Err(AppError::Internal(message)) if message == "两路检索都没有找到可写的人物"
@@ -2081,24 +2118,42 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
             && article["film"] == false
     }));
 
-    // Brought up to date, a profile asks Wikipedia for its portrait again.
-    let before: Option<Uuid> = sqlx::query_scalar(
-        "UPDATE articles SET updated_at = now() - INTERVAL '4 days' WHERE id = $1 RETURNING cover",
+    // Brought up to date, a profile asks Wikipedia for its portrait again. It shows a photograph
+    // and then its comic, which the writer hears to keep, so nothing is drawn.
+    let talk = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO article_images (id, article_id, url, content_type, width, height, expires_at)
+         VALUES ($1, $2, 'https://media.example/files/talk.jpg', 'image/jpeg', 800, 600,
+                 now() + INTERVAL '1 day')",
+    )
+    .bind(talk)
+    .bind(other)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    let (before, shown): (Option<Uuid>, String) = sqlx::query_as(
+        "UPDATE articles SET updated_at = now() - INTERVAL '4 days', body = $2 || body
+         WHERE id = $1 RETURNING cover, body",
     )
     .bind(other)
+    .bind(format!("![演讲](image:{talk})\n*演讲（例）*\n\n"))
     .fetch_one(&state.pool)
     .await
     .unwrap();
+    let comic = crate::articles::pictures(&shown)[1];
+    let drawn_before = drawings_log.lock().unwrap().len();
     assert_eq!(
         xabc::write(&state, xabc::Line::People, hot).await.unwrap(),
         Some(other)
     );
-    let after: Option<Uuid> = sqlx::query_scalar("SELECT cover FROM articles WHERE id = $1")
-        .bind(other)
-        .fetch_one(&state.pool)
-        .await
-        .unwrap();
+    assert_eq!(drawings_log.lock().unwrap().len(), drawn_before);
+    assert!(
+        writing(&asked_log.lock().unwrap())
+            .contains("其中 ![](keep:2) 是四格漫画，留在「你可能不知道」后面，不再画新的。")
+    );
+    let (_, _, body, after, _) = profiled(other).await.unwrap();
     assert!(before.is_some() && after.is_some() && after != before);
+    assert_eq!(crate::articles::pictures(&body), [talk, comic]);
 
     let searched = || {
         asked_log
@@ -2114,8 +2169,8 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     };
 
     // A round of leaders passes over every person profiled, however long ago; a round of
-    // companies writes up a company under a key of its own, shown by a photograph grok looked
-    // at, and only once.
+    // companies writes up a company under a key of its own, with a comic, shown by a photograph
+    // grok looked at, and only once.
     sqlx::query(
         "UPDATE articles SET updated_at = now() - INTERVAL '4 days' WHERE person IS NOT NULL",
     )
@@ -2142,22 +2197,18 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         passed.contains("lisa-su") && passed.contains("jensen-huang"),
         "{passed}"
     );
+    let drawn_before = drawings_log.lock().unwrap().len();
     let firm = xabc::write(&state, xabc::Line::People, company)
         .await
         .unwrap()
         .unwrap();
-    let (person, title, cover): (Option<String>, String, Option<i32>) = sqlx::query_as(
-        "SELECT a.person, a.title, i.width FROM articles a
-         LEFT JOIN article_images i ON i.id = a.cover WHERE a.id = $1",
-    )
-    .bind(firm)
-    .fetch_one(&state.pool)
-    .await
-    .unwrap();
+    let (person, title, body, cover, width) = profiled(firm).await.unwrap();
     assert_eq!(
-        (person.as_deref(), title.as_str(), cover),
+        (person.as_deref(), title.as_str(), width),
         (Some("company:huawei"), "Huawei 的企业介绍", Some(640))
     );
+    assert_eq!(drawings_log.lock().unwrap().len(), drawn_before + 1);
+    assert!(body.contains("*四个时刻（AI 生成）*") && !body.contains(&cover.unwrap().to_string()));
     assert!(searched().contains("这一轮找各行各业举足轻重的企业"));
     assert!(
         photo_asked()["instructions"]
