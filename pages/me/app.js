@@ -4,7 +4,6 @@ import { createArticles } from "./articles.js";
 
 let session = null;
 let authController;
-let loginToken = null;
 const form = $("#topicForm");
 const numericFields = ["window_end", "max_items", "lookback_hours", "daily_run_cap", "sort_weight"];
 const publicFields = ["name_en", "description", "model", "reasoning_effort"];
@@ -22,33 +21,12 @@ bindDialogs();
 backToTop();
 bindEvents();
 buildScheduleInputs();
-const linkToken = takeLoginToken();
-void (linkToken ? confirmLogin(linkToken) : authenticate());
+void authenticate(takeLoginToken());
 
 function beginAuthRequest() {
   authController?.abort();
   authController = new AbortController();
   return authController.signal;
-}
-
-// A link signs in only after its address is confirmed, so a link someone else requested
-// cannot silently switch this browser into their account.
-async function confirmLogin(token) {
-  const signal = beginAuthRequest();
-  try {
-    const { email } = await api("/api/auth/email/check", { method: "POST", body: { token }, signal });
-    showAuth();
-    loginToken = token;
-    $("#confirmEmail").textContent = email;
-    $("#loginForm").classList.add("hidden");
-    $("#loginConfirm").classList.remove("hidden");
-    $("#confirmLogin").focus();
-  } catch (error) {
-    if (!signal.aborted) {
-      showAuth();
-      reportError(error);
-    }
-  }
 }
 
 async function authenticate(token) {
@@ -84,11 +62,9 @@ function bindEvents() {
     });
   });
   $("#sendAgain").addEventListener("click", resetLoginForm);
-  $("#rejectLogin").addEventListener("click", resetLoginForm);
-  $("#confirmLogin").addEventListener("click", () => void authenticate(loginToken));
   window.addEventListener("hashchange", () => {
     const token = takeLoginToken();
-    if (token) void confirmLogin(token);
+    if (token) void authenticate(token);
   });
   $("#logoutButton").addEventListener("click", () => withBusy($("#logoutButton"), "退出中…", async () => {
     await session.request("/api/auth/logout", { method: "POST" });
@@ -153,10 +129,8 @@ function takeLoginToken() {
 }
 
 function resetLoginForm() {
-  loginToken = null;
   $("#loginForm").classList.remove("hidden");
   $("#mailSent").classList.add("hidden");
-  $("#loginConfirm").classList.add("hidden");
   $("#sentEmail").textContent = "";
   $("#devLoginLink").removeAttribute("href");
   $("#email").focus();

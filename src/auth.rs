@@ -139,23 +139,6 @@ pub(crate) async fn start_email_login(
     }))
 }
 
-/// Names the account a login link belongs to without spending it, so the page asks before
-/// signing in and a link requested by someone else cannot switch this browser silently.
-/// Whoever holds the link could sign in with it anyway.
-pub(crate) async fn check_email_login(
-    State(state): State<AppState>,
-    ApiJson(request): ApiJson<EmailLoginToken>,
-) -> Result<Json<serde_json::Value>> {
-    let email = sqlx::query_scalar::<_, String>(
-        "SELECT email FROM email_login_tokens WHERE token_hash = $1 AND used_at IS NULL AND expires_at > NOW()",
-    )
-    .bind(hash_token(request.token.trim()))
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::Unauthorized("登录链接无效或已失效".into()))?;
-    Ok(Json(serde_json::json!({ "email": email })))
-}
-
 pub(crate) async fn consume_email_login(
     State(state): State<AppState>,
     ApiJson(request): ApiJson<EmailLoginToken>,
