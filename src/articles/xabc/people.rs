@@ -3,14 +3,16 @@
 //! about most now, two for people who lead their fields and one for a company that weighs in its
 //! industry. Both scouts name candidates and one is written about (`pick`): anew, or, for a
 //! person talked about again once their profile is `REVISE_AFTER_DAYS` days old, brought up to
-//! date. Leaders and companies are written once. Searching, writing and pictures are 分享's
+//! date. Leaders and companies are written once. An administrator may name a person or a
+//! company to write about at once (`named`), which is written up anew or brought up to date
+//! however lately it was. Searching, writing and pictures are 分享's
 //! (`super`), but an article also shows one comic of its subject, drawn in a style of its own
 //! (`comic`), and the lists show its subject: a person's portrait on Wikipedia (`portrait`), or
 //! else a photograph grok found and looked at, which is how a company is shown too (`sighted`).
 use super::{
-    ACCEPT, Drafted, KEEPING, KEPT, Line, Picture, SEARCH_TIME, Slot, Subject, Wanted, draft,
-    drawn, figures, finish, images, linked, listed, log, look, pick, placed, publish, revise,
-    uncited, uploaded,
+    ACCEPT, Drafted, Found, KEEPING, KEPT, Line, Picture, SEARCH_TIME, Slot, Subject, Wanted,
+    draft, drawn, figures, finish, images, key, linked, listed, log, look, pick, placed, publish,
+    revise, uncited, uploaded,
 };
 use crate::{
     ai,
@@ -120,18 +122,48 @@ pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -
     }
     let mut found = look(state, Line::People, &input, &HashSet::new()).await;
     let passed: HashSet<String> = written.into_iter().collect();
-    let (key, finds) = pick(found.finds, &passed, usize::MAX)
+    (_, found.finds) = pick(found.finds, &passed, usize::MAX)
         .ok_or_else(|| AppError::Internal(format!("两路检索都没有找到可写的{kind}").into()))?;
-    let subject = if company {
-        format!("{COMPANY}{key}")
-    } else {
-        key
-    };
-    let name = finds[0].1.subject.trim();
-    let material = format!("今天是 {today}。\n{kind}：{name}\n");
     // Only a person talked about again is brought up to date; leaders and companies are written
     // once, and the unique key keeps a second article out.
-    let due: Option<Due> = if round == Round::Hot {
+    profile(state, author, since, company, found, round == Round::Hot).await
+}
+
+/// Profiles the person or the company an administrator names, whichever the scouts tell it is,
+/// or brings its profile up to date.
+pub(super) async fn named(state: &AppState, author: i64, name: &str) -> Result<Uuid> {
+    let since = Utc::now();
+    let today = since.with_timezone(&state.config.timezone).date_naive();
+    let input = format!("今天是 {today}。\n{NAMED}{name}");
+    let mut found = look(state, Line::People, &input, &HashSet::new()).await;
+    (_, found.finds) = pick(found.finds, &HashSet::new(), usize::MAX)
+        .ok_or_else(|| AppError::Internal(format!("两路检索都没有查到「{name}」").into()))?;
+    let company = found.finds[0].1.company;
+    profile(state, author, since, company, found, true).await
+}
+
+/// Writes up the person or the company `found` holds the finds about, or brings its profile up
+/// to date when it has one and may (`revisable`).
+async fn profile(
+    state: &AppState,
+    author: i64,
+    since: DateTime<Utc>,
+    company: bool,
+    mut found: Found,
+    revisable: bool,
+) -> Result<Uuid> {
+    let finds = &found.finds;
+    let name = finds[0].1.subject.trim();
+    let (kind, prefix, writing, style) = if company {
+        ("企业", COMPANY, COMPANY_WRITING, format!("{COMIC}{NOBODY}"))
+    } else {
+        ("人物", "", WRITING, COMIC.to_owned())
+    };
+    let subject = format!("{prefix}{}", key(name));
+    let zone = state.config.timezone;
+    let today = Utc::now().with_timezone(&zone).date_naive();
+    let material = format!("今天是 {today}。\n{kind}：{name}\n");
+    let due: Option<Due> = if revisable {
         sqlx::query_as(
             "SELECT id, title, body, revision, cover, updated_at FROM articles WHERE person = $1",
         )
@@ -142,12 +174,7 @@ pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -
         None
     };
     let Some(due) = due else {
-        let material = format!("{material}线索：\n{}", listed(&finds));
-        let (writing, style) = if company {
-            (COMPANY_WRITING, format!("{COMIC}{NOBODY}"))
-        } else {
-            (WRITING, COMIC.to_owned())
-        };
+        let material = format!("{material}线索：\n{}", listed(finds));
         let drafted = comic(draft(state, writing, &material).await?, None, &style);
         found.usage += drafted.usage;
         found.known.extend(drafted.cited);
@@ -173,36 +200,31 @@ pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -
     // The profile's links were checked when it went out.
     found.known.extend(linked(&due.body));
     let (body, kept) = figures(&due.body);
-    // The comic the profile shows, drawn and captioned as one, which the writer hears to keep.
+    // The comic the profile shows, which the writer hears to keep: the first picture drawn for
+    // it, since the comic follows 「你可能不知道」 and illustrations come after it.
     let shown = kept
         .iter()
-        .position(|figure| {
-            drawn(figure)
-                && figure
-                    .lines()
-                    .last()
-                    .is_some_and(|line| line.starts_with(&format!("*{COMIC_MARK}")))
-        })
+        .position(|figure| drawn(figure))
         .map(|index| index + 1);
     let note = shown.map_or_else(String::new, |number| {
         format!("其中 ![]({KEPT}{number}) 是四格漫画，留在「你可能不知道」后面，不再画新的。\n\n")
     });
     let last = due.updated_at.with_timezone(&zone).format("%Y-%m-%d");
     let material = format!(
-        "{material}这篇人物介绍上次更新于 {last}，现有全文：\n标题：{}\n\n{body}\n\n{note}他最近受关注的线索：\n{}",
+        "{material}这篇{kind}介绍上次更新于 {last}，现有全文：\n标题：{}\n\n{body}\n\n{note}最近的线索：\n{}",
         due.title,
-        listed(&finds)
+        listed(finds)
     );
     let drafted = comic(
-        draft(state, &format!("{WRITING}{REVISING}{KEEPING}"), &material).await?,
+        draft(state, &format!("{writing}{REVISING}{KEEPING}"), &material).await?,
         shown,
-        COMIC,
+        &style,
     );
     found.usage += drafted.usage;
     found.known.extend(drafted.cited);
     let mut article = finish(state, drafted.article, found.known, &kept, false).await?;
     // The cover is the subject's picture, or else the picture the profile opens with now.
-    article.cover = cover(state, name, &article.title, false).await;
+    article.cover = cover(state, name, &article.title, company).await;
     let cover = article
         .cover
         .as_ref()
@@ -222,9 +244,9 @@ pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -
 
 /// A draft whose pictures come from pages or are drawn as 分享's are, but for its comic: the
 /// first picture the body places whose prompt starts with `COMIC_MARK`, drawn in 时代's style
-/// (`style`) under a caption that says what it is. No other is drawn, nor any while the body keeps the
-/// comic the profile shows (`shown`, its number among the figures kept). The body is read as
-/// `finish` will place its pictures, without search marks.
+/// (`style`). No other is drawn, nor any while the body keeps the comic the profile shows
+/// (`shown`, its number among the figures kept). The body is read as `finish` will place its
+/// pictures, without search marks.
 fn comic(mut drafted: Drafted, shown: Option<usize>, style: &str) -> Drafted {
     let article = &mut drafted.article;
     let body = uncited(&article.body);
@@ -246,12 +268,6 @@ fn comic(mut drafted: Drafted, shown: Option<usize>, style: &str) -> Drafted {
     for (number, picture) in (1..).zip(&mut article.pictures) {
         if Some(number) == drawing {
             picture.prompt = format!("{}\n{style}", picture.prompt.trim());
-            let caption = picture.caption.trim();
-            if !caption.starts_with(COMIC_MARK) {
-                picture.caption = format!("{COMIC_MARK}：{caption}")
-                    .trim_end_matches('：')
-                    .to_owned();
-            }
         } else if asks(picture) {
             picture.prompt.clear();
         }
@@ -377,7 +393,7 @@ async fn sighted(state: &AppState, name: &str, title: &str, company: bool) -> Op
 
 pub(super) const SEARCHING: &str = "你是 XABC「时代」栏目的选题编辑。XABC 在 xabcnews.com 为这个时代的人物和企业写全方位的长文，人物再次成为焦点时就更新，读者是关心科技、科学、商业和世界的中文读者。
 今天请你{scope}，按输入里这一轮的要求找线索。
-每条线索是一个人或一家企业：name 写最常用的英文名，中国人用拼音，企业写通行的英文名（比如 Huawei、CATL、TSMC），只写名字，不加头衔、括号和说明；title 一句话说明是谁、为什么值得写；points 写写作用得上的经历、成就和近况，以及相关的公司和机构；sources 里要有维基百科、百度百科词条或官方介绍页；pictures 优先给有本人或企业照片的页面。
+每条线索是一个人或一家企业：name 写最常用的英文名，中国人用拼音，企业写通行的英文名（比如 Huawei、CATL、TSMC），只写名字，不加头衔、括号和说明；company 是企业写 true，是人写 false；title 一句话说明是谁、为什么值得写；points 写写作用得上的经历、成就和近况，以及相关的公司和机构；sources 里要有维基百科、百度百科词条或官方介绍页；pictures 优先给有本人或企业照片的页面。
 ";
 
 /// The round of people talked about most now.
@@ -387,6 +403,9 @@ const HOT: &str = "这一轮找此刻最受关注的人物：放眼全球的网�
 /// The round of people who lead their fields.
 const LEADERS: &str = "这一轮不看热度，找各行各业有头有脸的人物：在自己的领域做成了公认的大事的人，不论低调与否、最近是否上过热搜，至少 8 位，按分量从高到低排列。包括科技、制造、能源、汽车、消费、零售、医药、金融、互联网等行业的企业家和企业掌门人，大公司里主导关键业务和技术的核心人物，以及科学家、工程师和医学等领域公认的带头人，比如两院院士、国家最高科学技术奖和国际大奖的得主、重大突破的带头人。中国（含港澳台）的人物占一半以上，也看美国、欧洲、日本、韩国、印度等各地；最近一个月本人或他的企业、团队有实质进展的排在前面。只选公开身份清楚、有维基百科、百度百科词条或官方介绍页的人；不选政治人物，不选人文、艺术、娱乐和体育领域的人物，也不选网红和未成年人。why 写他的成就、规模、奖项和行业地位。
 ";
+
+/// The round of the person or the company an administrator names, whose name follows.
+const NAMED: &str = "这一轮不找新的人选，只写管理员点名的这一位人物或这一家企业：先确认是谁，同名的很多，选最知名的那一个；再把他或它的公开资料和近况查全，交回关于他或它的线索，每条的 name 都写同一个英文名。why 写为什么值得关注，points 写经历、成就和最近的动态。点名的若是中国的政治人物，就不交回线索。\n点名：";
 
 /// The round of a company.
 const COMPANIES: &str = "这一轮找各行各业举足轻重的企业：世界级的公司和各行业的隐形冠军，至少 8 家，按分量从高到低排列，看科技、制造、能源、汽车、消费、零售、医药、金融、互联网等行业。中国（含港澳台）的企业占一半以上，也看美国、欧洲、日本、韩国、印度等各地；最近一个月有实质进展（新产品、财报、技术突破、重大合同）的排在前面。只选有维基百科、百度百科词条或官网的企业；不选文化、艺术、娱乐、体育和传媒企业。why 写它的规模、地位和竞争力。
@@ -401,11 +420,11 @@ const WRITING: &str = "你是 XABC，在 xabcnews.com 的「时代」栏目写�
 - 同名的人很多：确认每条资料说的都是这个人，对不上的不用。
 - 人名第一次出现写通行的中文译名并附原名，标题带上他的中文名。
 - 配图以页面上的真实照片为主：pictures 的 page 填带图的页面，prompt 留空。第一张放在正文开头，是他本人的照片：page 填他的维基百科条目（英文或中文），没有条目才用他的官方介绍页或本人的 X 帖子。其余配上与他的工作、演讲、产品和公司有关的报道和页面；你看不到这些页面上的图，图注就写这张图出自哪篇报道、讲的什么事，不说画面里是谁。
-- 照片说不清的地方，比如技术和成果的原理、产品与业务的全貌、正文写到的重要场景，可以加 AI 插图，帮读者看懂、添点乐趣：page 留空，prompt 写画面描述；这些插图不画真实人物，他本人只出现在下面的四格漫画里。
+- 照片说不清的地方，比如技术和成果的原理、产品与业务的全貌、正文写到的重要场景，可以加 AI 插图，帮读者看懂、添点乐趣：page 留空，prompt 写画面描述；这些插图不画真实人物，都放在四格漫画后面，他本人只出现在四格漫画里。
 - 「你可能不知道」后面单独成段放一组四格漫画，page 留空：prompt 以「四格漫画：」开头，先写他的中文名和原名，再按时间顺序写四格各画什么，每格是正文写到、有出处的一个关键时刻，写清年份、地点、他当时的年纪和样子、在做什么；只画公开的经历和轶事，不画争议、官司、传闻和私生活；同框的其他人只当陪衬，不写名字。画风和版式由程序统一，不用写。caption 用一句话依次写出这四个时刻和年份。政治人物不画漫画。
 ";
 
-const REVISING: &str = "- 这次是更新：输入里有这篇人物介绍的现有全文和他最近受关注的线索。在现有全文的基础上把它改得更好：把新的动态按时间写进「近况」，补上以前缺的资料，修正不准确和已过时的说法；「近况」只留最近一两年的要事，更早的写进经历。交回更新后的完整全文。";
+const REVISING: &str = "- 这次是更新：输入里有这篇介绍的现有全文和最近的线索。在现有全文的基础上把它改得更好：把新的动态按时间写进「近况」，补上以前缺的资料，修正不准确和已过时的说法；「近况」只留最近一两年的要事，更早的写进经历。交回更新后的完整全文。";
 
 const COMPANY_WRITING: &str = "你是 XABC，在 xabcnews.com 的「时代」栏目写企业，读者是关心科技、科学、商业和世界的中文读者。
 下面是这次要写的企业和两位编辑找来的线索。多用 web_search 把它的公开资料查全：维基百科等资料、官网、年报和财报、权威媒体的报道和长篇特写、创始人和管理层的访谈；然后写一篇完整的中文企业长文。
@@ -415,11 +434,11 @@ const COMPANY_WRITING: &str = "你是 XABC，在 xabcnews.com 的「时代」栏
 - 只写公开、查得到出处的信息：数字和引语都要来自资料和检索；传闻写明是传闻，有争议的事写清各方的说法。同名的企业很多：确认每条资料说的都是这家企业，对不上的不用。
 - 企业名第一次出现写通行的中文名并附原名，标题带上它的中文名；人名第一次出现写通行的中文译名并附原名。
 - 配图以页面上的真实照片为主：pictures 的 page 填带图的页面，prompt 留空；总部、工厂、门店、产品和重要场合的照片都可以，第一张放在正文开头。你看不到这些页面上的图，图注就写这张图出自哪篇报道、讲的什么事，不描述画面。
-- 照片说不清的地方，比如技术和产品的原理、业务版图、产业链和重要的场景，可以加 AI 插图，帮读者看懂、添点乐趣：page 留空，prompt 写画面描述；这些插图不画真实人物。
+- 照片说不清的地方，比如技术和产品的原理、业务版图、产业链和重要的场景，可以加 AI 插图，帮读者看懂、添点乐趣：page 留空，prompt 写画面描述；这些插图不画真实人物，都放在四格漫画后面。
 - 「你可能不知道」后面单独成段放一组四格漫画，page 留空：prompt 以「四格漫画：」开头，先写企业的中文名和原名，再按时间顺序写四格各画什么：创立、转折、标志性的产品、现在，每格是正文写到、有出处的一个时刻，写清年份、地点和画面；每格以产品、场所和事件为主，人物只当陪衬，不画成哪一个具体的人，也不写名字；不画争议和官司。画风和版式由程序统一，不用写。caption 用一句话依次写出这四个时刻和年份。
 ";
 
-/// How the prompt of 时代's comic starts, and its caption.
+/// How the writer starts the prompt of 时代's comic.
 const COMIC_MARK: &str = "四格漫画";
 /// How 时代's comic is drawn, after what the writer asks its four panels to show.
 const COMIC: &str = "画成一张四格漫画：2×2 四格，按时间顺序从左上到右下，格与格之间留白。画风统一用清爽的扁平线描漫画，像报刊上的人物漫画和连环画：线条干净，平涂上色，色彩柔和温暖；每一格的人物和背景都是漫画，不画成照片或写实的绘画。同一个人出现在几格里时，要认得出是同一个人，样子随年代变化；神态自然，不夸张丑化。";
@@ -454,13 +473,12 @@ mod tests {
 
     #[test]
     fn a_profile_draws_its_illustrations_and_one_comic_unless_it_keeps_the_one_it_shows() {
-        // The prompts and captions left, for a draft whose body reads so, given the comic the
-        // profile shows.
-        let left = |body: &str, shown: Option<usize>| -> Vec<(String, String)> {
+        // The prompts left, for a draft whose body reads so, given the comic the profile shows.
+        let left = |body: &str, shown: Option<usize>| -> Vec<String> {
             let wanted = |page: &str, prompt: &str| Wanted {
                 page: page.into(),
                 prompt: prompt.into(),
-                caption: "四个时刻".into(),
+                caption: String::new(),
             };
             let drafted = Drafted {
                 article: super::super::Article {
@@ -482,65 +500,21 @@ mod tests {
                 .article
                 .pictures
                 .into_iter()
-                .map(|picture| (picture.prompt, picture.caption))
+                .map(|picture| picture.prompt)
                 .collect()
         };
-        let as_asked = |prompt: &str| (prompt.to_owned(), "四个时刻".to_owned());
-        let photo = as_asked("四格漫画：照片");
-        let illustration = as_asked("一幅示意图");
-        let none = as_asked("");
-        let drawn = (
-            format!("四格漫画：她的一生\n{COMIC}"),
-            "四格漫画：四个时刻".to_owned(),
-        );
+        let styled = format!("四格漫画：她的一生\n{COMIC}");
+        let drawn = ["四格漫画：照片", "", "一幅示意图", styled.as_str(), ""];
         // A page's picture is fetched and an illustration drawn as asked; of the comics the body
-        // places, not inline, the first is drawn, in 时代's style under a caption naming it.
+        // places, not inline, the first is drawn, in 时代's style.
         let body = "![](img:1)\n\n行内 ![](img:2) 的图。\n\n![](img:3)\n\n![](img:4)\n\n![](img:5)";
-        assert_eq!(
-            left(body, None),
-            [
-                photo.clone(),
-                none.clone(),
-                illustration.clone(),
-                drawn.clone(),
-                none.clone()
-            ]
-        );
+        assert_eq!(left(body, None), drawn);
         // A revision that keeps the comic the profile shows draws no other; one that drops it
         // draws as a new profile does.
         let body = "![](keep:1)\n\n![](keep:2)\n\n![](img:3)\n\n![](img:4)";
-        let kept = [
-            photo.clone(),
-            none.clone(),
-            illustration.clone(),
-            none.clone(),
-            none.clone(),
-        ];
+        let kept = ["四格漫画：照片", "", "一幅示意图", "", ""];
         assert_eq!(left(body, Some(2)), kept);
-        assert_eq!(
-            left(body, Some(3)),
-            [photo, none.clone(), illustration, drawn, none]
-        );
-        // A comic's caption is named so once; an empty one is the name alone.
-        for (caption, named) in [("", "四格漫画"), ("四格漫画：已有", "四格漫画：已有")]
-        {
-            let mut drafted = Drafted {
-                article: super::super::Article {
-                    title: String::new(),
-                    body: "![](img:1)".into(),
-                    pictures: vec![Wanted {
-                        page: String::new(),
-                        prompt: "四格漫画：她的一生".into(),
-                        caption: caption.into(),
-                    }],
-                    cover: String::new(),
-                },
-                cited: Vec::new(),
-                usage: Usage::default(),
-            };
-            drafted = comic(drafted, None, COMIC);
-            assert_eq!(drafted.article.pictures[0].caption, named);
-        }
+        assert_eq!(left(body, Some(3)), drawn);
         // A search mark after the comic it keeps goes before its pictures are placed.
         let body = "![](keep:2) ([example.com](https://example.com/a))\n\n![](img:3)\n\n![](img:4)";
         assert_eq!(left(body, Some(2)), kept);

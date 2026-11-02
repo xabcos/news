@@ -3,7 +3,8 @@ import { $, node, withBusy, toast, reportError, confirmDelete, formatTime } from
 const statusText = { draft: "草稿", pending: "待审", published: "已公开" };
 
 // 分享 in the workspace: the pen name, the reader's own articles and, for an administrator,
-// what waits for a ❤️. Requests share the session's abort signal.
+// what waits for a ❤️ and whom 时代 writes about at once. Requests share the session's abort
+// signal.
 export function createArticles(session) {
   const signal = session.controller.signal;
   let author = null;
@@ -17,6 +18,16 @@ export function createArticles(session) {
     event.preventDefault();
     editName();
     toast("写文章前先设置笔名");
+  }, { signal });
+  $("#profileForm").classList.toggle("hidden", !session.admin);
+  $("#profileForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    void withBusy($("#profileForm button"), "提交中…", async () => {
+      const name = $("#profileName").value.trim();
+      await session.request("/api/admin/people", { method: "POST", body: { name } });
+      $("#profileName").value = "";
+      toast(`时代开始写「${name}」，写好后排在时代的最前面`);
+    });
   }, { signal });
   $("#penNameForm").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -153,6 +164,7 @@ export function createArticles(session) {
       for (const id of ["articleList", "reviewLists"]) $(`#${id}`).replaceChildren();
       $("#reviewLists").classList.add("hidden");
       $("#penNameForm").classList.add("hidden");
+      $("#profileForm").classList.add("hidden");
       $("#authorLine").textContent = "";
       $("#articlesMessage").classList.add("hidden");
     },

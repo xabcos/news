@@ -114,6 +114,7 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/api/articles/views", get(views))
         .route("/api/admin/articles", get(queue))
         .route("/api/admin/articles/{id}", patch(review))
+        .route("/api/admin/people", post(profile))
         .merge(pages::router())
 }
 
@@ -713,6 +714,21 @@ async fn review(
         .await?
         .ok_or_else(|| AppError::Conflict("文章刚有修改或状态已变，请刷新后再看".into()))?;
     Ok(Json(json!({ "status": status, "revision": revision })))
+}
+
+/// 时代 writes at once about the person or the company an administrator names.
+async fn profile(
+    State(state): State<AppState>,
+    user: User,
+    ApiJson(request): ApiJson<Name>,
+) -> Result<StatusCode> {
+    auth::require_admin(&user)?;
+    let name = request.name.trim();
+    if name.is_empty() {
+        return Err(AppError::BadRequest("写上人物或企业的名字".into()));
+    }
+    xabc::name(&state, name.to_owned())?;
+    Ok(StatusCode::ACCEPTED)
 }
 
 #[derive(Clone, Copy)]

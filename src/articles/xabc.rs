@@ -3,7 +3,8 @@
 //! sharing; the writing model picks one subject from both sets of finds, reads further where it
 //! needs to and writes it up its own way. For 文娱 · 解说, every four hours, it explains the work
 //! 影视 discusses most, or revises its explanation (`film`). For 时代, every hour, it
-//! profiles a person or a company, or brings a profile up to date (`people`). For
+//! profiles a person or a company, or brings a profile up to date, and at once whoever an
+//! administrator names (`people`). For
 //! 追踪, every two hours, it follows the hottest event with something new, anew or in the
 //! article it already has (`tracker`). For 数码 · 评测, every two hours, it reviews the product
 //! 数码 discusses most from what reviewers and owners report, or brings its review up to date
@@ -125,13 +126,13 @@ impl Line {
         }
     }
 
-    /// What each find names for the line's `pick`, as the search schema calls it: 时代's
-    /// person and 追踪's event. The other lines' finds name nothing.
-    fn subject(self) -> Option<&'static str> {
+    /// The fields the line's finds have beyond every find's, with their schema types: 时代's
+    /// person or company by name and whether it is a company, 追踪's event by slug.
+    fn fields(self) -> &'static [(&'static str, &'static str)] {
         match self {
-            Self::People => Some("name"),
-            Self::Tracker => Some("event"),
-            Self::Share | Self::Film | Self::Review => None,
+            Self::People => &[("name", "string"), ("company", "boolean")],
+            Self::Tracker => &[("event", "string")],
+            Self::Share | Self::Film | Self::Review => &[],
         }
     }
 }
@@ -201,10 +202,42 @@ async fn start(state: &AppState, line: Line) {
     }
     let since = now - line.interval();
     let worker = state.clone();
+    run(
+        state,
+        line,
+        async move { write(&worker, line, since).await },
+    );
+}
+
+/// 时代 writes at once about the person or the company an administrator names, unless it is
+/// writing already.
+pub(crate) fn name(state: &AppState, name: String) -> Result<()> {
+    let line = Line::People;
+    if !state.in_flight().insert(line.job().to_owned()) {
+        return Err(AppError::Conflict("时代正在写一篇，写完再点".into()));
+    }
+    let worker = state.clone();
+    run(state, line, async move {
+        let _turn = turn(&worker).await?;
+        people::named(&worker, author(&worker).await?, &name)
+            .await
+            .map(Some)
+    });
+    Ok(())
+}
+
+/// Writes the line's article in the background; then the line waits its interval, or longer
+/// after a failure.
+fn run(
+    state: &AppState,
+    line: Line,
+    writing: impl Future<Output = Result<Option<Uuid>>> + Send + 'static,
+) {
+    let worker = state.clone();
     state.spawn_worker(async move {
         let outcome = tokio::select! {
             _ = worker.shutdown.cancelled() => Err(AppError::Internal("服务关闭，XABC 的文章没有写完".into())),
-            outcome = write(&worker, line, since) => outcome,
+            outcome = writing => outcome,
         };
         match outcome {
             Ok(written) => {
@@ -273,12 +306,7 @@ pub(super) async fn write(
     line: Line,
     since: DateTime<Utc>,
 ) -> Result<Option<Uuid>> {
-    let _slot = state
-        .run_slots
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|_| AppError::Internal("调度器已关闭".into()))?;
+    let _turn = turn(state).await?;
     let author = author(state).await?;
     match line {
         Line::Share => share(state, author, since).await.map(Some),
@@ -287,6 +315,16 @@ pub(super) async fn write(
         Line::Tracker => tracker::write(state, author, since).await,
         Line::Review => review::write(state, author, since).await.map(Some),
     }
+}
+
+/// XABC's turn among the runs the scheduler allows at once, held while it writes.
+async fn turn(state: &AppState) -> Result<OwnedSemaphorePermit> {
+    state
+        .run_slots
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| AppError::Internal("调度器已关闭".into()))
 }
 
 /// Finds two models look for, one 分享 article written from them.
@@ -552,11 +590,14 @@ struct Find {
     points: String,
     sources: Vec<String>,
     pictures: Vec<String>,
-    /// What the find is about, under the name its line gives it (`Line::subject`): for 时代 the
+    /// What the find is about, under the name its line gives it (`Line::fields`): for 时代 the
     /// person or the company by its English name, for 追踪 the event by its slug. Other finds
     /// name nothing.
     #[serde(default, alias = "name", alias = "event")]
     subject: String,
+    /// Whether 时代's find is about a company: what an administrator names may be either.
+    #[serde(default)]
+    company: bool,
 }
 
 #[derive(Deserialize)]
@@ -578,8 +619,8 @@ async fn search(state: &AppState, line: Line, scout: Scout, input: &str) -> Resu
         "sources": { "type": "array", "items": { "type": "string" } },
         "pictures": { "type": "array", "items": { "type": "string" } },
     });
-    if let Some(subject) = line.subject() {
-        find[subject] = json!({ "type": "string" });
+    for (field, kind) in line.fields() {
+        find[*field] = json!({ "type": kind });
     }
     let find = ai::object(find);
     let body = json!({
@@ -1446,6 +1487,7 @@ mod tests {
                 sources: Vec::new(),
                 pictures: Vec::new(),
                 subject: person.into(),
+                company: false,
             },
         )
     }

@@ -273,6 +273,7 @@ mod tests {
                 sources: Vec::new(),
                 pictures: Vec::new(),
                 subject: event.into(),
+                company: false,
             },
         )
     }

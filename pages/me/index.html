@@ -10,7 +10,7 @@
   <title>𝑵𝒆𝒘𝒔 · 工作台</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
   <link rel="stylesheet" href="/styles.css?v=sides">
-  <link rel="stylesheet" href="/me/styles.css?v=preview">
+  <link rel="stylesheet" href="/me/styles.css?v=named">
 </head>
 <body>
   <main class="workspace-shell">
@@ -73,6 +73,10 @@
           <label for="penName">笔名</label>
           <div class="inline"><input id="penName" name="name" minlength="2" maxlength="24" placeholder="2–24 个字，读者看到的名字" required><button class="button button-primary button-small" type="submit">保存</button></div>
           <p class="field-hint muted">读者只看到笔名，看不到邮箱。</p>
+        </form>
+        <form id="profileForm" class="profile-form hidden">
+          <label for="profileName">时代</label>
+          <div class="inline"><input id="profileName" name="name" maxlength="100" placeholder="人物或企业的名字" required><button class="button button-primary button-small" type="submit">立即写</button></div>
         </form>
         <div id="reviewLists" class="review-lists hidden"></div>
         <p id="articlesMessage" class="empty-state hidden" role="status"></p><ul id="articleList" class="item-list"></ul>
