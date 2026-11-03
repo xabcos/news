@@ -3,8 +3,8 @@
 //! about most now, two for people who lead their fields and one for a company that weighs in its
 //! industry. Both scouts name candidates and one is written about (`pick`): anew, or, for a
 //! person talked about again once their profile is `REVISE_AFTER_DAYS` days old, brought up to
-//! date. Leaders and companies are written once. An administrator may name a person or a
-//! company to write about at once (`named`), which is written up anew or brought up to date
+//! date. Leaders and companies are written once. The people and the companies an administrator
+//! names go first, one after another (`named`), each written up anew or brought up to date
 //! however lately it was. Searching, writing and pictures are 分享's
 //! (`super`), but an article also shows one comic of its subject, drawn in a style of its own
 //! (`comic`), and the lists show its subject: a person's portrait on Wikipedia (`portrait`), or

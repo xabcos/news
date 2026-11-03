@@ -716,19 +716,15 @@ async fn review(
     Ok(Json(json!({ "status": status, "revision": revision })))
 }
 
-/// 时代 writes at once about the person or the company an administrator names.
-async fn profile(
-    State(state): State<AppState>,
-    user: User,
-    ApiJson(request): ApiJson<Name>,
-) -> Result<StatusCode> {
+/// Puts the person or the company an administrator names on 时代's list, which it writes
+/// before its own rounds, and tells how many names wait ahead.
+async fn profile(user: User, ApiJson(request): ApiJson<Name>) -> Result<Json<Value>> {
     auth::require_admin(&user)?;
     let name = request.name.trim();
     if name.is_empty() {
         return Err(AppError::BadRequest("写上人物或企业的名字".into()));
     }
-    xabc::name(&state, name.to_owned())?;
-    Ok(StatusCode::ACCEPTED)
+    Ok(Json(json!({ "ahead": xabc::name(name.to_owned()) })))
 }
 
 #[derive(Clone, Copy)]

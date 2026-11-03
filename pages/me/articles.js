@@ -5,7 +5,7 @@ const statusText = { draft: "草稿", pending: "待审", published: "已公开" 
 const kind = (article) => article.film ? "解说" : article.person ? "时代" : article.event ? "追踪" : article.product ? "评测" : "分享";
 
 // 分享 in the workspace: the pen name, the reader's own articles and, for an administrator,
-// what waits for a ❤️ and whom 时代 writes about at once. Requests share the session's abort
+// what waits for a ❤️ and whom 时代 writes about next. Requests share the session's abort
 // signal.
 export function createArticles(session) {
   const signal = session.controller.signal;
@@ -26,9 +26,9 @@ export function createArticles(session) {
     event.preventDefault();
     void withBusy($("#profileForm button"), "提交中…", async () => {
       const name = $("#profileName").value.trim();
-      await session.request("/api/admin/people", { method: "POST", body: { name } });
+      const { ahead } = await session.request("/api/admin/people", { method: "POST", body: { name } });
       $("#profileName").value = "";
-      toast(`时代开始写「${name}」，写好后排在时代的最前面`);
+      toast(`「${name}」已排进时代，${ahead ? `前面还有 ${ahead} 个` : "下一篇就写它"}`);
     });
   }, { signal });
   $("#penNameForm").addEventListener("submit", (event) => {

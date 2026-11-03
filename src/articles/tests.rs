@@ -1134,13 +1134,13 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                         // 时代: in a round of people talked about now, grok names two people and
                         // the briefing model one of them; a round of leaders names Ren Zhengfei,
                         // a round of companies Huawei, and a round an administrator asks for
-                        // whom they name. Huawei is a company.
+                        // whom they name, unless nobody can be found. Huawei is a company.
                         let people = instructions.contains("「时代」");
                         if request["text"]["format"]["name"] == "finds" && people {
                             let input = request["input"][0]["content"].as_str().unwrap_or_default();
                             let grok = request["tools"].as_array().unwrap().len() == 2;
                             let named = if let Some((_, name)) = input.split_once("点名：") {
-                                vec![name]
+                                if name == "查无此人" { Vec::new() } else { vec![name] }
                             } else if input.contains("有头有脸") {
                                 vec!["Lisa Su", if grok { "Ren Zhengfei" } else { "ren zhengfei" }]
                             } else if input.contains("举足轻重的企业") {
@@ -2263,8 +2263,8 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
             .contains("Huawei 的企业介绍")
     );
 
-    // An administrator names one for 时代 to write about at once, unless it is writing already,
-    // and 时代 writes it in the background.
+    // An administrator names people and companies for 时代, which lines them up, each once, and
+    // writes them one after another before its own rounds, as the scheduler starts it.
     let (_, administrator) = account(&state, "admin").await;
     let origin = state.config.public_base_url.origin().ascii_serialization();
     let name = |name: &str| {
@@ -2274,11 +2274,15 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
             .json(&json!({ "name": name }))
             .send()
     };
-    let written = |subject: &'static str| {
+    let ahead = |subject: &'static str| {
         let request = name(subject);
+        async move { request.await.unwrap().json::<Value>().await.unwrap()["ahead"].clone() }
+    };
+    // 时代 writes the next name on its list, and the test waits until it is done.
+    let next = || {
         let state = &state;
         async move {
-            assert_eq!(request.await.unwrap().status(), 202);
+            xabc::start(state, xabc::Line::People).await;
             tokio::time::timeout(std::time::Duration::from_secs(60), async {
                 while state.in_flight().contains("__xabc_people__") {
                     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -2289,8 +2293,13 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         }
     };
     assert_eq!(name(" ").await.unwrap().status(), 400);
+    // While 时代 is writing, names wait.
     state.in_flight().insert("__xabc_people__".into());
-    assert_eq!(name("Huawei").await.unwrap().status(), 409);
+    assert_eq!(ahead(" Huawei ").await, 0);
+    assert_eq!(ahead("查无此人").await, 1);
+    assert_eq!(ahead("Satya Nadella").await, 2);
+    assert_eq!(ahead("Huawei").await, 0);
+    xabc::start(&state, xabc::Line::People).await;
     state.in_flight().remove("__xabc_people__");
     // The scouts tell Huawei is a company, so the company written once is brought up to date all
     // the same, shown by a photograph grok looked at. It reads like one written before 时代 drew
@@ -2302,7 +2311,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         .await
         .unwrap();
     let drawn_before = drawings_log.lock().unwrap().len();
-    written(" Huawei ").await;
+    next().await;
     assert_eq!(profiled(firm).await.unwrap().1, "Huawei 的企业介绍（更新）");
     let heard = asked_log
         .lock()
@@ -2342,8 +2351,24 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
             .unwrap()
             .contains("企业长文找一张封面照片")
     );
-    // Named again at once, it is brought up to date however lately it was, keeping its comic.
-    written("Huawei").await;
+    // A name the scouts cannot find is dropped, and the next goes on though 时代 failed: someone
+    // not written yet, written up anew though a profile went out a moment ago.
+    next().await;
+    next().await;
+    let title: String =
+        sqlx::query_scalar("SELECT title FROM articles WHERE person = 'satya-nadella'")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(title, "Satya Nadella 的人物介绍");
+    // With the list written, 时代's own round waits its interval.
+    let asked_before = asked_log.lock().unwrap().len();
+    next().await;
+    assert_eq!(asked_log.lock().unwrap().len(), asked_before);
+    // Named again, it is brought up to date however lately it was, keeping its comic.
+    let drawn_before = drawings_log.lock().unwrap().len();
+    assert_eq!(ahead("Huawei").await, 0);
+    next().await;
     let revision: i32 = sqlx::query_scalar("SELECT revision FROM articles WHERE id = $1")
         .bind(firm)
         .fetch_one(&state.pool)
@@ -2351,15 +2376,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         .unwrap();
     assert_eq!(revision, 3);
     assert!(writing(&asked_log.lock().unwrap()).contains("其中 ![](keep:1) 是四格漫画"));
-    assert_eq!(drawings_log.lock().unwrap().len(), drawn_before + 1);
-    // Someone not written yet is written up anew, though a profile went out a moment ago.
-    written("Satya Nadella").await;
-    let title: String =
-        sqlx::query_scalar("SELECT title FROM articles WHERE person = 'satya-nadella'")
-            .fetch_one(&state.pool)
-            .await
-            .unwrap();
-    assert_eq!(title, "Satya Nadella 的人物介绍");
+    assert_eq!(drawings_log.lock().unwrap().len(), drawn_before);
 
     // 追踪: the event both scouts name goes first, under the key its slug makes, in an article that
     // shows no drawn picture. Showing none at all, it takes for the lists the picture the finds'

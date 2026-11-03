@@ -141,7 +141,7 @@ fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
 .catalog-models ul { margin: .4rem 0 0; padding: 0; list-style: none; }
 .catalog-models li { display: flex; align-items: center; justify-content: space-between; gap: .6rem; padding: .25rem 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
 
-/* 分享: the pen name, whom 时代 writes about at once, the reader's articles and the review
+/* 分享: the pen name, whom 时代 writes about next, the reader's articles and the review
    queue. */
 .pen-name-form, .profile-form { margin-bottom: 1rem; }
 .pen-name-form .inline, .profile-form .inline { flex-wrap: nowrap; }

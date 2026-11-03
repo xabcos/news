@@ -3,7 +3,7 @@
 //! sharing; the writing model picks one subject from both sets of finds, reads further where it
 //! needs to and writes it up its own way. For 文娱 · 解说, every four hours, it explains the work
 //! 影视 discusses most, or revises its explanation (`film`). For 时代, every hour, it
-//! profiles a person or a company, or brings a profile up to date, and at once whoever an
+//! profiles a person or a company, or brings a profile up to date, and first whoever an
 //! administrator names (`people`). For
 //! 追踪, every two hours, it follows the hottest event with something new, anew or in the
 //! article it already has (`tracker`). For 数码 · 评测, every two hours, it reviews the product
@@ -31,7 +31,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     cmp::Reverse,
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     fmt::Write,
     ops::Range,
     sync::{Mutex, PoisonError},
@@ -174,17 +174,60 @@ fn progress<T>(line: Line, change: impl FnOnce(&mut Progress) -> T) -> T {
     )
 }
 
+/// The people and the companies an administrator named for 时代, the first named first, kept in
+/// the process.
+static NAMED: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
+
+/// Puts the person or the company an administrator names on 时代's list, unless it is there
+/// already, and tells how many names wait ahead of it.
+pub(crate) fn name(name: String) -> usize {
+    let mut named = NAMED.lock().unwrap_or_else(PoisonError::into_inner);
+    named
+        .iter()
+        .position(|waiting| *waiting == name)
+        .unwrap_or_else(|| {
+            named.push_back(name);
+            named.len() - 1
+        })
+}
+
+/// The first name on 时代's list, taken off it.
+fn named() -> Option<String> {
+    NAMED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .pop_front()
+}
+
 /// Starts each line's next article once its last is due, unless XABC is writing one for the
-/// line or is waiting after a failure. The scheduler calls this on every tick.
+/// line or is waiting after a failure; 时代 writes what an administrator named first, one name
+/// after another. The scheduler calls this on every tick.
 pub(crate) async fn tick(state: &AppState) {
     for line in Line::ALL {
         start(state, line).await;
     }
 }
 
-async fn start(state: &AppState, line: Line) {
+/// Starts the line's next article: for 时代 the first name an administrator gave, whenever the
+/// line is free; otherwise the line's own once it is due.
+pub(super) async fn start(state: &AppState, line: Line) {
     let now = Utc::now();
-    if progress(line, |progress| progress.next > now) || state.in_flight().contains(line.job()) {
+    if state.in_flight().contains(line.job()) {
+        return;
+    }
+    if matches!(line, Line::People)
+        && let Some(name) = named()
+    {
+        tracing::info!(name, "XABC writes for 时代 what an administrator named");
+        let worker = state.clone();
+        return run(state, line, async move {
+            let _turn = turn(&worker).await?;
+            people::named(&worker, author(&worker).await?, &name)
+                .await
+                .map(Some)
+        });
+    }
+    if progress(line, |progress| progress.next > now) {
         return;
     }
     match last(state, line).await {
@@ -197,9 +240,6 @@ async fn start(state: &AppState, line: Line) {
             return;
         }
     }
-    if !state.in_flight().insert(line.job().to_owned()) {
-        return;
-    }
     let since = now - line.interval();
     let worker = state.clone();
     run(
@@ -209,30 +249,14 @@ async fn start(state: &AppState, line: Line) {
     );
 }
 
-/// 时代 writes at once about the person or the company an administrator names, unless it is
-/// writing already.
-pub(crate) fn name(state: &AppState, name: String) -> Result<()> {
-    let line = Line::People;
-    if !state.in_flight().insert(line.job().to_owned()) {
-        return Err(AppError::Conflict("时代正在写一篇，写完再点".into()));
-    }
-    let worker = state.clone();
-    run(state, line, async move {
-        let _turn = turn(&worker).await?;
-        people::named(&worker, author(&worker).await?, &name)
-            .await
-            .map(Some)
-    });
-    Ok(())
-}
-
-/// Writes the line's article in the background; then the line waits its interval, or longer
-/// after a failure.
+/// Writes the line's article in the background, marked as in flight while it does; then the
+/// line's own rounds wait an interval, or longer after a failure.
 fn run(
     state: &AppState,
     line: Line,
     writing: impl Future<Output = Result<Option<Uuid>>> + Send + 'static,
 ) {
+    state.in_flight().insert(line.job().to_owned());
     let worker = state.clone();
     state.spawn_worker(async move {
         let outcome = tokio::select! {
