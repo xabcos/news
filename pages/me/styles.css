@@ -27,8 +27,9 @@
 .empty-state { margin: 0; padding: 2.5rem .5rem; text-align: center; color: var(--muted); font-size: .9rem; }
 .item-row { padding: 1rem 0; border-top: 1px solid var(--line); }
 .item-row.is-hidden { opacity: .55; }
-.item-row a { font-size: 1rem; font-weight: 650; text-decoration: none; overflow-wrap: anywhere; }
-.item-row a:hover { color: var(--primary); }
+/* A row's links read as its title, but a link styled as a button stays one. */
+.item-row a:not(.button) { font-size: 1rem; font-weight: 650; text-decoration: none; overflow-wrap: anywhere; }
+.item-row a:not(.button):hover { color: var(--primary); }
 .item-row p { margin: .4rem 0; color: var(--muted); font-size: .88rem; }
 .item-meta { font-size: .72rem; }
 .item-actions { display: flex; gap: .3rem; margin-top: .6rem; }

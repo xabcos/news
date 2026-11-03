@@ -1006,6 +1006,16 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
     assert_eq!(status(response), 503);
     refuse.store(false, Ordering::SeqCst);
     assert_eq!(counts().await, (tomorrow, 0, 1));
+
+    // Another reader can't delete an article; an administrator deletes anyone's.
+    let path = format!("/api/articles/{}", other["id"].as_str().unwrap());
+    for (cookie, expected) in [(&reader, 404), (&admin, 204), (&admin, 404)] {
+        let response = send(reqwest::Method::DELETE, &path, cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(status(response), expected);
+    }
 }
 
 /// XABC's lines from start to finish against stand-ins for the AI service and tmpfile: a 分享

@@ -1,6 +1,8 @@
 import { $, node, withBusy, toast, reportError, confirmDelete, formatTime } from "./ui.js";
 
 const statusText = { draft: "草稿", pending: "待审", published: "已公开" };
+// Which article it is: a reader's 分享 or one of XABC's lines.
+const kind = (article) => article.film ? "解说" : article.person ? "时代" : article.event ? "追踪" : article.product ? "评测" : "分享";
 
 // 分享 in the workspace: the pen name, the reader's own articles and, for an administrator,
 // what waits for a ❤️ and whom 时代 writes about at once. Requests share the session's abort
@@ -74,25 +76,19 @@ export function createArticles(session) {
       const actions = node("div", "item-actions");
       actions.append(link("编辑", title.href), link("预览", `/api/articles/${encodeURIComponent(article.id)}/preview`, true));
       if (article.status === "published") actions.append(link("查看", `/articles/${encodeURIComponent(article.id)}`, true));
-      const remove = node("button", "button button-quiet button-small danger-text", "删除");
-      remove.type = "button";
-      remove.addEventListener("click", () => confirmDelete("删除文章", `确定删除「${article.title || "无标题"}」吗？删除后不能恢复。`, async () => {
-        await session.request(`/api/articles/${encodeURIComponent(article.id)}`, { method: "DELETE" });
-        toast("文章已删除");
-        await load();
-      }));
-      actions.append(remove);
+      actions.append(removal(article));
       row.append(title, node("p", "item-meta muted", `${statusText[article.status]} · 阅读 ${article.views} · 更新于 ${formatTime(article.updated_at, session.timezone)}`), actions);
       return row;
     }));
   }
 
   // The administrator reads each article in its preview, where the ❤️ and the copies for X
-  // Articles are, and edits anyone's, XABC's above all.
+  // Articles are, edits anyone's, XABC's above all, and deletes what waits for a ❤️; a public
+  // one goes back to wait first.
   function renderReview({ pending, published }) {
     const lists = $("#reviewLists");
     lists.classList.remove("hidden");
-    const section = (heading, articles, empty, extra) => {
+    const section = (heading, articles, empty, extra, removable = false) => {
       const box = node("div", "review-list");
       box.append(node("h3", "", heading));
       if (!articles.length) box.append(node("p", "muted small", empty));
@@ -105,6 +101,7 @@ export function createArticles(session) {
         title.rel = "noopener";
         const actions = node("div", "item-actions");
         actions.append(link("编辑", `/me/write.html?id=${encodeURIComponent(article.id)}`));
+        if (removable) actions.append(removal(article));
         row.append(title, node("p", "item-meta muted", `${article.author} · ${extra(article)}`), actions);
         return row;
       }));
@@ -113,12 +110,27 @@ export function createArticles(session) {
     };
     const finding = Boolean(find.day || find.q);
     const recent = section(finding ? `找到 ${published.length} 篇` : "最近公开", published, finding ? "没有找到。" : "还没有公开的文章。",
-      (article) => `${article.film ? "解说" : article.person ? "时代" : article.event ? "追踪" : article.product ? "评测" : "分享"} · 阅读 ${article.views} · 公开于 ${formatTime(article.published_at, session.timezone)}`);
+      (article) => `${kind(article)} · 阅读 ${article.views} · 公开于 ${formatTime(article.published_at, session.timezone)}`);
     recent.querySelector("h3").after(finder());
     lists.replaceChildren(
-      section(`待审（${pending.length}）`, pending, "没有等待审核的文章。", (article) => `更新于 ${formatTime(article.updated_at, session.timezone)}`),
+      section(`待审（${pending.length}）`, pending, "没有等待审核的文章。", (article) => `更新于 ${formatTime(article.updated_at, session.timezone)}`, true),
       recent,
     );
+  }
+
+  // Deleting can't be undone. An article of XABC's lines waits for a ❤️ only once it was taken
+  // back, which keeps its line off the subject; deleted, the line may take the subject up again.
+  function removal(article) {
+    const line = kind(article);
+    const again = line === "分享" ? "" : `留在待审，${line}就不会再写这个选题；删除后可能再写。`;
+    const remove = node("button", "button button-quiet button-small danger-text", "删除");
+    remove.type = "button";
+    remove.addEventListener("click", () => confirmDelete("删除文章", `确定删除「${article.title || "无标题"}」吗？删除后不能恢复。${again}`, async () => {
+      await session.request(`/api/articles/${encodeURIComponent(article.id)}`, { method: "DELETE" });
+      toast("文章已删除");
+      await load();
+    }));
+    return remove;
   }
 
   // A day, words in the title or opening, or both; 最近 goes back to the latest.
