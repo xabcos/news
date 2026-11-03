@@ -3,8 +3,8 @@ use crate::{
     error::{AppError, Result},
     reading::{self, Reader},
     site::{
-        Chrome, EYE, absolute, choose, containing, escape, localized, search_box, search_words,
-        topic_name,
+        Chrome, EYE, absolute, choose, containing, escape, listing, localized, pagination,
+        search_box, search_words, topic_name,
     },
     state::AppState,
 };
@@ -93,25 +93,6 @@ struct Detail {
     source_title: String,
     source_language: String,
     full_text: Option<sqlx::types::Json<super::full_text::Document>>,
-}
-
-fn listing(page: u32, en: bool, words: &str) -> String {
-    let mut query = url::form_urlencoded::Serializer::new(String::new());
-    if !words.is_empty() {
-        query.append_pair("q", words);
-    }
-    if page > 1 {
-        query.append_pair("page", &page.to_string());
-    }
-    let query = query.finish();
-    localized(
-        &if query.is_empty() {
-            "/reads".into()
-        } else {
-            format!("/reads?{query}")
-        },
-        en,
-    )
 }
 
 async fn index(
@@ -266,28 +247,20 @@ async fn index(
             "<p class=muted>The first read is on its way.</p>",
         ) });
     }
-    content.push_str("</div><nav class=reads-pagination aria-label=Pagination>");
-    if page > 1 {
-        let _ = write!(
-            content,
-            "<a rel=prev href=\"{}\">{}</a>",
-            escape(&listing(page - 1, en, &words)),
-            choose(en, "上一页", "Newer")
-        );
-    }
-    if more {
-        let _ = write!(
-            content,
-            "<a rel=next href=\"{}\">{}</a>",
-            escape(&listing(page + 1, en, &words)),
-            choose(en, "继续阅读", "Older reads")
-        );
-    }
-    content.push_str("</nav>");
+    content.push_str("</div>");
+    content.push_str(&pagination(
+        "/reads",
+        page,
+        more,
+        en,
+        None,
+        &words,
+        "Older reads",
+    ));
     let path = if hot {
         "/reads?view=hot".into()
     } else {
-        listing(page, false, &words)
+        listing("/reads", page, false, None, &words)
     };
     let title = if searching {
         format!("{words} · {label}")

@@ -113,7 +113,7 @@ async fn home(
   <script src="{STATS_SCRIPT}" data-track-url="{track_url}" defer></script>
   <script src="{PUBLIC_SCRIPT}" defer></script>
   <script src="/travel.js?v=13" defer></script>
-  <script src="/app.js?v=53" defer></script>
+  <script src="/app.js?v=54" defer></script>
   <!-- async: a slow third-party banner must not hold back DOMContentLoaded, which starts app.js. -->
   <script src="https://broadcast.xairouter.com/embed.js" async></script>
 </body>
@@ -295,6 +295,61 @@ pub(crate) fn localized(path: &str, en: bool) -> String {
             ""
         }
     )
+}
+
+/// The address of a list's page, one author's with `by`, a search's with `words`.
+pub(crate) fn listing(path: &str, page: u32, en: bool, by: Option<i64>, words: &str) -> String {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    if let Some(by) = by {
+        query.append_pair("by", &by.to_string());
+    }
+    if !words.is_empty() {
+        query.append_pair("q", words);
+    }
+    if page > 1 {
+        query.append_pair("page", &page.to_string());
+    }
+    let query = query.finish();
+    localized(
+        &if query.is_empty() {
+            path.into()
+        } else {
+            format!("{path}?{query}")
+        },
+        en,
+    )
+}
+
+/// Links to a list's neighbouring pages, the older ones under `older` in English; the page script
+/// follows the next one as readers scroll.
+pub(crate) fn pagination(
+    path: &str,
+    page: u32,
+    more: bool,
+    en: bool,
+    by: Option<i64>,
+    words: &str,
+    older: &str,
+) -> String {
+    let mut nav = "<nav class=reads-pagination aria-label=Pagination>".to_owned();
+    if page > 1 {
+        let _ = write!(
+            nav,
+            "<a rel=prev href=\"{}\">{}</a>",
+            escape(&listing(path, page - 1, en, by, words)),
+            choose(en, "上一页", "Newer")
+        );
+    }
+    if more {
+        let _ = write!(
+            nav,
+            "<a rel=next href=\"{}\">{}</a>",
+            escape(&listing(path, page + 1, en, by, words)),
+            choose(en, "继续阅读", older)
+        );
+    }
+    nav.push_str("</nav>");
+    nav
 }
 
 pub(crate) fn absolute(state: &AppState, path: &str) -> String {

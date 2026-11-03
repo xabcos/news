@@ -33,29 +33,11 @@ const FUN_TOPIC = "fun";
 const CARD_TOPICS = new Set(["p", FASHION_TOPIC, "creations", FUN_TOPIC]);
 // Fashion photographs stand upright, and 趣图's pictures show whole.
 const CARD_SHAPES = new Map([[FASHION_TOPIC, "fashion-card"], [FUN_TOPIC, "fun-card"]]);
-const storage = (() => {
-  try {
-    const store = window.localStorage;
-    return {
-      getItem(key) {
-        try {
-          return store.getItem(key);
-        } catch {
-          return null;
-        }
-      },
-      setItem(key, value) {
-        try {
-          store.setItem(key, value);
-        } catch {
-          // Private browsing and full storage should not break the public page.
-        }
-      },
-    };
-  } catch {
-    return { getItem: () => null, setItem: () => {} };
-  }
-})();
+// When the reader last came, for the NEW marks. Private browsing and full storage must not break
+// the page: without a stored visit nothing is new.
+let lastVisit = 0;
+try { lastVisit = Number(localStorage.getItem("news.lastVisit")); } catch { /* No storage. */ }
+try { localStorage.setItem("news.lastVisit", String(Date.now())); } catch { /* No room. */ }
 
 const TEXT = {
   zh: {
@@ -102,10 +84,9 @@ const state = {
   historyError: false,
   historyDone: false,
   // Items first collected after the previous visit get a NEW mark.
-  lastVisit: Number(storage.getItem("news.lastVisit")) || Date.now(),
+  lastVisit: lastVisit || Date.now(),
   epoch: 0,
 };
-storage.setItem("news.lastVisit", String(Date.now()));
 
 const el = {
   tabs: $(".tabs"), lang: $(".tools [hreflang]"),

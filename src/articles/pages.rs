@@ -10,7 +10,10 @@ use crate::{
     digest::{Rendered, conditional},
     error::{AppError, Result},
     reading::{self, Reader},
-    site::{Chrome, EYE, Picture, absolute, choose, escape, localized, markdown, search_box},
+    site::{
+        Chrome, EYE, Picture, absolute, choose, escape, listing, localized, markdown, pagination,
+        search_box,
+    },
     state::AppState,
 };
 use axum::{
@@ -304,52 +307,6 @@ enum Mode {
     Author(Option<i64>),
 }
 
-/// The address of a list's page, one author's with `by`, a search's with `words`.
-fn listing(path: &str, page: u32, en: bool, by: Option<i64>, words: &str) -> String {
-    let mut query = url::form_urlencoded::Serializer::new(String::new());
-    if let Some(by) = by {
-        query.append_pair("by", &by.to_string());
-    }
-    if !words.is_empty() {
-        query.append_pair("q", words);
-    }
-    if page > 1 {
-        query.append_pair("page", &page.to_string());
-    }
-    let query = query.finish();
-    localized(
-        &if query.is_empty() {
-            path.into()
-        } else {
-            format!("{path}?{query}")
-        },
-        en,
-    )
-}
-
-/// Links to a list's neighbouring pages; the page script follows the next one as readers scroll.
-fn pagination(path: &str, page: u32, more: bool, en: bool, by: Option<i64>, words: &str) -> String {
-    let mut nav = "<nav class=reads-pagination aria-label=Pagination>".to_owned();
-    if page > 1 {
-        let _ = write!(
-            nav,
-            "<a rel=prev href=\"{}\">{}</a>",
-            escape(&listing(path, page - 1, en, by, words)),
-            choose(en, "上一页", "Newer")
-        );
-    }
-    if more {
-        let _ = write!(
-            nav,
-            "<a rel=next href=\"{}\">{}</a>",
-            escape(&listing(path, page + 1, en, by, words)),
-            choose(en, "继续阅读", "Older articles")
-        );
-    }
-    nav.push_str("</nav>");
-    nav
-}
-
 /// The page of a list asked for.
 fn page(params: &Params) -> Result<u32> {
     match params.page.unwrap_or(1) {
@@ -502,6 +459,7 @@ async fn index(
         en,
         params.by,
         &search.words,
+        "Older articles",
     ));
     let title = match (&author, page) {
         (Some(name), _) => format!("{name} · {}", label(en)),
@@ -646,11 +604,13 @@ async fn shelved(
     Ok((rows, more))
 }
 
-/// A list of XABC's articles under a catalogue section, as picture cards under the section's
-/// tabs: 文娱 · 解说 and 数码 · 评测. Its words are in Chinese and English.
-struct Catalogued {
+/// A list of XABC's articles on one of its lines, as picture cards: under a catalogue section's
+/// tabs (文娱 · 解说, 数码 · 评测), or else heading a page of its own, tiled as 分享's are (时代,
+/// 追踪). Its words are in Chinese and English.
+struct List {
     shelf: Shelf,
-    section: crate::catalog::Section,
+    /// The catalogue section it sits under, if any.
+    section: Option<crate::catalog::Section>,
     path: &'static str,
     name: fn(bool) -> &'static str,
     chrome: &'static Chrome<'static>,
@@ -664,9 +624,9 @@ struct Catalogued {
 }
 
 /// 文娱 · 解说: XABC's articles on films and series.
-const EXPLANATIONS: Catalogued = Catalogued {
+const EXPLANATIONS: List = List {
     shelf: Shelf::Explained,
-    section: crate::catalog::Section::Culture,
+    section: Some(crate::catalog::Section::Culture),
     path: COMMENTARY,
     name: commentary_label,
     chrome: &EXPLAINED,
@@ -683,9 +643,9 @@ const EXPLANATIONS: Catalogued = Catalogued {
 };
 
 /// 数码 · 评测: XABC's reviews of the products 数码 collects.
-const REVIEWS_LIST: Catalogued = Catalogued {
+const REVIEWS_LIST: List = List {
     shelf: Shelf::Reviewed,
-    section: crate::catalog::Section::Gadgets,
+    section: Some(crate::catalog::Section::Gadgets),
     path: REVIEWS,
     name: reviews_label,
     chrome: &REVIEWED,
@@ -701,110 +661,10 @@ const REVIEWS_LIST: Catalogued = Catalogued {
     ),
 };
 
-async fn commentary(
-    State(state): State<AppState>,
-    reader: Reader,
-    Query(params): Query<Params>,
-    headers: HeaderMap,
-) -> Result<Response> {
-    catalogued(&state, reader, &EXPLANATIONS, &params, &headers).await
-}
-
-async fn reviews(
-    State(state): State<AppState>,
-    reader: Reader,
-    Query(params): Query<Params>,
-    headers: HeaderMap,
-) -> Result<Response> {
-    catalogued(&state, reader, &REVIEWS_LIST, &params, &headers).await
-}
-
-async fn catalogued(
-    state: &AppState,
-    reader: Reader,
-    list: &Catalogued,
-    params: &Params,
-    headers: &HeaderMap,
-) -> Result<Response> {
-    let en = params.english();
-    let say = |(zh, english): (&'static str, &'static str)| choose(en, zh, english);
-    let page = page(params)?;
-    let search = Search::new(params.q.as_deref());
-    let (rows, more) = shelved(state, list.shelf, &search, page).await?;
-    let found = found(
-        &search,
-        page,
-        en,
-        listed("SELECT count(*)", list.shelf, None, &search).build_query_scalar(),
-        state,
-    )
-    .await?;
-    let mut content = crate::catalog::articles_tabs(state, list.section, reader, en);
-    content.push_str(&search_box(
-        "catalog-search",
-        list.path,
-        &search.words,
-        say(list.search),
-        en,
-    ));
-    if let Some(found) = found {
-        let _ = write!(content, "<p class=\"commentary-found muted\">{found}</p>");
-    }
-    content.push_str("<div class=\"reads-list catalog-grid\">");
-    for row in &rows {
-        content.push_str(&card(row, en, None, list.shelf, state.config.timezone));
-    }
-    content.push_str("</div>");
-    if rows.is_empty() {
-        let _ = write!(
-            content,
-            "<p class=empty>{}</p>",
-            say(if search.is_empty() {
-                list.first
-            } else {
-                list.nothing
-            })
-        );
-    }
-    content.push_str(&pagination(list.path, page, more, en, None, &search.words));
-    let (name, section) = ((list.name)(en), list.section.label(en));
-    let title = match page {
-        1 => format!("{name} · {section}"),
-        page => format!("{name} · {page} · {section}"),
-    };
-    let html = crate::site::layout(
-        state,
-        en,
-        &listing(list.path, page, false, None, &search.words),
-        &title,
-        say(list.description),
-        &content,
-        None,
-        list.chrome,
-    );
-    Ok(listed_page(headers, html, &search))
-}
-
-/// A list of XABC's articles that it brings up to date as their subjects move, the one brought
-/// up to date last first, tiled as 分享's cards: 时代's profiles and 追踪's events. Its words are
-/// in Chinese and English.
-struct Followed {
-    shelf: Shelf,
-    path: &'static str,
-    name: fn(bool) -> &'static str,
-    chrome: &'static Chrome<'static>,
-    description: (&'static str, &'static str),
-    /// What the search box asks for.
-    search: (&'static str, &'static str),
-    /// What the list says while it is empty.
-    first: (&'static str, &'static str),
-    /// What it says when a search finds nothing.
-    nothing: (&'static str, &'static str),
-}
-
 /// 时代: XABC's profiles of the people and the companies of this age.
-const PROFILES: Followed = Followed {
+const PROFILES: List = List {
     shelf: Shelf::People,
+    section: None,
     path: PEOPLE,
     name: people_label,
     chrome: &PEOPLE_LIST,
@@ -821,8 +681,9 @@ const PROFILES: Followed = Followed {
 };
 
 /// 追踪: XABC's articles following the events the whole web talks about.
-const EVENTS: Followed = Followed {
+const EVENTS: List = List {
     shelf: Shelf::Tracked,
+    section: None,
     path: TRACKER,
     name: tracker_label,
     chrome: &TRACKER_LIST,
@@ -838,29 +699,48 @@ const EVENTS: Followed = Followed {
     ),
 };
 
-async fn people(
+async fn commentary(
     State(state): State<AppState>,
-    // The page is the same for everyone, but a preview of it still needs an administrator.
-    _: Reader,
+    reader: Reader,
     Query(params): Query<Params>,
     headers: HeaderMap,
 ) -> Result<Response> {
-    followed(&state, &PROFILES, &params, &headers).await
+    list(&state, reader, &EXPLANATIONS, &params, &headers).await
+}
+
+async fn reviews(
+    State(state): State<AppState>,
+    reader: Reader,
+    Query(params): Query<Params>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    list(&state, reader, &REVIEWS_LIST, &params, &headers).await
+}
+
+// 时代's and 追踪's pages are the same for everyone, but a preview of them still needs an
+// administrator.
+async fn people(
+    State(state): State<AppState>,
+    reader: Reader,
+    Query(params): Query<Params>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    list(&state, reader, &PROFILES, &params, &headers).await
 }
 
 async fn tracker(
     State(state): State<AppState>,
-    // The page is the same for everyone, but a preview of it still needs an administrator.
-    _: Reader,
+    reader: Reader,
     Query(params): Query<Params>,
     headers: HeaderMap,
 ) -> Result<Response> {
-    followed(&state, &EVENTS, &params, &headers).await
+    list(&state, reader, &EVENTS, &params, &headers).await
 }
 
-async fn followed(
+async fn list(
     state: &AppState,
-    list: &Followed,
+    reader: Reader,
+    list: &List,
     params: &Params,
     headers: &HeaderMap,
 ) -> Result<Response> {
@@ -869,6 +749,7 @@ async fn followed(
     let page = page(params)?;
     let search = Search::new(params.q.as_deref());
     let (rows, more) = shelved(state, list.shelf, &search, page).await?;
+    let name = (list.name)(en);
     let description = say(list.description);
     let found = found(
         &search,
@@ -878,18 +759,29 @@ async fn followed(
         state,
     )
     .await?;
-    let mut content = format!(
-        "<header class=reads-heading><h1>{}</h1><p>{}</p><div class=reads-tools>{}</div></header><div class=reads-list>",
-        (list.name)(en),
-        found.unwrap_or_else(|| escape(description)),
-        search_box(
-            "reads-search",
-            list.path,
-            &search.words,
-            say(list.search),
-            en
+    let search_form = |class| search_box(class, list.path, &search.words, say(list.search), en);
+    // Under a catalogue section the list follows the section's tabs and is titled after it;
+    // otherwise it heads a page of its own.
+    let (mut content, empty, suffix) = match list.section {
+        Some(section) => {
+            let mut content = crate::catalog::articles_tabs(state, section, reader, en);
+            content.push_str(&search_form("catalog-search"));
+            if let Some(found) = found {
+                let _ = write!(content, "<p class=\"commentary-found muted\">{found}</p>");
+            }
+            content.push_str("<div class=\"reads-list catalog-grid\">");
+            (content, "empty", section.label(en))
+        }
+        None => (
+            format!(
+                "<header class=reads-heading><h1>{name}</h1><p>{}</p><div class=reads-tools>{}</div></header><div class=reads-list>",
+                found.unwrap_or_else(|| escape(description)),
+                search_form("reads-search"),
+            ),
+            "muted",
+            "𝑵𝒆𝒘𝒔",
         ),
-    );
+    };
     for row in &rows {
         content.push_str(&card(row, en, None, list.shelf, state.config.timezone));
     }
@@ -897,7 +789,7 @@ async fn followed(
     if rows.is_empty() {
         let _ = write!(
             content,
-            "<p class=muted>{}</p>",
+            "<p class={empty}>{}</p>",
             say(if search.is_empty() {
                 list.first
             } else {
@@ -905,10 +797,18 @@ async fn followed(
             })
         );
     }
-    content.push_str(&pagination(list.path, page, more, en, None, &search.words));
+    content.push_str(&pagination(
+        list.path,
+        page,
+        more,
+        en,
+        None,
+        &search.words,
+        "Older articles",
+    ));
     let title = match page {
-        1 => format!("{} · 𝑵𝒆𝒘𝒔", (list.name)(en)),
-        page => format!("{} · {page} · 𝑵𝒆𝒘𝒔", (list.name)(en)),
+        1 => format!("{name} · {suffix}"),
+        page => format!("{name} · {page} · {suffix}"),
     };
     let html = crate::site::layout(
         state,

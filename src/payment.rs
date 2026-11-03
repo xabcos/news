@@ -231,22 +231,7 @@ pub(crate) async fn create_order(
     {
         order
     } else {
-        let out_trade_no = new_out_trade_no();
-        sqlx::query_as::<_, Order>(
-            r#"
-            INSERT INTO orders
-                (user_id, plan_code, out_trade_no, amount_fen, duration_days)
-            VALUES ($1, $2, $3, $4, $5)
-            RETURNING *
-            "#,
-        )
-        .bind(user_id)
-        .bind(&plan.code)
-        .bind(out_trade_no)
-        .bind(plan.price_fen)
-        .bind(plan.duration_days)
-        .fetch_one(&mut *transaction)
-        .await?
+        new_order(&mut transaction, user_id, &plan).await?
     };
     if let Some(payment) = stored_payment(&order) {
         transaction.commit().await?;
@@ -274,22 +259,7 @@ pub(crate) async fn create_order(
         .bind(order.id)
         .execute(&mut *transaction)
         .await?;
-        let out_trade_no = new_out_trade_no();
-        order = sqlx::query_as::<_, Order>(
-            r#"
-            INSERT INTO orders
-                (user_id, plan_code, out_trade_no, amount_fen, duration_days)
-            VALUES ($1, $2, $3, $4, $5)
-            RETURNING *
-            "#,
-        )
-        .bind(user_id)
-        .bind(&plan.code)
-        .bind(out_trade_no)
-        .bind(plan.price_fen)
-        .bind(plan.duration_days)
-        .fetch_one(&mut *transaction)
-        .await?;
+        order = new_order(&mut transaction, user_id, &plan).await?;
     }
     let order = sqlx::query_as::<_, Order>(
         r#"
@@ -882,6 +852,29 @@ fn stored_payment(order: &Order) -> Option<YpayPayment> {
         return None;
     }
     serde_json::from_value(order.payment.clone()).ok()
+}
+
+/// A new pending order for the plan, under a merchant number of its own.
+async fn new_order(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: i64,
+    plan: &Plan,
+) -> Result<Order> {
+    Ok(sqlx::query_as::<_, Order>(
+        r#"
+        INSERT INTO orders
+            (user_id, plan_code, out_trade_no, amount_fen, duration_days)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING *
+        "#,
+    )
+    .bind(user_id)
+    .bind(&plan.code)
+    .bind(new_out_trade_no())
+    .bind(plan.price_fen)
+    .bind(plan.duration_days)
+    .fetch_one(&mut **transaction)
+    .await?)
 }
 
 fn new_out_trade_no() -> String {
