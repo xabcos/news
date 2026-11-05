@@ -153,12 +153,7 @@ pub(crate) fn instructions(topic: &Topic, section: Section) -> String {
 pub(crate) fn schema(mut base: Value, topic: &Topic, section: Section) -> Value {
     let item = &mut base["properties"]["items"]["items"];
     let required = item["required"].as_array_mut().expect("item schema");
-    required.extend([
-        json!("work"),
-        json!("image"),
-        json!("image_page_url"),
-        json!("role"),
-    ]);
+    required.extend([json!("work"), json!("image_page_url"), json!("role")]);
     item["properties"]["role"] = json!({"type":"string", "enum":["review","share","news"]});
     item["properties"]["image_page_url"] = json!({"type":["string","null"]});
     item["properties"]["published_at"] = json!({"type":"string"});

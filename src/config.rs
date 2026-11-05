@@ -36,6 +36,8 @@ pub struct Config {
     /// The model that writes XABC's 分享 and 解说 from what the searches found.
     pub(crate) ai_writing_model: String,
     pub(crate) ai_image_model: String,
+    /// The model asked when a grok request gets no completed answer; none asks no other.
+    pub(crate) ai_fallback_model: Option<String>,
     pub(crate) timezone: Tz,
     pub(crate) briefing_time: NaiveTime,
     pub(crate) fetch_timeout: Duration,
@@ -209,6 +211,7 @@ impl Config {
             ai_insight_model: env_value("AI_INSIGHT_MODEL", "gpt-6-astra"),
             ai_writing_model: env_value("AI_WRITING_MODEL", "gpt-6.1-terra"),
             ai_image_model: env_value("AI_IMAGE_MODEL", "gpt-image-2.6-flare"),
+            ai_fallback_model: optional_env("AI_FALLBACK_MODEL"),
             timezone,
             briefing_time,
             fetch_timeout: Duration::from_secs(fetch_timeout_secs),

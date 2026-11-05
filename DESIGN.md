@@ -12,6 +12,8 @@
 
 Rust / Axum 提供 API、页面与后台调度。PostgreSQL 保存业务数据，Redis 承载邮件队列。浏览器通过服务端读取内容，不接触 AI 或图片服务密钥。
 
+Responses 请求都经 `ai::request` 发往 `AI_BASE_URL`（生图另走 `/v1/images/generations`）：429、5xx 与连接错误等 10 秒、30 秒各重试一次，其他错误立即返回。grok 的请求这样仍没有完成的回答（出错、额度用完或状态不是 completed）时，设了 `AI_FALLBACK_MODEL` 就把同一个请求交给它再问一次，重试规则相同（`ai::fallback`）：去掉只有 grok 有的 X 检索和网页检索的看图选项，其余不变。需要 X 的请求不替代：只用 X 检索的（𝑾、旅行），以及要看 X 帖子图片的（数码与文娱各栏、时代找照片），因为备用模型既搜不了 X 也看不了图，而时代找到的照片会直接用作封面。运行记录里的模型仍写 grok；替代的回答没有 grok 的费用字段，花费记为 0，不代表没有花费。普通栏目的输出结构把可为空的 `image` 也列为必填，因为 GPT 的严格模式要求每个字段都在 `required` 里且只列一次（`fetch` 的测试逐类栏目检查）。
+
 ## 数据模型
 
 `users`、`sessions`、`email_login_tokens` 管理账户和登录；`topics`、`runs`、`items` 管理栏目、采集和新闻；`read_articles` 保存 Reads 精读、全文和热度，`read_candidates` 保存临时候选；`ai_insights` 保存日报；`llm_vendors`、`llm_sources` 登记模型服务商（在线、候选或已下线）与其官方页面，`llm_models` 保存当前核验的模型、价格与原文证据，`llm_changes` 追加记录变化并只保留 1 天；`travel_places` 保存旅行目的地（Wikidata 编号、路径、中英文名、国家、坐标、导读资料页与导读），`travel_moments` 保存旅行条目的地点、封面以外的照片和原文；`catalog_entries` 保存 Culture 作品与 𝑮𝒂𝒅𝒈𝒆𝒕𝒔 产品的标识、资料链接、已核验导读、官方图片与来源指纹，`catalog_items` 以角色（动态、评测、分享）关联条目与新闻；`authors`、`articles`、`article_images` 保存读者写的文章（分享）：笔名与当天的新建和上传计数、Markdown 正文与审核状态、tmpfile 中的图片；`plans`、`orders`、`payment_events` 管理套餐和支付。`user_metrics` 维护注册数量，`maintenance_state` 记录清理进度。表、约束、索引与公共主题默认配置由 `migrations/` 中的顺序迁移定义。

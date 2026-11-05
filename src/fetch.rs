@@ -521,7 +521,7 @@ fn schema() -> Value {
             "items": { "type": "array", "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["title", "summary", "title_en", "summary_en", "url", "source", "published_at", "tags", "tags_en", "importance"],
+            "required": ["title", "summary", "title_en", "summary_en", "url", "source", "published_at", "tags", "tags_en", "importance", "image"],
             "properties": {
                 "title": { "type": "string" },
                 "summary": { "type": "string" },
@@ -731,6 +731,49 @@ mod tests {
             consecutive_failures: 0,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn every_topic_schema_requires_each_of_its_fields_once() {
+        // Strict structured output as GPT, the fallback for grok, reads it: every object lists
+        // each of its fields in `required`, once.
+        fn strict(node: &serde_json::Value) -> bool {
+            match node {
+                serde_json::Value::Object(map) => {
+                    let whole = match (&map.get("properties"), &map.get("required")) {
+                        (
+                            Some(serde_json::Value::Object(fields)),
+                            Some(serde_json::Value::Array(required)),
+                        ) => {
+                            required.len() == fields.len()
+                                && fields
+                                    .keys()
+                                    .all(|key| required.iter().any(|name| name == key.as_str()))
+                        }
+                        (Some(_), _) => false,
+                        _ => true,
+                    };
+                    whole && map.values().all(strict)
+                }
+                serde_json::Value::Array(values) => values.iter().all(strict),
+                _ => true,
+            }
+        }
+        let now = Utc::now();
+        let window = NewsWindow {
+            start: now - Duration::hours(24),
+            end: now,
+        };
+        for id in ["x", "digital", "movie", "travel"] {
+            let body = request_body(
+                &topic(id),
+                now.with_timezone(&chrono_tz::Asia::Shanghai),
+                &[],
+                window,
+                "",
+            );
+            assert!(strict(&body["text"]["format"]["schema"]), "{id}");
         }
     }
 
