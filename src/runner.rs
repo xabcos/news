@@ -553,9 +553,10 @@ async fn run(
         outcome,
     )
     .await;
+    // A failed run is recorded with its error and tried again later, so it warns no one.
     match &recorded {
         Ok(()) => match &failure {
-            Some(error) => tracing::warn!(
+            Some(error) => tracing::info!(
                 topic = %topic.id,
                 %error,
                 elapsed_ms = clock.elapsed().as_millis() as u64,

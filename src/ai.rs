@@ -33,7 +33,7 @@ fn completed(reply: &Value) -> bool {
 
 /// The request as the fallback model takes it: without X search and grok's picture options,
 /// which only grok has. None without a fallback, for a request not grok's, or for one that
-/// needs X: searching it alone, or looking at its pictures.
+/// searches X alone.
 fn fallback(model: Option<&str>, body: &Value) -> Option<Value> {
     let model = model?;
     if !body["model"].as_str()?.starts_with("grok") {
@@ -42,12 +42,6 @@ fn fallback(model: Option<&str>, body: &Value) -> Option<Value> {
     let mut spare = body.clone();
     spare["model"] = json!(model);
     if let Some(tools) = spare.get_mut("tools").and_then(Value::as_array_mut) {
-        if tools
-            .iter()
-            .any(|tool| tool["type"] == "x_search" && tool["enable_image_understanding"] == true)
-        {
-            return None;
-        }
         tools.retain(|tool| tool["type"] != "x_search");
         if tools.is_empty() {
             return None;
@@ -59,7 +53,9 @@ fn fallback(model: Option<&str>, body: &Value) -> Option<Value> {
     Some(spare)
 }
 
-async fn send(state: &AppState, body: &Value) -> Result<Value> {
+/// The request to the model it names alone, retried as above but never handed to another: for
+/// an answer only that model can give.
+pub(crate) async fn send(state: &AppState, body: &Value) -> Result<Value> {
     let url = format!(
         "{}/v1/responses",
         state.config.ai_base_url.as_str().trim_end_matches('/')
@@ -170,8 +166,8 @@ mod tests {
             spare,
             json!({ "model": "gpt-6.1-terra", "tools": [{ "type": "web_search" }], "input": "栏目方向" })
         );
-        // A request without tools keeps none; one that searches X alone or looks at its pictures,
-        // one not grok's and any without a fallback model aren't asked again.
+        // A request without tools keeps none; one that searches X alone, one not grok's and any
+        // without a fallback model aren't asked again.
         let plain = json!({ "model": "grok-4.7", "input": "导读" });
         assert_eq!(
             fallback(Some("gpt-6.1-terra"), &plain).unwrap(),
@@ -179,10 +175,14 @@ mod tests {
         );
         let x_alone = json!({ "model": "grok-4.7", "tools": [{ "type": "x_search" }] });
         assert!(fallback(Some("gpt-6.1-terra"), &x_alone).is_none());
+        // A request that also looks at X's pictures is asked with what the fallback can do.
         let x_pictures = json!({ "model": "grok-4.7", "tools": [
             { "type": "web_search" }, { "type": "x_search", "enable_image_understanding": true }
         ] });
-        assert!(fallback(Some("gpt-6.1-terra"), &x_pictures).is_none());
+        assert_eq!(
+            fallback(Some("gpt-6.1-terra"), &x_pictures).unwrap()["tools"],
+            json!([{ "type": "web_search" }])
+        );
         assert!(fallback(Some("gpt-6.1-terra"), &json!({ "model": "gpt-6-astra" })).is_none());
         assert!(fallback(None, &body).is_none());
         assert!(completed(&json!({ "status": "completed" })));

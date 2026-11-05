@@ -349,14 +349,16 @@ async fn sighted(state: &AppState, name: &str, title: &str, company: bool) -> Op
             })),
         } },
     });
-    let reply = match tokio::time::timeout(SEARCH_TIME, ai::request(state, body)).await {
+    // Only grok looks at the pictures it finds, so no other model is asked; without its answer
+    // the cover is the article's first picture.
+    let reply = match tokio::time::timeout(SEARCH_TIME, ai::send(state, &body)).await {
         Ok(Ok(reply)) => reply,
         Ok(Err(error)) => {
-            tracing::warn!(%error, name, "grok did not look for a photograph");
+            tracing::debug!(%error, name, "grok did not look for a photograph");
             return None;
         }
         Err(_) => {
-            tracing::warn!(name, "grok's look for a photograph timed out");
+            tracing::debug!(name, "grok's look for a photograph timed out");
             return None;
         }
     };

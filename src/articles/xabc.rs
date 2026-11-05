@@ -428,8 +428,9 @@ async fn look(state: &AppState, line: Line, input: &str, covered: &HashSet<Strin
     for (scout, searched) in [(Scout::X, x), (Scout::Web, web)] {
         let searched = match searched {
             Ok(searched) => searched,
+            // The other scout's finds still serve; without any, the line fails below.
             Err(error) => {
-                tracing::warn!(%error, scout = scout.label(), "XABC's search failed");
+                tracing::debug!(%error, scout = scout.label(), "XABC's search failed");
                 continue;
             }
         };

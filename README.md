@@ -217,7 +217,7 @@ docker compose up -d
 | `AI_INSIGHT_MODEL` | `gpt-6-astra` | 支持图片输入的日报模型，也是 XABC 检索素材的模型之一 |
 | `AI_WRITING_MODEL` | `gpt-6.1-terra` | XABC 写分享、解说、时代、追踪和评测的模型 |
 | `AI_IMAGE_MODEL` | `gpt-image-2.6-flare` | XABC 画插图、封面和时代四格漫画的生图模型 |
-| `AI_FALLBACK_MODEL` | 空 | grok 的请求重试后仍没有完成的回答（出错、额度用完或未完成）时改问的模型，如 `gpt-6.1-terra`：同一个请求去掉 X 检索与 grok 的看图选项再问一次；只搜 X 或要看 X 帖子图片的请求（𝑾、旅行、数码与文娱各栏、时代找照片）不替代；运行记录的花费此时记为 0；空则不替代 |
+| `AI_FALLBACK_MODEL` | 空 | grok 的请求重试后仍没有完成的回答（出错、额度用完或未完成）时改问的模型，如 `gpt-6.1-terra`：同一个请求去掉 X 检索与 grok 的看图选项再问一次；只搜 X 的 𝑾 与旅行不替代，看图挑选的时代找照片与图片栏目（图说、AI 创作、趣图）只问 grok（备用模型看不了图）；运行记录的花费此时记为 0；空则不替代 |
 | `NEWS_TIMEZONE` / `NEWS_BRIEFING_TIME` | `Asia/Shanghai` / `06:00` | 日期边界和日报截止时间 |
 | `NEWS_SCHEDULER_ENABLED` | `true` | 自动采集与日报调度 |
 | `NEWS_FETCH_TIMEOUT_SECS` / `NEWS_MAX_CONCURRENT_RUNS` | `1800` / `2` | 请求超时与采集、生成共用并发数 |

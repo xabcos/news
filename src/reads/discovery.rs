@@ -130,7 +130,7 @@ async fn select_pending(
     let mut fetched = match searched {
         Ok(fetched) => fetched,
         Err(error) => {
-            tracing::warn!(%error, "Reads search unavailable; reviewing subscription candidates");
+            tracing::debug!(%error, "Reads search unavailable; reviewing subscription candidates");
             Fetched {
                 usage: Default::default(),
                 candidates: Vec::new(),

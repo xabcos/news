@@ -369,7 +369,14 @@ pub async fn fetch(
         window,
         &focus,
     );
-    parse_reply(crate::ai::request(state, body).await?)
+    // A picture topic picks and explains its stories by looking at their pictures, which only
+    // grok does, so no fallback answers for it.
+    let reply = if PICTURE_TOPICS.contains(&topic.id.as_str()) {
+        crate::ai::send(state, &body).await
+    } else {
+        crate::ai::request(state, body).await
+    };
+    parse_reply(reply?)
 }
 
 /// `focus` follows the brief: what this run should look at besides the topic's direction.
