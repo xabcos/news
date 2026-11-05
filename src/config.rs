@@ -208,7 +208,7 @@ impl Config {
             ai_default_model: env_value("AI_DEFAULT_MODEL", "grok-4.7"),
             ai_insight_model: env_value("AI_INSIGHT_MODEL", "gpt-6-astra"),
             ai_writing_model: env_value("AI_WRITING_MODEL", "gpt-6.1-terra"),
-            ai_image_model: env_value("AI_IMAGE_MODEL", "gpt-image-2.5-flare"),
+            ai_image_model: env_value("AI_IMAGE_MODEL", "gpt-image-2.6-flare"),
             timezone,
             briefing_time,
             fetch_timeout: Duration::from_secs(fetch_timeout_secs),
