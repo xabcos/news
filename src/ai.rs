@@ -18,11 +18,11 @@ pub(crate) async fn request(state: &AppState, body: Value) -> Result<Value> {
     let Some(spare) = fallback(state.config.ai_fallback_model.as_deref(), &body) else {
         return answer;
     };
-    let failure = answer.map_or_else(
-        |error| error.to_string(),
-        |reply| reply["status"].to_string(),
+    tracing::debug!(
+        failure = %answer.map_or_else(|error| error.to_string(), |reply| reply["status"].to_string()),
+        model = %spare["model"],
+        "grok did not answer; asking the fallback model"
     );
-    tracing::warn!(%failure, model = %spare["model"], "grok did not answer; asking the fallback model");
     send(state, &spare).await
 }
 
