@@ -20,6 +20,8 @@ const ROLE_COOKIE = "news_role";
 const DAYS_LIMIT = 366;
 const PRELOAD_MARGIN = "0px 0px 70% 0px";
 const INSIGHT_ID = "insight";
+// The page's title as the server wrote it in the page's language; the XAI daily names itself.
+const TITLE = document.title;
 // The photograph gallery: rows of photographs at their own ratio, opened in a lightbox that
 // plays faster than the travel viewer, since there is nothing to read beside a photograph.
 const PHOTO_TOPIC = "w";
@@ -77,8 +79,10 @@ const state = {
   timeline: [],
   insight: null,
   insightEtag: null,
-  // 精选's articles, kept so a refresh that brings the same ones leaves the cards alone.
+  // 精选's articles and whether it links 解说, kept so a refresh that brings the same leaves the
+  // cards alone.
   worth: [],
+  commentary: false,
   personal: false,
   historyLoading: false,
   historyError: false,
@@ -617,7 +621,7 @@ function renderTabs() {
   renderTravelMap();
   document.title = state.topic === INSIGHT_ID
     ? `𝑵𝒆𝒘𝒔 · ${state.lang === "en" ? "XAI Daily" : "XAI 日报"}`
-    : "𝑵𝒆𝒘𝒔";
+    : TITLE;
   // The bar comes with the page. Its switch opens this address in the other language, as the
   // server writes it (a page cached from before has none), and a signed-in reader's own topics
   // follow the site's tabs.
@@ -956,10 +960,12 @@ async function loadWorth() {
     return;
   }
   try {
-    const { articles } = await fetchJson("/articles/worth.json");
-    // A refresh that brings the same articles leaves the cards as they are.
-    const same = el.worth.childElementCount && JSON.stringify(articles) === JSON.stringify(state.worth);
+    const { articles, commentary } = await fetchJson("/articles/worth.json");
+    // A refresh that brings the same articles and lists leaves the cards as they are.
+    const same = el.worth.childElementCount && commentary === state.commentary
+      && JSON.stringify(articles) === JSON.stringify(state.worth);
     state.worth = articles;
+    state.commentary = commentary;
     if (same) el.worth.hidden = !worthShown() || !articles.length;
     else renderWorth();
   } catch { /* The feed reads the same without it. */ }
@@ -978,7 +984,10 @@ function renderWorth() {
   title.textContent = t().worth;
   const lists = document.createElement("p");
   lists.className = "muted small";
-  lists.append(link(t().articles, "/articles"), " · ", link(t().commentary, "/culture/commentary"), " · ", link(t().people, "/people"), " · ", link(t().tracker, "/tracker"), " · ", link(t().reviews, "/gadgets/reviews"));
+  lists.append(link(t().articles, "/articles"));
+  // 解说's list is open while 影视 is.
+  if (state.commentary) lists.append(" · ", link(t().commentary, "/culture/commentary"));
+  lists.append(" · ", link(t().people, "/people"), " · ", link(t().tracker, "/tracker"), " · ", link(t().reviews, "/gadgets/reviews"));
   heading.append(title, lists);
   const cards = document.createElement("div");
   cards.className = "worth-cards";

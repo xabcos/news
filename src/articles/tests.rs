@@ -1141,7 +1141,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                             let grok = request["tools"].as_array().unwrap().len() == 2;
                             let named = if let Some((_, name)) = input.split_once("点名：") {
                                 if name == "查无此人" { Vec::new() } else { vec![name] }
-                            } else if input.contains("有头有脸") {
+                            } else if input.contains("有分量的人物") {
                                 vec!["Lisa Su", if grok { "Ren Zhengfei" } else { "ren zhengfei" }]
                             } else if input.contains("举足轻重的企业") {
                                 vec![if grok { "Huawei" } else { "huawei" }]
@@ -1728,7 +1728,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     assert!(body.contains(&format!("](image:{standing})")), "{body}");
     assert!(matches!(
         xabc::write(&state, xabc::Line::Film, Utc::now()).await,
-        Err(AppError::Internal(message)) if message == "影视最近没有待解说的作品"
+        Ok(None)
     ));
 
     // Three days after its article, four new stories about the work (the review from before it
@@ -1743,7 +1743,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     }
     assert!(matches!(
         xabc::write(&state, xabc::Line::Film, Utc::now()).await,
-        Err(AppError::Internal(message)) if message == "影视最近没有待解说的作品"
+        Ok(None)
     ));
     story(entry, "news", "1 day").await;
 
@@ -1773,6 +1773,20 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         .await
         .unwrap();
     assert_eq!(film.as_deref(), Some("movie:louderfilm"));
+
+    // While 影视 collects nothing, 解说 writes nothing, however due the article is.
+    sqlx::query("UPDATE topics SET enabled = false WHERE id = 'movie'")
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        xabc::write(&state, xabc::Line::Film, Utc::now()).await,
+        Ok(None)
+    ));
+    sqlx::query("UPDATE topics SET enabled = true WHERE id = 'movie'")
+        .execute(&state.pool)
+        .await
+        .unwrap();
 
     // The article is revised: its figure and cover stay, a new picture joins them, and the line's
     // clock moves on.
@@ -1877,6 +1891,25 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
             (second.to_string(), true)
         ]
     );
+    assert_eq!(worth["commentary"], true);
+    // While 影视 is not public, 精选 leaves 解说 out and links no list of it.
+    let movie_shown = |visible: bool| {
+        let state = state.clone();
+        async move {
+            sqlx::query("UPDATE topics SET visible = $1 WHERE id = 'movie'")
+                .bind(visible)
+                .execute(&state.pool)
+                .await
+                .unwrap();
+            state.digest.reload_topics(&state).await.unwrap();
+        }
+    };
+    movie_shown(false).await;
+    let worth: Value =
+        serde_json::from_str(&page(format!("{base}/articles/worth.json")).await).unwrap();
+    assert_eq!(worth["commentary"], false);
+    assert_eq!(worth["articles"].as_array().unwrap().len(), 2);
+    movie_shown(true).await;
 
     // 时代's round goes by the hour it starts, an hour after `since`: at midnight it looks for
     // people talked about now, at one for leaders, at five for a company. The rounds start in
@@ -2213,7 +2246,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         .unwrap();
     assert_eq!(person.as_deref(), Some("ren-zhengfei"));
     let heard = searched();
-    assert!(heard.contains("这一轮不看热度，找各行各业有头有脸的人物"));
+    assert!(heard.contains("这一轮不看热度，找科技与科学领域有分量的人物"));
     let passed = heard
         .lines()
         .find_map(|line| line.strip_prefix("这些人物已经写过，这次不要选："))
@@ -2240,7 +2273,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         prompt.starts_with("四格漫画") && prompt.contains("画面里没有主角")
     }));
     assert!(body.contains("*四个时刻（AI 生成）*") && !body.contains(&cover.unwrap().to_string()));
-    assert!(searched().contains("这一轮找各行各业举足轻重的企业"));
+    assert!(searched().contains("这一轮找科技行业举足轻重的企业"));
     assert!(
         photo_asked()["instructions"]
             .as_str()

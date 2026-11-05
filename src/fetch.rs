@@ -471,7 +471,7 @@ fn instructions(topic: &Topic) -> String {
         "只收录可核实的新事实，未经确认的爆料不要写成既成事实。"
     };
     let cover = if topic.owner_user_id.is_none() && topic.id == "p" {
-        "每条 items 最多选一张与该条内容直接相关的图片，写入 image。内容可来自三类：全球热点新闻现场、x.com 上有明确热度或传播证据的公开热帖、以及正在被广泛分享的公开美图/热图（自然风光、城市、动物、文化等；女性美图归 𝑾 栏目）。三类内容都必须有可核实的事件或画面背景；美图/热图要说明拍摄地点、时间或传播背景，不要把普通图库图包装成热点。允许使用合适的 AI 生成图，但必须在 caption/credit 中明确标注 AI generated，不能把生成图写成现场照片。人物图片必须来自公开来源，排除私密、露骨、偷拍或未成年人性化内容。只使用搜索/浏览结果中实际出现、可直接加载的 HTTPS 图片地址。image.source_url 必须复制对应 items 的文章或 X 帖子 URL；caption/caption_en 只用一句话说明已核实的画面与事件，credit 保留摄影者或发布机构/账号。排除 Image not available、logo、默认缩略图、广告、拼图和血腥画面；找不到合适照片就把 image 设为 null；没有可靠图片的内容不要返回。cover 返回 null。"
+        "每条 items 最多选一张与该条内容直接相关的图片，写入 image。收什么以栏目方向为准；每条都必须有可核实的事件或画面背景，不要把普通图库图包装成热点。允许使用合适的 AI 生成图，但必须在 caption/credit 中明确标注 AI generated，不能把生成图写成现场照片。人物图片必须来自公开来源，排除私密、露骨、偷拍或未成年人性化内容。只使用搜索/浏览结果中实际出现、可直接加载的 HTTPS 图片地址。image.source_url 必须复制对应 items 的文章或 X 帖子 URL；caption/caption_en 只用一句话说明已核实的画面与事件，credit 保留摄影者或发布机构/账号。排除 Image not available、logo、默认缩略图、广告、拼图和血腥画面；找不到合适照片就把 image 设为 null；没有可靠图片的内容不要返回。cover 返回 null。"
     } else if fashion {
         "image 写一张与内容直接相关的照片，优先竖构图：秀场用首套或最有代表性的造型，明星穿搭与红毯用本人这次造型的全身或半身照，美妆用妆容、发型或美甲的特写，潮流单品用上身照。只使用搜索/浏览结果中实际出现、可直接加载的 HTTPS 图片地址，找不到合适的就把 image 设为 null，不要因此舍弃内容；image.source_url 必须复制对应 items 的 url；caption/caption_en 用一句话说明画面中的人物、品牌与季度或场合，credit 写图片署名（摄影师或图片社，没有署名时写发布媒体）。排除 logo、拼图、商品白底图、广告和截图。cover 返回 null。"
     } else if topic.owner_user_id.is_none() && topic.id == CREATIONS_TOPIC_ID {

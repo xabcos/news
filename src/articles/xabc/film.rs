@@ -1,7 +1,8 @@
 //! 文娱 · 解说: XABC explains a film or series in an article of its own. A work has one article.
 //! Each time XABC takes the work 影视 discusses most beyond what XABC has written about it: a
 //! work without an article gets one, and an article whose work 影视 keeps gathering news about
-//! is revised. Searching, writing and pictures are 分享's (`super`).
+//! is revised. While 影视 collects nothing, 解说 writes nothing. Searching, writing and pictures
+//! are 分享's (`super`).
 use super::{
     Finished, KEEPING, Line, Subject, draft, figures, finish, identity, linked, listed, look,
     publish, revise,
@@ -95,13 +96,20 @@ struct Next {
     revision: Option<i32>,
 }
 
-/// Explains the work 影视 discusses most, or revises its explanation.
-pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -> Result<Uuid> {
-    let next = next(state, author)
-        .await?
-        .ok_or_else(|| AppError::Internal("影视最近没有待解说的作品".into()))?;
+/// Explains the work 影视 discusses most, or revises its explanation; nothing while no work is
+/// due, as while 影视 collects nothing.
+pub(super) async fn write(
+    state: &AppState,
+    author: i64,
+    since: DateTime<Utc>,
+) -> Result<Option<Uuid>> {
+    let Some(next) = next(state, author).await? else {
+        return Ok(None);
+    };
     if let (Some(article), Some(revision)) = (next.article, next.revision) {
-        return revised(state, due(state, article, revision).await?).await;
+        return revised(state, due(state, article, revision).await?)
+            .await
+            .map(Some);
     }
     let work: Work = sqlx::query_as(
         "SELECT key, kind, name, name_en, creator, guide FROM catalog_entries WHERE id = $1",
@@ -127,16 +135,18 @@ pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -
     )
     .await?;
     log(id, "XABC's 解说 written", &work, &article, found.usage);
-    Ok(id)
+    Ok(Some(id))
 }
 
 /// The work 影视 discusses most beyond what XABC has written about it, and its article if it has
-/// one: a work without an article once it has a review or a post in the last 30 days, a work
-/// with one once `FRESH_STORIES` new stories came after the article's last revision,
-/// `REVISE_AFTER_DAYS` ago at least. The most stories go first, then the most reviews and posts.
+/// one, while 影视 collects: a work without an article once it has a review or a post in the
+/// last 30 days, a work with one once `FRESH_STORIES` new stories came after the article's last
+/// revision, `REVISE_AFTER_DAYS` ago at least. The most stories go first, then the most reviews
+/// and posts.
 async fn next(state: &AppState, author: i64) -> Result<Option<Next>> {
     Ok(sqlx::query_as(
         "SELECT e.id AS entry, a.id AS article, a.revision FROM catalog_entries e
+         JOIN topics t ON t.id = e.topic_id AND t.enabled
          JOIN catalog_items c ON c.entry_id = e.id
          JOIN items i ON i.id = c.item_id AND NOT i.hidden
          LEFT JOIN articles a ON a.film = e.key

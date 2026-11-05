@@ -27,6 +27,9 @@ const PAGE_TOPICS: [&str; 2] = ["reads", "llm"];
 const STYLES: &str = "/styles.css?v=worth";
 const PUBLIC_SCRIPT: &str = "/public.js?v=12";
 const STATS_SCRIPT: &str = "/stats.js?v=3";
+/// How the news page introduces the site where it is found and shared.
+const TITLE: &str = "𝑵𝒆𝒘𝒔 · AI、开发者与前沿科技的全网热点";
+const DESCRIPTION: &str = "面向 AI 实践者、软硬件开发者、开源爱好者和极客，每天精选全网科技热点、开发者热议、安全与创客动态、前沿进展，提供 XAI 日报与 XABC 长文。";
 /// app.js's first page of 𝐀𝐋𝐋 and of one topic, and the days it lists, which its preloads repeat.
 const ALL_PAGE_LIMIT: &str = "6";
 const PAGE_LIMIT: &str = "12";
@@ -77,21 +80,21 @@ async fn home(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="𝑵𝒆𝒘𝒔 · 每日 XAI 日报与 AI 热点资讯">
+  <meta name="description" content="{DESCRIPTION}">
   <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f6f4">
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1115">
   <meta name="referrer" content="no-referrer">
   <!-- How a link to the home page looks where it is shared, X first. -->
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="𝑵𝒆𝒘𝒔">
-  <meta property="og:title" content="𝑵𝒆𝒘𝒔 · 每日 XAI 日报与 AI 热点资讯">
-  <meta property="og:description" content="AI 与科技要闻、XAI 日报、精读长文、分享与影视解说，每天更新。">
+  <meta property="og:title" content="{TITLE}">
+  <meta property="og:description" content="{DESCRIPTION}">
   <meta property="og:url" content="{home}">
   <meta property="og:image" content="{card}">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
-  <title>𝑵𝒆𝒘𝒔</title>
+  <title>{title}</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
   <link rel="alternate" type="application/atom+xml" title="𝑵𝒆𝒘𝒔" href="/feed.xml">
   <link rel="stylesheet" href="{STYLES}">
@@ -113,13 +116,14 @@ async fn home(
   <script src="{STATS_SCRIPT}" data-track-url="{track_url}" defer></script>
   <script src="{PUBLIC_SCRIPT}" defer></script>
   <script src="/travel.js?v=13" defer></script>
-  <script src="/app.js?v=54" defer></script>
+  <script src="/app.js?v=55" defer></script>
   <!-- async: a slow third-party banner must not hold back DOMContentLoaded, which starts app.js. -->
   <script src="https://broadcast.xairouter.com/embed.js" async></script>
 </body>
 </html>
 "##,
         lang = choose(en, "zh-CN", "en"),
+        title = choose(en, TITLE, "𝑵𝒆𝒘𝒔"),
         home = escape(&absolute(&state, "/")),
         card = escape(&absolute(&state, "/og.png")),
         preloads = preloads(&topics, &topic, dated),

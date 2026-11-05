@@ -38,8 +38,8 @@ const MAX_FAILED_ATTEMPTS: i64 = 3;
 const FINISH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 const STAT_TOPICS: [&str; 6] = ["x", "p", "china-ai", "overseas-ai", "gossip", "cases"];
 
-/// The photograph collections, fashion, AI 创作, 趣图 and the catalogues stay outside the AI
-/// briefing.
+/// The photograph collections, fashion, AI 创作, 趣图, the catalogues and the topics beyond AI
+/// (热议, 安全, 创客 and 前沿, which live in the data alone) stay outside the AI briefing.
 pub(crate) fn outside_briefing() -> Vec<&'static str> {
     [
         crate::gallery::TOPIC_ID,
@@ -47,6 +47,10 @@ pub(crate) fn outside_briefing() -> Vec<&'static str> {
         crate::fetch::FASHION_TOPIC_ID,
         crate::fetch::CREATIONS_TOPIC_ID,
         crate::fetch::FUN_TOPIC_ID,
+        "buzz",
+        "security",
+        "maker",
+        "frontier",
     ]
     .into_iter()
     .chain(

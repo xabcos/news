@@ -545,8 +545,14 @@ struct Worth {
 
 /// 精选, which opens ALL: XABC's four newest 分享, newest first, then the four hottest of the
 /// last 30 days of 分享 and XABC's other lists together, ranked as 热读 is, each article once;
-/// while few are read, the newest fill the places.
+/// while few are read, the newest fill the places. 解说 is among them, and its list among the
+/// page's links, while 影视, whose works it explains, is public.
 async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
+    let commentary = state
+        .digest
+        .topics()
+        .iter()
+        .any(|topic| topic.id == "movie");
     let articles: Vec<Worth> = QueryBuilder::<Postgres>::new(
         "WITH newest AS (
              SELECT a.id, a.published_at FROM articles a JOIN users u ON u.id = a.author_id
@@ -563,9 +569,10 @@ async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Resp
          FROM articles a JOIN users u ON u.id = a.author_id
          LEFT JOIN article_images i ON i.id = a.cover
          LEFT JOIN newest n ON n.id = a.id
-         WHERE u.status AND a.status = 'published' AND a.published_at >= NOW() - INTERVAL '30 days'
-         ORDER BY n.published_at DESC NULLS LAST, ",
+         WHERE u.status AND a.status = 'published' AND a.published_at >= NOW() - INTERVAL '30 days'",
     )
+    .push(if commentary { "" } else { " AND a.film IS NULL" })
+    .push(" ORDER BY n.published_at DESC NULLS LAST, ")
     .push(HOT)
     .push(" DESC, a.published_at DESC, a.id DESC LIMIT 8")
     .build_query_as()
@@ -573,7 +580,7 @@ async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Resp
     .await?;
     Ok(conditional(
         &headers,
-        &Rendered::new(json!({ "articles": articles }).to_string()),
+        &Rendered::new(json!({ "articles": articles, "commentary": commentary }).to_string()),
         "application/json",
     ))
 }
