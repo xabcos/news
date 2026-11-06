@@ -15,9 +15,9 @@ use axum::{
     routing::get,
 };
 use chrono::{DateTime, Utc};
-use pulldown_cmark::{Event, Tag, TagEnd, TextMergeStream, html};
+use pulldown_cmark::{CowStr, Event, Options, Parser, Tag, TagEnd, TextMergeStream, html};
 use sqlx::{Postgres, QueryBuilder};
-use std::fmt::Write;
+use std::{fmt::Write, sync::LazyLock};
 use uuid::Uuid;
 
 /// Topics with their own server-rendered page instead of the news feed.
@@ -407,9 +407,158 @@ pub(crate) struct Picture {
     pub(crate) size: Option<(i32, i32)>,
 }
 
+/// Where the marks that stand for formulas set apart start: a private-use plane no text uses.
+/// A formula's mark is this plus its number.
+const FORMULA: u32 = 0xF0000;
+/// The longest formula math-core is given. It parses nested groups by recursion, a level for each
+/// `{` at worst: 1,000 of them take some 1.5 MiB of a worker's 2 MiB stack.
+const FORMULA_LENGTH: usize = 1000;
+
+/// Markdown parsed with its LaTeX formulas, `\(…\)` within a line and `\[…\]` set apart, as
+/// `InlineMath` and `DisplayMath` for `markdown` to lay out. Each formula outside code, links and
+/// pictures becomes one mark before parsing, so neither Markdown's escapes nor a table's bars
+/// reach it. `$` delimits nothing: Chinese writes prices with it, `$1.46→$2.06`.
+pub(crate) fn parsed(source: &str, options: Options) -> Vec<Event<'static>> {
+    // Code keeps every backslash as written, and so do links and their definitions, which escape
+    // parentheses with them.
+    let parser = Parser::new_ext(source, options);
+    let mut kept: Vec<_> = parser
+        .reference_definitions()
+        .iter()
+        .map(|(_, definition)| definition.span.clone())
+        .collect();
+    kept.extend(parser.into_offset_iter().filter_map(|(event, range)| {
+        matches!(
+            event,
+            Event::Code(_) | Event::Start(Tag::CodeBlock(_) | Tag::Link { .. } | Tag::Image { .. })
+        )
+        .then_some(range)
+    }));
+    kept.sort_unstable_by_key(|range| range.start);
+    let mut kept = kept.into_iter().peekable();
+    let bytes = source.as_bytes();
+    let mut found: Vec<Option<(&str, bool)>> = Vec::new();
+    let mut marked = String::with_capacity(source.len());
+    let mut copied = 0;
+    // The formula being read: where its TeX starts and whether it is set apart.
+    let mut open: Option<(usize, bool)> = None;
+    // One pass, whatever the text: an opener without its closer costs nothing later.
+    let mut at = 0;
+    while at < bytes.len() {
+        match (bytes[at], bytes.get(at + 1), open) {
+            // A backslash escaped, or a row ending inside a formula.
+            (b'\\', Some(b'\\'), _) => at += 2,
+            (b'\\', Some(&kind @ (b'(' | b'[')), None) => {
+                while kept.next_if(|range| range.end <= at).is_some() {}
+                if !kept.peek().is_some_and(|range| range.contains(&at)) {
+                    open = Some((at + 2, kind == b'['));
+                }
+                at += 2;
+            }
+            (b'\\', Some(&kind @ (b')' | b']')), Some((start, block)))
+                if block == (kind == b']') =>
+            {
+                let Some(mark) = u32::try_from(found.len())
+                    .ok()
+                    .and_then(|number| char::from_u32(FORMULA + number))
+                else {
+                    break;
+                };
+                marked.push_str(&source[copied..start - 2]);
+                marked.push(mark);
+                found.push(Some((&source[start..at], block)));
+                (copied, open, at) = (at + 2, None, at + 2);
+            }
+            // A formula ends with its paragraph, or was none: at a line holding nothing visible.
+            (b'\n', _, Some(_))
+                if bytes[at + 1..]
+                    .iter()
+                    .find(|byte| !matches!(byte, b' ' | b'\t' | b'\r'))
+                    == Some(&b'\n') =>
+            {
+                (open, at) = (None, at + 1);
+            }
+            _ => at += 1,
+        }
+    }
+    marked.push_str(&source[copied..]);
+    let mut events = Vec::new();
+    for event in Parser::new_ext(&marked, options) {
+        let Event::Text(text) = event else {
+            events.push(event.into_static());
+            continue;
+        };
+        let mut words = String::new();
+        for c in text.chars() {
+            // Each mark stands for its formula once: one the text forges, as a character or an
+            // entity, finds it taken or stays a character.
+            let formula = u32::from(c)
+                .checked_sub(FORMULA)
+                .and_then(|number| found.get_mut(usize::try_from(number).ok()?))
+                .and_then(Option::take);
+            let Some((tex, block)) = formula else {
+                words.push(c);
+                continue;
+            };
+            if !words.is_empty() {
+                events.push(Event::Text(std::mem::take(&mut words).into()));
+            }
+            let tex = CowStr::from(tex.to_owned());
+            events.push(if block {
+                Event::DisplayMath(tex)
+            } else {
+                Event::InlineMath(tex)
+            });
+        }
+        if !words.is_empty() {
+            events.push(Event::Text(words.into()));
+        }
+    }
+    events
+}
+
+/// The commands a formula could define its own with: one that expands to itself nests groups
+/// without end, so math-core isn't given a formula that names any. Its own commands that expand,
+/// like `\implies`, never recurse.
+const DEFINING: [&str; 6] = [
+    "\\def",
+    "\\gdef",
+    "\\let",
+    "\\newcommand",
+    "\\renewcommand",
+    "\\providecommand",
+];
+
+/// A formula as MathML, which browsers lay out themselves; one math-core can't read, or isn't
+/// given, stays as its TeX, as code. An operator name is set as `\mathop\mathrm`: math-core
+/// writes `\operatorname`'s into the page unescaped.
+fn formula(tex: &str, block: bool) -> String {
+    static CONVERTER: LazyLock<math_core::LatexToMathML> = LazyLock::new(|| {
+        math_core::LatexToMathML::new(math_core::MathCoreConfig::default(), Vec::new())
+            .expect("no custom macros to parse")
+    });
+    if tex.chars().count() <= FORMULA_LENGTH && !DEFINING.iter().any(|name| tex.contains(name)) {
+        let display = if block {
+            math_core::MathDisplay::Block
+        } else {
+            math_core::MathDisplay::Inline
+        };
+        // The longer names first, as each holds the shorter.
+        let named = tex
+            .replace("\\operatornamewithlimits", "\\mathop\\mathrm")
+            .replace("\\operatorname*", "\\mathop\\mathrm")
+            .replace("\\operatorname", "\\mathop\\mathrm");
+        if let Ok(converted) = CONVERTER.convert_with_local_state(&named, display) {
+            return converted.mathml;
+        }
+    }
+    format!("<code>{}</code>", escape(tex.trim()))
+}
+
 /// Markdown as HTML that can't run anything: raw HTML is dropped, links keep only http(s)
 /// addresses without credentials, and a picture shows only where `picture` gives it an
-/// address; otherwise its description stays as text.
+/// address; otherwise its description stays as text. Formulas (`parsed`) come out as MathML,
+/// which math-core writes with its text escaped.
 pub(crate) fn markdown<'a>(
     events: impl IntoIterator<Item = Event<'a>>,
     picture: impl Fn(&str) -> Option<Picture>,
@@ -462,6 +611,8 @@ pub(crate) fn markdown<'a>(
                 id,
             }))
         }
+        Event::InlineMath(tex) => Some(Event::InlineHtml(formula(&tex, false).into())),
+        Event::DisplayMath(tex) => Some(Event::InlineHtml(formula(&tex, true).into())),
         other => Some(other),
     });
     let mut html = String::new();
@@ -708,7 +859,7 @@ fn back_to_top(en: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{TopicMeta, headline, markdown, preloads, tabs};
+    use super::{TopicMeta, headline, markdown, parsed, preloads, tabs};
     use pulldown_cmark::{Options, Parser};
 
     fn topic(id: &str, name: &str, name_en: &str) -> TopicMeta {
@@ -902,5 +1053,97 @@ mod tests {
         ] {
             assert_eq!(render(source), html, "{source}");
         }
+    }
+
+    #[test]
+    fn formulas_come_out_as_mathml_and_leave_tables_code_links_and_prices_alone() {
+        let render = |source: &str| {
+            markdown(
+                parsed(
+                    source,
+                    Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES,
+                ),
+                |_| None,
+            )
+        };
+        // Within a line and set apart, a row's end inside the formula included; no TeX is left.
+        let html = render(
+            "动量 \\(\\mathbf p=m\\mathbf v\\) 很熟悉：\n\n\\[\n\\begin{aligned}P^2&=a\\\\\n&=b\\end{aligned}\n\\]",
+        );
+        assert_eq!(html.matches("<math").count(), 2, "{html}");
+        assert!(
+            html.contains("<math display=\"block\">") && !html.contains('\\'),
+            "{html}"
+        );
+        // A bar inside a formula leaves a table's cells alone.
+        let table = render("| 方向 | 长度 |\n|---|---|\n| 垂直 | \\(|\\mathbf C-\\mathbf V|\\) |");
+        assert_eq!(
+            (
+                table.matches("<td>").count(),
+                table.matches("<math>").count()
+            ),
+            (2, 1),
+            "{table}"
+        );
+        for (source, html) in [
+            // Code, escaped backslashes and prices stay as written.
+            (
+                "`\\(a\\)` 与\n\n```\nre.sub(r'\\(\\d+\\)', x)\n```",
+                "<p><code>\\(a\\)</code> 与</p>\n<pre><code>re.sub(r'\\(\\d+\\)', x)\n</code></pre>\n",
+            ),
+            (
+                "\\\\(不是公式\\\\) 单价 $1.46→$2.06，（$0.05/分钟）",
+                "<p>\\(不是公式\\) 单价 $1.46→$2.06，（$0.05/分钟）</p>\n",
+            ),
+            // A link escapes its parentheses with backslashes.
+            (
+                "[水星](https://en.wikipedia.org/wiki/Mercury_\\(planet\\) \"轨道 \\(a\\)\")",
+                "<p><a href=\"https://en.wikipedia.org/wiki/Mercury_(planet)\" title=\"轨道 (a)\">水星</a></p>\n",
+            ),
+            // So does a link's definition, title included.
+            (
+                "[水星][p]\n\n[p]: https://en.wikipedia.org/wiki/Mercury_\\(planet\\) \"轨道 \\(a\\)\"",
+                "<p><a href=\"https://en.wikipedia.org/wiki/Mercury_(planet)\" title=\"轨道 (a)\">水星</a></p>\n",
+            ),
+            // No formula runs past its paragraph, however its blank line is written.
+            ("\\(开头\n  \n结尾\\)", "<p>(开头</p>\n<p>结尾)</p>\n"),
+            ("\\(开头\r\n\r\n结尾\\)", "<p>(开头</p>\n<p>结尾)</p>\n"),
+            // What math-core can't read, or isn't given, stays as its TeX, escaped, as code: here
+            // a formula defining a command that would expand to itself without end.
+            (
+                "看 \\(\\def\\rec{{{\\rec}}}\\rec\\)",
+                "<p>看 <code>\\def\\rec{{{\\rec}}}\\rec</code></p>\n",
+            ),
+        ] {
+            assert_eq!(render(source), html, "{source}");
+        }
+        // An operator name is laid out with its markup escaped, however a formula reaches it.
+        for source in [
+            "\\(\\operatorname*{arg\\,max}_x f(x)\\)",
+            "\\(\\sqrt\\operatorname{<img/src=x>}\\)",
+            "\\(\\sqrt\\mathchoice{a}\\operatorname{b}{c}{<img/src=x>}\\)",
+        ] {
+            let html = render(source);
+            assert!(
+                html.starts_with("<p><math>") && !html.contains("<img"),
+                "{html}"
+            );
+        }
+        // So are math-core's own commands that expand.
+        let expanded = render("\\(a\\implies b\\iff c,\\ x_1,\\ldots,x_n\\equiv 0\\pmod{n}\\)");
+        assert!(
+            expanded.starts_with("<p><math>") && !expanded.contains('\\'),
+            "{expanded}"
+        );
+        // Nesting deeper than math-core's stack allows is not given to it.
+        let deep = render(&format!("\\({}x\\)", "{".repeat(2000)));
+        assert!(deep.starts_with("<p><code>{{{") && !deep.contains("<math"));
+        // A mark the text forges, as a character or an entity, takes a formula at most once.
+        let forged = render(&format!(
+            "{} {} \\(\\frac{{1}}{{2}}\\)",
+            "\u{F0000}".repeat(50),
+            "&#xF0000;".repeat(50)
+        ));
+        assert_eq!(forged.matches("<math").count(), 1, "{forged}");
     }
 }

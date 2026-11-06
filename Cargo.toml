@@ -15,6 +15,7 @@ getrandom = "0.4"
 hmac = "0.13"
 hex = "0.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+math-core = "0.9"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 redis = { version = "1", default-features = false, features = ["tokio-rustls-comp", "connection-manager"] }

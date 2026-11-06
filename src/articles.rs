@@ -526,7 +526,7 @@ async fn rendered(
     .into_iter()
     .map(|(image, width, height)| (image, (width, height)))
     .collect();
-    let html = crate::site::markdown(Parser::new_ext(&text.body, MARKDOWN), |destination| {
+    let html = crate::site::markdown(crate::site::parsed(&text.body, MARKDOWN), |destination| {
         let image = image_id(destination)?;
         Some(crate::site::Picture {
             src: format!("/api/articles/{}/images/{image}", article.id),

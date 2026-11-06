@@ -23,7 +23,7 @@ const STATIC_MAX_AGE: &str = "public, max-age=300";
 const HTML_MAX_AGE: &str = "public, max-age=60";
 /// The public page hosts the Broadcast embed and sends anonymous page views to Stats;
 /// news images may come from any HTTPS origin. Everything else stays same-origin.
-const CSP: &str = "default-src 'self'; script-src 'self' https://broadcast.xairouter.com; style-src 'self'; img-src 'self' data: blob: https:; font-src 'self'; connect-src 'self' https://stats.xairouter.com https://broadcast.xairouter.com; media-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
+const CSP: &str = "default-src 'self'; script-src 'self' https://broadcast.xairouter.com; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self'; connect-src 'self' https://stats.xairouter.com https://broadcast.xairouter.com; media-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
 
 pub(crate) fn router(state: AppState) -> Router {
     Router::new()

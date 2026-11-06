@@ -12,7 +12,7 @@ use crate::{
     reading::{self, Reader},
     site::{
         Chrome, EYE, Picture, absolute, choose, escape, listing, localized, markdown, pagination,
-        search_box,
+        parsed, search_box,
     },
     state::AppState,
 };
@@ -24,7 +24,6 @@ use axum::{
     routing::get,
 };
 use chrono::{DateTime, Utc};
-use pulldown_cmark::Parser;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::{FromRow, Postgres, QueryBuilder};
@@ -43,7 +42,7 @@ const FROM: &str = " FROM articles a JOIN authors w ON w.user_id = a.author_id J
 const LIST: Chrome<'static> = Chrome {
     current: "articles",
     section: "reads articles article-cards",
-    stylesheet: "/reads.css?v=20",
+    stylesheet: "/reads.css?v=21",
     script: "/reads.js?v=9",
     feed: ("News", "/feed.xml"),
 };
@@ -969,7 +968,7 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
             size: Some((image.width, image.height)),
         })
     };
-    let body = markdown(Parser::new_ext(&article.body, MARKDOWN), |destination| {
+    let body = markdown(parsed(&article.body, MARKDOWN), |destination| {
         image_id(destination).and_then(picture)
     });
     let cover = article.cover.and_then(picture);

@@ -31,12 +31,17 @@
 .read-body a:hover, .read-source a:hover { color: var(--primary-strong); }
 .read-body pre { padding: 1rem; background: var(--surface-soft); border-radius: .4rem; overflow-x: auto; font-size: .85rem; line-height: 1.7; }
 .read-body code { font-size: .88em; }
+/* Formulas, which the browser lays out from MathML; a long one scrolls on its own line. */
+.read-body math { font-family: "STIX Two Math", "Cambria Math", math; }
+.read-body math[display="block"] { max-width: 100%; overflow-x: auto; overflow-y: hidden; }
 .read-body img { display: block; max-width: 100%; height: auto; margin: 1.5rem auto; }
 .read-full { margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--line); }
 .read-full > h2 { margin: 0 0 1.5rem; color: var(--muted); font-size: .85rem; font-weight: 500; }
 .read-body blockquote { margin-left: 0; padding-left: 1.2rem; border-left: 2px solid var(--line-strong); color: var(--muted); }
 .read-body table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; font-size: .9rem; }
 .read-body th, .read-body td { padding: .5rem .75rem; border-bottom: 1px solid var(--line); text-align: left; }
+/* A header keeps its words whole: breaking anywhere would let a narrow column split 符号. */
+.read-body th { overflow-wrap: break-word; word-break: keep-all; }
 .read-source { margin-top: 2.5rem; padding-top: 1.25rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .8rem; line-height: 1.8; overflow-wrap: anywhere; }
 .read-source a { text-underline-offset: .2em; }
 .read-source p { margin: .6rem 0 0; }
