@@ -3,6 +3,10 @@ import { $, api, toast, reportError, withBusy } from "./ui.js";
 // Writing an article for 分享. A draft saves itself while being written; a public article
 // changes only on 「更新」, which sends it back to review unless an administrator wrote it.
 const LIMIT = 10 * 1024 * 1024;
+// Characters, spaces aside, a new article holds before it saves itself: a page opened and left,
+// or a few stray keys, leave no draft behind. Saving at once, a picture, a preview or a submit
+// still saves it.
+const KEEP = 20;
 const TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 const statusText = { draft: "草稿", pending: "待审", published: "已公开" };
 const title = $("#title");
@@ -72,10 +76,17 @@ function update(note = "") {
   $("#notice").classList.toggle("hidden", !notice);
 }
 
+// Whether the editor saves itself: a draft as it changes, a new article once it holds enough to
+// keep or while its first save is on the way, a public one only on 「更新」.
+function autosaves() {
+  if (article || saving) return article?.status !== "published";
+  return (title.value + body.value).replace(/\s/g, "").length >= KEEP;
+}
+
 function changed() {
   dirty = true;
   clearTimeout(timer);
-  if (article?.status !== "published") timer = setTimeout(() => void save().catch(reportError), 1500);
+  if (autosaves()) timer = setTimeout(() => void save().catch(reportError), 1500);
   update();
   clearTimeout(previewTimer);
   previewTimer = setTimeout(() => void render(), 400);
@@ -320,6 +331,8 @@ $("#previewButton").addEventListener("click", () => {
   previewing = !previewing;
   $("#writer").classList.toggle("previewing", previewing);
   update();
+  // Only a saved article renders, so a new one with words in it saves first, as a wide preview does.
+  if (previewing && !article && (title.value.trim() || body.value.trim())) void flush().catch(reportError);
   void render();
 });
 wide.addEventListener("change", () => {
@@ -410,7 +423,7 @@ body.addEventListener("drop", (event) => {
 });
 // A draft hidden behind another tab saves right away.
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden && dirty && article?.status !== "published") void save().catch(reportError);
+  if (document.hidden && dirty && autosaves()) void save().catch(reportError);
 });
 window.addEventListener("beforeunload", (event) => {
   if (dirty || saving) event.preventDefault();

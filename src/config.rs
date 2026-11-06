@@ -258,7 +258,7 @@ fn validate_tenant_code(value: &str) -> Result<()> {
 }
 
 fn parse_public_base_url(value: &str) -> Result<Url> {
-    let mut url = Url::parse(value)
+    let url = Url::parse(value)
         .map_err(|_| AppError::Config("PUBLIC_BASE_URL 必须是有效的 HTTP(S) URL".into()))?;
     if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none()
@@ -266,7 +266,7 @@ fn parse_public_base_url(value: &str) -> Result<Url> {
         || url.password().is_some()
         || url.query().is_some()
         || url.fragment().is_some()
-        || (!url.path().is_empty() && url.path() != "/")
+        || url.path() != "/"
     {
         return Err(AppError::Config(
             "PUBLIC_BASE_URL 必须是站点根目录的 HTTP(S) URL".into(),
@@ -276,11 +276,6 @@ fn parse_public_base_url(value: &str) -> Result<Url> {
         return Err(AppError::Config(
             "公开服务必须使用 HTTPS（回环地址除外）".into(),
         ));
-    }
-    // `https://example.com` and `https://example.com/` are the same site. Keep
-    // one canonical root form for login links and origin comparisons.
-    if url.path().is_empty() {
-        url.set_path("/");
     }
     Ok(url)
 }
@@ -355,7 +350,13 @@ mod tests {
     #[test]
     fn accepts_only_root_http_urls() {
         assert!(parse_public_base_url("https://news.example.com/").is_ok());
-        assert!(parse_public_base_url("https://news.example.com").is_ok());
+        // The site root has one form, with or without its slash.
+        assert_eq!(
+            parse_public_base_url("https://news.example.com")
+                .unwrap()
+                .as_str(),
+            "https://news.example.com/"
+        );
         assert!(parse_public_base_url("http://127.0.0.1:8788/").is_ok());
         assert!(parse_public_base_url("https://news.example.com/app").is_err());
         assert!(parse_public_base_url("http://news.example.com/").is_err());

@@ -28,7 +28,7 @@ pub(crate) async fn request(state: &AppState, body: Value) -> Result<Value> {
 
 /// Whether a reply finished without an error, as `parse_payload` requires.
 fn completed(reply: &Value) -> bool {
-    reply["status"] == "completed" && reply.get("error").is_none_or(Value::is_null)
+    reply["status"] == "completed" && reply["error"].is_null()
 }
 
 /// The request as the fallback model takes it: without X search and grok's picture options,
