@@ -5,8 +5,7 @@ const statusText = { draft: "草稿", pending: "待审", published: "已公开" 
 const kind = (article) => article.film ? "解说" : article.person ? "时代" : article.event ? "追踪" : article.product ? "评测" : "分享";
 
 // 分享 in the workspace: the pen name, the reader's own articles and, for an administrator,
-// what waits for a ❤️ and what XABC writes next: whom 时代 profiles, what 分享 looks into.
-// Requests share the session's abort signal.
+// what XABC writes next and the articles to review. Requests share the session's abort signal.
 export function createArticles(session) {
   const signal = session.controller.signal;
   let author = null;
@@ -21,22 +20,30 @@ export function createArticles(session) {
     editName();
     toast("写文章前先设置笔名");
   }, { signal });
-  // What an administrator asks for joins the line's list, written before its own articles.
-  const lineUp = (form, path, told) => {
-    const field = $(`${form} [name]`);
-    $(form).classList.toggle("hidden", !session.admin);
-    $(form).addEventListener("submit", (event) => {
-      event.preventDefault();
-      void withBusy($(`${form} button`), "提交中…", async () => {
-        const value = field.value.trim();
-        const { ahead } = await session.request(path, { method: "POST", body: { [field.name]: value } });
-        field.value = "";
-        toast(`${told(value)}，${ahead ? `前面还有 ${ahead} 个` : "下一篇就写它"}`);
-      });
-    }, { signal });
+  // What an administrator asks XABC to write joins the picked line's list, written before its
+  // own articles: something 分享 looks into, or a person or a company 时代 writes about.
+  const lines = {
+    share: { path: "/api/admin/research", key: "brief", hint: "想了解什么，XABC 全网调研后写成文章，比如：某个新模型怎么调用，以官方文档为准", told: () => "已排进分享" },
+    people: { path: "/api/admin/people", key: "name", hint: "人物或企业的名字", told: (name) => `「${name}」已排进时代` },
   };
-  lineUp("#profileForm", "/api/admin/people", (name) => `「${name}」已排进时代`);
-  lineUp("#researchForm", "/api/admin/research", () => "已排进分享");
+  const ask = $("#askForm");
+  const text = $("#askText");
+  const line = () => lines[ask.elements.line.value];
+  const hint = () => { text.placeholder = line().hint; };
+  hint();
+  ask.classList.toggle("hidden", !session.admin);
+  ask.addEventListener("change", hint, { signal });
+  ask.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const { path, key, told } = line();
+    void withBusy($("#askForm button"), "提交中…", async () => {
+      const value = text.value.trim();
+      const { ahead } = await session.request(path, { method: "POST", body: { [key]: value } });
+      // Whatever was typed meanwhile, for either line, stays.
+      if (text.value.trim() === value) text.value = "";
+      toast(`${told(value)}，${ahead ? `前面还有 ${ahead} 个` : "下一篇就写它"}`);
+    });
+  }, { signal });
   $("#penNameForm").addEventListener("submit", (event) => {
     event.preventDefault();
     void withBusy($("#penNameForm button"), "保存中…", async () => {
@@ -90,14 +97,13 @@ export function createArticles(session) {
 
   // The administrator reads each article in its preview, where the ❤️ and the copies for X
   // Articles are, edits anyone's, XABC's above all, and deletes what waits for a ❤️; a public
-  // one goes back to wait first.
+  // one goes back to wait first. What waits shows only while something does.
   function renderReview({ pending, published }) {
     const lists = $("#reviewLists");
     lists.classList.remove("hidden");
-    const section = (heading, articles, empty, extra, removable = false) => {
+    const section = (heading, articles, extra, removable = false) => {
       const box = node("div", "review-list");
       box.append(node("h3", "", heading));
-      if (!articles.length) box.append(node("p", "muted small", empty));
       const list = node("ul", "item-list");
       list.append(...articles.map((article) => {
         const row = node("li", "item-row");
@@ -115,11 +121,12 @@ export function createArticles(session) {
       return box;
     };
     const finding = Boolean(find.day || find.q);
-    const recent = section(finding ? `找到 ${published.length} 篇` : "最近公开", published, finding ? "没有找到。" : "还没有公开的文章。",
+    const recent = section(finding ? `找到 ${published.length} 篇` : "最近公开", published,
       (article) => `${kind(article)} · 阅读 ${article.views} · 公开于 ${formatTime(article.published_at, session.timezone)}`);
-    recent.querySelector("h3").after(finder());
+    recent.querySelector("h3").after(finder(finding));
+    if (!published.length) recent.append(node("p", "muted small", finding ? "没有找到。" : "还没有公开的文章。"));
     lists.replaceChildren(
-      section(`待审（${pending.length}）`, pending, "没有等待审核的文章。", (article) => `更新于 ${formatTime(article.updated_at, session.timezone)}`, true),
+      ...(pending.length ? [section(`待审（${pending.length}）`, pending, (article) => `更新于 ${formatTime(article.updated_at, session.timezone)}`, true)] : []),
       recent,
     );
   }
@@ -139,16 +146,15 @@ export function createArticles(session) {
     return remove;
   }
 
-  // A day, words in the title or opening, or both; 最近 goes back to the latest.
-  function finder() {
+  // A day, words in the title or opening, or both, looked for once a day is picked or Enter is
+  // pressed in the words, not while an input method composes them; while finding, 最近 goes back
+  // to the latest.
+  function finder(finding) {
     const form = node("form", "review-find inline");
     const day = Object.assign(node("input"), { type: "date", value: find.day });
     day.setAttribute("aria-label", "公开日期");
     const words = Object.assign(node("input"), { type: "search", value: find.q, placeholder: "标题或开头里的词" });
     words.setAttribute("aria-label", "关键词");
-    const search = node("button", "button button-quiet button-small", "查找");
-    const latest = node("button", "button button-quiet button-small", "最近");
-    latest.type = "button";
     const run = () => void load().catch(reportError);
     form.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -156,11 +162,22 @@ export function createArticles(session) {
       run();
     });
     day.addEventListener("change", () => form.requestSubmit());
-    latest.addEventListener("click", () => {
-      Object.assign(find, { day: "", q: "" });
-      run();
+    // Some browsers submit the words on Enter themselves, some don't: it is done here, once.
+    words.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
+      event.preventDefault();
+      form.requestSubmit();
     });
-    form.append(day, words, search, latest);
+    form.append(day, words);
+    if (finding) {
+      const latest = node("button", "button button-quiet button-small", "最近");
+      latest.type = "button";
+      latest.addEventListener("click", () => {
+        Object.assign(find, { day: "", q: "" });
+        run();
+      });
+      form.append(latest);
+    }
     return form;
   }
 
@@ -182,7 +199,7 @@ export function createArticles(session) {
       for (const id of ["articleList", "reviewLists"]) $(`#${id}`).replaceChildren();
       $("#reviewLists").classList.add("hidden");
       $("#penNameForm").classList.add("hidden");
-      $("#profileForm").classList.add("hidden");
+      $("#askForm").classList.add("hidden");
       $("#authorLine").textContent = "";
       $("#articlesMessage").classList.add("hidden");
     },

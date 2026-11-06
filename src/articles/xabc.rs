@@ -275,7 +275,7 @@ fn run(
             Ok(written) => {
                 match written {
                     Some(id) => tracing::info!(%id, ?line, "XABC published an article"),
-                    None => tracing::info!(?line, "XABC found nothing new to write"),
+                    None => tracing::debug!(?line, "XABC found nothing new to write"),
                 }
                 progress(line, |progress| progress.finished(line, Utc::now()));
             }

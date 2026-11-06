@@ -10,7 +10,7 @@
   <title>𝑵𝒆𝒘𝒔 · 工作台</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
   <link rel="stylesheet" href="/styles.css?v=sides">
-  <link rel="stylesheet" href="/me/styles.css?v=research">
+  <link rel="stylesheet" href="/me/styles.css?v=asks">
 </head>
 <body>
   <main class="workspace-shell">
@@ -74,13 +74,9 @@
           <div class="inline"><input id="penName" name="name" minlength="2" maxlength="24" placeholder="2–24 个字，读者看到的名字" required><button class="button button-primary button-small" type="submit">保存</button></div>
           <p class="field-hint muted">读者只看到笔名，看不到邮箱。</p>
         </form>
-        <form id="profileForm" class="profile-form hidden">
-          <label for="profileName">时代</label>
-          <div class="inline"><input id="profileName" name="name" maxlength="100" placeholder="人物或企业的名字" required><button class="button button-primary button-small" type="submit">立即写</button></div>
-        </form>
-        <form id="researchForm" class="profile-form hidden">
-          <label for="researchBrief">分享</label>
-          <div class="inline"><textarea id="researchBrief" name="brief" rows="3" maxlength="2000" placeholder="想了解什么，XABC 全网调研后写成文章，比如：找找 OpenAI 某个新模型的用法，以官方文档为准，写成上手指南" required></textarea><button class="button button-primary button-small" type="submit">立即写</button></div>
+        <form id="askForm" class="ask-form hidden">
+          <div class="ask-head"><span class="ask-title">让 XABC 写</span><span class="ask-lines" role="radiogroup" aria-label="写在哪一栏"><label><input type="radio" name="line" value="share" checked>分享</label><label><input type="radio" name="line" value="people">时代</label></span></div>
+          <div class="ask-row"><textarea id="askText" rows="2" maxlength="2000" aria-label="让 XABC 写什么" required></textarea><button class="button button-secondary button-small" type="submit">立即写</button></div>
         </form>
         <div id="reviewLists" class="review-lists hidden"></div>
         <p id="articlesMessage" class="empty-state hidden" role="status"></p><ul id="articleList" class="item-list"></ul>

@@ -142,15 +142,24 @@ fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
 .catalog-models li { display: flex; align-items: center; justify-content: space-between; gap: .6rem; padding: .25rem 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
 
 /* 分享: the pen name, what XABC writes next, the reader's articles and the review queue. */
-.pen-name-form, .profile-form { margin-bottom: 1rem; }
-.pen-name-form .inline, .profile-form .inline { flex-wrap: nowrap; }
-.pen-name-form input, .profile-form input { max-width: 18rem; }
-.profile-form textarea { max-width: 36rem; }
-.review-lists { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line); }
+.pen-name-form { margin-bottom: 1rem; }
+.pen-name-form .inline { flex-wrap: nowrap; }
+.pen-name-form input { max-width: 18rem; }
+/* What XABC writes next: one box, the line picked above it. */
+.ask-form { display: grid; gap: .45rem; margin-bottom: 1.25rem; padding-bottom: 1.25rem; border-bottom: 1px solid var(--line); }
+.ask-head { display: flex; align-items: center; gap: .75rem; }
+.ask-title { font-size: .85rem; font-weight: 650; }
+.ask-lines { display: inline-flex; padding: .15rem; border-radius: 999px; background: var(--surface-soft); }
+.ask-lines label { position: relative; margin: 0; padding: .15rem .75rem; border-radius: 999px; color: var(--muted); font-size: .8rem; cursor: pointer; }
+.ask-lines input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; opacity: 0; pointer-events: none; }
+.ask-lines label:has(input:checked) { background: var(--surface-solid); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / .08); }
+.ask-lines label:has(input:focus-visible) { outline: 2px solid var(--primary); outline-offset: 1px; }
+.ask-row { display: flex; align-items: flex-end; gap: .5rem; }
+.review-lists { display: grid; gap: 1.25rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line); }
 .review-list h3 { margin: 0 0 .4rem; font-size: .9rem; }
 .review-find { margin: 0 0 .5rem; }
 .review-find input { width: auto; padding: .3rem .5rem; font-size: .8rem; }
-.review-find input[type=search] { flex: 1; min-width: 8rem; }
+.review-find input[type=search] { flex: 1; min-width: 8rem; max-width: 24rem; }
 .review-list .item-row:first-child { border-top: 0; }
 /* The review lists' border already sets the reader's own articles apart. */
 .review-lists:not(.hidden) ~ .item-list > .item-row:first-child { border-top: 0; }
@@ -179,7 +188,6 @@ fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
   .writer-preview { display: block; position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow: auto; padding-left: 3rem; border-left: 1px solid var(--line); }
 }
 @media (max-width: 700px) {
-  .review-lists { grid-template-columns: 1fr; }
   .writer { width: calc(100% - 1.5rem); }
   .writer-title { font-size: 1.45rem; }
 }
