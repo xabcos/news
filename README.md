@@ -2,7 +2,7 @@
 
 NEWS 面向 AI 实践者、软硬件开发者、开源爱好者和极客，按主题采集、去重并整理全网的中英文科技热点，提供新闻首页、Atom 订阅、每日 XAI 日报和 XABC 的长文。工作台位于 `/me/`，管理员管理公共栏目和日报稿件，Pro 用户管理个人主题。
 
-> **AI 接口由 [𝐙𝐀𝐈 Router](https://zairouter.com) 提供** —— AI API 聚合平台，一个入口调用全部主流大模型，兼容 OpenAI、Claude、DeepSeek 接口，充值即用。本项目的新闻采集（grok 的 X 与网页检索）、XAI 日报和 XABC 配图都经它调用，`AI_BASE_URL` 默认就是 `https://api.zairouter.com`：在 [zairouter.com](https://zairouter.com) 取得 API Key，填入 `AI_API_KEY` 即可运行。
+> **AI 接口由 [𝐗𝐒𝐈 Router](https://xsirouter.com) 提供** —— AI API 聚合平台，一个入口调用全部主流大模型，兼容 OpenAI、Claude、DeepSeek 接口，充值即用。本项目的新闻采集（grok 的 X 与网页检索）、XAI 日报和 XABC 配图都经它调用，`AI_BASE_URL` 默认就是 `https://api.xsirouter.com`：在 [xsirouter.com](https://xsirouter.com) 取得 API Key，填入 `AI_API_KEY` 即可运行。
 
 ## 公共栏目
 
@@ -214,8 +214,8 @@ docker compose up -d
 | `DATABASE_URL` | 必填 | PostgreSQL 连接地址 |
 | `PUBLIC_BASE_URL` | 必填 | 对外地址，生产环境使用 HTTPS |
 | `NEWS_ADMIN_EMAILS` | 必填 | 管理员邮箱，逗号分隔 |
-| `AI_API_KEY` | 启用采集时必填 | Responses API 密钥，在 [zairouter.com](https://zairouter.com) 取得 |
-| `AI_BASE_URL` / `AI_DEFAULT_MODEL` | `https://api.zairouter.com` / `grok-4.7` | 采集接口与新建主题的模型 |
+| `AI_API_KEY` | 启用采集时必填 | Responses API 密钥，在 [xsirouter.com](https://xsirouter.com) 取得 |
+| `AI_BASE_URL` / `AI_DEFAULT_MODEL` | `https://api.xsirouter.com` / `grok-4.7` | 采集接口与新建主题的模型 |
 | `AI_INSIGHT_MODEL` | `gpt-6-astra` | 支持图片输入的日报模型，也是 XABC 检索素材的模型之一 |
 | `AI_WRITING_MODEL` | `gpt-6.1-terra` | XABC 写分享、解说、时代、追踪和评测的模型 |
 | `AI_IMAGE_MODEL` | `gpt-image-2.6-flare` | XABC 画插图、封面和时代四格漫画的生图模型 |
