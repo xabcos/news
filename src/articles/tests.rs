@@ -1280,6 +1280,15 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                                 )),
                             );
                         }
+                        // The writing model says what an administrator's request asks for.
+                        if request["text"]["format"]["name"] == "understanding" {
+                            let input = request["input"][0]["content"].as_str().unwrap_or_default();
+                            let asked = input.split_once("管理员的请求：").map_or("", |(_, asked)| asked);
+                            return (
+                                StatusCode::OK,
+                                Json(reply(json!({ "understanding": format!(" 他想弄懂「{asked}」。 ") }), "https://elsewhere.example/x")),
+                            );
+                        }
                         // grok looks for a photograph of a person or a company, and finds one
                         // while it may.
                         if request["text"]["format"]["name"] == "photo" {
@@ -2519,6 +2528,10 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         let (before, ..) = shares().await.unwrap();
         shared().await;
         let requests = asked_log.lock().unwrap()[asked_before..].to_vec();
+        // First the request is understood, and both scouts and the writer hear that.
+        assert_eq!(requests[0]["text"]["format"]["name"], "understanding");
+        assert_eq!(requests[0]["model"], state.config.ai_writing_model.as_str());
+        let understood = format!("管理员的请求：{brief}\n对请求的理解：他想弄懂「{brief}」。");
         let searches: Vec<&Value> = requests
             .iter()
             .filter(|request| request["text"]["format"]["name"] == "finds")
@@ -2529,11 +2542,11 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                 search["instructions"]
                     .as_str()
                     .unwrap()
-                    .contains("管理员请 XABC 就输入里的请求做一次全网调研")
+                    .contains("管理员请 XABC 就一件事做一次全网调研")
                     && search["input"][0]["content"]
                         .as_str()
                         .unwrap()
-                        .ends_with(&format!("管理员的请求：{brief}"))
+                        .ends_with(&understood)
             );
         }
         let guide = requests
@@ -2551,11 +2564,21 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                 .as_str()
                 .unwrap()
                 .contains(&format!(
-                    "管理员的请求：{brief}\n线索：\n1.【X 与全网】一个好玩的工具"
+                    "{understood}\n线索：\n1.【X 与全网】一个好玩的工具"
                 ))
         );
         let (after, latest, cover) = shares().await.unwrap();
         assert!(after == before + 1 && cover.is_some());
+        // A page read to understand the request keeps its link, which an hourly 分享 drops.
+        let body: String = sqlx::query_scalar("SELECT body FROM articles WHERE id = $1")
+            .bind(latest)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+        assert!(
+            body.contains("看看[别处](https://elsewhere.example/x)"),
+            "{body}"
+        );
         researched = latest;
     }
     // With the requests written, 分享's own round waits its interval, and 时代's name is still
