@@ -476,8 +476,8 @@ const USER_AGENT: &str = "XABCNEWS/1.0 (xabcnews.com)";
 const WIKIMEDIA_AGENT: &str = "XABCNEWS/1.0 (+https://xabcnews.com)";
 
 /// Wikimedia asks automated clients to send API requests one after another rather than in
-/// parallel; two at a time for the whole process keeps Travel's guides and place lookups and
-/// 时代's portraits moving without the bursts it refuses with 429.
+/// parallel; two at a time for the whole process keeps Travel's guides and place lookups moving
+/// without the bursts it refuses with 429.
 static WIKIMEDIA: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 /// A JSON response from a Wikimedia API; a refusal for too many requests is retried after a

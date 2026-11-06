@@ -136,7 +136,8 @@ fn an_article_renders_only_its_own_pictures_and_no_markup() {
 
 /// A local tmpfile over HTTPS: uploads get a link under its origin, and every file is `picture`.
 /// While the returned switch is on, it refuses uploads. The same server plays English Wikipedia,
-/// where only Jensen Huang's article leads with a photograph, and news pages under `/news/`, each
+/// whose every entry but Satya Nadella's leads with a photograph; X, where every account but
+/// `NoFace` shares a profile picture, 300 pixels square; and news pages under `/news/`, each
 /// sharing the scene photograph as its picture, a file large enough to show.
 async fn tmpfile(picture: Vec<u8>) -> (String, reqwest::Client, Arc<AtomicBool>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -145,6 +146,9 @@ async fn tmpfile(picture: Vec<u8>) -> (String, reqwest::Client, Arc<AtomicBool>)
         "media.example".into(),
         "en.wikipedia.org".into(),
         "upload.wikimedia.org".into(),
+        "x.com".into(),
+        "pbs.twimg.com".into(),
+        "abs.twimg.com".into(),
     ])
     .unwrap();
     let root = reqwest::Certificate::from_der(cert.cert.der()).unwrap();
@@ -184,6 +188,11 @@ async fn tmpfile(picture: Vec<u8>) -> (String, reqwest::Client, Arc<AtomicBool>)
                     };
                     connect.push(byte);
                 }
+                let host = String::from_utf8_lossy(&connect)
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_owned();
                 socket
                     .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                     .await
@@ -213,19 +222,29 @@ async fn tmpfile(picture: Vec<u8>) -> (String, reqwest::Client, Arc<AtomicBool>)
                 let refused = refused && path == "/upload";
                 let (kind, body) = if refused {
                     ("text/plain", b"full".to_vec())
-                } else if let Some(query) = path.strip_prefix("/w/api.php?") {
-                    let titles = url::form_urlencoded::parse(query.as_bytes())
-                        .find(|(key, _)| key == "titles")
-                        .map(|(_, value)| value.into_owned())
-                        .unwrap_or_default();
-                    let mut page = json!({ "title": titles });
-                    if titles == "Jensen Huang" {
-                        page["thumbnail"] = json!({
-                            "source": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/Jensen.jpg/960px-Jensen.jpg",
-                        });
-                    }
-                    let reply = json!({ "query": { "pages": [page] } });
-                    ("application/json", reply.to_string().into_bytes())
+                } else if let Some(title) = path.strip_prefix("/wiki/") {
+                    let photograph = if title == "Satya_Nadella" {
+                        String::new()
+                    } else {
+                        format!(
+                            "<meta property=\"og:image\" content=\"https://upload.wikimedia.org/wikipedia/commons/a/ab/{title}.jpg\">"
+                        )
+                    };
+                    let page = format!("<html><head>{photograph}</head></html>");
+                    ("text/html", page.into_bytes())
+                } else if host == "x.com:443" {
+                    let account = path.trim_start_matches('/');
+                    let picture = if account == "NoFace" {
+                        "https://abs.twimg.com/sticky/default_profile_images/default_profile_400x400.png".to_owned()
+                    } else {
+                        format!("https://pbs.twimg.com/profile_images/1/{account}_400x400.jpg")
+                    };
+                    let page = format!(
+                        "<html><head><meta property=\"og:image\" content=\"{picture}\"></head></html>"
+                    );
+                    ("text/html", page.into_bytes())
+                } else if path.starts_with("/profile_images/") {
+                    ("image/jpeg", jpeg(300, 300))
                 } else if path == "/files/scene.jpg" {
                     ("image/jpeg", jpeg(640, 400))
                 } else if path.starts_with("/news/") {
@@ -1134,7 +1153,10 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                         // 时代: in a round of people talked about now, grok names two people and
                         // the briefing model one of them; a round of leaders names Ren Zhengfei,
                         // a round of companies Huawei, and a round an administrator asks for
-                        // whom they name, unless nobody can be found. Huawei is a company.
+                        // whom they name, unless nobody can be found. Huawei is a company. The
+                        // scouts give the Wikipedia entries and the X accounts of Jensen Huang and
+                        // Satya Nadella and Ren Zhengfei's account, each met in their sources; Lisa
+                        // Su's entry and account they give without having met them.
                         let people = instructions.contains("「时代」");
                         if request["text"]["format"]["name"] == "finds" && people {
                             let input = request["input"][0]["content"].as_str().unwrap_or_default();
@@ -1152,12 +1174,23 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                             };
                             let finds: Vec<Value> = named
                                 .into_iter()
-                                .map(|person| json!({
-                                    "title": format!("{person} 的近况"), "why": "大家都在谈",
-                                    "points": "发布了新芯片", "sources": ["https://people.example/news"],
-                                    "pictures": [], "name": person,
-                                    "company": person.eq_ignore_ascii_case("huawei"),
-                                }))
+                                .map(|person| {
+                                    let (wiki, x, met): (&str, &str, &[&str]) = match person.to_lowercase().as_str() {
+                                        "jensen huang" => ("https://en.wikipedia.org/wiki/Jensen_Huang", "JensenHuang", &["https://en.wikipedia.org/wiki/Jensen_Huang", "https://x.com/JensenHuang/status/4"]),
+                                        "lisa su" => ("https://en.wikipedia.org/wiki/Lisa_Su", "LisaSu", &[]),
+                                        "ren zhengfei" => ("", "https://x.com/NoFace", &["https://x.com/NoFace/status/2"]),
+                                        "satya nadella" => ("https://en.wikipedia.org/wiki/Satya_Nadella", "@satyanadella", &["https://en.wikipedia.org/wiki/Satya_Nadella", "https://x.com/satyanadella/status/1"]),
+                                        _ => ("", "", &[]),
+                                    };
+                                    let sources: Vec<&str> = ["https://people.example/news"].iter().chain(met).copied().collect();
+                                    json!({
+                                        "title": format!("{person} 的近况"), "why": "大家都在谈",
+                                        "points": "发布了新芯片", "sources": sources,
+                                        "pictures": [], "name": person,
+                                        "company": person.eq_ignore_ascii_case("huawei"),
+                                        "wiki": wiki, "x": x,
+                                    })
+                                })
                                 .collect();
                             return (
                                 StatusCode::OK,
@@ -1171,6 +1204,12 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                                 .find_map(|line| line.strip_prefix("人物：").or_else(|| line.strip_prefix("企业：")))
                                 .unwrap_or_default();
                             let kind = if instructions.contains("栏目写企业") { "企业" } else { "人物" };
+                            // The name goes to the account the material gives.
+                            let home = material
+                                .lines()
+                                .find_map(|line| line.strip_prefix("X："))
+                                .map(|home| format!("[{name}]({home}) "))
+                                .unwrap_or_default();
                             let revising = instructions.contains("这次是更新");
                             let (title, body) = if revising {
                                 // The writer keeps the first figure and the comic the material
@@ -1189,7 +1228,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                             } else {
                                 (
                                     format!("{name} 的{kind}介绍"),
-                                    format!("{}\n\n![](img:1)\n\n![](img:2)\n\n看[报道](https://people.example/news)。", "一个人的经历，".repeat(80)),
+                                    format!("{home}{}\n\n![](img:1)\n\n![](img:2)\n\n看[报道](https://people.example/news)。", "一个人的经历，".repeat(80)),
                                 )
                             };
                             return (
@@ -1937,8 +1976,9 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     };
 
     // 时代: the person both scouts name goes first. Her profile shows her comic, drawn in 时代's
-    // style, and the illustration the writer asks for, drawn as 分享's are. Wikipedia has no
-    // portrait of her, so her cover is the photograph grok found and looked at.
+    // style, and the illustration the writer asks for, drawn as 分享's are. The scouts give her
+    // Wikipedia entry and her X account without having met them, so the writer hears of neither,
+    // and her cover is the photograph grok found and looked at.
     let drawn_before = drawings_log.lock().unwrap().len();
     let profile = xabc::write(&state, xabc::Line::People, hot)
         .await
@@ -1995,9 +2035,10 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     assert!(material.contains("人物：Lisa Su\n线索：\n1.【X 与全网】Lisa Su 的近况"));
     assert!(material.contains("2.【全网】lisa su 的近况"));
 
-    // Then the one grok named first; the scouts hear who was profiled lately. His article on
-    // Wikipedia leads with a photograph, so that is his cover, though his body shows only his
-    // comic, and grok isn't asked for one.
+    // Then the one grok named first; the scouts hear who was profiled lately. The scouts met his
+    // Wikipedia entry and his X account, which the writer hears of and links his name to. The
+    // entry leads with a photograph, which goes before his account's picture, so that is his
+    // cover, though his body shows only his comic, and grok isn't asked for one.
     let photos = || {
         asked_log
             .lock()
@@ -2026,6 +2067,10 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     );
     assert_eq!(body.matches("](image:").count(), 2);
     assert!(body.contains("*四个时刻（AI 生成）*"));
+    assert!(writing(&asked_log.lock().unwrap()).contains(
+        "人物：Jensen Huang\n维基百科：https://en.wikipedia.org/wiki/Jensen_Huang\nX：https://x.com/JensenHuang\n线索："
+    ));
+    assert!(body.starts_with("[Jensen Huang](https://x.com/JensenHuang) "));
     let searched = asked_log
         .lock()
         .unwrap()
@@ -2239,12 +2284,18 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         .await
         .unwrap()
         .unwrap();
-    let person: Option<String> = sqlx::query_scalar("SELECT person FROM articles WHERE id = $1")
-        .bind(leader)
-        .fetch_one(&state.pool)
-        .await
-        .unwrap();
-    assert_eq!(person.as_deref(), Some("ren-zhengfei"));
+    // His X account shares no picture of its own, so grok's photograph is his cover; the writer
+    // links his name to the account all the same.
+    let (person, _, body, _, width) = profiled(leader).await.unwrap();
+    assert_eq!(
+        (person.as_deref(), width),
+        (Some("ren-zhengfei"), Some(640))
+    );
+    assert!(body.starts_with("[Ren Zhengfei](https://x.com/NoFace) "));
+    assert!(
+        writing(&asked_log.lock().unwrap())
+            .contains("人物：Ren Zhengfei\nX：https://x.com/NoFace\n线索：")
+    );
     let heard = searched();
     assert!(heard.contains("这一轮不看热度，找科技与科学领域有分量的人物"));
     let passed = heard
@@ -2385,15 +2436,22 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
             .contains("企业长文找一张封面照片")
     );
     // A name the scouts cannot find is dropped, and the next goes on though 时代 failed: someone
-    // not written yet, written up anew though a profile went out a moment ago.
+    // not written yet, written up anew though a profile went out a moment ago. His Wikipedia
+    // entry shows no photograph, so the picture of his X account shows him on the lists, and grok
+    // isn't asked for a photograph.
+    let photos_before = photos();
     next().await;
     next().await;
-    let title: String =
-        sqlx::query_scalar("SELECT title FROM articles WHERE person = 'satya-nadella'")
-            .fetch_one(&state.pool)
-            .await
-            .unwrap();
-    assert_eq!(title, "Satya Nadella 的人物介绍");
+    let satya: Uuid = sqlx::query_scalar("SELECT id FROM articles WHERE person = 'satya-nadella'")
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    let (_, title, body, _, width) = profiled(satya).await.unwrap();
+    assert_eq!(
+        (title.as_str(), width, photos()),
+        ("Satya Nadella 的人物介绍", Some(300), photos_before)
+    );
+    assert!(body.starts_with("[Satya Nadella](https://x.com/satyanadella) "));
     // With the list written, 时代's own round waits its interval.
     let asked_before = asked_log.lock().unwrap().len();
     next().await;
@@ -2410,6 +2468,103 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     assert_eq!(revision, 3);
     assert!(writing(&asked_log.lock().unwrap()).contains("其中 ![](keep:1) 是四格漫画"));
     assert_eq!(drawings_log.lock().unwrap().len(), drawn_before);
+
+    // An administrator asks 分享 to look things into, each once and in turn, apart from 时代's
+    // names. Both scouts look the request up, nothing is left out as written lately, and the
+    // writer makes a guide of it, published as XABC's 分享 with a cover of its own.
+    let research = |brief: &str, cookie: &str| {
+        http.post(format!("{base}/api/admin/research"))
+            .header("cookie", cookie)
+            .header("origin", &origin)
+            .json(&json!({ "brief": brief }))
+            .send()
+    };
+    let (_, reader) = account(&state, "user").await;
+    assert_eq!(research("找找用法", &reader).await.unwrap().status(), 403);
+    assert_eq!(research(" ", &administrator).await.unwrap().status(), 400);
+    let asks = |brief: &'static str| {
+        let request = research(brief, &administrator);
+        async move { request.await.unwrap().json::<Value>().await.unwrap()["ahead"].clone() }
+    };
+    assert_eq!(asks(" 这个工具怎么用，以官方文档为准 ").await, 0);
+    assert_eq!(asks("另一个问题").await, 1);
+    assert_eq!(asks("这个工具怎么用，以官方文档为准").await, 0);
+    assert_eq!(ahead("Huawei").await, 0);
+    let shared = || {
+        let state = &state;
+        async move {
+            xabc::start(state, xabc::Line::Share).await;
+            tokio::time::timeout(std::time::Duration::from_secs(60), async {
+                while state.in_flight().contains("__xabc_article__") {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+    };
+    // XABC's 分享 so far, the latest and its cover.
+    let shares = || {
+        sqlx::query_as::<_, (i64, Uuid, Option<Uuid>)>(
+            "SELECT COUNT(*) OVER (), id, cover FROM articles
+             WHERE author_id = $1 AND num_nonnulls(film, person, event, product) = 0
+             ORDER BY published_at DESC LIMIT 1",
+        )
+        .bind(author)
+        .fetch_one(&state.pool)
+    };
+    let mut researched = Uuid::nil();
+    for brief in ["这个工具怎么用，以官方文档为准", "另一个问题"] {
+        let asked_before = asked_log.lock().unwrap().len();
+        let (before, ..) = shares().await.unwrap();
+        shared().await;
+        let requests = asked_log.lock().unwrap()[asked_before..].to_vec();
+        let searches: Vec<&Value> = requests
+            .iter()
+            .filter(|request| request["text"]["format"]["name"] == "finds")
+            .collect();
+        assert_eq!(searches.len(), 2);
+        for search in searches {
+            assert!(
+                search["instructions"]
+                    .as_str()
+                    .unwrap()
+                    .contains("管理员请 XABC 就输入里的请求做一次全网调研")
+                    && search["input"][0]["content"]
+                        .as_str()
+                        .unwrap()
+                        .ends_with(&format!("管理员的请求：{brief}"))
+            );
+        }
+        let guide = requests
+            .iter()
+            .find(|request| request["text"]["format"]["name"] == "article")
+            .unwrap();
+        assert!(
+            guide["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("这一篇是管理员点名的调研")
+        );
+        assert!(
+            guide["input"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains(&format!(
+                    "管理员的请求：{brief}\n线索：\n1.【X 与全网】一个好玩的工具"
+                ))
+        );
+        let (after, latest, cover) = shares().await.unwrap();
+        assert!(after == before + 1 && cover.is_some());
+        researched = latest;
+    }
+    // With the requests written, 分享's own round waits its interval, and 时代's name is still
+    // there for it.
+    let asked_before = asked_log.lock().unwrap().len();
+    shared().await;
+    assert_eq!(asked_log.lock().unwrap().len(), asked_before);
+    next().await;
+    assert!(asked_log.lock().unwrap().len() > asked_before);
 
     // 追踪: the event both scouts name goes first, under the key its slug makes, in an article that
     // shows no drawn picture. Showing none at all, it takes for the lists the picture the finds'
@@ -2599,7 +2754,8 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
             .await
             .contains("/tracker</loc>")
     );
-    // 精选 ranks 追踪 with the rest, but opens with XABC's 分享 alone.
+    // 精选 ranks 追踪 with the rest, but opens with XABC's 分享 alone, the newest first, what it
+    // looked into on request among them.
     sqlx::query("UPDATE articles SET views = 80 WHERE id = $1")
         .bind(selloff)
         .execute(&state.pool)
@@ -2608,7 +2764,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     let worth: Value =
         serde_json::from_str(&page(format!("{base}/articles/worth.json")).await).unwrap();
     let worth = worth["articles"].as_array().unwrap();
-    assert_eq!(worth[0]["id"], id.to_string());
+    assert_eq!(worth[0]["id"], researched.to_string());
     assert!(worth.iter().any(|article| {
         article["id"] == selloff.to_string()
             && article["event"] == true

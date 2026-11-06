@@ -117,7 +117,14 @@ pub(super) async fn write(
     .bind(next.entry)
     .fetch_one(&state.pool)
     .await?;
-    let mut found = look(state, Line::Film, &work.describe(), &HashSet::new()).await;
+    let mut found = look(
+        state,
+        Line::Film,
+        SEARCHING,
+        &work.describe(),
+        &HashSet::new(),
+    )
+    .await;
     if found.finds.is_empty() {
         return Err(AppError::Internal("两路检索都没有找到资料".into()));
     }
@@ -204,7 +211,7 @@ async fn revised(state: &AppState, due: Due) -> Result<Uuid> {
         "{}\n这篇解说上次修订于 {last}，重点找那之后的新资料，以及当时还缺的完整剧情和结局。",
         due.work.describe()
     );
-    let mut found = look(state, Line::Film, &input, &HashSet::new()).await;
+    let mut found = look(state, Line::Film, SEARCHING, &input, &HashSet::new()).await;
     // The article's links were checked when it went out, and 影视's stories were read.
     found.known.extend(linked(&due.body));
     found
@@ -247,7 +254,7 @@ fn log(id: Uuid, done: &str, work: &Work, article: &Finished, usage: crate::fetc
     );
 }
 
-pub(super) const SEARCHING: &str = "你是 XABC「文娱 · 解说」的资料编辑。XABC 在 xabcnews.com 为一部部好电影和好剧写完整的解说，读者是爱看电影和剧的中文读者。
+const SEARCHING: &str = "你是 XABC「文娱 · 解说」的资料编辑。XABC 在 xabcnews.com 为一部部好电影和好剧写完整的解说，读者是爱看电影和剧的中文读者。
 输入是这次要解说的作品。请你{scope}，找出写解说用得上的资料，越多越具体越好：完整剧情和结局、关键情节与人物关系、主题与结局的解读、创作背景与幕后故事、主创访谈、专业影评与观众口碑、奖项与票房。只找这部作品的资料，分清同名作品、翻拍和续集。
 ";
 

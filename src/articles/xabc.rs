@@ -1,7 +1,9 @@
 //! XABC, the site's own pen name, writes on five lines. For 分享, every hour, grok
 //! looks through X and the web, and the briefing model through the web, for things worth
 //! sharing; the writing model picks one subject from both sets of finds, reads further where it
-//! needs to and writes it up its own way. For 文娱 · 解说, every four hours, it explains the work
+//! needs to and writes it up its own way. What an administrator asks 分享 to look into goes
+//! first: both look it up, and the writer makes of it a guide to use at once
+//! (`research`). For 文娱 · 解说, every four hours, it explains the work
 //! 影视 discusses most, or revises its explanation (`film`). For 时代, every hour, it
 //! profiles a person or a company, or brings a profile up to date, and first whoever an
 //! administrator names (`people`). For
@@ -115,22 +117,17 @@ impl Line {
         }
     }
 
-    /// What the line's searches look for; `{scope}` is what each scout looks through.
-    fn brief(self) -> &'static str {
-        match self {
-            Self::Share => SEARCHING,
-            Self::Film => film::SEARCHING,
-            Self::People => people::SEARCHING,
-            Self::Tracker => tracker::SEARCHING,
-            Self::Review => review::SEARCHING,
-        }
-    }
-
     /// The fields the line's finds have beyond every find's, with their schema types: 时代's
-    /// person or company by name and whether it is a company, 追踪's event by slug.
+    /// person or company by name, whether it is a company, its Wikipedia entry and its own X
+    /// account; 追踪's event by slug.
     fn fields(self) -> &'static [(&'static str, &'static str)] {
         match self {
-            Self::People => &[("name", "string"), ("company", "boolean")],
+            Self::People => &[
+                ("name", "string"),
+                ("company", "boolean"),
+                ("wiki", "string"),
+                ("x", "string"),
+            ],
             Self::Tracker => &[("event", "string")],
             Self::Share | Self::Film | Self::Review => &[],
         }
@@ -174,57 +171,68 @@ fn progress<T>(line: Line, change: impl FnOnce(&mut Progress) -> T) -> T {
     )
 }
 
-/// The people and the companies an administrator named for 时代, the first named first, kept in
-/// the process.
-static NAMED: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
+/// What administrators asked each line to write, the first asked first, kept in the process:
+/// the people and the companies 时代 writes about, and what 分享 looks into.
+static ASKED: [Mutex<VecDeque<String>>; Line::ALL.len()] =
+    [const { Mutex::new(VecDeque::new()) }; Line::ALL.len()];
 
-/// Puts the person or the company an administrator names on 时代's list, unless it is there
-/// already, and tells how many names wait ahead of it.
-pub(crate) fn name(name: String) -> usize {
-    let mut named = NAMED.lock().unwrap_or_else(PoisonError::into_inner);
-    named
+/// Puts what an administrator asks the line to write on its list, unless it is there already,
+/// and tells how many requests wait ahead of it.
+pub(super) fn ask(line: Line, request: String) -> usize {
+    let mut asked = ASKED[line as usize]
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    asked
         .iter()
-        .position(|waiting| *waiting == name)
+        .position(|waiting| *waiting == request)
         .unwrap_or_else(|| {
-            named.push_back(name);
-            named.len() - 1
+            asked.push_back(request);
+            asked.len() - 1
         })
 }
 
-/// The first name on 时代's list, taken off it.
-fn named() -> Option<String> {
-    NAMED
+/// The first request on the line's list, taken off it.
+fn asked(line: Line) -> Option<String> {
+    ASKED[line as usize]
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .pop_front()
 }
 
 /// Starts each line's next article once its last is due, unless XABC is writing one for the
-/// line or is waiting after a failure; 时代 writes what an administrator named first, one name
-/// after another. The scheduler calls this on every tick.
+/// line or is waiting after a failure; 分享 and 时代 write what an administrator asked for
+/// first, one request after another. The scheduler calls this on every tick.
 pub(crate) async fn tick(state: &AppState) {
     for line in Line::ALL {
         start(state, line).await;
     }
 }
 
-/// Starts the line's next article: for 时代 the first name an administrator gave, whenever the
-/// line is free; otherwise the line's own once it is due.
+/// Starts the line's next article: the first request an administrator made of 分享 or 时代,
+/// whenever the line is free; otherwise the line's own once it is due.
 pub(super) async fn start(state: &AppState, line: Line) {
     let now = Utc::now();
     if state.in_flight().contains(line.job()) {
         return;
     }
-    if matches!(line, Line::People)
-        && let Some(name) = named()
-    {
-        tracing::info!(name, "XABC writes for 时代 what an administrator named");
+    if let Some(request) = asked(line) {
+        tracing::info!(
+            request,
+            ?line,
+            "XABC writes what an administrator asked for"
+        );
         let worker = state.clone();
         return run(state, line, async move {
             let _turn = turn(&worker).await?;
-            people::named(&worker, author(&worker).await?, &name)
-                .await
-                .map(Some)
+            let author = author(&worker).await?;
+            match line {
+                Line::Share => research(&worker, author, &request).await,
+                Line::People => people::named(&worker, author, &request).await,
+                Line::Film | Line::Tracker | Line::Review => {
+                    Err(AppError::Internal("这条线不接受管理员的请求".into()))
+                }
+            }
+            .map(Some)
         });
     }
     if progress(line, |progress| progress.next > now) {
@@ -372,7 +380,7 @@ async fn share(state: &AppState, author: i64, since: DateTime<Utc>) -> Result<Uu
         "今天是 {today}。\n{}",
         written_lately(lately.iter().map(|(title, _)| title.as_str()))
     );
-    let mut found = look(state, Line::Share, &context, &covered).await;
+    let mut found = look(state, Line::Share, SEARCHING, &context, &covered).await;
     if found.finds.is_empty() {
         return Err(AppError::Internal(
             if found.repeated > 0 {
@@ -401,6 +409,33 @@ async fn share(state: &AppState, author: i64, since: DateTime<Utc>) -> Result<Uu
     Ok(id)
 }
 
+/// A 分享 article on what an administrator asked to look into: both scouts look it up, official
+/// sources first, and the writer makes of it a guide to use at once, the sources it rests on
+/// listed at the end. Nothing is left out as written lately: it was asked for.
+async fn research(state: &AppState, author: i64, request: &str) -> Result<Uuid> {
+    let since = Utc::now();
+    let today = since.with_timezone(&state.config.timezone).date_naive();
+    let input = format!("今天是 {today}。\n管理员的请求：{request}");
+    let mut found = look(state, Line::Share, RESEARCHING, &input, &HashSet::new()).await;
+    if found.finds.is_empty() {
+        return Err(AppError::Internal("两路检索都没有查到资料".into()));
+    }
+    let material = format!("{input}\n线索：\n{}", listed(&found.finds));
+    let drafted = draft(state, GUIDE, &material).await?;
+    found.usage += drafted.usage;
+    found.known.extend(drafted.cited);
+    let article = finish(state, drafted.article, found.known, &[], true).await?;
+    let id = publish(state, author, since, None, &article).await?;
+    log(
+        id,
+        "XABC's 分享 article written on request",
+        request,
+        &article,
+        found.usage,
+    );
+    Ok(id)
+}
+
 /// What the two searches found: the finds, every address they cited or a find names, the finds
 /// left out because they are about a page already covered, how many searches answered and
 /// what it cost.
@@ -412,11 +447,18 @@ struct Found {
     usage: Usage,
 }
 
-/// Both scouts search for the line at once; a search that fails is only logged.
-async fn look(state: &AppState, line: Line, input: &str, covered: &HashSet<String>) -> Found {
+/// Both scouts search for the line at once, as `brief` asks, `{scope}` in it being what each
+/// looks through; a search that fails is only logged.
+async fn look(
+    state: &AppState,
+    line: Line,
+    brief: &str,
+    input: &str,
+    covered: &HashSet<String>,
+) -> Found {
     let (x, web) = tokio::join!(
-        search(state, line, Scout::X, input),
-        search(state, line, Scout::Web, input),
+        search(state, line, Scout::X, brief, input),
+        search(state, line, Scout::Web, brief, input),
     );
     let mut found = Found {
         finds: Vec::new(),
@@ -624,6 +666,12 @@ struct Find {
     /// Whether 时代's find is about a company: what an administrator names may be either.
     #[serde(default)]
     company: bool,
+    /// 时代's subject on Wikipedia and on X, as a scout gives them: the entry's address and the
+    /// subject's own account.
+    #[serde(default)]
+    wiki: String,
+    #[serde(default)]
+    x: String,
 }
 
 #[derive(Deserialize)]
@@ -637,7 +685,13 @@ struct Searched {
     usage: Usage,
 }
 
-async fn search(state: &AppState, line: Line, scout: Scout, input: &str) -> Result<Searched> {
+async fn search(
+    state: &AppState,
+    line: Line,
+    scout: Scout,
+    brief: &str,
+    input: &str,
+) -> Result<Searched> {
     let mut find = json!({
         "title": { "type": "string" },
         "why": { "type": "string" },
@@ -655,7 +709,7 @@ async fn search(state: &AppState, line: Line, scout: Scout, input: &str) -> Resu
         "store": false,
         "tools": scout.tools(),
         "tool_choice": "auto",
-        "instructions": format!("{}{FINDS}", line.brief().replace("{scope}", scout.scope(line))),
+        "instructions": format!("{}{FINDS}", brief.replace("{scope}", scout.scope(line))),
         "input": [{ "role": "user", "content": input }],
         "text": { "format": {
             "type": "json_schema", "name": "finds", "strict": true,
@@ -843,7 +897,7 @@ fn photographed(mut drafted: Drafted) -> Drafted {
     drafted
 }
 
-/// Logs an article written or brought up to date about a person or an event, and its cost.
+/// Logs an article written or brought up to date about its subject, and its cost.
 fn log(id: Uuid, done: &str, subject: &str, article: &Finished, usage: Usage) {
     tracing::info!(
         %id, subject, title = article.title, pictures = article.pictures.len(),
@@ -1467,6 +1521,22 @@ const SEARCHING: &str = "你是 XABC 的选题编辑。XABC 每小时在 xabcnew
 不要：时政、战争、灾难、犯罪与社会冲突；与科技无关的生活、旅行、美食和社会趣闻；明星八卦；股票、加密货币和投资建议；营销软文、带货、推广链接和邀请码；成人内容；账号、Key 买卖与破解之类的灰色内容；需要付费或登录才能看的内容；人人都知道的大新闻，除非有新的有趣角度。也避开 XABC 最近写过的主题。
 ";
 
+/// What both scouts look up for what an administrator asked 分享 to look into: the same for
+/// both, which look through what their tools reach.
+const RESEARCHING: &str = "你是 XABC 的资料编辑。XABC 在 xabcnews.com 的「分享」栏目写文章，读者是关注 AI、软件开发、硬件、开源与前沿科技的中文开发者和极客。
+管理员请 XABC 就输入里的请求做一次全网调研，写成读完就能上手的文章。请你用 web_search 检索全网，能用 x_search 时也在 X 上找：先找官方的网站、文档、API 参考、SDK、示例代码、价格和更新日志，再找 GitHub 仓库与 issue、技术博客、教程、开发者社区和 X 上别人的真实用法、示例和踩坑经验。把请求要的资料查全，最可靠、最有用的排在前面，不为凑数重复，也不偏到别的主题；每条线索是一份具体的资料，比如官方文档的一页、一篇教程、一个仓库或一条帖子。
+";
+
+/// How the writer turns what an administrator asked 分享 to look into into a guide.
+const GUIDE: &str = "你是 XABC，在 xabcnews.com 的「分享」栏目写文章，读者是关注 AI、软件开发、硬件、开源与前沿科技的中文开发者和极客。
+这一篇是管理员点名的调研：下面是管理员的请求和两位编辑从 X 和全网找来的线索。照请求多用 web_search 深挖，把资料查全、查准，然后写成一篇中文的上手指南或帮助文档，让读者照着就能用起来。
+怎么写：
+- 照请求的要求写。一般先说清它是什么、能做什么、适合什么场景，再一步步写怎么用：开通与准备、安装与配置、调用方法和关键参数，给出能直接运行的完整示例；然后写进阶用法、限制与价格、常见问题和踩坑，以及别人在实际中怎么用、有什么经验。
+- 以官方资料为准：接口、参数、模型名、版本、价格和限制都以官方网站和官方文档为准，写明对应的版本或查到的日期；第三方的用法与经验写明出自谁；两边说法不一致时以官方为准，并指出差别；官方没有公开的不要猜。
+- 越详细越好，篇幅不限；用小标题、步骤、表格和代码块组织，代码块标明语言，密钥之类写成占位符。
+- 最后一节是「参考来源」：用列表列出正文用到的官方文档、文章、仓库和帖子，每条是指向原始页面的 Markdown 链接，后面用一句话说明它是什么。
+";
+
 /// How a revision treats the figures the article shows (`figures`), after the line's words on
 /// revising.
 const KEEPING: &str = "现有配图写作 ![](keep:1)、![](keep:2)……，单独成段，可以保留、挪动或删掉，不要改写，下面也不要加图注；新图照常用 ![](img:N)。
@@ -1513,6 +1583,8 @@ mod tests {
                 pictures: Vec::new(),
                 subject: person.into(),
                 company: false,
+                wiki: String::new(),
+                x: String::new(),
             },
         )
     }
@@ -1667,6 +1739,18 @@ mod tests {
         assert_eq!(progress.next - now, chrono::Duration::hours(2));
         progress.failed(now);
         assert_eq!(progress.next - now, chrono::Duration::minutes(30));
+    }
+
+    #[test]
+    fn each_line_takes_what_administrators_ask_of_it_in_turn_each_once() {
+        assert_eq!(ask(Line::Share, "怎么用".into()), 0);
+        assert_eq!(ask(Line::People, "怎么用".into()), 0);
+        assert_eq!(ask(Line::Share, "另一个".into()), 1);
+        assert_eq!(ask(Line::Share, "怎么用".into()), 0);
+        let taken: Vec<Option<String>> = (0..3).map(|_| asked(Line::Share)).collect();
+        assert_eq!(taken, [Some("怎么用".into()), Some("另一个".into()), None]);
+        assert_eq!(asked(Line::People).as_deref(), Some("怎么用"));
+        assert_eq!(asked(Line::People), None);
     }
 
     #[test]

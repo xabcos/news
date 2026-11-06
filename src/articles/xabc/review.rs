@@ -124,7 +124,14 @@ pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -
         return revised(state, &product, due).await;
     }
     let (stories, linked_stories) = stories(state, &product, None).await?;
-    let mut found = look(state, Line::Review, &product.describe(), &HashSet::new()).await;
+    let mut found = look(
+        state,
+        Line::Review,
+        SEARCHING,
+        &product.describe(),
+        &HashSet::new(),
+    )
+    .await;
     found.known.extend(linked_stories);
     let (kept, official) = official(state, &product).await;
     found.known.extend(
@@ -318,7 +325,7 @@ async fn revised(state: &AppState, product: &Product, due: Due) -> Result<Uuid> 
         "{}\n这篇评测上次更新于 {last}，重点找那之后的新评测、长期使用体验、固件更新、价格变化和已知问题。",
         product.describe()
     );
-    let mut found = look(state, Line::Review, &input, &HashSet::new()).await;
+    let mut found = look(state, Line::Review, SEARCHING, &input, &HashSet::new()).await;
     // The review's links were checked when it went out, and 数码's stories were read.
     found.known.extend(linked(&due.body));
     found.known.extend(linked_stories);
@@ -349,7 +356,7 @@ async fn revised(state: &AppState, product: &Product, due: Due) -> Result<Uuid> 
     Ok(due.id)
 }
 
-pub(super) const SEARCHING: &str = "你是 XABC「数码 · 评测」的资料编辑。XABC 在 xabcnews.com 为热门数码产品写综合评测：把官方参数、各家评测和真实用户的体验整理成一篇完整详细、图文并茂的文章，读者是关心科技和数码产品的中文读者。
+const SEARCHING: &str = "你是 XABC「数码 · 评测」的资料编辑。XABC 在 xabcnews.com 为热门数码产品写综合评测：把官方参数、各家评测和真实用户的体验整理成一篇完整详细、图文并茂的文章，读者是关心科技和数码产品的中文读者。
 输入是这次要评测的产品。请你{scope}，找出写评测用得上的资料，越多越具体越好：专业媒体和独立评测者的上手评测与结论（测了什么、优缺点，给了分数的写明是哪家评测给的多少分），视频评测的要点，长期使用报告，用户亲自拍摄的开箱、实拍和使用体验，常见问题和故障，固件与系统更新，价格变化，以及和主要竞品的对比。只找这款产品的资料，分清同系列的其他型号和上一代。pictures 优先给有产品实拍的页面：用户亲自拍照的 X 帖子、评测文章。
 ";
 

@@ -5,8 +5,8 @@ const statusText = { draft: "草稿", pending: "待审", published: "已公开" 
 const kind = (article) => article.film ? "解说" : article.person ? "时代" : article.event ? "追踪" : article.product ? "评测" : "分享";
 
 // 分享 in the workspace: the pen name, the reader's own articles and, for an administrator,
-// what waits for a ❤️ and whom 时代 writes about next. Requests share the session's abort
-// signal.
+// what waits for a ❤️ and what XABC writes next: whom 时代 profiles, what 分享 looks into.
+// Requests share the session's abort signal.
 export function createArticles(session) {
   const signal = session.controller.signal;
   let author = null;
@@ -21,16 +21,22 @@ export function createArticles(session) {
     editName();
     toast("写文章前先设置笔名");
   }, { signal });
-  $("#profileForm").classList.toggle("hidden", !session.admin);
-  $("#profileForm").addEventListener("submit", (event) => {
-    event.preventDefault();
-    void withBusy($("#profileForm button"), "提交中…", async () => {
-      const name = $("#profileName").value.trim();
-      const { ahead } = await session.request("/api/admin/people", { method: "POST", body: { name } });
-      $("#profileName").value = "";
-      toast(`「${name}」已排进时代，${ahead ? `前面还有 ${ahead} 个` : "下一篇就写它"}`);
-    });
-  }, { signal });
+  // What an administrator asks for joins the line's list, written before its own articles.
+  const lineUp = (form, path, told) => {
+    const field = $(`${form} [name]`);
+    $(form).classList.toggle("hidden", !session.admin);
+    $(form).addEventListener("submit", (event) => {
+      event.preventDefault();
+      void withBusy($(`${form} button`), "提交中…", async () => {
+        const value = field.value.trim();
+        const { ahead } = await session.request(path, { method: "POST", body: { [field.name]: value } });
+        field.value = "";
+        toast(`${told(value)}，${ahead ? `前面还有 ${ahead} 个` : "下一篇就写它"}`);
+      });
+    }, { signal });
+  };
+  lineUp("#profileForm", "/api/admin/people", (name) => `「${name}」已排进时代`);
+  lineUp("#researchForm", "/api/admin/research", () => "已排进分享");
   $("#penNameForm").addEventListener("submit", (event) => {
     event.preventDefault();
     void withBusy($("#penNameForm button"), "保存中…", async () => {

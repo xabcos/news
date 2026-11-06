@@ -78,7 +78,7 @@ pub(super) async fn write(
     let now = Utc::now();
     let clock = format!("现在是 {}（{}）。\n", at(now), zone.name());
     let input = format!("{clock}{}", scouting(&tracked, at));
-    let mut found = look(state, Line::Tracker, &input, &HashSet::new()).await;
+    let mut found = look(state, Line::Tracker, SEARCHING, &input, &HashSet::new()).await;
     if found.answered == 0 {
         return Err(AppError::Internal("两路检索都失败了".into()));
     }
@@ -236,7 +236,7 @@ fn checked(after: DateTime<Utc>) -> Vec<String> {
     checked.keys().cloned().collect()
 }
 
-pub(super) const SEARCHING: &str = "你是 XABC「追踪」栏目的选题编辑。XABC 在 xabcnews.com 为全网最受关注的热点事件各写一篇持续更新的追踪：事情怎么发生的、现在到了哪一步、各方怎么说、接下来会怎样，有了新进展就在同一篇上更新；读者是关心科技的中文读者。
+const SEARCHING: &str = "你是 XABC「追踪」栏目的选题编辑。XABC 在 xabcnews.com 为全网最受关注的热点事件各写一篇持续更新的追踪：事情怎么发生的、现在到了哪一步、各方怎么说、接下来会怎样，有了新进展就在同一篇上更新；读者是关心科技的中文读者。
 今天请你{scope}，放眼全球科技圈的网络热点，找出最近一两天讨论最多、传播最广、还在发酵的事件，按热度从高到低排列，最多 10 件。美国、中国、欧洲、日本、韩国、印度等各地的事件都要看，中英文的讨论都要搜。只收科技事件：AI、互联网与开源，网络安全与数据泄露，服务宕机与事故复盘，芯片与硬件，科技公司的诉讼、监管、出口管制、并购与市场震荡，加密货币平台的被盗与安全事件，科学与航天任务。交通与工业事故、自然灾害、战争与政治事件、娱乐圈和社会新闻都不收。
 一件事要有起点、还会有后续：比如一次被盗、宕机、泄露或事故，一场诉讼或调查，一笔收购或一道禁令，一次翻车的发布，一项政策或法案的推进。一次性的发布、财报和融资，只有引发了连锁反应、各方还在跟进时才算；同一波连锁反应算一件事，要有来源说明它们出自同一个起因。
 输入里列出了正在追踪的事件。它们和别的事件一样按热度排进来，原样使用它的标识，不要换个说法另起标识；points 只写它上次更新之后（往前多看两个小时）的新进展，没有新进展就留空。不再追踪的事件不要列出，也不要换个标识再列。
@@ -274,6 +274,8 @@ mod tests {
                 pictures: Vec::new(),
                 subject: event.into(),
                 company: false,
+                wiki: String::new(),
+                x: String::new(),
             },
         )
     }

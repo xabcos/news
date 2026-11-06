@@ -115,6 +115,7 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/api/admin/articles", get(queue))
         .route("/api/admin/articles/{id}", patch(review))
         .route("/api/admin/people", post(profile))
+        .route("/api/admin/research", post(research))
         .merge(pages::router())
 }
 
@@ -216,6 +217,13 @@ struct Uploaded {
 #[serde(deny_unknown_fields)]
 struct Name {
     name: String,
+}
+
+/// What an administrator asks 分享 to look into, in their own words.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Research {
+    brief: String,
 }
 
 /// A new article, and the author the writing page was opened for: a page left open while the
@@ -724,7 +732,22 @@ async fn profile(user: User, ApiJson(request): ApiJson<Name>) -> Result<Json<Val
     if name.is_empty() {
         return Err(AppError::BadRequest("写上人物或企业的名字".into()));
     }
-    Ok(Json(json!({ "ahead": xabc::name(name.to_owned()) })))
+    Ok(Json(
+        json!({ "ahead": xabc::ask(xabc::Line::People, name.to_owned()) }),
+    ))
+}
+
+/// Puts what an administrator asks 分享 to look into on its list, which XABC writes up before
+/// its own articles, and tells how many requests wait ahead.
+async fn research(user: User, ApiJson(request): ApiJson<Research>) -> Result<Json<Value>> {
+    auth::require_admin(&user)?;
+    let brief = request.brief.trim();
+    if brief.is_empty() {
+        return Err(AppError::BadRequest("写上想调研的内容".into()));
+    }
+    Ok(Json(
+        json!({ "ahead": xabc::ask(xabc::Line::Share, brief.to_owned()) }),
+    ))
 }
 
 #[derive(Clone, Copy)]

@@ -7,25 +7,31 @@
 //! names go first, one after another (`named`), each written up anew or brought up to date
 //! however lately it was. Searching, writing and pictures are 分享's
 //! (`super`), but an article also shows one comic of its subject, drawn in a style of its own
-//! (`comic`), and the lists show its subject: a person's portrait on Wikipedia (`portrait`), or
-//! else a photograph grok found and looked at, which is how a company is shown too (`sighted`).
+//! (`comic`). The scouts also give the subject's Wikipedia entry and its own X account, which
+//! count only where their searches met them (`Pages`): the writer links the subject's name to
+//! that account, and the lists show a person by the photograph on that entry, or else by the
+//! picture of that account (`shared`), or else by a photograph grok found and looked at, which
+//! is how a company is shown too (`sighted`).
 use super::{
     ACCEPT, Drafted, Found, KEEPING, KEPT, Line, Picture, SEARCH_TIME, Slot, Subject, Wanted,
-    draft, drawn, figures, finish, images, key, linked, listed, log, look, pick, placed, publish,
-    revise, uncited, uploaded,
+    draft, drawn, figures, finish, identity, images, key, linked, listed, log, look, pick, placed,
+    publish, revise, uncited, uploaded,
 };
 use crate::{
     ai,
     error::{AppError, Result},
-    fetch::Usage,
+    fetch::{NewsImage, Usage},
     media,
     state::AppState,
 };
 use chrono::{DateTime, Timelike, Utc};
 use chrono_tz::Tz;
 use serde::Deserialize;
-use serde_json::{Value, json};
-use std::{collections::HashSet, fmt::Write};
+use serde_json::json;
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Write,
+};
 use url::Url;
 use uuid::Uuid;
 
@@ -33,6 +39,8 @@ use uuid::Uuid;
 const REVISE_AFTER_DAYS: i32 = 3;
 /// A company's key starts so, which tells it from a person's.
 const COMPANY: &str = "company:";
+/// Where X keeps the pictures of its accounts.
+const PROFILE_IMAGES: &str = "https://pbs.twimg.com/profile_images/";
 /// The scouts hear of this many of the subjects a round passes over, the latest first, so their
 /// input stays bounded; the round passes over all of them.
 const TOLD: usize = 2000;
@@ -120,7 +128,7 @@ pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -
             written[..written.len().min(TOLD)].join("、")
         );
     }
-    let mut found = look(state, Line::People, &input, &HashSet::new()).await;
+    let mut found = look(state, Line::People, SEARCHING, &input, &HashSet::new()).await;
     let passed: HashSet<String> = written.into_iter().collect();
     (_, found.finds) = pick(found.finds, &passed, usize::MAX)
         .ok_or_else(|| AppError::Internal(format!("两路检索都没有找到可写的{kind}").into()))?;
@@ -135,7 +143,7 @@ pub(super) async fn named(state: &AppState, author: i64, name: &str) -> Result<U
     let since = Utc::now();
     let today = since.with_timezone(&state.config.timezone).date_naive();
     let input = format!("今天是 {today}。\n{NAMED}{name}");
-    let mut found = look(state, Line::People, &input, &HashSet::new()).await;
+    let mut found = look(state, Line::People, SEARCHING, &input, &HashSet::new()).await;
     (_, found.finds) = pick(found.finds, &HashSet::new(), usize::MAX)
         .ok_or_else(|| AppError::Internal(format!("两路检索都没有查到「{name}」").into()))?;
     let company = found.finds[0].1.company;
@@ -162,7 +170,16 @@ async fn profile(
     let subject = format!("{prefix}{}", key(name));
     let zone = state.config.timezone;
     let today = Utc::now().with_timezone(&zone).date_naive();
-    let material = format!("今天是 {today}。\n{kind}：{name}\n");
+    let mut material = format!("今天是 {today}。\n{kind}：{name}\n");
+    let pages = Pages::of(&found);
+    if let Some(entry) = &pages.wiki {
+        let _ = writeln!(material, "维基百科：{entry}");
+    }
+    // The writer links the subject's name to its own account.
+    if let Some(home) = &pages.x {
+        let _ = writeln!(material, "X：{home}");
+        found.known.insert(home.clone());
+    }
     let due: Option<Due> = if revisable {
         sqlx::query_as(
             "SELECT id, title, body, revision, cover, updated_at FROM articles WHERE person = $1",
@@ -179,7 +196,7 @@ async fn profile(
         found.usage += drafted.usage;
         found.known.extend(drafted.cited);
         let mut article = finish(state, drafted.article, found.known, &[], false).await?;
-        article.cover = cover(state, name, &article.title, company).await;
+        article.cover = cover(state, &pages, name, &article.title, company).await;
         let id = publish(
             state,
             author,
@@ -224,7 +241,7 @@ async fn profile(
     found.known.extend(drafted.cited);
     let mut article = finish(state, drafted.article, found.known, &kept, false).await?;
     // The cover is the subject's picture, or else the picture the profile opens with now.
-    article.cover = cover(state, name, &article.title, company).await;
+    article.cover = cover(state, &pages, name, &article.title, company).await;
     let cover = article
         .cover
         .as_ref()
@@ -275,49 +292,120 @@ fn comic(mut drafted: Drafted, shown: Option<usize>, style: &str) -> Drafted {
     drafted
 }
 
-/// What shows the subject on the lists: a person's portrait on Wikipedia, or else a photograph
-/// grok found and looked at, as a company's always is. `title` is the article's, which tells
-/// who or what is meant.
-async fn cover(state: &AppState, name: &str, title: &str, company: bool) -> Option<Picture> {
-    if !company && let Some(portrait) = portrait(state, name).await {
-        return Some(portrait);
+/// Where the subject shows itself: its Wikipedia entry and the page of its own X account, as a
+/// scout gave them and only where the searches met them, an entry they cited or listed, at the
+/// address they met it, and an account whose page or posts they did. Neither is looked up by the
+/// name, which others share.
+struct Pages {
+    wiki: Option<String>,
+    x: Option<String>,
+}
+
+impl Pages {
+    fn of(found: &Found) -> Self {
+        let entries: HashMap<(String, String), &String> = found
+            .known
+            .iter()
+            .filter_map(|page| Some((entry(page)?, page)))
+            .collect();
+        let wiki = found
+            .finds
+            .iter()
+            .find_map(|(_, find)| entries.get(&entry(&identity(&find.wiki)?)?))
+            .map(|page| (*page).clone());
+        let met: Vec<String> = found
+            .known
+            .iter()
+            .filter_map(|page| owner(&Url::parse(page).ok()?))
+            .collect();
+        let x = found
+            .finds
+            .iter()
+            .filter_map(|(_, find)| account(&find.x))
+            .find(|account| met.iter().any(|owner| owner.eq_ignore_ascii_case(account)))
+            .map(|account| format!("https://x.com/{account}"));
+        Self { wiki, x }
+    }
+}
+
+/// A Wikipedia entry by its site and title, under whichever of the site's article paths it is
+/// shown: Chinese Wikipedia shows each entry under `/wiki/` and under each script, `/zh-hans/`
+/// and the rest. Any other address is no entry.
+fn entry(page: &str) -> Option<(String, String)> {
+    let url = Url::parse(page).ok()?;
+    let site = url.host_str()?;
+    let (path, title) = url.path().strip_prefix('/')?.split_once('/')?;
+    (site.ends_with(".wikipedia.org") && (path == "wiki" || path.starts_with("zh")))
+        .then(|| (site.to_owned(), title.to_owned()))
+}
+
+/// The X account a scout gives, by its name, `@name` or its address.
+fn account(given: &str) -> Option<String> {
+    let given = given.trim();
+    match Url::parse(given) {
+        Ok(url) => owner(&url),
+        Err(_) => {
+            let name = given.strip_prefix('@').unwrap_or(given);
+            is_handle(name).then(|| name.to_owned())
+        }
+    }
+}
+
+/// Whose an address on X is: an account's page and its posts sit under its name, but X's own
+/// addresses of posts, `x.com/i/status/…`, name nobody.
+fn owner(url: &Url) -> Option<String> {
+    let host = url.host_str()?.trim_start_matches("www.");
+    if !matches!(host, "x.com" | "twitter.com" | "mobile.twitter.com") {
+        return None;
+    }
+    let name = url.path_segments()?.next()?;
+    (is_handle(name) && name != "i").then(|| name.to_owned())
+}
+
+/// What X lets an account be named: up to 15 letters, digits and underscores.
+fn is_handle(name: &str) -> bool {
+    (1..=15).contains(&name.len())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+/// What shows the subject on the lists: a person's photograph on their Wikipedia entry, or the
+/// picture of their own X account; else, as a company's always is, a photograph grok found and
+/// looked at. `title` is the article's, which tells who or what is meant.
+async fn cover(
+    state: &AppState,
+    pages: &Pages,
+    name: &str,
+    title: &str,
+    company: bool,
+) -> Option<Picture> {
+    if !company {
+        if let Some(entry) = &pages.wiki
+            && let Some(portrait) = shared(state, entry, |_| true).await
+        {
+            return Some(portrait);
+        }
+        // For an account without a picture, or a page it won't show, X shares one of its own.
+        if let Some(home) = &pages.x
+            && let Some(avatar) = shared(state, home, |url| url.starts_with(PROFILE_IMAGES)).await
+        {
+            return Some(avatar);
+        }
     }
     sighted(state, name, title, company).await
 }
 
-/// The photograph that leads the person's article on English Wikipedia, which shows the person:
-/// none for a page without one, or for a disambiguation page, which names several people. A small
-/// portrait still beats any other picture, so only its type is checked, not its size.
-async fn portrait(state: &AppState, name: &str) -> Option<Picture> {
-    let mut url = Url::parse("https://en.wikipedia.org/w/api.php").expect("wiki API URL");
-    url.query_pairs_mut().extend_pairs([
-        ("action", "query"),
-        ("prop", "pageimages|pageprops"),
-        ("piprop", "thumbnail"),
-        ("pithumbsize", "960"),
-        ("redirects", "1"),
-        ("format", "json"),
-        ("formatversion", "2"),
-        ("titles", name),
-    ]);
-    let reply: Value = match media::wikimedia(state, url).await {
-        Ok(bytes) => serde_json::from_slice(&bytes).ok()?,
-        Err(error) => {
-            tracing::warn!(%error, name, "Wikipedia was not asked for a portrait");
-            return None;
-        }
-    };
-    let page = &reply["query"]["pages"][0];
-    if !page["pageprops"]["disambiguation"].is_null() {
-        return None;
-    }
-    let (bytes, _) =
-        media::download_image(state, page["thumbnail"]["source"].as_str()?, ACCEPT).await?;
-    let source = format!(
-        "https://en.wikipedia.org/wiki/{}",
-        page["title"].as_str()?.replace(' ', "_")
-    );
-    uploaded(state, bytes, Some(("en.wikipedia.org".into(), source))).await
+/// The first picture a page of the subject's own shares that `fits`, kept for the lists. A
+/// small one still beats any other picture, so only its type is checked, not its size.
+async fn shared(state: &AppState, page: &str, fits: fn(&str) -> bool) -> Option<Picture> {
+    let pictures = crate::catalog::page_pictures(state, page, &NewsImage::default(), false)
+        .await
+        .inspect_err(|error| tracing::debug!(%error, page, "the subject's page was not read"))
+        .ok()?;
+    let picture = pictures.into_iter().find(|picture| fits(&picture.url))?;
+    let (bytes, _) = media::download_image(state, &picture.url, ACCEPT).await?;
+    uploaded(state, bytes, Some((picture.credit, picture.source_url))).await
 }
 
 /// A photograph grok searched for and looked at, kept with the page that shows it: of the
@@ -393,9 +481,9 @@ async fn sighted(state: &AppState, name: &str, title: &str, company: bool) -> Op
         .next()
 }
 
-pub(super) const SEARCHING: &str = "你是 XABC「时代」栏目的选题编辑。XABC 在 xabcnews.com 为这个时代的人物和企业写全方位的长文，人物再次成为焦点时就更新，读者是关心科技与科学的中文读者。
+const SEARCHING: &str = "你是 XABC「时代」栏目的选题编辑。XABC 在 xabcnews.com 为这个时代的人物和企业写全方位的长文，人物再次成为焦点时就更新，读者是关心科技与科学的中文读者。
 今天请你{scope}，按输入里这一轮的要求找线索。
-每条线索是一个人或一家企业：name 写最常用的英文名，中国人用拼音，企业写通行的英文名（比如 Huawei、CATL、TSMC），只写名字，不加头衔、括号和说明；company 是企业写 true，是人写 false；title 一句话说明是谁、为什么值得写；points 写写作用得上的经历、成就和近况，以及相关的公司和机构；sources 里要有维基百科、百度百科词条或官方介绍页；pictures 优先给有本人或企业照片的页面。
+每条线索是一个人或一家企业：name 写最常用的英文名，中国人用拼音，企业写通行的英文名（比如 Huawei、CATL、TSMC），只写名字，不加头衔、括号和说明；company 是企业写 true，是人写 false；wiki 写他或它的维基百科词条地址（有英文词条就写英文的），x 写他本人或企业官方 X 账号的用户名（不带 @），两样都只写检索中实际看到、确认就是这一位或这一家的，并把这个词条和这个账号本人发的一条帖子也列进 sources，没有就留空；title 一句话说明是谁、为什么值得写；points 写写作用得上的经历、成就和近况，以及相关的公司和机构；sources 里要有维基百科、百度百科词条或官方介绍页；pictures 优先给有本人或企业照片的页面。
 ";
 
 /// The round of people talked about most now.
@@ -421,7 +509,8 @@ const WRITING: &str = "你是 XABC，在 xabcnews.com 的「时代」栏目写�
 - 只写公开、查得到出处的信息：经历、数字和引语都要来自资料和检索；传闻写明是传闻，有争议的事写清各方的说法。感情与家庭更严：只写本人公开过或主流媒体确认过的婚姻、伴侣、离婚和子女情况，以及他本人公开谈过的经历，媒体广泛报道的争议注明出处，没有这类公开信息就不写这一块；不写未经证实的传闻、小报爆料和猜测，不写未成年子女的细节和身为普通人的家人的隐私，也不写住址和联系方式。
 - 同名的人很多：确认每条资料说的都是这个人，对不上的不用。
 - 人名第一次出现写通行的中文译名并附原名，标题带上他的中文名。
-- 配图以页面上的真实照片为主：pictures 的 page 填带图的页面，prompt 留空。第一张放在正文开头，是他本人的照片：page 填他的维基百科条目（英文或中文），没有条目才用他的官方介绍页或本人的 X 帖子。其余配上与他的工作、演讲、产品和公司有关的报道和页面；你看不到这些页面上的图，图注就写这张图出自哪篇报道、讲的什么事，不说画面里是谁。
+- 材料里给了他的 X 主页时，正文第一次写到他的名字，就把名字链接到这个主页。
+- 配图以页面上的真实照片为主：pictures 的 page 填带图的页面，prompt 留空。第一张放在正文开头，是他本人的照片：page 填他的维基百科条目（材料里给了就用那一条，英文或中文），没有条目才用他的官方介绍页或本人的 X 帖子。其余配上与他的工作、演讲、产品和公司有关的报道和页面；你看不到这些页面上的图，图注就写这张图出自哪篇报道、讲的什么事，不说画面里是谁。
 - 照片说不清的地方，比如技术和成果的原理、产品与业务的全貌、正文写到的重要场景，可以加 AI 插图，帮读者看懂、添点乐趣：page 留空，prompt 写画面描述；这些插图不画真实人物，都放在四格漫画后面，他本人只出现在四格漫画里。
 - 「你可能不知道」后面单独成段放一组四格漫画，page 留空：prompt 以「四格漫画：」开头，先写他的中文名和原名，再按时间顺序写四格各画什么，每格是正文写到、有出处的一个关键时刻，写清年份、地点、他当时的年纪和样子、在做什么；只画公开的经历和轶事，不画争议、官司、传闻和私生活；同框的其他人只当陪衬，不写名字。画风和版式由程序统一，不用写。caption 用一句话依次写出这四个时刻和年份。政治人物不画漫画。
 ";
@@ -435,6 +524,7 @@ const COMPANY_WRITING: &str = "你是 XABC，在 xabcnews.com 的「时代」栏
 - 像一个做足功课、会讲故事的商业记者：具体、生动，用事实、细节和数字说话；可以有判断，但不吹捧、不贬低。篇幅不限，资料足够时写到一万字以上，资料多就写得更长，但不为凑字数重复或空谈；用小标题组织。
 - 只写公开、查得到出处的信息：数字和引语都要来自资料和检索；传闻写明是传闻，有争议的事写清各方的说法。同名的企业很多：确认每条资料说的都是这家企业，对不上的不用。
 - 企业名第一次出现写通行的中文名并附原名，标题带上它的中文名；人名第一次出现写通行的中文译名并附原名。
+- 材料里给了它的官方 X 主页时，正文第一次写到企业名，就把名字链接到这个主页。
 - 配图以页面上的真实照片为主：pictures 的 page 填带图的页面，prompt 留空；总部、工厂、门店、产品和重要场合的照片都可以，第一张放在正文开头。你看不到这些页面上的图，图注就写这张图出自哪篇报道、讲的什么事，不描述画面。
 - 照片说不清的地方，比如技术和产品的原理、业务版图、产业链和重要的场景，可以加 AI 插图，帮读者看懂、添点乐趣：page 留空，prompt 写画面描述；这些插图不画真实人物，都放在四格漫画后面。
 - 「你可能不知道」后面单独成段放一组四格漫画，page 留空：prompt 以「四格漫画：」开头，先写企业的中文名和原名，再按时间顺序写四格各画什么：创立、转折、标志性的产品、现在，每格是正文写到、有出处的一个时刻，写清年份、地点和画面；每格以产品、场所和事件为主，人物只当陪衬，不画成哪一个具体的人，也不写名字；不画争议和官司。画风和版式由程序统一，不用写。caption 用一句话依次写出这四个时刻和年份。
@@ -455,6 +545,7 @@ const COMPANY_PHOTO: &str = "你为一篇企业长文找一张封面照片。输
 
 #[cfg(test)]
 mod tests {
+    use super::super::{Find, Scout};
     use super::*;
     use chrono::TimeZone;
 
@@ -470,6 +561,112 @@ mod tests {
             [
                 Hot, Leaders, Hot, Leaders, Hot, Company, Hot, Leaders, Hot, Leaders, Hot, Company
             ]
+        );
+    }
+
+    #[test]
+    fn a_subject_shows_itself_only_through_the_entry_and_the_account_the_searches_met() {
+        for given in [
+            "XiYin_Phys",
+            " @XiYin_Phys ",
+            "https://x.com/XiYin_Phys",
+            "https://twitter.com/XiYin_Phys/status/1",
+        ] {
+            assert_eq!(account(given).as_deref(), Some("XiYin_Phys"), "{given}");
+        }
+        for given in [
+            "",
+            "@",
+            "Xi Yin",
+            "尹希",
+            "sixteen_letters_",
+            "https://example.com/XiYin_Phys",
+            "https://x.com/",
+            "https://x.com/i/status/3",
+        ] {
+            assert_eq!(account(given), None, "{given:?}");
+        }
+        let find = |wiki: &str, x: &str| {
+            let find = Find {
+                title: String::new(),
+                why: String::new(),
+                points: String::new(),
+                sources: Vec::new(),
+                pictures: Vec::new(),
+                subject: "Xi Yin".into(),
+                company: false,
+                wiki: wiki.into(),
+                x: x.into(),
+            };
+            (Scout::X, find)
+        };
+        let pages = |finds, met: &[&str]| {
+            let pages = Pages::of(&Found {
+                finds,
+                known: met.iter().filter_map(|page| identity(page)).collect(),
+                repeated: 0,
+                answered: 2,
+                usage: Usage::default(),
+            });
+            (pages.wiki, pages.x)
+        };
+        let met = [
+            "https://en.wikipedia.org/wiki/Xi_Yin",
+            "https://zh.wikipedia.org/zh-hans/%E5%B0%B9%E5%B8%8C",
+            "https://en.wikipedia.org/w/index.php?title=Xi_Yin",
+            "https://en.wikipedia.org/wiki/AC/DC",
+            "https://x.com/i/status/3",
+            "https://www.x.com/XiYin_Phys/status/1",
+            "https://baike.baidu.com/item/Xi_Yin",
+        ];
+        // The first entry and account a scout gives that the searches met, an account by any of
+        // its pages and in any case.
+        assert_eq!(
+            pages(
+                vec![
+                    find("https://en.wikipedia.org/wiki/Yin_Xi", "@XiYin"),
+                    find("https://en.wikipedia.org/wiki/Xi_Yin/", "xiyin_phys"),
+                ],
+                &met
+            ),
+            (
+                Some("https://en.wikipedia.org/wiki/Xi_Yin".into()),
+                Some("https://x.com/xiyin_phys".into())
+            )
+        );
+        // The same entry under another of its site's paths, at the address the searches met.
+        assert_eq!(
+            pages(vec![find("https://zh.wikipedia.org/wiki/尹希", "")], &met),
+            (
+                Some("https://zh.wikipedia.org/zh-hans/%E5%B0%B9%E5%B8%8C".into()),
+                None
+            )
+        );
+        // A title is the whole of it, slashes and all; another title is another entry, though it
+        // shares the site's other routes or a part of the title.
+        let entry = "https://en.wikipedia.org/wiki/AC/DC";
+        assert_eq!(
+            pages(vec![find(entry, "")], &met),
+            (Some(entry.into()), None)
+        );
+        for given in [
+            "https://en.wikipedia.org/w/index.php?title=Yinxi",
+            "https://en.wikipedia.org/wiki/AC",
+            "https://en.wikipedia.org/wiki/DC",
+        ] {
+            assert_eq!(pages(vec![find(given, "")], &met), (None, None), "{given}");
+        }
+        // Neither an entry by the name, which belongs to someone else, nor another site's page,
+        // nor an account whose pages the searches never met.
+        assert_eq!(
+            pages(
+                vec![
+                    find("https://en.wikipedia.org/wiki/Yin_Xi", "XiYin"),
+                    find("https://baike.baidu.com/item/Xi_Yin", "@Xi_Yin"),
+                ],
+                &met
+            ),
+            (None, None)
         );
     }
 
