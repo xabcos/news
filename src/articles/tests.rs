@@ -38,6 +38,18 @@ fn excerpts_are_one_line_of_the_body_without_markup_or_picture_descriptions() {
         )),
         "开头的话。"
     );
+    // A formula on one line reads as what it shows; one with scripts or fractions, as its TeX.
+    assert_eq!(
+        excerpt(
+            "式子：\n\n\\[\n\\mathbf P=m(\\mathbf C-\\mathbf V)\n\\]\n\n当 \\(\\cos\\theta<1\\)，\\(m_0\\) 与 \\(\\frac{1}{2}\\)"
+        ),
+        "式子： 𝐏=m(𝐂−𝐕) 当 cos θ<1，m_0 与 \\frac{1}{2}"
+    );
+    // Set apart or within a line, as the page lays it out.
+    assert_eq!(
+        excerpt("\\[\\mathchoice{A}{B}{C}{D}\\]\n\n\\(\\mathchoice{A}{B}{C}{D}\\)"),
+        "A B"
+    );
     let long = "字".repeat(EXCERPT_CHARS + 30);
     let cut = excerpt(&long);
     assert_eq!(cut.chars().count(), EXCERPT_CHARS + 1);

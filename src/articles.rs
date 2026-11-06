@@ -910,13 +910,14 @@ fn image_id(destination: &str) -> Option<Uuid> {
 }
 
 /// The body's words as one line of plain text: no markup, no picture descriptions and no
-/// captions, the italic line right under a picture (`reads.css` sets it apart as `img + em`).
+/// captions, the italic line right under a picture (`reads.css` sets it apart as `img + em`);
+/// formulas as `site::formula_text` writes them.
 fn words(body: &str) -> String {
     let mut text = String::new();
     // Inside a picture, how deep inside its caption's emphasis, and whether a picture just ended,
     // a line break apart.
     let (mut picture, mut caption, mut pictured) = (false, 0, false);
-    for event in crate::site::bolded(Parser::new_ext(body, MARKDOWN)) {
+    for event in crate::site::bolded(crate::site::parsed(body, MARKDOWN)) {
         match event {
             Event::Start(Tag::Image { .. }) => picture = true,
             Event::End(TagEnd::Image) => {
@@ -928,6 +929,12 @@ fn words(body: &str) -> String {
             Event::End(TagEnd::Emphasis) if caption > 0 => caption -= 1,
             Event::Text(part) | Event::Code(part) if !picture && caption == 0 => {
                 text.push_str(&part)
+            }
+            Event::InlineMath(tex) if !picture && caption == 0 => {
+                text.push_str(&crate::site::formula_text(&tex, false))
+            }
+            Event::DisplayMath(tex) if !picture && caption == 0 => {
+                text.push_str(&crate::site::formula_text(&tex, true))
             }
             Event::SoftBreak | Event::HardBreak => {
                 text.push(' ');

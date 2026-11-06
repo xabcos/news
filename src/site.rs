@@ -529,30 +529,72 @@ const DEFINING: [&str; 6] = [
     "\\providecommand",
 ];
 
-/// A formula as MathML, which browsers lay out themselves; one math-core can't read, or isn't
-/// given, stays as its TeX, as code. An operator name is set as `\mathop\mathrm`: math-core
-/// writes `\operatorname`'s into the page unescaped.
-fn formula(tex: &str, block: bool) -> String {
+/// The elements of a formula that lays out on one line.
+const FLAT: [&str; 9] = [
+    "math", "mi", "mn", "mo", "mtext", "mspace", "mrow", "mpadded", "mstyle",
+];
+
+/// A formula as MathML, if math-core is given it and can read it. An operator name is set as
+/// `\mathop\mathrm`: math-core writes `\operatorname`'s into the page unescaped.
+fn mathml(tex: &str, block: bool) -> Option<String> {
     static CONVERTER: LazyLock<math_core::LatexToMathML> = LazyLock::new(|| {
         math_core::LatexToMathML::new(math_core::MathCoreConfig::default(), Vec::new())
             .expect("no custom macros to parse")
     });
-    if tex.chars().count() <= FORMULA_LENGTH && !DEFINING.iter().any(|name| tex.contains(name)) {
-        let display = if block {
-            math_core::MathDisplay::Block
-        } else {
-            math_core::MathDisplay::Inline
-        };
-        // The longer names first, as each holds the shorter.
-        let named = tex
-            .replace("\\operatornamewithlimits", "\\mathop\\mathrm")
-            .replace("\\operatorname*", "\\mathop\\mathrm")
-            .replace("\\operatorname", "\\mathop\\mathrm");
-        if let Ok(converted) = CONVERTER.convert_with_local_state(&named, display) {
-            return converted.mathml;
-        }
+    if tex.chars().count() > FORMULA_LENGTH || DEFINING.iter().any(|name| tex.contains(name)) {
+        return None;
     }
-    format!("<code>{}</code>", escape(tex.trim()))
+    let display = if block {
+        math_core::MathDisplay::Block
+    } else {
+        math_core::MathDisplay::Inline
+    };
+    // The longer names first, as each holds the shorter.
+    let named = tex
+        .replace("\\operatornamewithlimits", "\\mathop\\mathrm")
+        .replace("\\operatorname*", "\\mathop\\mathrm")
+        .replace("\\operatorname", "\\mathop\\mathrm");
+    let converted = CONVERTER.convert_with_local_state(&named, display).ok()?;
+    Some(converted.mathml)
+}
+
+/// A formula as MathML, which browsers lay out themselves, or else its TeX, as code.
+fn formula(tex: &str, block: bool) -> String {
+    mathml(tex, block).unwrap_or_else(|| format!("<code>{}</code>", escape(tex.trim())))
+}
+
+/// A formula as plain text, for summaries: one that lays out on a line as the characters it
+/// shows, `𝐏=m(𝐂−𝐕)`, and one with scripts, fractions or anything else stacked as its TeX.
+pub(crate) fn formula_text(tex: &str, block: bool) -> String {
+    mathml(tex, block)
+        .and_then(|mathml| {
+            let mut text = String::new();
+            let mut rest = mathml.as_str();
+            while let Some((before, after)) = rest.split_once('<') {
+                text.push_str(before);
+                let (tag, after) = after.split_once('>')?;
+                let name = tag.trim_start_matches('/').split([' ', '/']).next()?;
+                if !FLAT.contains(&name) {
+                    return None;
+                }
+                // A space of some width; a bare one only stops Firefox spacing a word apart.
+                if name == "mspace" && tag.contains("width") {
+                    text.push(' ');
+                }
+                rest = after;
+            }
+            text.push_str(rest);
+            Some(
+                text.replace("&InvisibleTimes;", "")
+                    .replace("&ApplyFunction;", " ")
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&quot;", "\"")
+                    .replace("&#39;", "'")
+                    .replace("&amp;", "&"),
+            )
+        })
+        .unwrap_or_else(|| tex.trim().to_owned())
 }
 
 /// Markdown as HTML that can't run anything: raw HTML is dropped, links keep only http(s)
