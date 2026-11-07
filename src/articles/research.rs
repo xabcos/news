@@ -1,8 +1,8 @@
 //! 调研: readers ask XABC to look something up, and the article it researches and writes goes out
 //! under the reader's pen name. Questions wait in one queue in the database, so a restart loses
-//! none: the one being written first, then Pro before Free, each in the order asked; XABC writes
-//! them one at a time (`tick`), beside the run slots collection and its other lines share, so a
-//! reader's question never waits behind them. A reader asks as many a day as their plan allows, an
+//! none: those being written first, then Pro before Free, each in the order asked; XABC writes up
+//! to `NEWS_MAX_CONCURRENT_RESEARCH` at once (`tick`), beside the run slots collection and its
+//! other lines share, so a reader's question never waits behind them. A reader asks as many a day as their plan allows, an
 //! administrator, who waits with Pro, as many as they like; a question taken back before XABC
 //! starts on it, or one it could not write, gives its allowance back. The AI looks at a question
 //! before it joins the queue, and at the article, the question with it, before it goes public, as
@@ -31,12 +31,8 @@ pub(crate) const PATH: &str = "/research";
 pub(super) const QUESTION_CHARS: usize = 1000;
 /// About how many minutes a research takes, which tells a reader how long theirs waits.
 const MINUTES: i64 = 8;
-/// The research XABC is writing, among the jobs in flight.
+/// How the research XABC is writing is marked among the jobs in flight, before its id.
 const JOB: &str = "__research__";
-/// The questions waiting, in the order XABC writes them, each with how many go before it.
-const QUEUE: &str =
-    "SELECT id, row_number() OVER (ORDER BY started_at IS NULL, NOT pro, asked_at, id) - 1 AS ahead
-    FROM research WHERE NOT failed";
 
 /// 调研's name, in the page's language.
 pub(crate) fn label(en: bool) -> &'static str {
@@ -63,7 +59,8 @@ struct Public {
     public: bool,
 }
 
-/// A question waiting, being written or failed, and whether the reader asked it.
+/// A question waiting, being written or failed, whether the reader asked it, and how it stands
+/// while it waits (`standing`).
 #[derive(FromRow, Serialize)]
 struct Queued {
     id: Uuid,
@@ -74,9 +71,11 @@ struct Queued {
     public: bool,
     asked_at: DateTime<Utc>,
     started_at: Option<DateTime<Utc>>,
+    writing: bool,
     failed: bool,
-    /// How many are written before it; none once it failed.
     ahead: Option<i64>,
+    minutes: Option<i64>,
+    now: Option<bool>,
 }
 
 /// A research article, whether the reader asked for it and whether its author is on Pro now or
@@ -100,6 +99,48 @@ fn private(user: &User) -> bool {
     user.is_admin() || user.is_pro()
 }
 
+/// The questions this process is writing, by their marks among the jobs in flight. One marked
+/// started that isn't among them was cut off by a restart.
+fn writing(state: &AppState) -> Vec<Uuid> {
+    state
+        .in_flight()
+        .iter()
+        .filter_map(|job| job.strip_prefix(JOB)?.parse().ok())
+        .collect()
+}
+
+/// Pushes the questions waiting, all but failed ones and those being `written`, in the order
+/// XABC takes them, each with how many wait before it (`ahead`): any cut off by a restart first,
+/// then Pro before Free, each in the order asked.
+fn queue(query: &mut QueryBuilder<sqlx::Postgres>, written: &[Uuid]) {
+    query
+        .push(
+            "SELECT id, row_number() OVER (ORDER BY started_at IS NULL, NOT pro, asked_at, id) - 1 AS ahead
+             FROM research WHERE NOT failed AND id <> ALL(",
+        )
+        .push_bind(written.to_vec())
+        .push(")");
+}
+
+/// Pushes how a waiting question `q` of `queue` stands while `written` are being written,
+/// `writers` at a time: how many wait before it (`ahead`), about how many minutes until it is
+/// written (`minutes`), and whether a writer is free for it at once (`now`).
+fn standing(query: &mut QueryBuilder<sqlx::Postgres>, written: usize, writers: usize) {
+    let (written, writers) = (written as i64, writers as i64);
+    query
+        .push("q.ahead, ((q.ahead + ")
+        .push_bind(written)
+        .push(") / ")
+        .push_bind(writers)
+        .push(" + 1) * ")
+        .push_bind(MINUTES)
+        .push(" AS minutes, q.ahead + ")
+        .push_bind(written)
+        .push(" < ")
+        .push_bind(writers)
+        .push(" AS now");
+}
+
 /// How many research a reader may ask for in a day, as `private` says; an administrator, any
 /// number.
 fn allowance(state: &AppState, user: &User, private: bool) -> Option<u8> {
@@ -112,25 +153,29 @@ fn allowance(state: &AppState, user: &User, private: bool) -> Option<u8> {
 
 /// The reader's questions and research articles, or for an administrator everyone's questions
 /// and latest 30 articles; with what the reader may do: keep research to themselves, how many
-/// they may ask a day and have left today, and about how long one takes.
+/// they may ask a day and have left today; and how many XABC writes at once.
 async fn list(State(state): State<AppState>, user: User) -> Result<Json<Value>> {
     let admin = user.is_admin();
-    let queue: Vec<Queued> =
-        QueryBuilder::new("SELECT r.id, r.question, w.name AS author, r.author_id = ")
-            .push_bind(user.id)
-            .push(
-                " AS mine, r.pro, r.public, r.asked_at, r.started_at, r.failed, q.ahead
-         FROM research r JOIN authors w ON w.user_id = r.author_id LEFT JOIN (",
-            )
-            .push(QUEUE)
-            .push(") q ON q.id = r.id WHERE r.author_id = ")
-            .push_bind(user.id)
-            .push(" OR ")
-            .push_bind(admin)
-            .push(" ORDER BY r.failed, q.ahead, r.asked_at")
-            .build_query_as()
-            .fetch_all(&state.pool)
-            .await?;
+    let (written, writers) = (writing(&state), state.config.max_concurrent_research);
+    let mut query = QueryBuilder::new("SELECT r.id, r.question, w.name AS author, r.author_id = ");
+    query
+        .push_bind(user.id)
+        .push(" AS mine, r.pro, r.public, r.asked_at, r.started_at, r.id = ANY(")
+        .push_bind(written.clone())
+        .push(") AS writing, r.failed, ");
+    standing(&mut query, written.len(), writers);
+    // Only what waits stands somewhere: what is being written, or failed, waits for nothing.
+    query.push(" FROM research r JOIN authors w ON w.user_id = r.author_id LEFT JOIN (");
+    queue(&mut query, &written);
+    let queue: Vec<Queued> = query
+        .push(") q ON q.id = r.id WHERE r.author_id = ")
+        .push_bind(user.id)
+        .push(" OR ")
+        .push_bind(admin)
+        .push(" ORDER BY r.failed, q.ahead NULLS FIRST, r.asked_at")
+        .build_query_as()
+        .fetch_all(&state.pool)
+        .await?;
     let mut articles: Vec<Researched> = sqlx::query_as(
         "SELECT a.id, a.title, w.name AS author, a.author_id = $1 AS mine, a.status, a.held,
                 a.views, a.created_at, u.role = 'admin' OR COALESCE(u.pro_until > now(), false) AS pro
@@ -162,16 +207,16 @@ async fn list(State(state): State<AppState>, user: User) -> Result<Json<Value>> 
         "private": private,
         "limit": limit,
         "left": limit.map(|limit| (i16::from(limit) - used).max(0)),
-        "minutes": MINUTES,
+        "writers": writers,
+        "writing": written.len(),
         "queue": queue,
         "articles": articles,
     })))
 }
 
 /// Puts a reader's question in the queue, against their allowance for the day, unless the AI
-/// finds pornography, gambling, drugs or political risk in it; tells how many wait ahead and
-/// about how long one takes. The AI's look counts as one of the reviews the reader has a day, so
-/// no one keeps it busy.
+/// finds pornography, gambling, drugs or political risk in it; tells how it stands (`standing`).
+/// The AI's look counts as one of the reviews the reader has a day, so no one keeps it busy.
 async fn ask(
     State(state): State<AppState>,
     user: User,
@@ -242,16 +287,24 @@ async fn ask(
     .bind(day)
     .execute(&mut *tx)
     .await?;
-    let ahead: i64 = QueryBuilder::new("SELECT ahead FROM (")
-        .push(QUEUE)
+    let written = writing(&state);
+    let mut query = QueryBuilder::new("SELECT ");
+    standing(
+        &mut query,
+        written.len(),
+        state.config.max_concurrent_research,
+    );
+    query.push(" FROM (");
+    queue(&mut query, &written);
+    let (ahead, minutes, now): (i64, i64, bool) = query
         .push(") q WHERE id = ")
         .push_bind(id)
-        .build_query_scalar()
+        .build_query_as()
         .fetch_one(&mut *tx)
         .await?;
     tx.commit().await?;
     Ok(Json(
-        json!({ "id": id, "ahead": ahead, "minutes": MINUTES }),
+        json!({ "id": id, "ahead": ahead, "minutes": minutes, "now": now }),
     ))
 }
 
@@ -335,43 +388,54 @@ async fn remove(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Starts writing the first question in the queue unless XABC is writing one; the scheduler calls
-/// this on every tick. A question cut off by a shutdown comes first again after the restart.
+/// Starts writing the first questions in the queue while XABC writes fewer than it may at once,
+/// each marked among the jobs in flight while it is written; the scheduler calls this on every
+/// tick. A question cut off by a restart comes first again.
 pub(crate) async fn tick(state: &AppState) {
-    if state.in_flight().contains(JOB) {
+    let written = writing(state);
+    let free = state
+        .config
+        .max_concurrent_research
+        .saturating_sub(written.len());
+    if free == 0 {
         return;
     }
-    let next =
-        QueryBuilder::new("UPDATE research SET started_at = now() WHERE id = (SELECT id FROM (")
-            .push(QUEUE)
-            .push(") q WHERE ahead = 0) RETURNING id, question")
-            .build_query_as::<(Uuid, String)>()
-            .fetch_optional(&state.pool)
-            .await;
-    let (id, question) = match next {
-        Ok(Some(next)) => next,
-        Ok(None) => return,
+    let mut query =
+        QueryBuilder::new("UPDATE research SET started_at = now() WHERE id IN (SELECT id FROM (");
+    queue(&mut query, &written);
+    let next = query
+        .push(") q ORDER BY ahead LIMIT ")
+        .push_bind(free as i64)
+        .push(") RETURNING id, question")
+        .build_query_as::<(Uuid, String)>()
+        .fetch_all(&state.pool)
+        .await;
+    let next = match next {
+        Ok(next) => next,
         Err(error) => {
             tracing::warn!(%error, "could not read the research queue");
             return;
         }
     };
-    state.in_flight().insert(JOB.to_owned());
-    let worker = state.clone();
-    state.spawn_worker(async move {
-        tokio::select! {
-            _ = worker.shutdown.cancelled() => {}
-            written = write(&worker, id, &question) => {
-                if let Err(error) = written {
-                    tracing::warn!(%id, %error, "XABC could not write a research");
-                    if let Err(error) = fail(&worker, id).await {
-                        tracing::warn!(%id, %error, "could not mark a research failed");
+    for (id, question) in next {
+        let job = format!("{JOB}{id}");
+        state.in_flight().insert(job.clone());
+        let worker = state.clone();
+        state.spawn_worker(async move {
+            tokio::select! {
+                _ = worker.shutdown.cancelled() => {}
+                written = write(&worker, id, &question) => {
+                    if let Err(error) = written {
+                        tracing::warn!(%id, %error, "XABC could not write a research");
+                        if let Err(error) = fail(&worker, id).await {
+                            tracing::warn!(%id, %error, "could not mark a research failed");
+                        }
                     }
                 }
             }
-        }
-        worker.in_flight().remove(JOB);
-    });
+            worker.in_flight().remove(&job);
+        });
+    }
 }
 
 /// Researches the question and saves the article, each once more if it fails; then a reader's

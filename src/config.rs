@@ -7,6 +7,7 @@ use url::{Host, Url};
 
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:8788";
 
+#[derive(Clone)]
 pub struct Config {
     pub(crate) bind_addr: SocketAddr,
     pub(crate) database_url: String,
@@ -52,6 +53,8 @@ pub struct Config {
     /// plan keeps 调研 to Pro.
     pub(crate) research_free_daily: u8,
     pub(crate) research_pro_daily: u8,
+    /// The research XABC writes at once, beside the runs above.
+    pub(crate) max_concurrent_research: usize,
 }
 
 impl Config {
@@ -171,6 +174,12 @@ impl Config {
                 "NEWS_MAX_CONCURRENT_RUNS 必须在 1 到 8 之间".into(),
             ));
         }
+        let max_concurrent_research = parse_env("NEWS_MAX_CONCURRENT_RESEARCH", 8_usize)?;
+        if !(1..=32).contains(&max_concurrent_research) {
+            return Err(AppError::Config(
+                "NEWS_MAX_CONCURRENT_RESEARCH 必须在 1 到 32 之间".into(),
+            ));
+        }
 
         // NEWS always serves media through tmpfile so browser-visible assets stay stable.
         let tmpfile_base_url =
@@ -228,6 +237,7 @@ impl Config {
             image_timeout: Duration::from_secs(image_timeout_secs),
             research_free_daily: parse_env("NEWS_RESEARCH_FREE_DAILY", 2)?,
             research_pro_daily: parse_env("NEWS_RESEARCH_PRO_DAILY", 8)?,
+            max_concurrent_research,
         })
     }
 }

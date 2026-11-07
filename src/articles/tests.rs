@@ -1309,6 +1309,8 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     let sighting = Arc::new(AtomicBool::new(true));
     // Whether an administrator saves the Binance article while 追踪's scouts search.
     let saving = Arc::new(AtomicBool::new(false));
+    // Holds research on questions about writing side by side until the test lets it go.
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
     let admin = sqlx::PgPool::connect_lazy(&database_url).unwrap();
     let mut seed = 0x9e37_79b9_u32;
     let noise = image::RgbImage::from_fn(640, 400, |_, _| {
@@ -1341,20 +1343,22 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         .route(
             "/v1/responses",
             post({
-                let (asked, failing, news, saving, sighting) = (
+                let (asked, failing, news, saving, sighting, gate) = (
                     asked.clone(),
                     failing.clone(),
                     news.clone(),
                     saving.clone(),
                     sighting.clone(),
+                    gate.clone(),
                 );
                 move |Json(request): Json<Value>| {
-                    let (asked, failing, news, saving, sighting, admin, body) = (
+                    let (asked, failing, news, saving, sighting, gate, admin, body) = (
                         asked.clone(),
                         failing.clone(),
                         news.clone(),
                         saving.clone(),
                         sighting.clone(),
+                        gate.clone(),
                         admin.clone(),
                         body.clone(),
                     );
@@ -1532,6 +1536,9 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                             if asked.contains("写不出") {
                                 return (StatusCode::BAD_REQUEST, Json(json!({})));
                             }
+                            if asked.contains("并行") {
+                                gate.acquire().await.unwrap().forget();
+                            }
                             return (
                                 StatusCode::OK,
                                 Json(reply(json!({ "understanding": format!(" 他想弄懂「{asked}」。 ") }), "https://elsewhere.example/x")),
@@ -1695,6 +1702,8 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     config.ai_base_url = ai_base.parse().unwrap();
     config.ai_api_key = "fixture".into();
     config.ai_writing_model = "writer-fixture".into();
+    // 调研 is written one at a time first; several at once come last.
+    config.max_concurrent_research = 1;
     let (media, client, _) = tmpfile(jpeg(400, 300)).await;
     config.tmpfile_base_url = media.parse().unwrap();
     config.tmpfile_api_key = "fixture".into();
@@ -2783,19 +2792,27 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
             .bind(id)
             .fetch_one(&state.pool)
     };
-    // XABC writes the first question in the queue, and the test waits until it is done.
-    let researched = || {
+    // Until XABC writes no research.
+    let idle = || {
         let state = &state;
         async move {
-            research::tick(state).await;
             tokio::time::timeout(std::time::Duration::from_secs(60), async {
-                while state.in_flight().contains("__research__") {
+                while state
+                    .in_flight()
+                    .iter()
+                    .any(|job| job.starts_with("__research__"))
+                {
                     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                 }
             })
             .await
             .unwrap();
         }
+    };
+    // XABC writes the first question in the queue, and the test waits until it is done.
+    let researched = || async {
+        research::tick(&state).await;
+        idle().await;
     };
     // A question needs a session and a pen name.
     assert_eq!(
@@ -2935,7 +2952,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     let mut closed = state.clone();
     closed.config = Arc::new(Config {
         research_free_daily: 0,
-        ..Config::from_env().unwrap()
+        ..(*state.config).clone()
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let closed_base = format!("http://{}", listener.local_addr().unwrap());
@@ -3207,15 +3224,175 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     assert_eq!(
         (
             &everyone["queue"][0]["question"],
+            &everyone["queue"][0]["writing"],
             &everyone["queue"][0]["ahead"],
-            &everyone["queue"][1]["ahead"]
+            &everyone["queue"][1]["ahead"],
+            &everyone["queue"][1]["now"],
+            &everyone["queue"][1]["minutes"]
         ),
-        (&json!("重启前的问题"), &json!(0), &json!(1))
+        (
+            &json!("重启前的问题"),
+            &json!(false),
+            &json!(0),
+            &json!(1),
+            &json!(false),
+            &json!(16)
+        )
     );
     researched().await;
     assert_eq!(article(&cut["id"]).await.unwrap().1, "published");
     researched().await;
     assert_eq!(article(&waiting["id"]).await.unwrap().1, "draft");
+    // Several are written at once, as many as XABC may, Pro and administrators first; one that
+    // waits is told how many wait before it, whether it starts at once and about when it is done.
+    let mut side_by_side = state.clone();
+    side_by_side.config = Arc::new(Config {
+        max_concurrent_research: 2,
+        ..(*state.config).clone()
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let wide = format!("http://{}", listener.local_addr().unwrap());
+    let router = crate::web::router(side_by_side.clone());
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let ask_wide = |question: &'static str, cookie: String| {
+        answer(
+            http.post(format!("{wide}/api/research"))
+                .header("cookie", cookie)
+                .header("origin", &origin)
+                .json(&json!({ "question": question, "public": true })),
+        )
+    };
+    let (_, free_one) = ask_wide("并行的问题一", other_cookie.clone()).await;
+    assert_eq!(
+        (&free_one["ahead"], &free_one["now"], &free_one["minutes"]),
+        (&json!(0), &json!(true), &json!(8))
+    );
+    let (_, admin_one) = ask_wide("并行的问题二", administrator.clone()).await;
+    let (_, pro_one) = ask_wide("并行的问题三", pro_cookie.clone()).await;
+    assert_eq!(
+        (&pro_one["ahead"], &pro_one["now"]),
+        (&json!(1), &json!(true))
+    );
+    let standings = || async {
+        let (_, everyone) = answer(
+            http.get(format!("{wide}/api/research"))
+                .header("cookie", &administrator),
+        )
+        .await;
+        assert_eq!(everyone["writers"], 2);
+        everyone["queue"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|asked| {
+                (
+                    asked["question"].as_str().unwrap().to_owned(),
+                    asked["ahead"].clone(),
+                    asked["now"].clone(),
+                    asked["minutes"].clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        standings().await,
+        [
+            ("并行的问题二".into(), json!(0), json!(true), json!(8)),
+            ("并行的问题三".into(), json!(1), json!(true), json!(8)),
+            ("并行的问题一".into(), json!(2), json!(false), json!(16)),
+        ]
+    );
+    // One tick starts the two it may, written side by side, held at the gate; Free's waits behind
+    // them, told it comes next, in about two rounds.
+    research::tick(&side_by_side).await;
+    // Both reach the gate before either goes on.
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        while asked_log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| {
+                request["text"]["format"]["name"] == "understanding"
+                    && request["input"][0]["content"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .contains("并行的问题")
+            })
+            .count()
+            < 2
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let researching = || {
+        state
+            .in_flight()
+            .iter()
+            .filter(|job| job.starts_with("__research__"))
+            .count()
+    };
+    assert_eq!(researching(), 2);
+    assert_eq!(
+        standings().await,
+        [
+            ("并行的问题二".into(), Value::Null, Value::Null, Value::Null),
+            ("并行的问题三".into(), Value::Null, Value::Null, Value::Null),
+            ("并行的问题一".into(), json!(0), json!(false), json!(16)),
+        ]
+    );
+    let (_, everyone) = answer(
+        http.get(format!("{wide}/api/research"))
+            .header("cookie", &administrator),
+    )
+    .await;
+    let flags: Vec<&Value> = everyone["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|asked| &asked["writing"])
+        .collect();
+    assert_eq!(
+        (&everyone["writing"], flags),
+        (&json!(2), vec![&json!(true), &json!(true), &json!(false)])
+    );
+    gate.add_permits(3);
+    idle().await;
+    assert_eq!(
+        standings().await,
+        [("并行的问题一".into(), json!(0), json!(true), json!(8))]
+    );
+    research::tick(&side_by_side).await;
+    idle().await;
+    for asked in [&admin_one, &pro_one, &free_one] {
+        assert!(article(&asked["id"]).await.is_ok());
+    }
+    // A question this process writes isn't started again beside it; one marked started that no
+    // one here writes, cut off by a restart, is.
+    let (_, busy) = ask_wide("正在写的问题", administrator.clone()).await;
+    let (_, after) = ask_wide("接着写的问题", administrator.clone()).await;
+    let busy_id = Uuid::parse_str(busy["id"].as_str().unwrap()).unwrap();
+    sqlx::query("UPDATE research SET started_at = now() WHERE id = $1")
+        .bind(busy_id)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    let mark = format!("__research__{busy_id}");
+    state.in_flight().insert(mark.clone());
+    research::tick(&side_by_side).await;
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        while researching() > 1 || article(&after["id"]).await.is_err() {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(article(&busy["id"]).await.is_err());
+    state.in_flight().remove(&mark);
+    research::tick(&side_by_side).await;
+    idle().await;
+    assert!(article(&busy["id"]).await.is_ok());
 
     // 追踪: the event both scouts name goes first, under the key its slug makes, in an article that
     // shows no drawn picture. Showing none at all, it takes for the lists the picture the finds'

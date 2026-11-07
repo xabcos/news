@@ -216,10 +216,13 @@ window.addEventListener("pageshow", (event) => {
         if (localStorage.getItem(KEPT) === question) localStorage.removeItem(KEPT);
       } catch { /* The box works without storage. */ }
       if (input.value.trim() === question) input.value = "";
-      const wait = (data.ahead + 1) * data.minutes;
+      // A writer may be free for it at once; else it waits behind others, or comes next.
+      const standing = data.now ? (english ? "Starting now" : "马上开始调研")
+        : data.ahead ? (english ? `Queued with ${data.ahead} ahead` : `已排进调研队列，前面还有 ${data.ahead} 位`)
+          : (english ? "Queued, next in line" : "已排进调研队列，下一个就写它");
       say(english
-        ? `${data.ahead ? `Queued with ${data.ahead} ahead` : "Starting now"}: ready in about ${wait} minutes. Follow it in your `
-        : `${data.ahead ? `已排进调研队列，前面还有 ${data.ahead} 位` : "马上开始调研"}，大约 ${wait} 分钟后写好，进度在`, workspace(english ? "workspace" : "工作台"), english ? "." : "里看。");
+        ? `${standing}: ready in about ${data.minutes} minutes. Follow it in your `
+        : `${standing}，大约 ${data.minutes} 分钟后写好，进度在`, workspace(english ? "workspace" : "工作台"), english ? "." : "里看。");
     } catch {
       say(english ? "Couldn't send it. Try again." : "没有发出去，请重试。");
     } finally {

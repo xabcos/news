@@ -6,7 +6,7 @@ const statusText = { draft: "不公开", pending: "待审", published: "已公�
 // or for an administrator everyone's, with who asked, Pro or Free, and what isn't public. Pro
 // readers switch whether their own go public; the words are XABC's, which only an administrator
 // edits. The panel shows only while it has something, and looks again every minute while a
-// question waits.
+// question waits or is written.
 export function createResearch(session) {
   const signal = session.controller.signal;
   let version = 0;
@@ -22,12 +22,21 @@ export function createResearch(session) {
     const data = await session.request("/api/research");
     if (current !== version || signal.aborted) return;
     const { queue, articles } = data;
-    $("#researchPanel").classList.toggle("hidden", !queue.length && !articles.length);
+    // An administrator also follows research still being written whose question is gone, and
+    // anyone an article the AI is still reviewing.
+    const active = queue.some((asked) => !asked.failed) || (session.admin && data.writing > 0)
+      || articles.some((article) => article.status === "pending");
+    $("#researchPanel").classList.toggle("hidden", !queue.length && !articles.length && !active);
     $("#researchLine").textContent = session.admin
-      ? `排队 ${queue.filter((asked) => !asked.failed).length} 篇 · 一篇约 ${data.minutes} 分钟 · Pro 排在 Free 前面`
+      ? `写作中 ${data.writing} 篇 · 排队 ${queue.filter((asked) => asked.ahead !== null).length} 篇 · 同时写 ${data.writers} 篇 · Pro 排在 Free 前面`
       : data.limit === 0 ? "调研是 Pro 功能" : `今天还能调研 ${data.left} 次 · ${data.private ? "Pro" : "Free"}`;
     $("#researchList").replaceChildren(...queue.map((asked) => waiting(asked, data)), ...articles.map((article) => written(article, data)));
-    if (queue.some((asked) => !asked.failed)) timer = setTimeout(() => void load().catch(() => {}), 60_000);
+    if (active) later();
+  }
+
+  // Looks again in a minute, after a failed look too, while the session lasts.
+  function later() {
+    if (!signal.aborted) timer = setTimeout(() => void load().catch(later), 60_000);
   }
 
   // An administrator's lines lead with badges, Pro or Free and what isn't public, and name who
@@ -38,8 +47,9 @@ export function createResearch(session) {
   function waiting(asked, data) {
     const row = node("li", "item-row");
     const state = asked.failed ? "没写成，额度已退回"
-      : asked.started_at ? `写作中 · 已 ${Math.max(1, Math.round((Date.now() - new Date(asked.started_at)) / 60_000))} 分钟`
-        : asked.ahead ? `排队中 · 前面还有 ${asked.ahead} 位 · 约 ${(asked.ahead + 1) * data.minutes} 分钟后写好` : "马上开始";
+      : asked.writing ? `写作中 · 已 ${Math.max(1, Math.round((Date.now() - new Date(asked.started_at)) / 60_000))} 分钟`
+        : asked.now ? "马上开始"
+          : `${asked.ahead ? `排队中 · 前面还有 ${asked.ahead} 位` : "下一个就写它"} · 约 ${asked.minutes} 分钟后写好`;
     const meta = node("p", "item-meta muted");
     meta.append(...badges(asked.pro, ...(asked.public ? [] : [badge("不公开", "badge-private")])),
       [...asker(asked), state, `提交于 ${formatTime(asked.asked_at, session.timezone)}`].join(" · "));

@@ -43,7 +43,7 @@ const LIST: Chrome<'static> = Chrome {
     current: "articles",
     section: "reads articles article-cards",
     stylesheet: "/reads.css?v=22",
-    script: "/reads.js?v=11",
+    script: "/reads.js?v=12",
     feed: ("News", "/feed.xml"),
 };
 /// An article counts its reads, and its review takes a ❤️.
