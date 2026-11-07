@@ -798,7 +798,8 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
     // Its count has a place on the card even before anyone reads it, for the script to fill.
     assert!(list.contains(&format!("<span data-views=\"{id}\" hidden> · ")));
     assert!(!list.contains("articles.example.test"));
-    // Its tab follows 开源's on every page, and the sitemap lists it.
+    // Its tab follows 调研's on every page, the two with 时代 and 追踪 at their sort weight, and
+    // the sitemap lists it.
     assert!(list.contains("<a class=tab href=\"/articles\" aria-current=\"true\">分享</a>"));
     let reads = anonymous("/reads")
         .send()
@@ -807,7 +808,9 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
         .text()
         .await
         .unwrap();
-    assert!(reads.contains("开源</a><a class=tab href=\"/articles\">分享</a>"));
+    assert!(reads.contains(
+        "<a class=tab href=\"/research\">调研</a><a class=tab href=\"/articles\">分享</a><a class=tab href=\"/people\">时代</a><a class=tab href=\"/tracker\">追踪</a>"
+    ));
     assert!(reads.contains("<a class=tab href=\"/reads\" aria-current=\"true\">精读</a>"));
     let sitemaps = anonymous("/sitemap.xml")
         .send()

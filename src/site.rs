@@ -22,6 +22,9 @@ use uuid::Uuid;
 
 /// Topics with their own server-rendered page instead of the news feed.
 const PAGE_TOPICS: [&str; 2] = ["reads", "llm"];
+/// Where the tabs of 调研, 分享, 时代 and 追踪 stand among the topics': after those whose sort
+/// weight is at most this, so an administrator moves a topic before or after them by its weight.
+pub(crate) const ARTICLES_WEIGHT: i32 = 42;
 
 /// What every public page loads, with the versions that refresh caches.
 const STYLES: &str = "/styles.css?v=worth";
@@ -709,8 +712,8 @@ fn refused(inside: &str) -> bool {
 }
 
 /// The topic tabs of every public page, the news page's included: 𝐀𝐋𝐋 and 𝐀𝐈, then the site's
-/// visible topics, each catalogue section as one tab, with 分享 and 调研 after 开源. `current`
-/// is the page's topic, "" on the news page's 𝐀𝐋𝐋.
+/// visible topics by sort weight, each catalogue section as one tab, with 调研 and 分享 at
+/// `ARTICLES_WEIGHT`. `current` is the page's topic, "" on the news page's 𝐀𝐋𝐋.
 pub(crate) fn tabs(topics: &[TopicMeta], current: &str, en: bool) -> String {
     let marked = |id: &str| {
         if current == id {
@@ -726,23 +729,23 @@ pub(crate) fn tabs(topics: &[TopicMeta], current: &str, en: bool) -> String {
         escape(&localized("/?topic=insight", en)),
         marked("insight")
     );
-    // 分享 and 调研 are not topics: readers write and ask for them. Their tabs follow 开源, and
-    // XABC's 时代 and 追踪 follow them.
-    let articles_tab = format!(
+    // 调研 and 分享 are not topics: readers ask for and write them. Their tabs stand at
+    // `ARTICLES_WEIGHT`, and XABC's 时代 and 追踪 follow them.
+    let mut articles_tab = Some(format!(
         "<a class=tab href=\"{}\"{}>{}</a><a class=tab href=\"{}\"{}>{}</a><a class=tab href=\"{}\"{}>{}</a><a class=tab href=\"{}\"{}>{}</a>",
-        localized("/articles", en),
-        marked("articles"),
-        crate::articles::label(en),
         localized(crate::articles::research::PATH, en),
         marked("research"),
         crate::articles::research::label(en),
+        localized("/articles", en),
+        marked("articles"),
+        crate::articles::label(en),
         localized(crate::articles::PEOPLE, en),
         marked("people"),
         crate::articles::people_label(en),
         localized(crate::articles::TRACKER, en),
         marked("tracker"),
         crate::articles::tracker_label(en)
-    );
+    ));
     // A catalogue section's topics share one tab; swiping back into it enters the last
     // (public.js).
     let mut sections = crate::catalog::Section::ALL.map(|section| {
@@ -754,6 +757,11 @@ pub(crate) fn tabs(topics: &[TopicMeta], current: &str, en: bool) -> String {
         (section, last)
     });
     for topic in topics.iter() {
+        if topic.sort_weight > ARTICLES_WEIGHT
+            && let Some(articles) = articles_tab.take()
+        {
+            tabs.push_str(&articles);
+        }
         let id = &topic.id;
         if let Some(section) = crate::catalog::Section::of(id) {
             if let Some(last) = sections
@@ -794,12 +802,9 @@ pub(crate) fn tabs(topics: &[TopicMeta], current: &str, en: bool) -> String {
             marked(id),
             escape(choose(en, &topic.name, &topic.name_en))
         );
-        if id == "github" {
-            tabs.push_str(&articles_tab);
-        }
     }
-    if !topics.iter().any(|topic| topic.id == "github") {
-        tabs.push_str(&articles_tab);
+    if let Some(articles) = articles_tab {
+        tabs.push_str(&articles);
     }
     tabs
 }
@@ -907,24 +912,26 @@ mod tests {
     use super::{TopicMeta, headline, markdown, parsed, preloads, tabs};
     use pulldown_cmark::{Options, Parser};
 
-    fn topic(id: &str, name: &str, name_en: &str) -> TopicMeta {
+    fn topic(id: &str, name: &str, name_en: &str, sort_weight: i32) -> TopicMeta {
         TopicMeta {
             id: id.into(),
             name: name.into(),
             name_en: name_en.into(),
             description: String::new(),
             visible: true,
+            sort_weight,
         }
     }
 
-    fn topics() -> [TopicMeta; 6] {
+    fn topics() -> [TopicMeta; 7] {
         [
-            topic("x", "要闻", "𝐗"),
-            topic("overseas-ai", "海外 AI", "𝑶"),
-            topic("github", "开源", "𝑮"),
-            topic("movie", "影视", "𝑴𝒐𝒗𝒊𝒆"),
-            topic("book", "图书", "𝑩𝒐𝒐𝒌"),
-            topic("reads", "精读", "𝑹𝒆𝒂𝒅𝒔"),
+            topic("x", "要闻", "𝐗", 0),
+            topic("overseas-ai", "海外 AI", "𝑶", 30),
+            topic("security", "安全", "𝑺𝒆𝒄𝒖𝒓𝒊𝒕𝒚", 42),
+            topic("github", "开源", "𝑮", 52),
+            topic("movie", "影视", "𝑴𝒐𝒗𝒊𝒆", 80),
+            topic("book", "图书", "𝑩𝒐𝒐𝒌", 80),
+            topic("reads", "精读", "𝑹𝒆𝒂𝒅𝒔", 82),
         ]
     }
 
@@ -937,11 +944,12 @@ mod tests {
                 "<a class=tab href=\"/?topic=insight\">𝐀𝐈</a>",
                 "<a class=tab href=\"/?topic=x\">要闻</a>",
                 "<a class=tab href=\"/?topic=overseas-ai\">海外 AI</a>",
-                "<a class=tab href=\"/?topic=github\">开源</a>",
-                "<a class=tab href=\"/articles\">分享</a>",
+                "<a class=tab href=\"/?topic=security\">安全</a>",
                 "<a class=tab href=\"/research\">调研</a>",
+                "<a class=tab href=\"/articles\">分享</a>",
                 "<a class=tab href=\"/people\">时代</a>",
                 "<a class=tab href=\"/tracker\">追踪</a>",
+                "<a class=tab href=\"/?topic=github\">开源</a>",
                 "<a class=tab href=\"/culture\" data-last=\"/culture/book\">文娱</a>",
                 "<a class=tab href=\"/reads\">精读</a>",
             )
@@ -976,29 +984,49 @@ mod tests {
 
     #[test]
     fn tabs_keep_their_places_without_their_neighbours() {
-        // Without 开源, 分享, 调研, 时代 and 追踪 come last; without 图书, swiping back into 文娱 enters
-        // 影视. Names are escaped in both languages.
+        // 调研, 分享, 时代 and 追踪 keep their weight whoever is shown: before every topic weighted
+        // more, last after topics weighted no more. Without 图书, swiping back into 文娱 enters 影视.
+        // Names are escaped in both languages.
+        let articles = concat!(
+            "<a class=tab href=\"/research\">调研</a>",
+            "<a class=tab href=\"/articles\">分享</a>",
+            "<a class=tab href=\"/people\">时代</a>",
+            "<a class=tab href=\"/tracker\">追踪</a>",
+        );
         let topics = [
-            topic("movie", "影视", "𝑴𝒐𝒗𝒊𝒆"),
-            topic("odd", "A&B \"</template>", "<b>"),
+            topic("movie", "影视", "𝑴𝒐𝒗𝒊𝒆", 80),
+            topic("odd", "A&B \"</template>", "<b>", 90),
         ];
         assert_eq!(
             tabs(&topics, "", false),
-            concat!(
+            [
                 "<a class=tab href=\"/\" aria-current=\"true\">𝐀𝐋𝐋</a>",
                 "<a class=tab href=\"/?topic=insight\">𝐀𝐈</a>",
+                articles,
                 "<a class=tab href=\"/culture\" data-last=\"/culture/movie\">文娱</a>",
                 "<a class=tab href=\"/?topic=odd\">A&amp;B &quot;&lt;/template&gt;</a>",
-                "<a class=tab href=\"/articles\">分享</a>",
-                "<a class=tab href=\"/research\">调研</a>",
-                "<a class=tab href=\"/people\">时代</a>",
-                "<a class=tab href=\"/tracker\">追踪</a>",
-            )
+            ]
+            .concat()
         );
         assert!(
             tabs(&topics, "", true)
                 .contains("<a class=tab href=\"/?topic=odd&amp;lang=en\">&lt;b&gt;</a>")
         );
+        let light = [
+            topic("x", "要闻", "𝐗", 0),
+            topic("security", "安全", "𝑺", 42),
+        ];
+        assert!(tabs(&light, "", false).ends_with(&format!("安全</a>{articles}")));
+        // A section's one tab goes where its first shown topic is, though another of its topics
+        // weighs more than the four.
+        let split = [
+            topic("movie", "影视", "𝑴𝒐𝒗𝒊𝒆", 18),
+            topic("x", "要闻", "𝐗", 30),
+            topic("book", "图书", "𝑩𝒐𝒐𝒌", 50),
+        ];
+        assert!(tabs(&split, "", false).ends_with(&format!(
+            "data-last=\"/culture/book\">文娱</a><a class=tab href=\"/?topic=x\">要闻</a>{articles}"
+        )));
     }
 
     #[test]

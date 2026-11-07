@@ -532,6 +532,8 @@ async fn status(
             "active_7d": active_7d,
             "registered": registered,
         });
+        // Where 调研, 分享, 时代 and 追踪 stand among the topics, which the list marks.
+        response["articles_weight"] = json!(crate::site::ARTICLES_WEIGHT);
     }
     Ok(Json(response))
 }

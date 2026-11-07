@@ -20,6 +20,9 @@
 .topic-select[aria-current="true"] strong { color: var(--primary-strong); }
 .topic-meta { display: block; margin-top: .3rem; font-size: .76rem; color: var(--muted); }
 .topic-actions { display: flex; gap: .35rem; flex-shrink: 0; }
+/* Where the tabs of 调研, 分享, 时代 and 追踪 stand among the topics: a mark, not a topic. */
+.topic-fixed .topic-select { cursor: default; }
+.topic-fixed strong { color: var(--muted); }
 .dot { display: inline-block; width: .45rem; height: .45rem; margin: 0 .5rem .1rem 0; border-radius: 50%; background: var(--muted); }
 .dot.ok { background: #2f9e6b; }
 .dot.failed { background: var(--danger); }

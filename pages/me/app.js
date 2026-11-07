@@ -235,6 +235,7 @@ async function refresh(s) {
     s.timezone = status.timezone;
     s.today = status.today;
     s.users = status.users || null;
+    s.articlesWeight = status.articles_weight;
     if (account) { s.user = account.user; s.usage = account.usage; s.account.update(); }
     if (!selected) {
       await selectTopic(s, topics[0]?.id);
@@ -391,7 +392,7 @@ function renderTopics(s) {
   newTopicButton.title = !s.admin && !canCreate ? "购买 Pro 后创建抓取任务" : "";
   updateEditorPlanState(s);
   message("topicsMessage", s.topics.length ? "" : "还没有主题，创建一个你关心的方向。");
-  $("#topicList").replaceChildren(...s.topics.map((topic) => {
+  const rows = s.topics.map((topic) => {
     const row = node("li", "topic-row");
     const select = node("button", "topic-select");
     select.type = "button";
@@ -406,7 +407,7 @@ function renderTopics(s) {
     const cadence = interval >= DAILY_INTERVAL ? `每天 ${startTime(topic)}` : `${interval} 分钟`;
     const detail = topic.plan_locked ? "当前套餐不包含 · 升级 Pro 后恢复" : !topic.enabled ? "已暂停" : running ? "正在抓取…"
       : `${cadence}${topic.next_run_at ? ` · 下次 ${formatTime(topic.next_run_at, s.timezone)}` : " · 等待排程"}${topic.last_status === "failed" ? " · 上次失败" : ""}`;
-    select.append(title, node("span", "topic-meta", `${detail}${topic.visible ? "" : " · 前台隐藏"}`));
+    select.append(title, node("span", "topic-meta", `${s.admin ? `权重 ${topic.sort_weight} · ` : ""}${detail}${topic.visible ? "" : " · 前台隐藏"}`));
     select.addEventListener("click", () => void selectTopic(s, topic.id));
     const actions = node("div", "topic-actions");
     const run = button(running ? "抓取中" : "抓取", () => runTopic(s, topic), "button-secondary");
@@ -416,7 +417,19 @@ function renderTopics(s) {
     actions.append(run, button("编辑", () => openEditor(topic)));
     row.append(select, actions);
     return row;
-  }));
+  });
+  // The public tabs of 调研, 分享, 时代 and 追踪 stand at a fixed weight: the topics weighted up to
+  // it come before them, so an administrator moves a topic by its weight.
+  if (s.admin && s.articlesWeight !== undefined) {
+    const fixed = node("li", "topic-row topic-fixed");
+    const label = node("div", "topic-select");
+    label.append(node("strong", "", "调研 · 分享 · 时代 · 追踪"),
+      node("span", "topic-meta", `权重 ${s.articlesWeight} · 位置固定，权重不大于 ${s.articlesWeight} 的栏目排在它们前面；文娱、数码这样合成一个标签的，跟着其中最靠前的公开栏目`));
+    fixed.append(label);
+    const at = s.topics.findIndex((topic) => topic.sort_weight > s.articlesWeight);
+    rows.splice(at < 0 ? rows.length : at, 0, fixed);
+  }
+  $("#topicList").replaceChildren(...rows);
 }
 
 async function selectTopic(s, id) {

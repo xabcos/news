@@ -53,6 +53,7 @@ pub struct TopicMeta {
     pub name_en: String,
     pub description: String,
     pub visible: bool,
+    pub sort_weight: i32,
 }
 
 #[derive(Default)]
@@ -299,7 +300,7 @@ impl DigestCache {
     pub async fn reload_topics(&self, state: &AppState) -> Result<()> {
         let _cache_guard = self.0.cache_write.lock().await;
         let topics = sqlx::query_as::<_, TopicMeta>(
-            "SELECT id, name, name_en, description, visible FROM topics WHERE enabled AND owner_user_id IS NULL ORDER BY sort_weight, created_at",
+            "SELECT id, name, name_en, description, visible, sort_weight FROM topics WHERE enabled AND owner_user_id IS NULL ORDER BY sort_weight, created_at",
         )
         .fetch_all(&state.pool)
         .await?;
