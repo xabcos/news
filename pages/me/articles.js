@@ -97,7 +97,8 @@ export function createArticles(session) {
 
   // The administrator reads each article in its preview, where the ❤️ and the copies for X
   // Articles are, edits anyone's, XABC's above all, and deletes what waits for a ❤️; a public
-  // one goes back to wait first. What waits shows only while something does.
+  // one goes back to wait first. What waits shows only while something does, with why: the AI
+  // held it or an administrator took it back.
   function renderReview({ pending, published }) {
     const lists = $("#reviewLists");
     lists.classList.remove("hidden");
@@ -126,7 +127,7 @@ export function createArticles(session) {
     recent.querySelector("h3").after(finder(finding));
     if (!published.length) recent.append(node("p", "muted small", finding ? "没有找到。" : "还没有公开的文章。"));
     lists.replaceChildren(
-      ...(pending.length ? [section(`待审（${pending.length}）`, pending, (article) => `更新于 ${formatTime(article.updated_at, session.timezone)}`, true)] : []),
+      ...(pending.length ? [section(`待审（${pending.length}）`, pending, (article) => [`更新于 ${formatTime(article.updated_at, session.timezone)}`, article.held].filter(Boolean).join(" · "), true)] : []),
       recent,
     );
   }

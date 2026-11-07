@@ -1,9 +1,11 @@
 //! 分享: articles readers write in the workspace. Authors write under a pen name. An article is
-//! public once an administrator gives it a ❤️, and an author's edit takes it back to review.
+//! public once the AI finds nothing to hold it for (`check`) or an administrator gives it a ❤️,
+//! and an author's edit takes it back to review.
 //! Pictures go to tmpfile as they were uploaded, which can't delete them, so their links go only
 //! to public pages, administrators' previews and text the author copies out of the editor; the
 //! author's own pages show them through this server. A read counts once a day per browser,
 //! never the author's own. XABC, the site's own pen name, publishes one every hour (`xabc`).
+mod check;
 mod pages;
 pub(crate) mod xabc;
 
@@ -24,7 +26,7 @@ use axum::{
     routing::{get, patch, post, put},
 };
 use chrono::{DateTime, NaiveDate, Utc};
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, Options, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{FromRow, PgPool};
@@ -35,6 +37,9 @@ use uuid::Uuid;
 const DAILY_ARTICLES: i16 = 10;
 /// Pictures an author may upload in a day.
 const DAILY_IMAGES: i16 = 64;
+/// AI reviews an author's articles get in a day; past them a submit waits for an administrator,
+/// so no one keeps the AI busy.
+const DAILY_REVIEWS: i16 = 30;
 /// Pictures one article may show, its cover included.
 const ARTICLE_IMAGES: usize = 128;
 /// The largest picture: nginx lets ten megabytes through (`client_max_body_size 10m`).
@@ -126,6 +131,8 @@ struct Listed {
     title: String,
     author: String,
     status: String,
+    /// Why it waits for an administrator, when it does.
+    held: Option<String>,
     revision: i32,
     views: i64,
     updated_at: DateTime<Utc>,
@@ -140,7 +147,7 @@ struct Listed {
     product: bool,
 }
 
-const LISTED: &str = "SELECT a.id, a.title, w.name AS author, a.status, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person, a.event IS NOT NULL AS event, a.product IS NOT NULL AS product
+const LISTED: &str = "SELECT a.id, a.title, w.name AS author, a.status, a.held, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person, a.event IS NOT NULL AS event, a.product IS NOT NULL AS product
     FROM articles a JOIN authors w ON w.user_id = a.author_id JOIN users u ON u.id = a.author_id";
 
 /// A search of 分享 or one of XABC's lists: its words, as the page shows them, and the patterns each of
@@ -264,13 +271,17 @@ async fn mine(State(state): State<AppState>, user: User) -> Result<Json<Value>> 
         .bind(user.id)
         .fetch_optional(&state.pool)
         .await?;
-    let articles: Vec<Listed> = sqlx::QueryBuilder::new(LISTED)
+    let mut articles: Vec<Listed> = sqlx::QueryBuilder::new(LISTED)
         .push(" WHERE a.author_id = ")
         .push_bind(user.id)
         .push(" ORDER BY a.updated_at DESC, a.id DESC")
         .build_query_as()
         .fetch_all(&state.pool)
         .await?;
+    // An author isn't told why an article waits: it would help word around the review.
+    for article in &mut articles {
+        article.held = None;
+    }
     Ok(Json(json!({
         "author": name.map(|name| json!({ "id": user.id, "name": name })),
         "admin": user.is_admin(),
@@ -354,7 +365,8 @@ async fn edit(
 }
 
 /// Saves the revision the editor holds. An author's edit takes a pending article back to being
-/// a draft and a public one back to review; an administrator's leaves its status as it was.
+/// a draft and a public one back to review, which the AI gives at once; an administrator's leaves
+/// its status as it was.
 async fn save(
     State(state): State<AppState>,
     user: User,
@@ -387,16 +399,20 @@ async fn save(
         }
         _ => error.into(),
     })?;
-    let (status, revision, updated_at) = match saved {
+    let (mut status, revision, updated_at) = match saved {
         Some(saved) => saved,
         None => return Err(stale(&state, &user, id).await),
     };
+    if status == "pending" && !user.is_admin() {
+        status = check::settled(&state, id, revision).await?.0;
+    }
     Ok(Json(
         json!({ "status": status, "revision": revision, "updated_at": updated_at }),
     ))
 }
 
-/// Sends a draft to review; an administrator's own goes straight out.
+/// Sends a draft to review, which the AI gives at once; an administrator's own goes straight
+/// out.
 async fn submit(
     State(state): State<AppState>,
     user: User,
@@ -427,8 +443,11 @@ async fn submit(
     .bind(status)
     .fetch_optional(&state.pool)
     .await?;
-    let (status, revision, published_at) =
+    let (mut status, revision, mut published_at) =
         submitted.ok_or_else(|| AppError::Conflict("文章已修改或已提交，请刷新后再试".into()))?;
+    if status == "pending" {
+        (status, published_at) = check::settled(&state, article.id, revision).await?;
+    }
     Ok(Json(
         json!({ "status": status, "revision": revision, "published_at": published_at }),
     ))
@@ -699,8 +718,9 @@ async fn queue(
     Ok(Json(json!({ "pending": pending, "published": published })))
 }
 
-/// An administrator's ❤️ publishes the revision they read; taking it back returns the article
-/// to review.
+/// An administrator's ❤️ publishes the revision they read and outdates any refusal the AI is
+/// still giving; taking it back returns the article to review and holds it there, so the AI
+/// doesn't pass it again whatever its author changes.
 async fn review(
     State(state): State<AppState>,
     user: User,
@@ -709,10 +729,11 @@ async fn review(
 ) -> Result<Json<Value>> {
     auth::require_admin(&user)?;
     let sql = if request.published {
-        "UPDATE articles SET status = 'published', published_at = COALESCE(published_at, now())
+        "UPDATE articles SET status = 'published', published_at = COALESCE(published_at, now()),
+             held = NULL, approvals = approvals + 1
          WHERE id = $1 AND revision = $2 AND status = 'pending' RETURNING status, revision"
     } else {
-        "UPDATE articles SET status = 'pending'
+        "UPDATE articles SET status = 'pending', held = '管理员下线'
          WHERE id = $1 AND revision = $2 AND status = 'published' RETURNING status, revision"
     };
     let (status, revision): (String, i32) = sqlx::query_as(sql)
@@ -754,10 +775,11 @@ async fn research(user: User, ApiJson(request): ApiJson<Research>) -> Result<Jso
 enum Quota {
     Articles,
     Images,
+    Reviews,
 }
 
-/// Counts one more article or picture for today, or refuses once the day's allowance is used,
-/// and returns the day it was counted on. The day only moves forward: a request that read the
+/// Counts one more article, picture or AI review for today, or refuses once the day's allowance
+/// is used, and returns the day it was counted on. The day only moves forward: a request that read the
 /// date just before midnight counts toward the new day instead of starting the old one again.
 async fn take<'c>(
     executor: impl sqlx::PgExecutor<'c>,
@@ -768,17 +790,27 @@ async fn take<'c>(
     let (sql, limit, refusal) = match quota {
         Quota::Articles => (
             "UPDATE authors SET articles = CASE WHEN day >= $2 THEN articles + 1 ELSE 1 END,
-                 images = CASE WHEN day >= $2 THEN images ELSE 0 END, day = GREATEST(day, $2)
+                 images = CASE WHEN day >= $2 THEN images ELSE 0 END,
+                 reviews = CASE WHEN day >= $2 THEN reviews ELSE 0 END, day = GREATEST(day, $2)
              WHERE user_id = $1 AND (day IS NULL OR day < $2 OR articles < $3) RETURNING day",
             DAILY_ARTICLES,
             format!("每天最多新建 {DAILY_ARTICLES} 篇文章，明天再来吧"),
         ),
         Quota::Images => (
             "UPDATE authors SET images = CASE WHEN day >= $2 THEN images + 1 ELSE 1 END,
-                 articles = CASE WHEN day >= $2 THEN articles ELSE 0 END, day = GREATEST(day, $2)
+                 articles = CASE WHEN day >= $2 THEN articles ELSE 0 END,
+                 reviews = CASE WHEN day >= $2 THEN reviews ELSE 0 END, day = GREATEST(day, $2)
              WHERE user_id = $1 AND (day IS NULL OR day < $2 OR images < $3) RETURNING day",
             DAILY_IMAGES,
             format!("每天最多上传 {DAILY_IMAGES} 张图片，明天再来吧"),
+        ),
+        Quota::Reviews => (
+            "UPDATE authors SET reviews = CASE WHEN day >= $2 THEN reviews + 1 ELSE 1 END,
+                 articles = CASE WHEN day >= $2 THEN articles ELSE 0 END,
+                 images = CASE WHEN day >= $2 THEN images ELSE 0 END, day = GREATEST(day, $2)
+             WHERE user_id = $1 AND (day IS NULL OR day < $2 OR reviews < $3) RETURNING day",
+            DAILY_REVIEWS,
+            format!("每天最多由 AI 审核 {DAILY_REVIEWS} 次"),
         ),
     };
     sqlx::query_scalar(sql)
@@ -872,11 +904,7 @@ fn checked(title: &str, body: &str, cover: Option<Uuid>) -> Result<Checked> {
             format!("正文最多 {BODY_CHARS} 个字").into(),
         ));
     }
-    let mut shown = pictures(body);
-    if let Some(cover) = cover.filter(|cover| !shown.contains(cover)) {
-        shown.push(cover);
-    }
-    if shown.len() > ARTICLE_IMAGES {
+    if pictures(body, cover).len() > ARTICLE_IMAGES {
         return Err(AppError::BadRequest(
             format!("每篇最多 {ARTICLE_IMAGES} 张图，封面也算一张").into(),
         ));
@@ -889,10 +917,11 @@ fn checked(title: &str, body: &str, cover: Option<Uuid>) -> Result<Checked> {
     })
 }
 
-/// The pictures the body shows, each once, in order.
-fn pictures(body: &str) -> Vec<Uuid> {
-    let mut shown = Vec::new();
-    for event in Parser::new_ext(body, MARKDOWN) {
+/// The pictures readers see, each once: the cover, then the body's in order, found as the page
+/// finds them (`site::parsed`).
+fn pictures(body: &str, cover: Option<Uuid>) -> Vec<Uuid> {
+    let mut shown: Vec<Uuid> = cover.into_iter().collect();
+    for event in crate::site::parsed(body, MARKDOWN) {
         if let Event::Start(Tag::Image { dest_url, .. }) = event
             && let Some(id) = image_id(&dest_url)
             && !shown.contains(&id)

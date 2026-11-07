@@ -62,7 +62,7 @@ async function start() {
 function update(note = "") {
   const status = article?.status || "draft";
   const button = $("#publishButton");
-  button.textContent = busy ? "处理中…"
+  button.textContent = busy ? (admin ? "处理中…" : "AI 审核中…")
     : status === "published" ? "更新" : status === "pending" ? "审核中" : admin ? "发布" : "提交审核";
   button.disabled = !ready || busy || Boolean(stopped) || (status !== "draft" && !dirty);
   $("#previewButton").disabled = !ready || busy;
@@ -70,8 +70,8 @@ function update(note = "") {
   $("#saveState").textContent = note || stopped || (dirty
     ? (status === "published" ? "有未更新的修改" : "未保存")
     : article ? `${statusText[status]} · 已保存` : "");
-  const notice = status === "pending" ? "审核中。修改会撤回提交，改完需要重新提交。"
-    : status === "published" && !admin ? "已公开。点「更新」后要重新审核，审核通过前文章暂不公开。" : "";
+  const notice = status === "pending" ? "等待管理员审核。修改会撤回提交，改完需要重新提交。"
+    : status === "published" && !admin ? "已公开。点「更新」后由 AI 重新审核，通过即公开。" : "";
   $("#notice").textContent = notice;
   $("#notice").classList.toggle("hidden", !notice);
 }
@@ -172,7 +172,7 @@ async function publish() {
   if (article?.status === "published") {
     if (!admin && !window.confirm("更新后要重新审核，审核通过前文章暂不公开。确定更新吗？")) return;
     await flush();
-    toast(article.status === "published" ? "已更新" : "已提交审核，通过后重新公开");
+    toast(article.status === "published" ? "已更新" : "已提交，等待管理员审核");
     return;
   }
   if (!title.value.trim()) {
@@ -192,7 +192,7 @@ async function publish() {
   } catch (error) {
     throw guard(error);
   }
-  toast(article.status === "published" ? "已发布" : "已提交，审核通过后公开");
+  toast(article.status === "published" ? "已发布" : "已提交，等待管理员审核");
 }
 
 // The preview opens at once, so the browser allows it, and loads once the latest is saved.

@@ -78,11 +78,25 @@ fn an_article_shows_at_most_its_allowance_of_pictures_with_the_cover_counted_onc
     };
     let all = ARTICLE_IMAGES;
     let shown = checked("Title", &body(all), Some(ids[0])).unwrap();
-    assert_eq!(pictures(&shown.body).len(), all);
+    assert_eq!(pictures(&shown.body, shown.cover).len(), all);
     assert!(checked("Title", &body(all), Some(ids[all])).is_err());
     assert!(checked("Title", &body(all - 1), Some(ids[all])).is_ok());
     // Addresses that aren't the article's own pictures don't count.
-    assert!(pictures("![](https://example.com/a.png) ![](image:nope)").is_empty());
+    assert!(pictures("![](https://example.com/a.png) ![](image:nope)", None).is_empty());
+    // They are found as the page finds them, where a formula's backtick hides no picture, and the
+    // cover comes first.
+    let (cover, inside) = (ids[1], ids[2]);
+    assert_eq!(
+        pictures(&format!("\\(x`\\) ![照片](image:{inside}) `"), Some(cover)),
+        [cover, inside]
+    );
+    assert_eq!(
+        pictures(
+            &format!("![a](image:{inside}) ![b](image:{cover})"),
+            Some(cover)
+        ),
+        [cover, inside]
+    );
     assert_eq!(checked("  标题  ", "", None).unwrap().title, "标题");
     assert!(checked(&"题".repeat(TITLE_CHARS + 1), "", None).is_err());
     assert!(checked("", &"字".repeat(BODY_CHARS + 1), None).is_err());
@@ -123,7 +137,7 @@ fn an_article_renders_only_its_own_pictures_and_no_markup() {
     let own = Uuid::from_u128(1);
     let foreign = Uuid::from_u128(2);
     let html = crate::site::markdown(
-        Parser::new_ext(
+        crate::site::parsed(
             &format!(
                 "![猫](image:{own}) ![狗](image:{foreign}) ![外链](https://tracker.example/p.png)\n\n<script>alert(1)</script> [bad](javascript:alert%281%29)"
             ),
@@ -321,12 +335,52 @@ async fn account(state: &AppState, role: &str) -> (i64, String) {
 #[ignore = "requires NEWS_ARTICLES_TEST_DATABASE_URL and local test configuration"]
 async fn postgres_articles_are_written_reviewed_published_and_counted() {
     use crate::config::Config;
+    use std::sync::Mutex;
     let database_url =
         std::env::var("NEWS_ARTICLES_TEST_DATABASE_URL").expect("disposable database URL");
+    // The AI reviews each submit as `verdict` says and keeps every request it is sent. While
+    // `gated`, it says it has one and answers only once `released`. Its first verdict passes but
+    // gives a reason, which contradicts itself.
+    let verdict = Arc::new(Mutex::new(json!({ "pass": true, "reason": "测试拦下" })));
+    let reviews: Arc<Mutex<Vec<Value>>> = Arc::default();
+    let gated = Arc::new(AtomicBool::new(false));
+    let (arrived, released) = (
+        Arc::new(tokio::sync::Notify::new()),
+        Arc::new(tokio::sync::Notify::new()),
+    );
+    let ai = Router::new().route(
+        "/v1/responses",
+        post({
+            let (verdict, reviews) = (verdict.clone(), reviews.clone());
+            let (gated, arrived, released) = (gated.clone(), arrived.clone(), released.clone());
+            move |Json(request): Json<Value>| {
+                reviews.lock().unwrap().push(request);
+                let text = verdict.lock().unwrap().to_string();
+                let gate = gated
+                    .load(Ordering::SeqCst)
+                    .then(|| (arrived.clone(), released.clone()));
+                async move {
+                    if let Some((arrived, released)) = gate {
+                        arrived.notify_one();
+                        released.notified().await;
+                    }
+                    Json(
+                        json!({ "status": "completed", "output": [{ "type": "message",
+                        "content": [{ "type": "output_text", "text": text }] }] }),
+                    )
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ai_base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, ai).await.unwrap() });
     let mut config = Config::from_env().unwrap();
     config.database_url = database_url;
     config.redis_addr = None;
     config.scheduler_enabled = false;
+    config.ai_base_url = ai_base.parse().unwrap();
+    config.ai_api_key = "fixture".into();
     let picture = jpeg(400, 300);
     assert!(picture.len() > 64 * 1024);
     let (media, client, refuse) = tmpfile(picture.clone()).await;
@@ -641,6 +695,16 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
         status(anonymous(&format!("/articles/{id}")).send().await.unwrap()),
         404
     );
+    // The AI was shown the title, the body and the one picture, the cover too, and held it.
+    let shown = reviews.lock().unwrap()[0]["input"][0]["content"].clone();
+    assert!(
+        shown[0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("标题：第一篇\n\nHello **world**")
+    );
+    assert_eq!(shown[1]["image_url"], url.as_str());
+    assert_eq!(shown.as_array().unwrap().len(), 2);
     let review = get(&format!("/api/admin/preview/articles/{id}"), &admin)
         .send()
         .await
@@ -676,6 +740,24 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
         .unwrap();
     assert_eq!(queue["pending"][0]["id"], id.as_str());
     assert_eq!(queue["pending"][0]["author"], "小明");
+    assert_eq!(queue["pending"][0]["held"], "AI：测试拦下");
+    let mine: Value = get("/api/articles", &author)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let listed = mine["articles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|article| article["id"] == id.as_str())
+        .unwrap();
+    assert_eq!(
+        (listed["status"].as_str(), &listed["held"]),
+        (Some("pending"), &Value::Null)
+    );
     assert_eq!(status(heart(&admin, true, 2).send().await.unwrap()), 200);
     // The workspace finds it again by the day it went out, by words of its title, or by both.
     let today = Utc::now()
@@ -909,6 +991,156 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
         reviewed.contains("data-article-copy=title") && reviewed.contains("data-article-copy=body")
     );
     assert!(reviewed.contains("第一篇（再改）"));
+
+    // Taken back, it stays with the administrators: its author's changes aren't sent to the AI
+    // until a ❤️. After one the AI reviews the author's edits again, and passed, one is public
+    // at once.
+    assert_eq!(status(heart(&admin, false, 5).send().await.unwrap()), 200);
+    let queue: Value = get("/api/admin/articles", &admin)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(queue["pending"][0]["held"], "管理员下线");
+    let asked = reviews.lock().unwrap().len();
+    let saved: Value = save(&author, 5, &body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        (saved["status"].as_str(), saved["revision"].as_i64()),
+        (Some("draft"), Some(6))
+    );
+    let submitted: Value = submit(6).send().await.unwrap().json().await.unwrap();
+    assert_eq!(submitted["status"], "pending");
+    assert_eq!(reviews.lock().unwrap().len(), asked);
+    assert_eq!(status(heart(&admin, true, 6).send().await.unwrap()), 200);
+    // A picture tmpfile no longer keeps isn't shown to the AI, as readers don't see it either.
+    let expire = |days: i32| {
+        sqlx::query(
+            "UPDATE article_images SET expires_at = now() + make_interval(days => $2)
+             WHERE article_id = $1::uuid",
+        )
+        .bind(&id)
+        .bind(days)
+        .execute(&state.pool)
+    };
+    expire(-1).await.unwrap();
+    *verdict.lock().unwrap() = json!({ "pass": true, "reason": "" });
+    let saved: Value = save(&author, 6, &body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        (saved["status"].as_str(), saved["revision"].as_i64()),
+        (Some("published"), Some(7))
+    );
+    let shown = reviews.lock().unwrap()[asked]["input"][0]["content"].clone();
+    assert_eq!(shown.as_array().unwrap().len(), 1);
+    expire(30).await.unwrap();
+    assert_eq!(
+        status(anonymous(&format!("/articles/{id}")).send().await.unwrap()),
+        200
+    );
+    // An administrator's ❤️ while the AI reviews is what the author is told, and the AI's later
+    // refusal holds nothing public.
+    *verdict.lock().unwrap() = json!({ "pass": false, "reason": "测试拦下" });
+    gated.store(true, Ordering::SeqCst);
+    let update = tokio::spawn(save(&author, 7, &body).send());
+    arrived.notified().await;
+    assert_eq!(status(heart(&admin, true, 8).send().await.unwrap()), 200);
+    released.notify_one();
+    let saved: Value = update.await.unwrap().unwrap().json().await.unwrap();
+    assert_eq!(
+        (saved["status"].as_str(), saved["revision"].as_i64()),
+        (Some("published"), Some(8))
+    );
+    let standing = || async {
+        sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT status, held FROM articles WHERE id = $1::uuid",
+        )
+        .bind(&id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap()
+    };
+    // Nor does a refusal from before a ❤️ hold the revision its author saved since, though that
+    // waits, as a save leaves it, for its own review to start; the overtaken update hears of the
+    // conflict.
+    let overtaken = tokio::spawn(save(&author, 8, &body).send());
+    arrived.notified().await;
+    assert_eq!(status(heart(&admin, true, 9).send().await.unwrap()), 200);
+    sqlx::query("UPDATE articles SET status = 'pending', revision = 10 WHERE id = $1::uuid")
+        .bind(&id)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    released.notify_one();
+    assert_eq!(status(overtaken.await.unwrap().unwrap()), 409);
+    assert_eq!(standing().await, ("pending".to_owned(), None));
+    assert_eq!(status(heart(&admin, true, 10).send().await.unwrap()), 200);
+    // A refusal holds what its author saved and submitted again while it was being given, so
+    // the later review's pass publishes nothing.
+    *verdict.lock().unwrap() = json!({ "pass": false, "reason": "测试拦下" });
+    let refused = tokio::spawn(save(&author, 10, &body).send());
+    arrived.notified().await;
+    let saved: Value = save(&author, 11, &body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(saved["status"], "draft");
+    *verdict.lock().unwrap() = json!({ "pass": true, "reason": "" });
+    let resubmitted = tokio::spawn(submit(12).send());
+    arrived.notified().await;
+    released.notify_one();
+    assert_eq!(status(refused.await.unwrap().unwrap()), 409);
+    released.notify_one();
+    let submitted: Value = resubmitted.await.unwrap().unwrap().json().await.unwrap();
+    assert_eq!(submitted["status"], "pending");
+    assert_eq!(
+        standing().await,
+        ("pending".to_owned(), Some("AI：测试拦下".to_owned()))
+    );
+    gated.store(false, Ordering::SeqCst);
+    assert_eq!(status(heart(&admin, true, 12).send().await.unwrap()), 200);
+    // Once its author's reviews for the day are used up, an update waits for an administrator
+    // without asking the AI.
+    sqlx::query("UPDATE authors SET reviews = $2 WHERE user_id = $1")
+        .bind(writer)
+        .bind(DAILY_REVIEWS)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    let asked = reviews.lock().unwrap().len();
+    let saved: Value = save(&author, 12, &body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(saved["status"], "pending");
+    assert_eq!(reviews.lock().unwrap().len(), asked);
+    let queue: Value = get("/api/admin/articles", &admin)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(queue["pending"][0]["held"], "作者今天的 AI 审核次数已用完");
+    assert_eq!(status(heart(&admin, true, 13).send().await.unwrap()), 200);
 
     // A disabled account's articles leave every public page.
     sqlx::query("UPDATE users SET status = false WHERE id = $1")
@@ -2264,7 +2496,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     .fetch_one(&state.pool)
     .await
     .unwrap();
-    let comic = crate::articles::pictures(&shown)[1];
+    let comic = crate::articles::pictures(&shown, None)[1];
     let drawn_before = drawings_log.lock().unwrap().len();
     assert_eq!(
         xabc::write(&state, xabc::Line::People, hot).await.unwrap(),
@@ -2277,7 +2509,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     );
     let (_, _, body, after, _) = profiled(other).await.unwrap();
     assert!(before.is_some() && after.is_some() && after != before);
-    assert_eq!(crate::articles::pictures(&body), [talk, comic]);
+    assert_eq!(crate::articles::pictures(&body, None), [talk, comic]);
 
     let searched = || {
         asked_log
@@ -2918,7 +3150,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     copied("share", Some(post)).await;
     assert!(matches!(
         xabc::write(&state, xabc::Line::Review, Utc::now()).await,
-        Err(AppError::Internal(message)) if message == "数码最近没有待评测的产品"
+        Ok(None)
     ));
     // A review AI 硬件 collected makes two. Only AI 硬件's stories are recent now, and the guide
     // is still found in 数码's entry.
@@ -2969,7 +3201,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     // Reviewed once, it waits for more news.
     assert!(matches!(
         xabc::write(&state, xabc::Line::Review, Utc::now()).await,
-        Err(AppError::Internal(message)) if message == "数码最近没有待评测的产品"
+        Ok(None)
     ));
     // Days later, four new reviews and posts are not enough and the fifth brings it up to date,
     // its photograph kept; what came before the last update doesn't count.
@@ -2989,7 +3221,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     }
     assert!(matches!(
         xabc::write(&state, xabc::Line::Review, Utc::now()).await,
-        Err(AppError::Internal(message)) if message == "数码最近没有待评测的产品"
+        Ok(None)
     ));
     gadget("review").await;
     assert_eq!(

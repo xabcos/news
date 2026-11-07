@@ -349,7 +349,7 @@ pub(super) async fn write(
         Line::Film => film::write(state, author, since).await,
         Line::People => people::write(state, author, since).await.map(Some),
         Line::Tracker => tracker::write(state, author, since).await,
-        Line::Review => review::write(state, author, since).await.map(Some),
+        Line::Review => review::write(state, author, since).await,
     }
 }
 
@@ -1457,7 +1457,7 @@ pub(super) async fn publish(
         .cover
         .as_ref()
         .map(|cover| cover.id)
-        .or_else(|| super::pictures(&article.body).first().copied());
+        .or_else(|| super::pictures(&article.body, None).first().copied());
     let content = checked(&article.title, &article.body, cover)?;
     let mut tx = state.pool.begin().await?;
     sqlx::query("SELECT 1 FROM authors WHERE user_id = $1 FOR UPDATE")

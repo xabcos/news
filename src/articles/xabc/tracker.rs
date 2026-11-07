@@ -108,7 +108,7 @@ pub(super) async fn write(
         found.usage += drafted.usage;
         found.known.extend(drafted.cited);
         let mut article = finish(state, drafted.article, found.known, &[], false).await?;
-        if crate::articles::pictures(&article.body).is_empty() {
+        if crate::articles::pictures(&article.body, None).is_empty() {
             article.cover = cover_from(state, &finds).await;
         }
         let id = publish(state, author, since, Some(Subject::Event(&event)), &article).await?;
@@ -149,7 +149,7 @@ pub(super) async fn write(
     let mut article = finish(state, drafted.article, found.known, &kept, false).await?;
     // The cover is the picture the article opens with now, or else the one it had, or else one
     // the finds' pages give.
-    let mut cover = crate::articles::pictures(&article.body)
+    let mut cover = crate::articles::pictures(&article.body, None)
         .first()
         .copied()
         .or(due.cover);

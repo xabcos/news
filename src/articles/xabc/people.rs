@@ -246,7 +246,11 @@ async fn profile(
         .cover
         .as_ref()
         .map(|cover| cover.id)
-        .or_else(|| crate::articles::pictures(&article.body).first().copied())
+        .or_else(|| {
+            crate::articles::pictures(&article.body, None)
+                .first()
+                .copied()
+        })
         .or(due.cover);
     revise(state, due.id, due.revision, cover, &article).await?;
     log(

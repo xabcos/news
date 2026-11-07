@@ -97,11 +97,16 @@ struct Due {
     updated_at: DateTime<Utc>,
 }
 
-/// Reviews the product 数码 discusses most, or brings its review up to date.
-pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -> Result<Uuid> {
-    let next = next(state, author)
-        .await?
-        .ok_or_else(|| AppError::Internal("数码最近没有待评测的产品".into()))?;
+/// Reviews the product 数码 discusses most, or brings its review up to date; none while 数码
+/// has nothing new to review.
+pub(super) async fn write(
+    state: &AppState,
+    author: i64,
+    since: DateTime<Utc>,
+) -> Result<Option<Uuid>> {
+    let Some(next) = next(state, author).await? else {
+        return Ok(None);
+    };
     let product: Product = sqlx::query_as(
         "SELECT key, name, name_en, creator, guide, images FROM catalog_entries
          WHERE key = $1 AND topic_id = ANY($2)
@@ -121,7 +126,7 @@ pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -
         .fetch_optional(&state.pool)
         .await?
         .ok_or_else(|| AppError::Conflict("评测刚被改过".into()))?;
-        return revised(state, &product, due).await;
+        return revised(state, &product, due).await.map(Some);
     }
     let (stories, linked_stories) = stories(state, &product, None).await?;
     let mut found = look(
@@ -173,7 +178,7 @@ pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -
         &article,
         found.usage,
     );
-    Ok(id)
+    Ok(Some(id))
 }
 
 /// 数码's topics, which 评测 reviews the products of.
@@ -302,7 +307,7 @@ async fn official(state: &AppState, product: &Product) -> (Vec<String>, Vec<Pict
 /// Keeps the official photographs the review shows; when it shows no picture at all, the first
 /// stands for it on the lists.
 fn placed(article: &mut Finished, official: Vec<Picture>) {
-    let shown = crate::articles::pictures(&article.body);
+    let shown = crate::articles::pictures(&article.body, None);
     let (placed, unplaced): (Vec<Picture>, Vec<Picture>) = official
         .into_iter()
         .partition(|picture| shown.contains(&picture.id));
@@ -341,7 +346,7 @@ async fn revised(state: &AppState, product: &Product, due: Due) -> Result<Uuid> 
     found.usage += drafted.usage;
     found.known.extend(drafted.cited);
     let article = finish(state, drafted.article, found.known, &kept, false).await?;
-    let cover = crate::articles::pictures(&article.body)
+    let cover = crate::articles::pictures(&article.body, None)
         .first()
         .copied()
         .or(due.cover);
