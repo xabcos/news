@@ -145,16 +145,11 @@ fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
 .pen-name-form { margin-bottom: 1rem; }
 .pen-name-form .inline { flex-wrap: nowrap; }
 .pen-name-form input { max-width: 18rem; }
-/* What XABC writes next: one box, the line picked above it. */
+/* Whom 时代 writes about next. */
 .ask-form { display: grid; gap: .45rem; margin-bottom: 1.25rem; padding-bottom: 1.25rem; border-bottom: 1px solid var(--line); }
-.ask-head { display: flex; align-items: center; gap: .75rem; }
-.ask-title { font-size: .85rem; font-weight: 650; }
-.ask-lines { display: inline-flex; padding: .15rem; border-radius: 999px; background: var(--surface-soft); }
-.ask-lines label { position: relative; margin: 0; padding: .15rem .75rem; border-radius: 999px; color: var(--muted); font-size: .8rem; cursor: pointer; }
-.ask-lines input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; opacity: 0; pointer-events: none; }
-.ask-lines label:has(input:checked) { background: var(--surface-solid); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / .08); }
-.ask-lines label:has(input:focus-visible) { outline: 2px solid var(--primary); outline-offset: 1px; }
-.ask-row { display: flex; align-items: flex-end; gap: .5rem; }
+.ask-title { margin: 0; font-size: .85rem; font-weight: 650; }
+.ask-row { display: flex; align-items: center; gap: .5rem; }
+.ask-row input { max-width: 24rem; }
 .review-lists { display: grid; gap: 1.25rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line); }
 .review-list h3 { margin: 0 0 .4rem; font-size: .9rem; }
 .review-find { margin: 0 0 .5rem; }
@@ -192,3 +187,16 @@ fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
   .writer-title { font-size: 1.45rem; }
 }
 a.button { text-decoration: none; }
+
+/* 调研: questions in the queue and the articles written for them, with who asked and what isn't public. */
+.research-panel { min-width: 0; padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; }
+.research-panel .item-row:first-child { border-top: 0; }
+.research-panel .research-asked { margin: 0; color: var(--text); font-size: 1rem; font-weight: 650; overflow-wrap: anywhere; }
+.research-asked::before { content: "问 "; color: var(--primary-strong); }
+.research-panel .badge { margin-right: .35rem; padding: 0 .4rem; font-size: .62rem; vertical-align: .05em; }
+.badge-pro { color: var(--primary-strong); background: var(--primary-soft); }
+.badge-free { color: var(--muted); background: var(--surface-soft); }
+.badge-private { color: var(--surface-solid); background: var(--muted); }
+.badge-held { color: #9a5b00; background: rgb(240 160 30 / .14); }
+.public-switch { display: inline-flex; align-items: center; gap: .3rem; margin-right: .3rem; color: var(--muted); font-size: .8rem; white-space: nowrap; }
+.public-switch input { width: auto; margin: 0; accent-color: var(--primary); }

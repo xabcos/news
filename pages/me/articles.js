@@ -1,11 +1,13 @@
 import { $, node, withBusy, toast, reportError, confirmDelete, formatTime } from "./ui.js";
 
 const statusText = { draft: "草稿", pending: "待审", published: "已公开" };
-// Which article it is: a reader's 分享 or one of XABC's lines.
-const kind = (article) => article.film ? "解说" : article.person ? "时代" : article.event ? "追踪" : article.product ? "评测" : "分享";
+// Which article it is: a reader's 分享 or 调研, or one of XABC's lines.
+const kind = (article) => article.film ? "解说" : article.person ? "时代" : article.event ? "追踪" : article.product ? "评测"
+  : article.research ? "调研" : "分享";
 
 // 分享 in the workspace: the pen name, the reader's own articles and, for an administrator,
-// what XABC writes next and the articles to review. Requests share the session's abort signal.
+// whom 时代 writes about next and the articles to review. Requests share the session's abort
+// signal.
 export function createArticles(session) {
   const signal = session.controller.signal;
   let author = null;
@@ -20,28 +22,19 @@ export function createArticles(session) {
     editName();
     toast("写文章前先设置笔名");
   }, { signal });
-  // What an administrator asks XABC to write joins the picked line's list, written before its
-  // own articles: something 分享 looks into, or a person or a company 时代 writes about.
-  const lines = {
-    share: { path: "/api/admin/research", key: "brief", hint: "想了解什么，XABC 全网调研后写成文章，比如：某个新模型怎么调用，以官方文档为准", told: () => "已排进分享" },
-    people: { path: "/api/admin/people", key: "name", hint: "人物或企业的名字", told: (name) => `「${name}」已排进时代` },
-  };
+  // A person or a company an administrator names joins 时代's list, written before its own
+  // rounds.
   const ask = $("#askForm");
   const text = $("#askText");
-  const line = () => lines[ask.elements.line.value];
-  const hint = () => { text.placeholder = line().hint; };
-  hint();
   ask.classList.toggle("hidden", !session.admin);
-  ask.addEventListener("change", hint, { signal });
   ask.addEventListener("submit", (event) => {
     event.preventDefault();
-    const { path, key, told } = line();
     void withBusy($("#askForm button"), "提交中…", async () => {
-      const value = text.value.trim();
-      const { ahead } = await session.request(path, { method: "POST", body: { [key]: value } });
-      // Whatever was typed meanwhile, for either line, stays.
-      if (text.value.trim() === value) text.value = "";
-      toast(`${told(value)}，${ahead ? `前面还有 ${ahead} 个` : "下一篇就写它"}`);
+      const name = text.value.trim();
+      const { ahead } = await session.request("/api/admin/people", { method: "POST", body: { name } });
+      // Whatever was typed meanwhile stays.
+      if (text.value.trim() === name) text.value = "";
+      toast(`「${name}」已排进时代，${ahead ? `前面还有 ${ahead} 个` : "下一篇就写它"}`);
     });
   }, { signal });
   $("#penNameForm").addEventListener("submit", (event) => {
@@ -134,9 +127,10 @@ export function createArticles(session) {
 
   // Deleting can't be undone. An article of XABC's lines waits for a ❤️ only once it was taken
   // back, which keeps its line off the subject; deleted, the line may take the subject up again.
+  // Readers' 分享 and 调研 have no such lines.
   function removal(article) {
     const line = kind(article);
-    const again = line === "分享" ? "" : `留在待审，${line}就不会再写这个选题；删除后可能再写。`;
+    const again = ["分享", "调研"].includes(line) ? "" : `留在待审，${line}就不会再写这个选题；删除后可能再写。`;
     const remove = node("button", "button button-quiet button-small danger-text", "删除");
     remove.type = "button";
     remove.addEventListener("click", () => confirmDelete("删除文章", `确定删除「${article.title || "无标题"}」吗？删除后不能恢复。${again}`, async () => {

@@ -1524,14 +1524,28 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                                 )),
                             );
                         }
-                        // The writing model says what an administrator's request asks for.
+                        // The writing model says what a reader's question asks, unless it can't
+                        // be written.
                         if request["text"]["format"]["name"] == "understanding" {
                             let input = request["input"][0]["content"].as_str().unwrap_or_default();
-                            let asked = input.split_once("管理员的请求：").map_or("", |(_, asked)| asked);
+                            let asked = input.split_once("读者的问题：").map_or("", |(_, asked)| asked);
+                            if asked.contains("写不出") {
+                                return (StatusCode::BAD_REQUEST, Json(json!({})));
+                            }
                             return (
                                 StatusCode::OK,
                                 Json(reply(json!({ "understanding": format!(" 他想弄懂「{asked}」。 ") }), "https://elsewhere.example/x")),
                             );
+                        }
+                        // The AI passes what it reviews, but gambling.
+                        if request["text"]["format"]["name"] == "review" {
+                            let text = request["input"][0]["content"][0]["text"].as_str().unwrap_or_default();
+                            let verdict = if text.contains("赌场") {
+                                json!({ "pass": false, "reason": "涉及赌博" })
+                            } else {
+                                json!({ "pass": true, "reason": "" })
+                            };
+                            return (StatusCode::OK, Json(reply(verdict, "https://cited.example/review")));
                         }
                         // grok looks for a photograph of a person or a company, and finds one
                         // while it may.
@@ -2602,7 +2616,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
 
     // An administrator names people and companies for 时代, which lines them up, each once, and
     // writes them one after another before its own rounds, as the scheduler starts it.
-    let (_, administrator) = account(&state, "admin").await;
+    let (administrator_id, administrator) = account(&state, "admin").await;
     let origin = state.config.public_base_url.origin().ascii_serialization();
     let name = |name: &str| {
         http.post(format!("{base}/api/admin/people"))
@@ -2722,33 +2736,60 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     assert!(writing(&asked_log.lock().unwrap()).contains("其中 ![](keep:1) 是四格漫画"));
     assert_eq!(drawings_log.lock().unwrap().len(), drawn_before);
 
-    // An administrator asks 分享 to look things into, each once and in turn, apart from 时代's
-    // names. Both scouts look the request up, nothing is left out as written lately, and the
-    // writer makes a guide of it, published as XABC's 分享 with a cover of its own.
-    let research = |brief: &str, cookie: &str| {
-        http.post(format!("{base}/api/admin/research"))
+    // 调研: readers ask, and XABC researches each question and writes it up under their pen
+    // names, one at a time: the one cut off by a restart first, then Pro and administrators before
+    // Free, each in the order asked.
+    let ask = |question: &str, public: bool, cookie: &str| {
+        http.post(format!("{base}/api/research"))
             .header("cookie", cookie)
             .header("origin", &origin)
-            .json(&json!({ "brief": brief }))
+            .json(&json!({ "question": question, "public": public }))
             .send()
     };
-    let (_, reader) = account(&state, "user").await;
-    assert_eq!(research("找找用法", &reader).await.unwrap().status(), 403);
-    assert_eq!(research(" ", &administrator).await.unwrap().status(), 400);
-    let asks = |brief: &'static str| {
-        let request = research(brief, &administrator);
-        async move { request.await.unwrap().json::<Value>().await.unwrap()["ahead"].clone() }
+    let answer = |request: reqwest::RequestBuilder| async move {
+        let response = request.send().await.unwrap();
+        let status = response.status().as_u16();
+        (status, response.json::<Value>().await.unwrap_or_default())
     };
-    assert_eq!(asks(" 这个工具怎么用，以官方文档为准 ").await, 0);
-    assert_eq!(asks("另一个问题").await, 1);
-    assert_eq!(asks("这个工具怎么用，以官方文档为准").await, 0);
-    assert_eq!(ahead("Huawei").await, 0);
-    let shared = || {
+    let asked = |question: &'static str, public: bool, cookie: String| {
+        answer(
+            http.post(format!("{base}/api/research"))
+                .header("cookie", cookie)
+                .header("origin", &origin)
+                .json(&json!({ "question": question, "public": public })),
+        )
+    };
+    let listed = |cookie: String| {
+        answer(
+            http.get(format!("{base}/api/research"))
+                .header("cookie", cookie),
+        )
+    };
+    let reader = |name: &'static str| {
         let state = &state;
         async move {
-            xabc::start(state, xabc::Line::Share).await;
+            let (id, cookie) = account(state, "user").await;
+            sqlx::query("INSERT INTO authors (user_id, name) VALUES ($1, $2)")
+                .bind(id)
+                .bind(name)
+                .execute(&state.pool)
+                .await
+                .unwrap();
+            (id, cookie)
+        }
+    };
+    let counted = |id: i64| {
+        sqlx::query_scalar::<_, i16>("SELECT research FROM authors WHERE user_id = $1")
+            .bind(id)
+            .fetch_one(&state.pool)
+    };
+    // XABC writes the first question in the queue, and the test waits until it is done.
+    let researched = || {
+        let state = &state;
+        async move {
+            research::tick(state).await;
             tokio::time::timeout(std::time::Duration::from_secs(60), async {
-                while state.in_flight().contains("__xabc_article__") {
+                while state.in_flight().contains("__research__") {
                     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                 }
             })
@@ -2756,82 +2797,425 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
             .unwrap();
         }
     };
-    // XABC's 分享 so far, the latest and its cover.
-    let shares = || {
-        sqlx::query_as::<_, (i64, Uuid, Option<Uuid>)>(
-            "SELECT COUNT(*) OVER (), id, cover FROM articles
-             WHERE author_id = $1 AND num_nonnulls(film, person, event, product) = 0
-             ORDER BY published_at DESC LIMIT 1",
-        )
-        .bind(author)
-        .fetch_one(&state.pool)
+    // A question needs a session and a pen name.
+    assert_eq!(
+        http.post(format!("{base}/api/research"))
+            .header("origin", &origin)
+            .json(&json!({ "question": "怎么用", "public": true }))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    let (_, nameless) = account(&state, "user").await;
+    assert_eq!(ask("怎么用", true, &nameless).await.unwrap().status(), 409);
+    let (free, free_cookie) = reader("小林").await;
+    let (other, other_cookie) = reader("阿青").await;
+    let (pro, pro_cookie) = reader("老王").await;
+    sqlx::query("UPDATE users SET pro_until = now() + INTERVAL '1 day' WHERE id = $1")
+        .bind(pro)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO authors (user_id, name) VALUES ($1, '站长')")
+        .bind(administrator_id)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(ask(" ", true, &free_cookie).await.unwrap().status(), 400);
+    // Free asks twice a day, and only in public.
+    let (status, refused) = asked("SSH 怎么免密登录", false, free_cookie.clone()).await;
+    assert_eq!(
+        (status, refused["error"]["message"].as_str()),
+        (403, Some("不公开是 Pro 功能"))
+    );
+    let (status, first) = asked(" SSH 怎么免密登录 ", true, free_cookie.clone()).await;
+    assert_eq!(
+        (status, &first["ahead"], &first["minutes"]),
+        (200, &json!(0), &json!(8))
+    );
+    let (_, failing_question) = asked("写不出的问题", true, free_cookie.clone()).await;
+    assert_eq!(failing_question["ahead"], 1);
+    let (status, refused) = asked("第三个问题", true, free_cookie.clone()).await;
+    assert_eq!(
+        (status, refused["error"]["message"].as_str()),
+        (429, Some("今天的 2 次调研已用完，明天再来吧"))
+    );
+    // The AI turns a question away before it waits, and the allowance comes back.
+    let (status, refused) = asked("澳门赌场怎么玩", true, other_cookie.clone()).await;
+    assert_eq!(
+        (status, refused["error"]["message"].as_str()),
+        (400, Some("这个问题不能调研：涉及赌博"))
+    );
+    assert_eq!(counted(other).await.unwrap(), 0);
+    // Pro and an administrator wait before Free, each in the order asked; Pro keeps its own.
+    let (_, kept) = asked("Pro 的问题", false, pro_cookie.clone()).await;
+    assert_eq!(kept["ahead"], 0);
+    let (_, by_admin) = asked("站长的问题", true, administrator.clone()).await;
+    assert_eq!(by_admin["ahead"], 1);
+    // The day the allowance counted a question on stays with it; an administrator's has none.
+    let charged = |id: &Value| {
+        sqlx::query_scalar::<_, Option<chrono::NaiveDate>>("SELECT day FROM research WHERE id = $1")
+            .bind(Uuid::parse_str(id.as_str().unwrap()).unwrap())
+            .fetch_one(&state.pool)
     };
-    let mut researched = Uuid::nil();
-    for brief in ["这个工具怎么用，以官方文档为准", "另一个问题"] {
-        let asked_before = asked_log.lock().unwrap().len();
-        let (before, ..) = shares().await.unwrap();
-        shared().await;
-        let requests = asked_log.lock().unwrap()[asked_before..].to_vec();
-        // First the request is understood, and both scouts and the writer hear that.
-        assert_eq!(requests[0]["text"]["format"]["name"], "understanding");
-        assert_eq!(requests[0]["model"], state.config.ai_writing_model.as_str());
-        let understood = format!("管理员的请求：{brief}\n对请求的理解：他想弄懂「{brief}」。");
-        let searches: Vec<&Value> = requests
-            .iter()
-            .filter(|request| request["text"]["format"]["name"] == "finds")
-            .collect();
-        assert_eq!(searches.len(), 2);
-        for search in searches {
-            assert!(
-                search["instructions"]
+    assert_eq!(
+        charged(&first["id"]).await.unwrap(),
+        Some(state.digest.today())
+    );
+    assert_eq!(charged(&by_admin["id"]).await.unwrap(), None);
+    let (_, mine) = listed(free_cookie.clone()).await;
+    assert_eq!(
+        (
+            &mine["private"],
+            &mine["limit"],
+            &mine["left"],
+            mine["queue"].as_array().unwrap().len()
+        ),
+        (&json!(false), &json!(2), &json!(0), 2)
+    );
+    assert_eq!(
+        (
+            &mine["queue"][0]["question"],
+            &mine["queue"][0]["ahead"],
+            &mine["queue"][0]["public"],
+            &mine["queue"][0]["mine"]
+        ),
+        (
+            &json!("SSH 怎么免密登录"),
+            &json!(2),
+            &json!(true),
+            &json!(true)
+        )
+    );
+    let (_, everyone) = listed(administrator.clone()).await;
+    let line: Vec<(&str, &Value, &Value)> = everyone["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|asked| {
+            (
+                asked["author"].as_str().unwrap(),
+                &asked["pro"],
+                &asked["ahead"],
+            )
+        })
+        .collect();
+    assert_eq!(
+        line,
+        [
+            ("老王", &json!(true), &json!(0)),
+            ("站长", &json!(true), &json!(1)),
+            ("小林", &json!(false), &json!(2)),
+            ("小林", &json!(false), &json!(3)),
+        ]
+    );
+    assert_eq!(
+        (&everyone["left"], &everyone["private"]),
+        (&Value::Null, &json!(true))
+    );
+    // A day allowing none allows none, even the first of a new day.
+    sqlx::query("UPDATE authors SET day = NULL WHERE user_id = $1")
+        .bind(pro)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        take(&state.pool, pro, state.digest.today(), Quota::Research(0)).await,
+        Err(AppError::TooManyRequests(_))
+    ));
+    sqlx::query("UPDATE authors SET day = $2, research = 1 WHERE user_id = $1")
+        .bind(pro)
+        .bind(state.digest.today())
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    // With Free set to none, 调研 is Pro's.
+    let mut closed = state.clone();
+    closed.config = Arc::new(Config {
+        research_free_daily: 0,
+        ..Config::from_env().unwrap()
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let closed_base = format!("http://{}", listener.local_addr().unwrap());
+    let router = crate::web::router(closed);
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (status, refused) = answer(
+        http.post(format!("{closed_base}/api/research"))
+            .header("cookie", &other_cookie)
+            .header("origin", &origin)
+            .json(&json!({ "question": "怎么用", "public": true })),
+    )
+    .await;
+    assert_eq!(
+        (status, refused["error"]["message"].as_str()),
+        (403, Some("调研是 Pro 功能，升级 Pro 后每天可以调研 8 次"))
+    );
+    // A reader takes back what waits, and the allowance comes back; someone else's isn't theirs.
+    let (_, taken) = asked("不想问了", true, other_cookie.clone()).await;
+    let take_back = |id: &Value, cookie: &str| {
+        http.delete(format!("{base}/api/research/{}", id.as_str().unwrap()))
+            .header("cookie", cookie)
+            .header("origin", &origin)
+            .send()
+    };
+    assert_eq!(
+        take_back(&taken["id"], &free_cookie)
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    assert_eq!(counted(other).await.unwrap(), 1);
+    assert_eq!(
+        take_back(&taken["id"], &other_cookie)
+            .await
+            .unwrap()
+            .status(),
+        204
+    );
+    assert_eq!(counted(other).await.unwrap(), 0);
+
+    // 调研 writes beside the run slots collection shares, so it goes on with all of them taken.
+    let busy = state
+        .run_slots
+        .clone()
+        .acquire_many_owned(state.config.max_concurrent_runs as u32)
+        .await
+        .unwrap();
+    // Pro's question goes first: both scouts look up what it really asks, and the writer makes of
+    // it an article under the reader's pen name, as the question's id, kept to the reader.
+    let asked_before = asked_log.lock().unwrap().len();
+    researched().await;
+    drop(busy);
+    let requests = asked_log.lock().unwrap()[asked_before..].to_vec();
+    assert_eq!(requests[0]["text"]["format"]["name"], "understanding");
+    let understood = "读者的问题：Pro 的问题\n对问题的理解：他想弄懂「Pro 的问题」。";
+    let searches: Vec<&Value> = requests
+        .iter()
+        .filter(|request| request["text"]["format"]["name"] == "finds")
+        .collect();
+    assert_eq!(searches.len(), 2);
+    for search in searches {
+        assert!(
+            search["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("「调研」栏目提了一个问题")
+                && search["input"][0]["content"]
                     .as_str()
                     .unwrap()
-                    .contains("管理员请 XABC 就一件事做一次全网调研")
-                    && search["input"][0]["content"]
-                        .as_str()
-                        .unwrap()
-                        .ends_with(&understood)
-            );
-        }
-        let guide = requests
-            .iter()
-            .find(|request| request["text"]["format"]["name"] == "article")
-            .unwrap();
-        assert!(
-            guide["instructions"]
-                .as_str()
-                .unwrap()
-                .contains("这一篇是管理员点名的调研")
+                    .ends_with(understood)
         );
-        assert!(
-            guide["input"][0]["content"]
-                .as_str()
-                .unwrap()
-                .contains(&format!(
-                    "{understood}\n线索：\n1.【X 与全网】一个好玩的工具"
-                ))
-        );
-        let (after, latest, cover) = shares().await.unwrap();
-        assert!(after == before + 1 && cover.is_some());
-        // A page read to understand the request keeps its link, which an hourly 分享 drops.
-        let body: String = sqlx::query_scalar("SELECT body FROM articles WHERE id = $1")
-            .bind(latest)
+    }
+    let guide = requests
+        .iter()
+        .find(|request| request["text"]["format"]["name"] == "article")
+        .unwrap();
+    assert!(
+        guide["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("这一篇回答一位读者的问题")
+    );
+    let article = |id: &Value| {
+        sqlx::query_as::<_, (i64, String, Option<String>, Option<Uuid>, String)>(
+            "SELECT author_id, status, question, cover, body FROM articles WHERE id = $1",
+        )
+        .bind(Uuid::parse_str(id.as_str().unwrap()).unwrap())
+        .fetch_one(&state.pool)
+    };
+    let (author_id, status, question, cover, body) = article(&kept["id"]).await.unwrap();
+    assert_eq!(
+        (author_id, status.as_str(), question.as_deref()),
+        (pro, "draft", Some("Pro 的问题"))
+    );
+    assert!(cover.is_some());
+    // A page read to understand the question keeps its link.
+    assert!(
+        body.contains("看看[别处](https://elsewhere.example/x)"),
+        "{body}"
+    );
+    // An administrator's goes out at once, and a reader's after the AI reviews it.
+    researched().await;
+    assert_eq!(article(&by_admin["id"]).await.unwrap().1, "published");
+    researched().await;
+    assert_eq!(article(&first["id"]).await.unwrap().1, "published");
+    let shown = page(format!("{base}/articles/{}", first["id"].as_str().unwrap())).await;
+    assert!(
+        shown.contains("<p class=research-question><b>问</b><span>SSH 怎么免密登录</span></p>")
+    );
+    assert!(shown.contains(&format!("<a href=\"/research?by={free}\">小林</a>")));
+    assert!(shown.contains("<a href=\"/research\">← 调研</a>"));
+    assert!(shown.contains("<a class=tab href=\"/research\" aria-current=\"true\">调研</a>"));
+    let listing = page(format!("{base}/research")).await;
+    assert!(
+        listing.contains("<form class=research-ask>") && listing.contains("搜索调研的标题和内容")
+    );
+    assert!(listing.contains(&format!("/articles/{}", first["id"].as_str().unwrap())));
+    assert!(!listing.contains(&format!("/articles/{}", kept["id"].as_str().unwrap())));
+    assert!(
+        page(format!("{base}/research?by={free}"))
+            .await
+            .contains("小林 的调研")
+    );
+    assert!(
+        !page(format!("{base}/articles"))
+            .await
+            .contains(first["id"].as_str().unwrap())
+    );
+    assert!(
+        page(format!("{base}/articles/sitemap.xml"))
+            .await
+            .contains("/research</loc>")
+    );
+    // The words are XABC's: its reader can't save over them.
+    let saved = http
+        .patch(format!(
+            "{base}/api/articles/{}",
+            first["id"].as_str().unwrap()
+        ))
+        .header("cookie", &free_cookie)
+        .header("origin", &origin)
+        .json(&json!({ "revision": 1, "title": "改了", "body": "改了", "cover": null }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), 404);
+    // A question the AI couldn't look at is reviewed with its article, shown on the page with it.
+    let unchecked = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO research (id, author_id, question, pro, public, day)
+         VALUES ($1, $2, '澳门赌场的问题', false, true, $3)",
+    )
+    .bind(unchecked)
+    .bind(other)
+    .bind(state.digest.today())
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    // A question XABC can't write is tried once more, then marked, its allowance given back; its
+    // reader clears it.
+    let asked_before = asked_log.lock().unwrap().len();
+    researched().await;
+    let understandings = asked_log.lock().unwrap()[asked_before..]
+        .iter()
+        .filter(|request| request["text"]["format"]["name"] == "understanding")
+        .count();
+    assert_eq!(understandings, 2);
+    let (_, mine) = listed(free_cookie.clone()).await;
+    assert_eq!(
+        (
+            &mine["queue"][0]["failed"],
+            &mine["queue"][0]["ahead"],
+            &mine["left"]
+        ),
+        (&json!(true), &Value::Null, &json!(1))
+    );
+    assert_eq!(
+        take_back(&failing_question["id"], &free_cookie)
+            .await
+            .unwrap()
+            .status(),
+        204
+    );
+    assert_eq!(counted(free).await.unwrap(), 1);
+    researched().await;
+    let (status, held): (String, Option<String>) =
+        sqlx::query_as("SELECT status, held FROM articles WHERE id = $1")
+            .bind(unchecked)
             .fetch_one(&state.pool)
             .await
             .unwrap();
-        assert!(
-            body.contains("看看[别处](https://elsewhere.example/x)"),
-            "{body}"
-        );
-        researched = latest;
-    }
-    // With the requests written, 分享's own round waits its interval, and 时代's name is still
-    // there for it.
-    let asked_before = asked_log.lock().unwrap().len();
-    shared().await;
-    assert_eq!(asked_log.lock().unwrap().len(), asked_before);
-    next().await;
-    assert!(asked_log.lock().unwrap().len() > asked_before);
+    assert_eq!(
+        (status.as_str(), held.as_deref()),
+        ("pending", Some("AI：涉及赌博"))
+    );
+    // Pro switches its research public, through the AI's review, and back; Free can't.
+    let publicize = |id: &Value, public: bool, cookie: &str| {
+        answer(
+            http.patch(format!("{base}/api/research/{}", id.as_str().unwrap()))
+                .header("cookie", cookie)
+                .header("origin", &origin)
+                .json(&json!({ "public": public })),
+        )
+    };
+    assert_eq!(publicize(&first["id"], false, &free_cookie).await.0, 403);
+    assert_eq!(
+        publicize(&kept["id"], true, &pro_cookie).await,
+        (200, json!({ "status": "published" }))
+    );
+    assert_eq!(
+        publicize(&kept["id"], false, &pro_cookie).await,
+        (200, json!({ "status": "draft" }))
+    );
+    assert_eq!(publicize(&kept["id"], false, &pro_cookie).await.0, 409);
+    // Each switch is a revision of its own, so a review of an earlier one publishes nothing.
+    let revision: i32 = sqlx::query_scalar("SELECT revision FROM articles WHERE id = $1")
+        .bind(Uuid::parse_str(kept["id"].as_str().unwrap()).unwrap())
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(revision, 3);
+    // Its reader previews it without the editor: the words are XABC's.
+    let preview = http
+        .get(format!(
+            "{base}/api/articles/{}/preview",
+            kept["id"].as_str().unwrap()
+        ))
+        .header("cookie", &pro_cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(preview.contains("预览 · 草稿") && !preview.contains("继续编辑"));
+    // What waits switches too, and an administrator sees the reader's choice.
+    let (_, waiting) = asked("还没写的问题", true, pro_cookie.clone()).await;
+    assert_eq!(
+        publicize(&waiting["id"], false, &pro_cookie).await,
+        (200, json!({ "public": false }))
+    );
+    let (_, everyone) = listed(administrator.clone()).await;
+    assert_eq!(
+        (
+            &everyone["queue"][0]["public"],
+            &everyone["queue"][0]["mine"]
+        ),
+        (&json!(false), &json!(false))
+    );
+    let kept_row = everyone["articles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|article| article["id"] == kept["id"])
+        .unwrap();
+    assert_eq!(
+        (&kept_row["status"], &kept_row["pro"], &kept_row["author"]),
+        (&json!("draft"), &json!(true), &json!("老王"))
+    );
+    // A question cut off by a restart is written first again, ahead of Pro.
+    let (_, cut) = asked("重启前的问题", true, other_cookie.clone()).await;
+    sqlx::query("UPDATE research SET started_at = now() WHERE id = $1")
+        .bind(Uuid::parse_str(cut["id"].as_str().unwrap()).unwrap())
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    let (_, everyone) = listed(administrator.clone()).await;
+    assert_eq!(
+        (
+            &everyone["queue"][0]["question"],
+            &everyone["queue"][0]["ahead"],
+            &everyone["queue"][1]["ahead"]
+        ),
+        (&json!("重启前的问题"), &json!(0), &json!(1))
+    );
+    researched().await;
+    assert_eq!(article(&cut["id"]).await.unwrap().1, "published");
+    researched().await;
+    assert_eq!(article(&waiting["id"]).await.unwrap().1, "draft");
 
     // 追踪: the event both scouts name goes first, under the key its slug makes, in an article that
     // shows no drawn picture. Showing none at all, it takes for the lists the picture the finds'
@@ -3021,21 +3405,33 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
             .await
             .contains("/tracker</loc>")
     );
-    // 精选 ranks 追踪 with the rest, but opens with XABC's 分享 alone, the newest first, what it
-    // looked into on request among them.
-    sqlx::query("UPDATE articles SET views = 80 WHERE id = $1")
+    // 精选 ranks 追踪 and 调研 with the rest, but opens with XABC's 分享 alone, the newest first.
+    sqlx::query("UPDATE articles SET views = 80 WHERE id = $1 OR id = $2")
         .bind(selloff)
+        .bind(Uuid::parse_str(first["id"].as_str().unwrap()).unwrap())
         .execute(&state.pool)
         .await
         .unwrap();
+    let shared: Uuid = sqlx::query_scalar(
+        "SELECT id FROM articles WHERE author_id = $1
+           AND num_nonnulls(film, person, event, product, question) = 0
+         ORDER BY published_at DESC LIMIT 1",
+    )
+    .bind(author)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
     let worth: Value =
         serde_json::from_str(&page(format!("{base}/articles/worth.json")).await).unwrap();
     let worth = worth["articles"].as_array().unwrap();
-    assert_eq!(worth[0]["id"], researched.to_string());
+    assert_eq!(worth[0]["id"], shared.to_string());
     assert!(worth.iter().any(|article| {
         article["id"] == selloff.to_string()
             && article["event"] == true
             && article["person"] == false
+    }));
+    assert!(worth.iter().any(|article| {
+        article["id"] == first["id"] && article["research"] == true && article["event"] == false
     }));
 
     // Each line waits for its own articles: a 分享 just out keeps another 分享 back, not 追踪.

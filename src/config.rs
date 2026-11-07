@@ -48,6 +48,10 @@ pub struct Config {
     pub(crate) tmpfile_api_key: String,
     pub(crate) image_max_bytes: u64,
     pub(crate) image_timeout: Duration,
+    /// The research a reader may ask for in a day on the free plan and on Pro; none on the free
+    /// plan keeps 调研 to Pro.
+    pub(crate) research_free_daily: u8,
+    pub(crate) research_pro_daily: u8,
 }
 
 impl Config {
@@ -222,6 +226,8 @@ impl Config {
             tmpfile_api_key,
             image_max_bytes,
             image_timeout: Duration::from_secs(image_timeout_secs),
+            research_free_daily: parse_env("NEWS_RESEARCH_FREE_DAILY", 2)?,
+            research_pro_daily: parse_env("NEWS_RESEARCH_PRO_DAILY", 8)?,
         })
     }
 }

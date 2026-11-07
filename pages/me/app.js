@@ -1,6 +1,7 @@
 import { $, api, node, button, withBusy, toast, reportError, openDialog, closeDialog, bindDialogs, backToTop, confirmDelete, safeUrl, formatTime, cost } from "./ui.js";
 import { createAccount } from "./account.js";
 import { createArticles } from "./articles.js";
+import { createResearch } from "./research.js";
 
 let session = null;
 let authController;
@@ -142,6 +143,7 @@ function endSession() {
     clearTimeout(session.timer);
     session.account?.destroy();
     session.articles?.destroy();
+    session.research?.destroy();
   }
   session = null;
   document.querySelectorAll("dialog[open]").forEach(closeDialog);
@@ -195,7 +197,9 @@ async function enterApp(data) {
   };
   if (!s.admin) s.account = createAccount(s, () => refresh(s));
   s.articles = createArticles(s);
+  s.research = createResearch(s);
   void s.articles.load().catch(reportError);
+  void s.research.load().catch(reportError);
   $("#authView").classList.add("hidden");
   $("#appView").classList.remove("hidden");
   $("#accountEmail").textContent = s.user.email;

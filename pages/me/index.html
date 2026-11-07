@@ -10,7 +10,7 @@
   <title>𝑵𝒆𝒘𝒔 · 工作台</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
   <link rel="stylesheet" href="/styles.css?v=sides">
-  <link rel="stylesheet" href="/me/styles.css?v=asks">
+  <link rel="stylesheet" href="/me/styles.css?v=research">
 </head>
 <body>
   <main class="workspace-shell">
@@ -75,11 +75,18 @@
           <p class="field-hint muted">读者只看到笔名，看不到邮箱。</p>
         </form>
         <form id="askForm" class="ask-form hidden">
-          <div class="ask-head"><span class="ask-title">让 XABC 写</span><span class="ask-lines" role="radiogroup" aria-label="写在哪一栏"><label><input type="radio" name="line" value="share" checked>分享</label><label><input type="radio" name="line" value="people">时代</label></span></div>
-          <div class="ask-row"><textarea id="askText" rows="2" maxlength="2000" aria-label="让 XABC 写什么" required></textarea><button class="button button-secondary button-small" type="submit">立即写</button></div>
+          <label class="ask-title" for="askText">让 XABC 写时代</label>
+          <div class="ask-row"><input id="askText" maxlength="200" placeholder="人物或企业的名字" required><button class="button button-secondary button-small" type="submit">立即写</button></div>
         </form>
         <div id="reviewLists" class="review-lists hidden"></div>
         <p id="articlesMessage" class="empty-state hidden" role="status"></p><ul id="articleList" class="item-list"></ul>
+      </section>
+      <section id="researchPanel" class="panel research-panel hidden" aria-labelledby="researchTitle">
+        <div class="panel-heading">
+          <div><h2 id="researchTitle">调研</h2><p id="researchLine" class="muted small" role="status"></p></div>
+          <a class="button button-quiet button-small" href="/research">去提问</a>
+        </div>
+        <ul id="researchList" class="item-list"></ul>
       </section>
       <section class="panel topics-panel" aria-label="主题列表">
         <div class="panel-heading"><h2>主题</h2><button id="refreshButton" class="button button-quiet button-small" type="button">刷新</button></div>
@@ -159,6 +166,6 @@
     <div class="dialog-actions"><button class="button button-quiet" type="button" data-close-dialog>取消</button><button id="confirmActionButton" class="button button-danger" type="button">确认删除</button></div>
   </dialog>
   <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
-  <script src="/me/app.js?v=23" type="module"></script>
+  <script src="/me/app.js?v=25" type="module"></script>
 </body>
 </html>

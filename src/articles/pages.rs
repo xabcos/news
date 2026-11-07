@@ -1,9 +1,9 @@
 //! The 分享 pages: public articles newest first, one author's articles, an article, and the
-//! previews its author and an administrator read before readers do. 解说, 时代 and 追踪 read on
-//! the same article page, and 时代's and 追踪's lists are 分享's.
+//! previews its author and an administrator read before readers do. 调研, 解说, 时代 and 追踪
+//! read on the same article page, and 调研's, 时代's and 追踪's lists are 分享's.
 use super::{
     COMMENTARY, MARKDOWN, PEOPLE, REVIEWS, Search, TRACKER, commentary_label, image_id, label,
-    missing, parse, people_label, reviews_label, tracker_label,
+    missing, parse, people_label, research, reviews_label, tracker_label,
 };
 use crate::{
     auth::User,
@@ -42,8 +42,8 @@ const FROM: &str = " FROM articles a JOIN authors w ON w.user_id = a.author_id J
 const LIST: Chrome<'static> = Chrome {
     current: "articles",
     section: "reads articles article-cards",
-    stylesheet: "/reads.css?v=21",
-    script: "/reads.js?v=9",
+    stylesheet: "/reads.css?v=22",
+    script: "/reads.js?v=11",
     feed: ("News", "/feed.xml"),
 };
 /// An article counts its reads, and its review takes a ❤️.
@@ -51,6 +51,15 @@ const ARTICLE: Chrome<'static> = Chrome {
     section: "reads articles",
     script: "/articles.js?v=5",
     ..LIST
+};
+/// 调研 has a tab of its own after 分享's.
+const RESEARCH_LIST: Chrome<'static> = Chrome {
+    current: "research",
+    ..LIST
+};
+const RESEARCH: Chrome<'static> = Chrome {
+    current: "research",
+    ..ARTICLE
 };
 /// 文娱 · 解说 belongs to Culture, whose tab it marks, and its cards tile like Culture's while
 /// they load and count like the lists here.
@@ -95,11 +104,12 @@ const REVIEW: Chrome<'static> = Chrome {
     ..ARTICLE
 };
 
-/// The lists articles are on: 分享, which readers and XABC write, and XABC's 解说, 时代, 追踪 and
-/// 评测.
+/// The lists articles are on: 分享, which readers and XABC write, 调研, the research readers ask
+/// for, and XABC's 解说, 时代, 追踪 and 评测.
 #[derive(Clone, Copy, PartialEq)]
 enum Shelf {
     Shared,
+    Researched,
     Explained,
     People,
     Tracked,
@@ -107,12 +117,13 @@ enum Shelf {
 }
 
 impl Shelf {
-    fn of(film: bool, person: bool, event: bool, product: bool) -> Self {
-        match (film, person, event, product) {
+    fn of(film: bool, person: bool, event: bool, product: bool, research: bool) -> Self {
+        match (film, person, event, product, research) {
             (true, ..) => Self::Explained,
             (_, true, ..) => Self::People,
-            (_, _, true, _) => Self::Tracked,
-            (.., true) => Self::Reviewed,
+            (_, _, true, ..) => Self::Tracked,
+            (_, _, _, true, _) => Self::Reviewed,
+            (.., true) => Self::Researched,
             _ => Self::Shared,
         }
     }
@@ -121,13 +132,32 @@ impl Shelf {
     fn articles(self) -> &'static str {
         match self {
             Self::Shared => {
-                " AND a.film IS NULL AND a.person IS NULL AND a.event IS NULL AND a.product IS NULL"
+                " AND a.film IS NULL AND a.person IS NULL AND a.event IS NULL AND a.product IS NULL AND a.question IS NULL"
             }
+            Self::Researched => " AND a.question IS NOT NULL",
             Self::Explained => " AND a.film IS NOT NULL",
             Self::People => " AND a.person IS NOT NULL",
             Self::Tracked => " AND a.event IS NOT NULL",
             Self::Reviewed => " AND a.product IS NOT NULL",
         }
+    }
+
+    /// Where the shelf's list is, and its name.
+    fn list(self) -> (&'static str, fn(bool) -> &'static str) {
+        match self {
+            Self::Shared => ("/articles", label),
+            Self::Researched => (research::PATH, research::label),
+            Self::Explained => (COMMENTARY, commentary_label),
+            Self::People => (PEOPLE, people_label),
+            Self::Tracked => (TRACKER, tracker_label),
+            Self::Reviewed => (REVIEWS, reviews_label),
+        }
+    }
+
+    /// Whether readers write the shelf's articles under their pen names, so its list shows their
+    /// names and has a page for each; XABC alone writes the others.
+    fn readers(self) -> bool {
+        matches!(self, Self::Shared | Self::Researched)
     }
 
     /// Whether an article on the shelf is as new as its last update: XABC brings profiles,
@@ -150,7 +180,7 @@ impl Shelf {
     fn stamp(self) -> &'static str {
         match self {
             Self::Tracked => "%Y-%m-%d %H:%M",
-            Self::Shared | Self::Explained | Self::People | Self::Reviewed => "%Y-%m-%d",
+            _ => "%Y-%m-%d",
         }
     }
 }
@@ -159,6 +189,7 @@ pub(super) fn router() -> Router<AppState> {
     reading::pages(
         Router::new()
             .route("/articles", get(index))
+            .route(research::PATH, get(asked))
             .route("/articles/{id}", get(detail))
             .route(COMMENTARY, get(commentary))
             .route(PEOPLE, get(people))
@@ -183,7 +214,14 @@ async fn sitemap(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
             .fetch_all(&state.pool)
             .await?;
     let mut xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">".to_owned();
-    for list in ["/articles", COMMENTARY, PEOPLE, TRACKER, REVIEWS] {
+    for list in [
+        "/articles",
+        research::PATH,
+        COMMENTARY,
+        PEOPLE,
+        TRACKER,
+        REVIEWS,
+    ] {
         let _ = write!(
             xml,
             "<url><loc>{}</loc></url>",
@@ -282,6 +320,8 @@ struct Article {
     event: bool,
     /// Whether it reviews a product for 评测.
     product: bool,
+    /// The reader's question it researches for 调研.
+    question: Option<String>,
 }
 
 #[derive(FromRow)]
@@ -321,8 +361,29 @@ async fn index(
     Query(params): Query<Params>,
     headers: HeaderMap,
 ) -> Result<Response> {
+    readers(&state, Shelf::Shared, &params, &headers).await
+}
+
+// So is 调研's.
+async fn asked(
+    State(state): State<AppState>,
+    _: Reader,
+    Query(params): Query<Params>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    readers(&state, Shelf::Researched, &params, &headers).await
+}
+
+/// 分享's list or 调研's: readers' articles newest first, 热读's, one author's or those holding
+/// some words. 分享's leads to writing one; 调研's asks a question in the middle of its heading.
+async fn readers(
+    state: &AppState,
+    shelf: Shelf,
+    params: &Params,
+    headers: &HeaderMap,
+) -> Result<Response> {
     let en = params.english();
-    let page = page(&params)?;
+    let page = page(params)?;
     let search = Search::new(params.q.as_deref());
     // 热读 ranks the section's last 30 days as Reads ranks its own: reads, fading by half a week.
     let hot = params.view.as_deref() == Some("hot") && params.by.is_none() && search.is_empty();
@@ -341,15 +402,55 @@ async fn index(
         ),
         None => None,
     };
-    // 解说 and 时代 have lists of their own.
-    let mut query = listed(CARD, Shelf::Shared, params.by, &search);
+    let (path, name) = shelf.list();
+    let name = name(en);
+    // What the list's articles are, what it says of itself and while it is empty, and what its
+    // heading holds besides: 调研's question box in the middle, 分享's link to write beside the
+    // search.
+    let (noun, about, first, middle, beside) = if shelf == Shelf::Researched {
+        (
+            ("调研", "Research"),
+            choose(
+                en,
+                "你想知道的，XABC 全网调研后写成文章",
+                "Ask anything: XABC researches it across the web and writes it up",
+            ),
+            choose(
+                en,
+                "还没有公开的调研，在上面问第一个问题吧。",
+                "No research yet. Ask the first question above.",
+            ),
+            ask_box(en),
+            String::new(),
+        )
+    } else {
+        (
+            ("文章", "Articles"),
+            choose(
+                en,
+                "读者分享的有趣好玩的东西",
+                "Fun and interesting things our readers share",
+            ),
+            choose(
+                en,
+                "还没有公开的文章，<a href=\"/me/\">来写第一篇</a>。",
+                "No articles yet. <a href=\"/me/\">Write the first one</a>.",
+            ),
+            String::new(),
+            format!(
+                "<a class=article-write href=\"/me/\">{}</a>",
+                choose(en, "写文章", "Write")
+            ),
+        )
+    };
+    let mut query = listed(CARD, shelf, params.by, &search);
     if hot {
         query
             .push(" AND a.views > 0 AND a.published_at >= NOW() - INTERVAL '30 days' ORDER BY ")
             .push(HOT)
             .push(" DESC, a.published_at DESC, a.id DESC LIMIT 24");
     } else {
-        search.order(&mut query, Shelf::Shared.dated());
+        search.order(&mut query, shelf.dated());
         query
             .push(" LIMIT ")
             .push_bind(PAGE_SIZE + 1)
@@ -363,25 +464,20 @@ async fn index(
     let more = !hot && rows.len() > PAGE_SIZE as usize;
     rows.truncate(PAGE_SIZE as usize);
     let description = match &author {
-        Some(name) => choose(
+        Some(author) => choose(
             en,
-            &format!("{name} 的文章"),
-            &format!("Articles by {name}"),
+            &format!("{author} 的{}", noun.0),
+            &format!("{} by {author}", noun.1),
         )
         .to_owned(),
-        None => choose(
-            en,
-            "读者分享的有趣好玩的东西",
-            "Fun and interesting things our readers share",
-        )
-        .to_owned(),
+        None => about.to_owned(),
     };
     let found = found(
         &search,
         page,
         en,
-        listed("SELECT count(*)", Shelf::Shared, params.by, &search).build_query_scalar(),
-        &state,
+        listed("SELECT count(*)", shelf, params.by, &search).build_query_scalar(),
+        state,
     )
     .await?;
     // One author's page keeps to their articles in order.
@@ -389,14 +485,14 @@ async fn index(
         format!(
             "<nav class=reads-views aria-label=\"{}\"><a href=\"{}\"{}>{}</a><a href=\"{}\"{}>{}</a></nav>",
             choose(en, "阅读排序", "Reading order"),
-            localized("/articles", en),
+            localized(path, en),
             if hot || !search.is_empty() {
                 ""
             } else {
                 " aria-current=\"page\""
             },
             choose(en, "最新", "Latest"),
-            escape(&localized("/articles?view=hot", en)),
+            escape(&localized(&format!("{path}?view=hot"), en)),
             if hot { " aria-current=\"page\"" } else { "" },
             choose(en, "热读", "Popular"),
         )
@@ -404,55 +500,76 @@ async fn index(
         String::new()
     };
     let mut content = format!(
-        "<header class=reads-heading><h1>{}</h1><p>{}</p><div class=reads-tools>{}<a class=article-write href=\"/me/\">{}</a>{views}</div></header><div class=reads-list>",
-        label(en),
+        "<header class=reads-heading><h1>{name}</h1><p>{}</p>{middle}<div class=reads-tools>{}{beside}{views}</div></header><div class=reads-list>",
         found.unwrap_or_else(|| escape(&description)),
         search_box(
             "reads-search",
-            "/articles",
+            path,
             &search.words,
-            choose(en, "搜索分享的标题和内容", "Search titles and openings"),
+            choose(
+                en,
+                &format!("搜索{name}的标题和内容"),
+                "Search titles and openings"
+            ),
             en
         ),
-        choose(en, "写文章", "Write")
     );
     for (index, row) in rows.iter().enumerate() {
         content.push_str(&card(
             row,
             en,
             hot.then_some(index + 1),
-            Shelf::Shared,
+            shelf,
             state.config.timezone,
         ));
     }
     content.push_str("</div>");
+    let latest = escape(&localized(path, en));
     if rows.is_empty() && !search.is_empty() {
-        content.push_str(choose(
-            en,
-            "<p class=muted>没有找到相关文章，换个词试试，或看看<a href=\"/articles\">最新文章</a>。</p>",
-            "<p class=muted>No articles match these words. Try others, or explore the <a href=\"/articles?lang=en\">latest ones</a>.</p>",
-        ));
+        let _ = write!(
+            content,
+            "<p class=muted>{}</p>",
+            choose(
+                en,
+                &format!(
+                    "没有找到相关{0}，换个词试试，或看看<a href=\"{latest}\">最新{0}</a>。",
+                    noun.0
+                ),
+                &format!(
+                    "Nothing matches these words. Try others, or explore the <a href=\"{latest}\">latest ones</a>."
+                ),
+            )
+        );
     } else if rows.is_empty() && hot {
-        content.push_str(choose(
-            en,
-            "<p class=muted>热读正在积累，先看看<a href=\"/articles\">最新文章</a>。</p>",
-            "<p class=muted>Popular articles are taking shape. Explore the <a href=\"/articles?lang=en\">latest ones</a>.</p>",
-        ));
+        let _ = write!(
+            content,
+            "<p class=muted>{}</p>",
+            choose(
+                en,
+                &format!(
+                    "热读正在积累，先看看<a href=\"{latest}\">最新{}</a>。",
+                    noun.0
+                ),
+                &format!(
+                    "Popular reads are taking shape. Explore the <a href=\"{latest}\">latest ones</a>."
+                ),
+            )
+        );
     } else if rows.is_empty() && author.is_some() {
-        content.push_str(choose(
-            en,
-            "<p class=muted>还没有公开的文章。</p>",
-            "<p class=muted>No public articles yet.</p>",
-        ));
+        let _ = write!(
+            content,
+            "<p class=muted>{}</p>",
+            choose(
+                en,
+                &format!("还没有公开的{}。", noun.0),
+                "Nothing public yet."
+            )
+        );
     } else if rows.is_empty() {
-        content.push_str(choose(
-            en,
-            "<p class=muted>还没有公开的文章，<a href=\"/me/\">来写第一篇</a>。</p>",
-            "<p class=muted>No articles yet. <a href=\"/me/\">Write the first one</a>.</p>",
-        ));
+        let _ = write!(content, "<p class=muted>{first}</p>");
     }
     content.push_str(&pagination(
-        "/articles",
+        path,
         page,
         more,
         en,
@@ -461,27 +578,47 @@ async fn index(
         "Older articles",
     ));
     let title = match (&author, page) {
-        (Some(name), _) => format!("{name} · {}", label(en)),
-        (None, _) if hot => format!("{} · {}", choose(en, "热读", "Popular"), label(en)),
-        (None, 1) => format!("{} · 𝑵𝒆𝒘𝒔", label(en)),
-        (None, page) => format!("{} · {page} · 𝑵𝒆𝒘𝒔", label(en)),
+        (Some(author), _) => format!("{author} · {name}"),
+        (None, _) if hot => format!("{} · {name}", choose(en, "热读", "Popular")),
+        (None, 1) => format!("{name} · 𝑵𝒆𝒘𝒔"),
+        (None, page) => format!("{name} · {page} · 𝑵𝒆𝒘𝒔"),
     };
-    let path = if hot {
-        "/articles?view=hot".to_owned()
+    let address = if hot {
+        format!("{path}?view=hot")
     } else {
-        listing("/articles", page, false, params.by, &search.words)
+        listing(path, page, false, params.by, &search.words)
     };
     let html = crate::site::layout(
-        &state,
+        state,
         en,
-        &path,
+        &address,
         &title,
         &description,
         &content,
         None,
-        &LIST,
+        if shelf == Shelf::Researched {
+            &RESEARCH_LIST
+        } else {
+            &LIST
+        },
     );
-    Ok(listed_page(&headers, html, &search))
+    Ok(listed_page(headers, html, &search))
+}
+
+/// 调研's question box, which the list script sends; its choice to keep the article private
+/// shows for Pro readers.
+fn ask_box(en: bool) -> String {
+    format!(
+        "<form class=research-ask><input name=question maxlength={} placeholder=\"{hint}\" aria-label=\"{hint}\" required><label class=research-public hidden><input type=checkbox name=public checked>{}</label><button type=submit>{}</button></form>",
+        research::QUESTION_CHARS,
+        choose(en, "公开", "Public"),
+        choose(en, "调研", "Ask"),
+        hint = choose(
+            en,
+            "想了解什么，调研一下你就知道！",
+            "What do you want to know? Ask, and find out!"
+        ),
+    )
 }
 
 /// What a search found, for the line under a list's title: on its first page how many articles
@@ -537,6 +674,7 @@ struct Worth {
     person: bool,
     event: bool,
     product: bool,
+    research: bool,
     cover: Option<String>,
     width: Option<i32>,
     height: Option<i32>,
@@ -564,6 +702,7 @@ async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Resp
              ORDER BY a.published_at DESC, a.id DESC LIMIT 4)
          SELECT a.id, a.title, a.views, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person,
                 a.event IS NOT NULL AS event, a.product IS NOT NULL AS product,
+                a.question IS NOT NULL AS research,
                 CASE WHEN i.expires_at > now() THEN i.url END AS cover, i.width, i.height
          FROM articles a JOIN users u ON u.id = a.author_id
          LEFT JOIN article_images i ON i.id = a.cover
@@ -839,8 +978,8 @@ fn reads(id: Uuid, views: i64, en: bool) -> String {
     )
 }
 
-/// An article's card: its cover, then 热读's place, the author on 分享 (the other lists are all
-/// XABC's), the date, the reads, the title and the opening.
+/// An article's card: its cover, then 热读's place, the author on readers' lists (the others are
+/// all XABC's), the date, the reads, the title and the opening.
 fn card(
     item: &Card,
     en: bool,
@@ -864,10 +1003,13 @@ fn card(
     let rank = rank
         .map(|rank| format!("<span class=read-rank aria-hidden=true>{rank:02}</span>"))
         .unwrap_or_default();
-    let author = if shelf == Shelf::Shared {
+    let author = if shelf.readers() {
         format!(
             "<a href=\"{}\">{}</a> · ",
-            escape(&localized(&format!("/articles?by={}", item.author_id), en)),
+            escape(&localized(
+                &format!("{}?by={}", shelf.list().0, item.author_id),
+                en
+            )),
             escape(&item.author)
         )
     } else {
@@ -933,7 +1075,7 @@ async fn preview(
 
 async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<String> {
     let mut query = QueryBuilder::<Postgres>::new(
-        "SELECT a.id, a.author_id, w.name AS author, a.title, a.body, a.excerpt, a.cover, a.status, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person, a.event IS NOT NULL AS event, a.product IS NOT NULL AS product",
+        "SELECT a.id, a.author_id, w.name AS author, a.title, a.body, a.excerpt, a.cover, a.status, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person, a.event IS NOT NULL AS event, a.product IS NOT NULL AS product, a.question",
     );
     query.push(FROM).push(" AND a.id = ").push_bind(id);
     match mode {
@@ -977,7 +1119,13 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
     } else {
         &article.title
     };
-    let shelf = Shelf::of(article.film, article.person, article.event, article.product);
+    let shelf = Shelf::of(
+        article.film,
+        article.person,
+        article.event,
+        article.product,
+        article.question.is_some(),
+    );
     // A profile or an event is as new as its last update.
     let date = if shelf.updated() {
         article.updated_at
@@ -1029,10 +1177,15 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
                 },
             )
         }
+        // A research's words are XABC's: its reader previews it without editing.
         Mode::Author(author) => format!(
             "<div class=article-notice><span class=article-status>{} · {status}</span><span class=article-actions>{}{}</span></div>",
             choose(en, "预览", "Preview"),
-            edit(choose(en, "继续编辑", "Edit")),
+            if author.is_some() && shelf == Shelf::Researched {
+                String::new()
+            } else {
+                edit(choose(en, "继续编辑", "Edit"))
+            },
             if author.is_none() {
                 copies.as_str()
             } else {
@@ -1040,20 +1193,29 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
             },
         ),
     };
-    // XABC's own lists lead back to themselves: all their articles are XABC's.
-    let (list, name, by) = match shelf {
-        Shelf::Shared => (
-            "/articles",
-            label(en),
-            localized(&format!("/articles?by={}", article.author_id), en),
-        ),
-        Shelf::Explained => (COMMENTARY, commentary_label(en), localized(COMMENTARY, en)),
-        Shelf::People => (PEOPLE, people_label(en), localized(PEOPLE, en)),
-        Shelf::Tracked => (TRACKER, tracker_label(en), localized(TRACKER, en)),
-        Shelf::Reviewed => (REVIEWS, reviews_label(en), localized(REVIEWS, en)),
+    // The author's name leads to their articles on readers' lists; XABC's own lists lead back
+    // to themselves: all their articles are XABC's.
+    let (list, name) = shelf.list();
+    let name = name(en);
+    let by = if shelf.readers() {
+        localized(&format!("{list}?by={}", article.author_id), en)
+    } else {
+        localized(list, en)
     };
+    // A research article shows the question it answers, as its reader asked it.
+    let asked = article
+        .question
+        .as_deref()
+        .map(|question| {
+            format!(
+                "<p class=research-question><b>{}</b><span>{}</span></p>",
+                choose(en, "问", "Q"),
+                escape(question)
+            )
+        })
+        .unwrap_or_default();
     let mut content = format!(
-        "{notice}<article class=\"read article\">{}<header class=read-heading><div class=read-title><h1>{}</h1></div><div class=item-meta><a href=\"{}\">{}</a> · <time datetime=\"{}\">{}</time> · {views}</div></header><div class=read-body>{body}</div></article>",
+        "{notice}<article class=\"read article\">{}<header class=read-heading><div class=read-title><h1>{}</h1></div><div class=item-meta><a href=\"{}\">{}</a> · <time datetime=\"{}\">{}</time> · {views}</div>{asked}</header><div class=read-body>{body}</div></article>",
         // A profile's cover, its subject's portrait, stands for it on the lists, and so does an
         // event's, the first picture it shows; the page opens with the writer's own pictures.
         cover
@@ -1107,6 +1269,7 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
         Some(structured),
         match shelf {
             Shelf::Shared => &ARTICLE,
+            Shelf::Researched => &RESEARCH,
             Shelf::Explained => &EXPLANATION,
             Shelf::People => &PROFILE,
             Shelf::Tracked => &TRACKING,

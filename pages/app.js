@@ -43,7 +43,7 @@ try { localStorage.setItem("news.lastVisit", String(Date.now())); } catch { /* N
 
 const TEXT = {
   zh: {
-    locale: "zh-CN", articles: "分享", commentary: "解说", people: "时代", tracker: "追踪", reviews: "评测", worth: "精选", today: "今天", top: "重要",
+    locale: "zh-CN", articles: "分享", research: "调研", commentary: "解说", people: "时代", tracker: "追踪", reviews: "评测", worth: "精选", today: "今天", top: "重要",
     fresh: "NEW", failed: "加载失败", retry: "重试",
     empty: "这一天还没有内容", latest: "查看最近有内容的一天",
     personalEmpty: "还没有可阅读的内容", manageTopics: "管理我的主题",
@@ -55,7 +55,7 @@ const TEXT = {
     publish: "公开", unpublish: "取消公开",
   },
   en: {
-    locale: "en", articles: "𝑨𝒓𝒕𝒊𝒄𝒍𝒆𝒔", commentary: "𝑬𝒙𝒑𝒍𝒂𝒊𝒏𝒆𝒅", people: "𝑷𝒆𝒐𝒑𝒍𝒆", tracker: "𝑻𝒓𝒂𝒄𝒌𝒆𝒓", reviews: "𝑹𝒆𝒗𝒊𝒆𝒘𝒔", worth: "Featured", today: "Today", top: "Top",
+    locale: "en", articles: "𝑨𝒓𝒕𝒊𝒄𝒍𝒆𝒔", research: "𝑹𝒆𝒔𝒆𝒂𝒓𝒄𝒉", commentary: "𝑬𝒙𝒑𝒍𝒂𝒊𝒏𝒆𝒅", people: "𝑷𝒆𝒐𝒑𝒍𝒆", tracker: "𝑻𝒓𝒂𝒄𝒌𝒆𝒓", reviews: "𝑹𝒆𝒗𝒊𝒆𝒘𝒔", worth: "Featured", today: "Today", top: "Top",
     fresh: "NEW", failed: "Failed to load", retry: "Retry",
     empty: "Nothing collected for this day yet", latest: "Go to the latest day with content",
     personalEmpty: "Nothing to read yet", manageTopics: "Manage my topics",
@@ -122,8 +122,8 @@ const CATALOG = {
 };
 const sectionOf = (id) => Object.keys(CATALOG).find((section) => CATALOG[section].topics.includes(id));
 // Topics with their own server-rendered page instead of a news feed, where an old link to one
-// of them here goes. 分享 (articles) is not a topic but has such a page too.
-const PAGE_TOPICS = ["reads", "llm", "articles", ...Object.keys(CATALOG), ...Object.values(CATALOG).flatMap((section) => section.topics)];
+// of them here goes. 分享 (articles) and 调研 (research) are not topics but have such pages too.
+const PAGE_TOPICS = ["reads", "llm", "articles", "research", ...Object.keys(CATALOG), ...Object.values(CATALOG).flatMap((section) => section.topics)];
 const topicPage = (id) => `/${sectionOf(id) ? `${sectionOf(id)}/${id}` : id}${state.lang === "en" ? "?lang=en" : ""}`;
 
 async function init() {
@@ -984,7 +984,7 @@ function renderWorth() {
   title.textContent = t().worth;
   const lists = document.createElement("p");
   lists.className = "muted small";
-  lists.append(link(t().articles, "/articles"));
+  lists.append(link(t().articles, "/articles"), " · ", link(t().research, "/research"));
   // 解说's list is open while 影视 is.
   if (state.commentary) lists.append(" · ", link(t().commentary, "/culture/commentary"));
   lists.append(" · ", link(t().people, "/people"), " · ", link(t().tracker, "/tracker"), " · ", link(t().reviews, "/gadgets/reviews"));
@@ -1006,7 +1006,8 @@ function renderWorth() {
     }
     const meta = document.createElement("p");
     meta.className = "item-meta";
-    meta.textContent = article.film ? t().commentary : article.person ? t().people : article.event ? t().tracker : article.product ? t().reviews : t().articles;
+    meta.textContent = article.film ? t().commentary : article.person ? t().people : article.event ? t().tracker
+      : article.product ? t().reviews : article.research ? t().research : t().articles;
     if (article.views > 0) {
       const views = document.createElement("span");
       views.className = "read-views";

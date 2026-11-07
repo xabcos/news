@@ -61,7 +61,7 @@ impl User {
         self.role == "admin"
     }
 
-    fn is_pro(&self) -> bool {
+    pub(crate) fn is_pro(&self) -> bool {
         self.pro_until.is_some_and(|until| until > Utc::now())
     }
 

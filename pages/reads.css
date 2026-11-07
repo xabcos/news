@@ -56,6 +56,19 @@
 .article-cards .item-title { font-size: 1.05rem; line-height: 1.5; font-weight: 650; }
 .article-cards .item-summary { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 .article-cards .read-rank { width: auto; padding: 0; }
+/* 调研's question box sits in the middle of its heading; what it answers shows in a card under it. */
+.research-ask { position: relative; display: flex; flex: 0 1 31rem; min-width: 16rem; margin-inline: auto; align-self: center; }
+.research-ask input[name=question] { flex: 1; min-width: 0; height: 2.6rem; padding: 0 1.1rem; border: 1px solid var(--line-strong); border-right: 0; border-radius: 999px 0 0 999px; background: var(--surface-solid); color: inherit; font: inherit; font-size: 1rem; }
+.research-ask input[name=question]:focus { border-color: var(--primary); outline: none; }
+.research-public { display: flex; align-items: center; gap: .3rem; padding: 0 .85rem 0 .2rem; border-block: 1px solid var(--line-strong); background: var(--surface-solid); color: var(--muted); font-size: .8rem; white-space: nowrap; }
+.research-public input { margin: 0; accent-color: var(--primary); }
+.research-ask button { height: 2.6rem; padding: 0 1.35rem; border: 0; border-radius: 0 999px 999px 0; background: var(--primary); color: var(--on-primary); font: inherit; font-size: .95rem; font-weight: 600; letter-spacing: .08em; cursor: pointer; }
+.research-ask button:hover:not(:disabled) { background: var(--primary-strong); }
+.research-ask button:disabled { opacity: .6; cursor: progress; }
+.research-told { position: absolute; z-index: 5; top: calc(100% + .6rem); left: 0; right: 0; padding: .75rem 1rem; border: 1px solid var(--line); border-radius: var(--radius-m); background: var(--surface-solid); box-shadow: 0 10px 30px rgb(0 0 0 / .1); font-size: .85rem; line-height: 1.7; }
+.research-told a { color: var(--primary-strong); }
+.research-question { display: flex; gap: .6rem; align-items: baseline; margin: 1rem 0 0; padding: .7rem 1rem; border-radius: var(--radius-m); background: var(--surface-soft); color: var(--muted); font-size: .92rem; line-height: 1.75; overflow-wrap: anywhere; }
+.research-question b { flex-shrink: 0; color: var(--primary-strong); font-weight: 600; }
 /* 时代's cards show people: the crop keeps their faces. */
 .people .image-news-media img { object-position: 50% 20%; }
 .article .read-title { margin: 0 0 .7rem; }
@@ -73,7 +86,8 @@
   .reads-heading { flex-wrap: wrap; gap: .6rem .8rem; }
   .reads-heading p { flex: 1 1 0; }
   .reads-tools { display: contents; }
-  .reads-search { order: 1; flex: 1 0 100%; }
+  .reads-search, .research-ask { order: 1; flex: 1 0 100%; }
+  .research-ask { min-width: 0; margin: 0; }
   .reads-search input { width: 100%; }
   .reads-heading h1 { font-size: 1.25rem; }
   .reads-heading p, .reads-views { font-size: .75rem; }

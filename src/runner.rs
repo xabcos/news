@@ -249,6 +249,7 @@ async fn today_runs(state: &AppState, topic: &Topic) -> Result<i64> {
 /// `next_run_at`, so a topic cannot be picked twice; the run reschedules it on completion.
 async fn tick(state: &AppState) -> Result<()> {
     crate::articles::xabc::tick(state).await;
+    crate::articles::research::tick(state).await;
     insight::tick(state).await?;
     let slots = state.run_slots.available_permits();
     if slots == 0 {

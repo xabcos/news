@@ -4,9 +4,11 @@
 //! Pictures go to tmpfile as they were uploaded, which can't delete them, so their links go only
 //! to public pages, administrators' previews and text the author copies out of the editor; the
 //! author's own pages show them through this server. A read counts once a day per browser,
-//! never the author's own. XABC, the site's own pen name, publishes one every hour (`xabc`).
+//! never the author's own. XABC, the site's own pen name, publishes one every hour (`xabc`), and
+//! writes up what readers ask 调研 to look into under their pen names (`research`).
 mod check;
 mod pages;
+pub(crate) mod research;
 pub(crate) mod xabc;
 
 #[cfg(test)]
@@ -120,7 +122,7 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/api/admin/articles", get(queue))
         .route("/api/admin/articles/{id}", patch(review))
         .route("/api/admin/people", post(profile))
-        .route("/api/admin/research", post(research))
+        .merge(research::router())
         .merge(pages::router())
 }
 
@@ -145,9 +147,11 @@ struct Listed {
     event: bool,
     /// Whether it reviews a product for 评测.
     product: bool,
+    /// Whether it answers a reader's question for 调研.
+    research: bool,
 }
 
-const LISTED: &str = "SELECT a.id, a.title, w.name AS author, a.status, a.held, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person, a.event IS NOT NULL AS event, a.product IS NOT NULL AS product
+const LISTED: &str = "SELECT a.id, a.title, w.name AS author, a.status, a.held, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person, a.event IS NOT NULL AS event, a.product IS NOT NULL AS product, a.question IS NOT NULL AS research
     FROM articles a JOIN authors w ON w.user_id = a.author_id JOIN users u ON u.id = a.author_id";
 
 /// A search of 分享 or one of XABC's lists: its words, as the page shows them, and the patterns each of
@@ -226,13 +230,6 @@ struct Name {
     name: String,
 }
 
-/// What an administrator asks 分享 to look into, in their own words.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Research {
-    brief: String,
-}
-
 /// A new article, and the author the writing page was opened for: a page left open while the
 /// browser signs in as someone else must not write under that account.
 #[derive(Deserialize)]
@@ -265,14 +262,14 @@ struct Review {
     revision: i32,
 }
 
-/// The signed-in reader's pen name and articles, newest edit first.
+/// The signed-in reader's pen name and articles, newest edit first; their research is 调研's.
 async fn mine(State(state): State<AppState>, user: User) -> Result<Json<Value>> {
     let name: Option<String> = sqlx::query_scalar("SELECT name FROM authors WHERE user_id = $1")
         .bind(user.id)
         .fetch_optional(&state.pool)
         .await?;
     let mut articles: Vec<Listed> = sqlx::QueryBuilder::new(LISTED)
-        .push(" WHERE a.author_id = ")
+        .push(" WHERE a.question IS NULL AND a.author_id = ")
         .push_bind(user.id)
         .push(" ORDER BY a.updated_at DESC, a.id DESC")
         .build_query_as()
@@ -366,7 +363,7 @@ async fn edit(
 
 /// Saves the revision the editor holds. An author's edit takes a pending article back to being
 /// a draft and a public one back to review, which the AI gives at once; an administrator's leaves
-/// its status as it was.
+/// its status as it was. A research article's words are XABC's: only an administrator edits them.
 async fn save(
     State(state): State<AppState>,
     user: User,
@@ -380,7 +377,7 @@ async fn save(
              revision = revision + 1, updated_at = now(),
              status = CASE WHEN $8 THEN status WHEN status = 'pending' THEN 'draft'
                            WHEN status = 'published' THEN 'pending' ELSE status END
-         WHERE id = $1 AND (author_id = $2 OR $8) AND revision = $3
+         WHERE id = $1 AND (author_id = $2 AND question IS NULL OR $8) AND revision = $3
          RETURNING status, revision, updated_at",
     )
     .bind(id)
@@ -487,7 +484,7 @@ async fn upload(
     })?;
     let (content_type, (width, height)) = kind(&bytes)?;
     if !sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS (SELECT 1 FROM articles WHERE id = $1 AND (author_id = $2 OR $3))",
+        "SELECT EXISTS (SELECT 1 FROM articles WHERE id = $1 AND (author_id = $2 AND question IS NULL OR $3))",
     )
     .bind(article)
     .bind(user.id)
@@ -753,73 +750,76 @@ async fn profile(user: User, ApiJson(request): ApiJson<Name>) -> Result<Json<Val
     if name.is_empty() {
         return Err(AppError::BadRequest("写上人物或企业的名字".into()));
     }
-    Ok(Json(
-        json!({ "ahead": xabc::ask(xabc::Line::People, name.to_owned()) }),
-    ))
+    Ok(Json(json!({ "ahead": xabc::name(name.to_owned()) })))
 }
 
-/// Puts what an administrator asks 分享 to look into on its list, which XABC writes up before
-/// its own articles, and tells how many requests wait ahead.
-async fn research(user: User, ApiJson(request): ApiJson<Research>) -> Result<Json<Value>> {
-    auth::require_admin(&user)?;
-    let brief = request.brief.trim();
-    if brief.is_empty() {
-        return Err(AppError::BadRequest("写上想调研的内容".into()));
-    }
-    Ok(Json(
-        json!({ "ahead": xabc::ask(xabc::Line::Share, brief.to_owned()) }),
-    ))
-}
-
+/// What an author does a number of times a day: start articles, upload pictures, have the AI
+/// review articles and ask for research, as many as their plan allows.
 #[derive(Clone, Copy)]
 enum Quota {
     Articles,
     Images,
     Reviews,
+    Research(u8),
 }
 
-/// Counts one more article, picture or AI review for today, or refuses once the day's allowance
-/// is used, and returns the day it was counted on. The day only moves forward: a request that read the
-/// date just before midnight counts toward the new day instead of starting the old one again.
+impl Quota {
+    /// Its count among the author's, how many a day allows and what a refusal says.
+    fn allowance(self) -> (&'static str, i16, String) {
+        match self {
+            Self::Articles => (
+                "articles",
+                DAILY_ARTICLES,
+                format!("每天最多新建 {DAILY_ARTICLES} 篇文章，明天再来吧"),
+            ),
+            Self::Images => (
+                "images",
+                DAILY_IMAGES,
+                format!("每天最多上传 {DAILY_IMAGES} 张图片，明天再来吧"),
+            ),
+            Self::Reviews => (
+                "reviews",
+                DAILY_REVIEWS,
+                format!("每天最多由 AI 审核 {DAILY_REVIEWS} 次"),
+            ),
+            Self::Research(limit) => (
+                "research",
+                limit.into(),
+                format!("今天的 {limit} 次调研已用完，明天再来吧"),
+            ),
+        }
+    }
+}
+
+/// Counts one more for today, or refuses once the day's allowance is used, and returns the day
+/// it was counted on. A new day starts every count again, and the day only moves forward: a
+/// request that read the date just before midnight counts toward the new day instead of starting
+/// the old one again.
 async fn take<'c>(
     executor: impl sqlx::PgExecutor<'c>,
     author: i64,
     today: NaiveDate,
     quota: Quota,
 ) -> Result<NaiveDate> {
-    let (sql, limit, refusal) = match quota {
-        Quota::Articles => (
-            "UPDATE authors SET articles = CASE WHEN day >= $2 THEN articles + 1 ELSE 1 END,
-                 images = CASE WHEN day >= $2 THEN images ELSE 0 END,
-                 reviews = CASE WHEN day >= $2 THEN reviews ELSE 0 END, day = GREATEST(day, $2)
-             WHERE user_id = $1 AND (day IS NULL OR day < $2 OR articles < $3) RETURNING day",
-            DAILY_ARTICLES,
-            format!("每天最多新建 {DAILY_ARTICLES} 篇文章，明天再来吧"),
-        ),
-        Quota::Images => (
-            "UPDATE authors SET images = CASE WHEN day >= $2 THEN images + 1 ELSE 1 END,
-                 articles = CASE WHEN day >= $2 THEN articles ELSE 0 END,
-                 reviews = CASE WHEN day >= $2 THEN reviews ELSE 0 END, day = GREATEST(day, $2)
-             WHERE user_id = $1 AND (day IS NULL OR day < $2 OR images < $3) RETURNING day",
-            DAILY_IMAGES,
-            format!("每天最多上传 {DAILY_IMAGES} 张图片，明天再来吧"),
-        ),
-        Quota::Reviews => (
-            "UPDATE authors SET reviews = CASE WHEN day >= $2 THEN reviews + 1 ELSE 1 END,
-                 articles = CASE WHEN day >= $2 THEN articles ELSE 0 END,
-                 images = CASE WHEN day >= $2 THEN images ELSE 0 END, day = GREATEST(day, $2)
-             WHERE user_id = $1 AND (day IS NULL OR day < $2 OR reviews < $3) RETURNING day",
-            DAILY_REVIEWS,
-            format!("每天最多由 AI 审核 {DAILY_REVIEWS} 次"),
-        ),
-    };
-    sqlx::query_scalar(sql)
-        .bind(author)
-        .bind(today)
-        .bind(limit)
-        .fetch_optional(executor)
-        .await?
-        .ok_or_else(|| AppError::TooManyRequests(refusal.into()))
+    let (count, limit, refusal) = quota.allowance();
+    sqlx::query_scalar(
+        "UPDATE authors SET
+             articles = CASE WHEN day >= $2 THEN articles ELSE 0 END + ($4 = 'articles')::int,
+             images = CASE WHEN day >= $2 THEN images ELSE 0 END + ($4 = 'images')::int,
+             reviews = CASE WHEN day >= $2 THEN reviews ELSE 0 END + ($4 = 'reviews')::int,
+             research = CASE WHEN day >= $2 THEN research ELSE 0 END + ($4 = 'research')::int,
+             day = GREATEST(day, $2)
+         WHERE user_id = $1 AND $3 > 0 AND (day IS NULL OR day < $2 OR CASE $4 WHEN 'articles' THEN articles
+             WHEN 'images' THEN images WHEN 'reviews' THEN reviews ELSE research END < $3)
+         RETURNING day",
+    )
+    .bind(author)
+    .bind(today)
+    .bind(limit)
+    .bind(count)
+    .fetch_optional(executor)
+    .await?
+    .ok_or_else(|| AppError::TooManyRequests(refusal.into()))
 }
 
 /// Gives back a picture counted on `day` that tmpfile did not keep.
@@ -850,10 +850,10 @@ async fn owned(state: &AppState, user: &User, id: &str) -> Result<Draft> {
     .ok_or_else(missing)
 }
 
-/// Why a save matched nothing: someone else's article, or a revision saved since.
+/// Why a save matched nothing: someone else's article or research, or a revision saved since.
 async fn stale(state: &AppState, user: &User, id: Uuid) -> AppError {
     match sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS (SELECT 1 FROM articles WHERE id = $1 AND (author_id = $2 OR $3))",
+        "SELECT EXISTS (SELECT 1 FROM articles WHERE id = $1 AND (author_id = $2 AND question IS NULL OR $3))",
     )
     .bind(id)
     .bind(user.id)

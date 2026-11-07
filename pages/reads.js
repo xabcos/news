@@ -158,3 +158,72 @@ freshen([...document.querySelectorAll(".reads-list")]);
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) freshen([...document.querySelectorAll(".reads-list")]);
 });
+
+// 调研's question box. A question goes out under its reader's pen name, so it needs a session and
+// a pen name: a reader without them is told where to get them, and the question waits in this
+// browser until they come back. Pro readers may keep the article to themselves.
+(() => {
+  const form = document.querySelector(".research-ask");
+  if (!form) return;
+  const KEPT = "news.research.question";
+  const input = form.elements.question;
+  const button = form.querySelector("button");
+  const choice = form.querySelector(".research-public");
+  const told = Object.assign(document.createElement("div"), { className: "research-told", hidden: true });
+  told.setAttribute("role", "status");
+  form.append(told);
+  try { input.value ||= localStorage.getItem(KEPT) || ""; } catch { /* The box works without storage. */ }
+  if (PublicPage.role()) {
+    fetch("/api/research")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => { choice.hidden = !data?.private; })
+      .catch(() => {});
+  }
+  const workspace = (text) => Object.assign(document.createElement("a"), { href: "/me/", textContent: text });
+  const say = (...parts) => {
+    told.replaceChildren(...parts);
+    told.hidden = false;
+  };
+  input.addEventListener("input", () => { told.hidden = true; });
+  document.addEventListener("click", (event) => {
+    if (!form.contains(event.target)) told.hidden = true;
+  });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const question = input.value.trim();
+    if (!question) return;
+    try { localStorage.setItem(KEPT, question); } catch { /* The box works without storage. */ }
+    button.disabled = true;
+    try {
+      const response = await fetch("/api/research", {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ question, public: choice.hidden || choice.querySelector("input").checked }),
+      });
+      const data = await response.json().catch(() => null);
+      if (response.status === 401) {
+        return say(english
+          ? "Research goes out under your pen name. Sign in to the workspace and set one first; your question stays here. "
+          : "调研以你的笔名公开发布，先登录工作台、设置笔名吧，问题已经帮你留着。", workspace(english ? "Workspace" : "登录工作台"));
+      }
+      if (!response.ok) {
+        const message = data?.error?.message || `HTTP ${response.status}`;
+        // A pen name to set, or Pro to have, waits in the workspace.
+        return say(message, ...([403, 409].includes(response.status) ? [" ", workspace(english ? "Workspace" : "去工作台")] : []));
+      }
+      // Whatever was typed meanwhile stays.
+      try {
+        if (localStorage.getItem(KEPT) === question) localStorage.removeItem(KEPT);
+      } catch { /* The box works without storage. */ }
+      if (input.value.trim() === question) input.value = "";
+      const wait = (data.ahead + 1) * data.minutes;
+      say(english
+        ? `${data.ahead ? `Queued with ${data.ahead} ahead` : "Starting now"}: ready in about ${wait} minutes. Follow it in your `
+        : `${data.ahead ? `已排进调研队列，前面还有 ${data.ahead} 位` : "马上开始调研"}，大约 ${wait} 分钟后写好，进度在`, workspace(english ? "workspace" : "工作台"), english ? "." : "里看。");
+    } catch {
+      say(english ? "Couldn't send it. Try again." : "没有发出去，请重试。");
+    } finally {
+      button.disabled = false;
+    }
+  });
+})();
