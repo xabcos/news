@@ -894,6 +894,8 @@ struct Checked {
 }
 
 fn checked(title: &str, body: &str, cover: Option<Uuid>) -> Result<Checked> {
+    // Postgres text holds no NUL, which a model's JSON or a page's metadata may still carry.
+    let (title, body) = (title.replace('\0', ""), body.replace('\0', ""));
     let title = title.trim();
     if title.chars().count() > TITLE_CHARS {
         return Err(AppError::BadRequest(
@@ -905,15 +907,15 @@ fn checked(title: &str, body: &str, cover: Option<Uuid>) -> Result<Checked> {
             format!("正文最多 {BODY_CHARS} 个字").into(),
         ));
     }
-    if pictures(body, cover).len() > ARTICLE_IMAGES {
+    if pictures(&body, cover).len() > ARTICLE_IMAGES {
         return Err(AppError::BadRequest(
             format!("每篇最多 {ARTICLE_IMAGES} 张图，封面也算一张").into(),
         ));
     }
     Ok(Checked {
         title: title.to_owned(),
-        body: body.to_owned(),
-        excerpt: excerpt(body),
+        excerpt: excerpt(&body),
+        body,
         cover,
     })
 }

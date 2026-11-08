@@ -98,6 +98,12 @@ fn an_article_shows_at_most_its_allowance_of_pictures_with_the_cover_counted_onc
         [cover, inside]
     );
     assert_eq!(checked("  标题  ", "", None).unwrap().title, "标题");
+    // Postgres text holds no NUL: it goes, from the excerpt too.
+    let clean = checked("标\0题", "正\0文", None).unwrap();
+    assert_eq!(
+        (clean.title, clean.body, clean.excerpt),
+        ("标题".into(), "正文".into(), "正文".into())
+    );
     assert!(checked(&"题".repeat(TITLE_CHARS + 1), "", None).is_err());
     assert!(checked("", &"字".repeat(BODY_CHARS + 1), None).is_err());
 }
