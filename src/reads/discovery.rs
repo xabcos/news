@@ -337,8 +337,9 @@ async fn refresh_pool(state: &AppState, window: NewsWindow) -> Result<()> {
         };
         match result {
             Ok((_, Ok(seeds))) => save_seeds(state, &seeds).await?,
+            // A feed that is down now and then is routine; the others still bring candidates.
             Ok((name, Err(error))) => {
-                tracing::warn!(source = name, %error, "Reads feed unavailable")
+                tracing::debug!(source = name, %error, "Reads feed unavailable")
             }
             Err(error) => tracing::warn!(%error, "Reads feed task failed"),
         }
