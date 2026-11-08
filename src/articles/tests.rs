@@ -1287,7 +1287,8 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
 /// XABC's lines from start to finish against stand-ins for the AI service and tmpfile: a 分享
 /// article's searches, writing, drawn pictures, publication and pages; then 解说 explaining a
 /// work 影视 discusses and then another, revising the first, and listing them under Culture;
-/// then 时代's profiles and 追踪's events, written, brought up to date and listed.
+/// then 时代's profiles and 追踪's events, written, brought up to date and listed; last XAI's
+/// 分享 on what X talks about.
 #[tokio::test]
 #[ignore = "requires NEWS_XABC_TEST_DATABASE_URL and local test configuration"]
 async fn postgres_xabc_shares_explains_profiles_and_tracks() {
@@ -1633,6 +1634,8 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                                 )),
                             );
                         }
+                        // 分享: the scouts find a fun tool, XAI's also what X talks about.
+                        let trending = instructions.contains("你是 XAI");
                         if request["text"]["format"]["name"] == "finds" {
                             let grok = request["tools"].as_array().unwrap().len() == 2;
                             match failing.load(Ordering::SeqCst) {
@@ -1640,22 +1643,27 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                                 1 if grok => return (StatusCode::BAD_REQUEST, Json(json!({}))),
                                 _ => {}
                             }
+                            let mut finds = vec![json!({
+                                "title": "一个好玩的工具", "why": "好玩", "points": "能做很多事",
+                                "sources": ["https://known.example/tool"], "pictures": [],
+                            })];
+                            if trending {
+                                finds.push(json!({
+                                    "title": "大家都在聊的事", "why": "X 上都在讨论", "points": "来龙去脉",
+                                    "sources": ["https://talk.example/thread"], "pictures": [],
+                                }));
+                            }
                             return (
                                 StatusCode::OK,
-                                Json(reply(
-                                    json!({ "finds": [{
-                                        "title": "一个好玩的工具", "why": "好玩", "points": "能做很多事",
-                                        "sources": ["https://known.example/tool"], "pictures": [],
-                                    }] }),
-                                    "https://cited.example/search",
-                                )),
+                                Json(reply(json!({ "finds": finds }), "https://cited.example/search")),
                             );
                         }
                         (
                             StatusCode::OK,
                             Json(reply(
                                 json!({
-                                    "title": "今天分享一个好玩的工具", "body": body,
+                                    "title": if trending { "大家都在聊的一件事" } else { "今天分享一个好玩的工具" },
+                                    "body": body,
                                     "pictures": [
                                         { "page": "", "prompt": "一只猫", "caption": "一只猫" },
                                         { "page": "", "prompt": "", "caption": "不会来" },
@@ -1724,7 +1732,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         .await
         .unwrap();
     // The migration made XABC's account, which takes the pen name before any reader can.
-    let author = xabc::author(&state).await.unwrap();
+    let author = xabc::author(&state, xabc::Line::Share).await.unwrap();
     let since = Utc::now() - chrono::Duration::minutes(1);
     let id = xabc::write(&state, xabc::Line::Share, since)
         .await
@@ -2079,7 +2087,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     }
     assert!(matches!(
         xabc::write(&state, xabc::Line::Film, Utc::now() - chrono::Duration::hours(4)).await,
-        Err(AppError::Conflict(message)) if message == "XABC 刚发过一篇文章"
+        Err(AppError::Conflict(message)) if message == "这条线刚发过一篇文章"
     ));
     let loudest = xabc::write(&state, xabc::Line::Film, Utc::now())
         .await
@@ -3832,4 +3840,76 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     assert!(article.contains("<a href=\"/gadgets/reviews\">← 评测</a>"));
     assert!(!article.contains("class=article-cover"));
     assert!(!page(format!("{base}/articles")).await.contains("综合评测"));
+
+    // XAI writes 分享 on what X's tech circle talks about most, from its own brief and under its
+    // own pen name: its scouts hear what both pen names shared lately, and a find about a page
+    // XABC linked to is left out. It goes by its own clock, so XABC's 分享 just out holds it
+    // back no more than its own would XABC, and 精选 opens with the newest of either pen name's.
+    let asked_before = asked_log.lock().unwrap().len();
+    let talked = xabc::write(
+        &state,
+        xabc::Line::Trending,
+        shared - chrono::Duration::seconds(1),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let (title, name): (String, String) = sqlx::query_as(
+        "SELECT a.title, w.name FROM articles a JOIN authors w ON w.user_id = a.author_id
+         WHERE a.id = $1 AND a.status = 'published'",
+    )
+    .bind(talked)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (title.as_str(), name.as_str()),
+        ("大家都在聊的一件事", "XAI")
+    );
+    let requests = asked_log.lock().unwrap()[asked_before..].to_vec();
+    let searches: Vec<&Value> = requests
+        .iter()
+        .filter(|request| request["text"]["format"]["name"] == "finds")
+        .collect();
+    assert_eq!(searches.len(), 2);
+    assert!(searches.iter().all(|search| {
+        search["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("你是 XAI 的选题编辑")
+            && search["input"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("- 今天分享一个好玩的工具\n")
+    }));
+    let material = writing(&requests);
+    assert!(material.contains("1.【X 与全网】大家都在聊的事"));
+    assert!(!material.contains("】一个好玩的工具"));
+    assert_eq!(
+        xabc::last(&state, xabc::Line::Share).await.unwrap(),
+        Some(shared)
+    );
+    assert!(
+        xabc::last(&state, xabc::Line::Trending)
+            .await
+            .unwrap()
+            .is_some_and(|at| at > shared)
+    );
+    let worth: Value =
+        serde_json::from_str(&page(format!("{base}/articles/worth.json")).await).unwrap();
+    assert_eq!(worth["articles"][0]["id"], talked.to_string());
+    // XABC hears what XAI shared, too.
+    let asked_before = asked_log.lock().unwrap().len();
+    assert!(matches!(
+        xabc::write(&state, xabc::Line::Share, Utc::now()).await,
+        Err(AppError::Internal(message)) if message.contains("最近写过")
+    ));
+    let searches = asked_log.lock().unwrap()[asked_before..].to_vec();
+    assert_eq!(searches.len(), 2);
+    assert!(searches.iter().all(|search| {
+        search["input"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("- 大家都在聊的一件事\n")
+    }));
 }

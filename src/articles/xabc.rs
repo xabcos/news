@@ -1,15 +1,15 @@
-//! XABC, the site's own pen name, writes on five lines. For 分享, every hour, grok
+//! XABC and XAI, the site's own pen names, write on six lines. For 分享, every hour, grok
 //! looks through X and the web, and the briefing model through the web, for things worth
 //! sharing; the writing model picks one subject from both sets of finds, reads further where it
-//! needs to and writes it up its own way. For 文娱 · 解说, every four hours, it explains the work
-//! 影视 discusses most, or revises its explanation (`film`). For 时代, every hour, it
-//! profiles a person or a company, or brings a profile up to date, and first whoever an
-//! administrator names (`people`). For
-//! 追踪, every two hours, it follows the hottest event with something new, anew or in the
-//! article it already has (`tracker`). For 数码 · 评测, every two hours, it reviews the product
-//! 数码 discusses most from what reviewers and owners report, or brings its review up to date
-//! (`review`).
-//! Articles go out at once under the pen name XABC. Their pictures come from the pages the
+//! needs to and writes it up its own way. XAI does the same every hour for 分享 with what X's
+//! tech circle talks about most (`Line::Trending`), and neither writes what the other just did.
+//! For 文娱 · 解说, every four hours, XABC explains the work 影视 discusses most, or revises its
+//! explanation (`film`). For 时代, every hour, it profiles a person or a company, or brings a
+//! profile up to date, and first whoever an administrator names (`people`). For 追踪, every two
+//! hours, it follows the hottest event with something new, anew or in the article it already
+//! has (`tracker`). For 数码 · 评测, every two hours, it reviews the product 数码 discusses most
+//! from what reviewers and owners report, or brings its review up to date (`review`).
+//! Articles go out at once under the line's pen name. Their pictures come from the pages the
 //! models cite or are drawn by an image model, and they link only to addresses the models found.
 //! XABC also researches the questions readers ask 调研 the same way, both looking a question up
 //! and the writer making of it a thorough article (`researched`), which goes out under the
@@ -46,6 +46,11 @@ use uuid::Uuid;
 
 /// XABC's account, which the schema makes.
 pub(super) const EMAIL: &str = "xabc@xabcnews.invalid";
+/// XAI's, which writes 分享 on what X talks about (`Line::Trending`).
+const XAI: &str = "xai@xabcnews.invalid";
+/// The accounts whose 分享 are the site's own: each leaves out what the other wrote lately, and
+/// 精选 opens with their newest.
+pub(super) const SHARING: [&str; 2] = [EMAIL, XAI];
 /// After a failure XABC waits half an hour, twice as long after each failure in a row, eight
 /// hours at most: a lasting fault costs a few tries a day, not one every half hour.
 const RETRY_SECONDS: i64 = 30 * 60;
@@ -81,6 +86,8 @@ const LINK_ROUNDS: usize = 8;
 pub(super) enum Line {
     /// An article for 分享.
     Share,
+    /// An article for 分享 under XAI's pen name, on what X's tech circle talks about most.
+    Trending,
     /// A film or series explained for 文娱 · 解说, anew or revised.
     Film,
     /// A person or a company profiled for 时代, anew or brought up to date.
@@ -92,18 +99,20 @@ pub(super) enum Line {
 }
 
 impl Line {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Share,
+        Self::Trending,
         Self::Film,
         Self::People,
         Self::Tracker,
         Self::Review,
     ];
 
-    /// The line's mark among the jobs in flight.
+    /// The line's mark among the jobs in flight. XABC's and XAI's 分享 share one, so they take
+    /// turns and each hears what the other just shared.
     fn job(self) -> &'static str {
         match self {
-            Self::Share => "__xabc_article__",
+            Self::Share | Self::Trending => "__xabc_article__",
             Self::Film => "__xabc_film__",
             Self::People => "__xabc_people__",
             Self::Tracker => "__xabc_tracker__",
@@ -111,11 +120,19 @@ impl Line {
         }
     }
 
+    /// The account the line writes under.
+    fn email(self) -> &'static str {
+        match self {
+            Self::Trending => XAI,
+            Self::Share | Self::Film | Self::People | Self::Tracker | Self::Review => EMAIL,
+        }
+    }
+
     /// How long after its last article the line writes again: 解说 and 评测 follow what 影视
     /// and 数码 gather through the day, 时代 who is talked about and 追踪 how events move.
     fn interval(self) -> chrono::Duration {
         match self {
-            Self::Share | Self::People => chrono::Duration::hours(1),
+            Self::Share | Self::Trending | Self::People => chrono::Duration::hours(1),
             Self::Tracker | Self::Review => chrono::Duration::hours(2),
             Self::Film => chrono::Duration::hours(4),
         }
@@ -133,7 +150,7 @@ impl Line {
                 ("x", "string"),
             ],
             Self::Tracker => &[("event", "string")],
-            Self::Share | Self::Film | Self::Review => &[],
+            Self::Share | Self::Trending | Self::Film | Self::Review => &[],
         }
     }
 }
@@ -223,7 +240,7 @@ pub(super) async fn start(state: &AppState, line: Line) {
         let worker = state.clone();
         return run(state, line, async move {
             let _turn = turn(&worker).await?;
-            let author = author(&worker).await?;
+            let author = author(&worker, line).await?;
             people::named(&worker, author, &name).await.map(Some)
         });
     }
@@ -280,11 +297,11 @@ fn run(
     });
 }
 
-/// When XABC last published on the line, or for 解说, 时代 and 追踪 last revised. An article an
+/// When the line last published, or for 解说, 时代 and 追踪 last revised. An article an
 /// administrator takes back keeps its time.
 pub(super) async fn last(state: &AppState, line: Line) -> Result<Option<DateTime<Utc>>> {
     Ok(sqlx::query_scalar(match line {
-        Line::Share => {
+        Line::Share | Line::Trending => {
             "SELECT max(a.published_at) FROM articles a JOIN users u ON u.id = a.author_id
              WHERE u.email = $1 AND a.film IS NULL AND a.person IS NULL AND a.event IS NULL
                AND a.product IS NULL"
@@ -306,21 +323,21 @@ pub(super) async fn last(state: &AppState, line: Line) -> Result<Option<DateTime
              WHERE u.email = $1 AND a.product IS NOT NULL"
         }
     })
-    .bind(EMAIL)
+    .bind(line.email())
     .fetch_one(&state.pool)
     .await?)
 }
 
-/// XABC's account while it is open.
-pub(super) async fn author(state: &AppState) -> Result<i64> {
+/// The account the line writes under, while it is open.
+pub(super) async fn author(state: &AppState, line: Line) -> Result<i64> {
     sqlx::query_scalar(
         "SELECT w.user_id FROM authors w JOIN users u ON u.id = w.user_id
          WHERE u.email = $1 AND u.status",
     )
-    .bind(EMAIL)
+    .bind(line.email())
     .fetch_optional(&state.pool)
     .await?
-    .ok_or_else(|| AppError::Conflict("XABC 的账户不存在或已停用".into()))
+    .ok_or_else(|| AppError::Conflict("这条线的笔名账户不存在或已停用".into()))
 }
 
 /// Writes the line's next article and publishes it; for 解说, 时代 and 追踪 this may revise one
@@ -332,9 +349,9 @@ pub(super) async fn write(
     since: DateTime<Utc>,
 ) -> Result<Option<Uuid>> {
     let _turn = turn(state).await?;
-    let author = author(state).await?;
+    let author = author(state, line).await?;
     match line {
-        Line::Share => share(state, author, since).await.map(Some),
+        Line::Share | Line::Trending => share(state, line, author, since).await.map(Some),
         Line::Film => film::write(state, author, since).await,
         Line::People => people::write(state, author, since).await.map(Some),
         Line::Tracker => tracker::write(state, author, since).await,
@@ -352,27 +369,33 @@ async fn turn(state: &AppState) -> Result<OwnedSemaphorePermit> {
         .map_err(|_| AppError::Internal("调度器已关闭".into()))
 }
 
-/// Finds two models look for, one 分享 article written from them.
-async fn share(state: &AppState, author: i64, since: DateTime<Utc>) -> Result<Uuid> {
-    // What XABC shared in the last week: the models are told the titles, and a find about a
-    // page those articles linked to is left out.
+/// Finds two models look for, one 分享 article written from them: XABC's on what is worth
+/// sharing, XAI's on what X's tech circle talks about most.
+async fn share(state: &AppState, line: Line, author: i64, since: DateTime<Utc>) -> Result<Uuid> {
+    let (searching, writing) = match line {
+        Line::Trending => (TRENDING, TRENDING_WRITING),
+        _ => (SEARCHING, WRITING),
+    };
+    // What both pen names shared in the last week: the models are told the titles, and a find
+    // about a page those articles linked to is left out.
     let lately: Vec<(String, String)> = sqlx::query_as(
-        "SELECT title, body FROM articles WHERE author_id = $1 AND film IS NULL AND person IS NULL
-           AND event IS NULL AND product IS NULL AND published_at >= NOW() - INTERVAL '7 days'
-         ORDER BY published_at DESC",
+        "SELECT a.title, a.body FROM articles a JOIN users u ON u.id = a.author_id
+         WHERE u.email = ANY($1) AND a.film IS NULL AND a.person IS NULL AND a.event IS NULL
+           AND a.product IS NULL AND a.published_at >= NOW() - INTERVAL '7 days'
+         ORDER BY a.published_at DESC",
     )
-    .bind(author)
+    .bind(SHARING)
     .fetch_all(&state.pool)
     .await?;
     let covered: HashSet<String> = lately.iter().flat_map(|(_, body)| linked(body)).collect();
-    let today = Utc::now()
-        .with_timezone(&state.config.timezone)
-        .date_naive();
+    let zone = state.config.timezone;
     let context = format!(
-        "今天是 {today}。\n{}",
+        "现在是 {}（{}）。\n{}",
+        Utc::now().with_timezone(&zone).format("%Y-%m-%d %H:%M"),
+        zone.name(),
         written_lately(lately.iter().map(|(title, _)| title.as_str()))
     );
-    let mut found = look(state, Line::Share, SEARCHING, &context, &covered).await;
+    let mut found = look(state, line, searching, &context, &covered).await;
     if found.finds.is_empty() {
         return Err(AppError::Internal(
             if found.repeated > 0 {
@@ -384,13 +407,13 @@ async fn share(state: &AppState, author: i64, since: DateTime<Utc>) -> Result<Uu
         ));
     }
     let material = format!("{context}\n线索：\n{}", listed(&found.finds));
-    let drafted = draft(state, WRITING, &material).await?;
+    let drafted = draft(state, writing, &material).await?;
     found.usage += drafted.usage;
     found.known.extend(drafted.cited);
     let article = finish(state, drafted.article, found.known, &[], true).await?;
     let id = publish(state, author, since, None, &article).await?;
     tracing::info!(
-        %id, title = article.title, finds = found.finds.len(), repeated = found.repeated,
+        %id, ?line, title = article.title, finds = found.finds.len(), repeated = found.repeated,
         pictures = article.pictures.len(), cover = article.cover.is_some(),
         input_tokens = found.usage.input_tokens, output_tokens = found.usage.output_tokens,
         web_searches = found.usage.server_side_tool_usage_details.web_search_calls,
@@ -646,6 +669,12 @@ impl Scout {
             (Line::Share, Self::Web) => {
                 "以中文网络为主：用 web_search 检索 V2EX、少数派、掘金、知乎、IT之家、36氪、InfoQ 中文、开源中国等中文科技社区和媒体正在热传的内容，也看 Lobsters、Reddit、Product Hunt 和英文科技媒体"
             }
+            (Line::Trending, Self::X) => {
+                "以 X 为主：多用 x_search 检索，x_keyword_search 的 mode 设为 Top（按热度排序），limit 设为可用的最大值，查询里带上最近一天的 since 和 min_faves 点赞下限（英文帖约 1000，中文帖约 200，结果太少时降低再搜）；用中英文的 AI、大模型、各家公司与产品、科技圈知名人物和开发者这类关键词去找，也看热帖下的引用和回复里大家在讨论什么。每条线索都要有 X 上的热帖作证据；再用 web_search 查证"
+            }
+            (Line::Trending, Self::Web) => {
+                "以全网为主：用 web_search 检索中英文科技媒体（The Verge、TechCrunch、Ars Technica、IT之家、36氪、量子位、机器之心等）和中文社区（知乎、V2EX、少数派等）此刻大量跟进和讨论的科技话题，找出已经从 X 传开的热点，Hacker News 只作佐证"
+            }
             (Line::Film, Self::X) => {
                 "用 x_search 看 X 上主创、影评人和观众对它的讨论、口碑和争议，也用 web_search 查全网"
             }
@@ -845,7 +874,7 @@ fn listed(finds: &[(Scout, Find)]) -> String {
 }
 
 fn written_lately<'a>(titles: impl IntoIterator<Item = &'a str>) -> String {
-    let mut lines = "XABC 最近写过的文章，不要重复这些主题：\n".to_owned();
+    let mut lines = "本站最近写过的分享，不要重复这些主题：\n".to_owned();
     let mut any = false;
     for title in titles {
         let _ = writeln!(lines, "- {title}");
@@ -854,7 +883,7 @@ fn written_lately<'a>(titles: impl IntoIterator<Item = &'a str>) -> String {
     if any {
         lines
     } else {
-        "XABC 还没有写过文章。".into()
+        "本站最近还没有写过分享。".into()
     }
 }
 
@@ -1435,8 +1464,8 @@ impl Subject<'_> {
     }
 }
 
-/// Publishes the article with its pictures, unless XABC published one on the line since `since`
-/// meanwhile; 分享's articles have no subject.
+/// Publishes the article with its pictures, unless its author published one on the line since
+/// `since` meanwhile; 分享's articles have no subject.
 pub(super) async fn publish(
     state: &AppState,
     author: i64,
@@ -1464,7 +1493,7 @@ pub(super) async fn publish(
     .fetch_one(&mut *tx)
     .await?
     {
-        return Err(AppError::Conflict("XABC 刚发过一篇文章".into()));
+        return Err(AppError::Conflict("这条线刚发过一篇文章".into()));
     }
     let id = Uuid::new_v4();
     save(&mut tx, id, author, "published", subject, article).await?;
@@ -1586,7 +1615,20 @@ const SEARCHING: &str = "你是 XABC 的选题编辑。XABC 每小时在 xabcnew
 - 一线实践者有干货的工程复盘和长帖；
 - 正在被大量讨论的科学发现，以及科学、航天与工程里的好故事。
 早一些但最近又被很多人讨论、依然有价值的也可以。没有传播证据的冷门论文和小众新闻不要。一条线索可以是一件事，也可以是同一主题下的一组资源。
-不要：时政、战争、灾难、犯罪与社会冲突；与科技无关的生活、旅行、美食和社会趣闻；明星八卦；股票、加密货币和投资建议；营销软文、带货、推广链接和邀请码；成人内容；账号、Key 买卖与破解之类的灰色内容；需要付费或登录才能看的内容；人人都知道的大新闻，除非有新的有趣角度。也避开 XABC 最近写过的主题。
+不要：时政、战争、灾难、犯罪与社会冲突；与科技无关的生活、旅行、美食和社会趣闻；明星八卦；股票、加密货币和投资建议；营销软文、带货、推广链接和邀请码；成人内容；账号、Key 买卖与破解之类的灰色内容；需要付费或登录才能看的内容；人人都知道的大新闻，除非有新的有趣角度。也避开本站最近写过的主题。
+";
+
+/// What XAI's scouts look for: what X's tech circle talks about most now, with substance; no
+/// gossip.
+const TRENDING: &str = "你是 XAI 的选题编辑。XAI 每小时在 xabcnews.com 的「分享」栏目写一篇文章，把科技圈此刻在 X 上讨论最热的一件事讲清楚、讲透，读者是关注 AI、软件开发、硬件、开源与前沿科技的中文开发者和极客。
+现在请你{scope}，找出最近一天里科技圈讨论最热、传播最广、又有实质内容的事，按热度从高到低排列，12 条左右，证据不足就少列，不凑数。热度要有看得到的证据：X 上相关帖子的浏览、点赞、转发、引用和回复，有多少圈内有分量的人在转发、评论或讨论，有没有扩散到中文网络和科技媒体；why 里写清检索中实际看到的这些证据。好线索是大家都在看、都在聊，又值得认真讲清楚的事，比如：
+- 重磅的发布、模型和产品，以及实测、评测和争议；
+- 刷屏的演示、研究成果和有干货的长帖；
+- 有分量的人对技术和行业走向的判断，以及由此引发的讨论；
+- 影响很多开发者和用户的变化：定价与额度、条款与政策、宕机与故障、安全事件；
+- 让业内分成几派的技术争论；
+- 科学与航天的重大进展。
+不要：八卦、传闻、未经证实的爆料和人物之间的口水战；时政、战争、灾难、犯罪与社会冲突（科技公司的诉讼、监管和出口管制可以）；明星娱乐与体育；股价涨跌、加密货币行情和投资建议；营销软文、带货和推广链接；成人内容；只在小圈子里有人聊、没有传开的帖子。也避开本站最近写过的主题。
 ";
 
 /// How the writing model reads a reader's question, before anyone searches.
@@ -1625,7 +1667,17 @@ const WRITING: &str = "你是 XABC，在 xabcnews.com 的「分享」栏目写�
 - 篇幅不限，内容需要多长就写多长。写法跟着内容走：该用文字讲清的就写文字，用图更清楚的地方就配图；需要时才用小标题、列表、表格或引用，不给每段都加标题，也不套「背景、亮点、总结」之类的固定框架。
 ";
 
-/// What every XABC article keeps to, after the line's own instructions.
+/// How XAI writes up the one thing X talks about most, professionally.
+const TRENDING_WRITING: &str = "你是 XAI，在 xabcnews.com 的「分享」栏目写文章，读者是关注 AI、软件开发、硬件、开源与前沿科技的中文开发者和极客。
+下面是两位编辑刚从 X 和全网找来的热点线索。从中挑出此刻讨论最热、最值得讲透的一件事（八卦和传闻不选），可以是一条线索，也可以把同一件事的几条线索合在一起；多用 web_search 把它查透：起因和一手出处（原帖、官方公告与文档、论文与数据、当事人的说法），X 上有分量的人怎么看，实测、数据和不同观点，多方核实，补上背景，然后写成一篇专业、严谨、有深度的中文文章。
+怎么写：
+- 开头直接说清发生了什么、为什么大家都在讨论；再讲清来龙去脉和关键细节，技术问题讲清原理，有代表性的观点写明出自谁，并链接到原帖或原文，分清已证实的事实、当事方的说法和外界的推测；最后给出有依据的判断：这件事意味着什么，对开发者和行业有什么影响。
+- 热度只用来挑选，标题、正文和图注都不写点赞、转发、浏览这类数字。
+- 安全事件只写影响、原理和应对，不写攻击步骤、利用代码和能照着做的细节。
+- 篇幅不限，内容需要多长就写多长，但每一段都要有信息量。写法跟着内容走：该用文字讲清的就写文字，用图更清楚的地方就配图；需要时才用小标题、列表、表格或引用，不套固定框架。
+";
+
+/// What every article XABC and XAI write keeps to, after the line's own instructions.
 const RULES: &str = "- 不用套话：不写「在当今……」「值得一提的是」「总的来说」「总而言之」「让我们」「不难发现」，不用表情符号，不自称「本文」「笔者」，结尾不做总结，也不号召点赞关注。
 - 可以有自己的判断和推荐，但不编造亲身经历（比如「我用了一周」），不编造事实、数字和引语，拿不准的就不写。
 - 查不到的内容直接略过：不交代自己查资料的过程，不写「现有资料不足以确认」「没有必要用……填补空白」这类话。

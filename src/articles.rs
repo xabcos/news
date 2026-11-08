@@ -4,8 +4,9 @@
 //! Pictures go to tmpfile as they were uploaded, which can't delete them, so their links go only
 //! to public pages, administrators' previews and text the author copies out of the editor; the
 //! author's own pages show them through this server. A read counts once a day per browser,
-//! never the author's own. XABC, the site's own pen name, publishes one every hour (`xabc`), and
-//! writes up what readers ask 调研 to look into under their pen names (`research`).
+//! never the author's own. XABC and XAI, the site's own pen names, each publish one every hour
+//! (`xabc`), and XABC writes up what readers ask 调研 to look into under their pen names
+//! (`research`).
 mod check;
 mod pages;
 pub(crate) mod research;

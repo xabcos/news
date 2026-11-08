@@ -680,10 +680,10 @@ struct Worth {
     height: Option<i32>,
 }
 
-/// 精选, which opens ALL: XABC's four newest 分享, newest first, then the four hottest of the
-/// last 30 days of 分享 and XABC's other lists together, ranked as 热读 is, each article once;
-/// while few are read, the newest fill the places. 解说 is among them, and its list among the
-/// page's links, while 影视, whose works it explains, is public.
+/// 精选, which opens ALL: the four newest 分享 XABC and XAI wrote, newest first, then the four
+/// hottest of the last 30 days of 分享 and XABC's other lists together, ranked as 热读 is, each
+/// article once; while few are read, the newest fill the places. 解说 is among them, and its
+/// list among the page's links, while 影视, whose works it explains, is public.
 async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
     let commentary = state
         .digest
@@ -693,11 +693,11 @@ async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Resp
     let articles: Vec<Worth> = QueryBuilder::<Postgres>::new(
         "WITH newest AS (
              SELECT a.id, a.published_at FROM articles a JOIN users u ON u.id = a.author_id
-             WHERE u.email = ",
+             WHERE u.email = ANY(",
     )
-    .push_bind(super::xabc::EMAIL)
+    .push_bind(super::xabc::SHARING)
     .push(
-        " AND a.status = 'published' AND a.film IS NULL AND a.person IS NULL AND a.event IS NULL
+        ") AND u.status AND a.status = 'published' AND a.film IS NULL AND a.person IS NULL AND a.event IS NULL
                AND a.product IS NULL
              ORDER BY a.published_at DESC, a.id DESC LIMIT 4)
          SELECT a.id, a.title, a.views, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person,
