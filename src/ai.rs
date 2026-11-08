@@ -70,7 +70,11 @@ pub(crate) async fn send(state: &AppState, body: &Value) -> Result<Value> {
             .send()
             .await
         {
-            Ok(response) if response.status().is_success() => return Ok(response.json().await?),
+            Ok(response) if response.status().is_success() => {
+                let mut reply = response.json().await?;
+                unnul(&mut reply);
+                return Ok(reply);
+            }
             Ok(response)
                 if response.status().as_u16() == 429 || response.status().is_server_error() =>
             {
@@ -130,7 +134,25 @@ pub(crate) fn parse_payload(reply: &Value) -> Result<Value> {
         (Some(start), Some(end)) if start < end => &text[start..=end],
         _ => text,
     };
-    serde_json::from_str(json).map_err(|_| AppError::Internal("AI 响应不是有效的 JSON".into()))
+    let mut payload = serde_json::from_str(json)
+        .map_err(|_| AppError::Internal("AI 响应不是有效的 JSON".into()))?;
+    unnul(&mut payload);
+    Ok(payload)
+}
+
+/// Drops NUL, which no Postgres text or jsonb takes, from every string in `value`, and any key
+/// holding it: from a reply as it comes and from the JSON a model writes in it, where it may
+/// write \u0000.
+fn unnul(value: &mut Value) {
+    match value {
+        Value::String(text) => text.retain(|c| c != '\0'),
+        Value::Array(items) => items.iter_mut().for_each(unnul),
+        Value::Object(fields) => {
+            fields.retain(|key, _| !key.contains('\0'));
+            fields.values_mut().for_each(unnul);
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -152,6 +174,15 @@ mod tests {
         );
         reply["output"][2] = message("An incomplete final answer");
         assert!(parse_payload(&reply).is_err());
+        // NUL goes from every string, however deep, with any key holding it, while the words
+        // \u0000 stay.
+        reply["output"][2] = message(
+            r#"{"title":"标\u0000题","items":[{"text":"\\u0000 是 NUL\u0000","x\u0000":1}]}"#,
+        );
+        assert_eq!(
+            parse_payload(&reply).unwrap(),
+            json!({ "title": "标题", "items": [{ "text": "\\u0000 是 NUL" }] })
+        );
     }
 
     #[test]
