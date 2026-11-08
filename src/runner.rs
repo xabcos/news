@@ -805,8 +805,9 @@ async fn execute(
                 Ok(None) => {
                     dropped += 1;
                 }
+                // A source unfit to publish is routine; the run's payload keeps why.
                 Err(error) => {
-                    tracing::warn!(url = %item.url, %error, "Reads candidate skipped");
+                    tracing::debug!(url = %item.url, %error, "Reads candidate skipped");
                     skipped.push(serde_json::json!({"url": item.url, "reason": error.to_string()}));
                     dropped += 1;
                 }

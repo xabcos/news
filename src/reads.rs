@@ -167,8 +167,9 @@ async fn prepare_source(
     .unwrap_or_else(|_| Err(invalid_source("全文处理达到单篇时间预算")))
     {
         Ok(document) => Some(document),
+        // Expected now and then: the guide goes out alone, as the next line logs.
         Err(error) => {
-            tracing::warn!(url = %source.url, %error, "Reads full text unavailable; publishing the reading guide");
+            tracing::debug!(url = %source.url, %error, "Reads full text unavailable; publishing the reading guide");
             None
         }
     };
