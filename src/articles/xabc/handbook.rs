@@ -778,12 +778,14 @@ fn json_keys(value: &Value, named: &mut BTreeSet<String>) {
     match value {
         Value::Object(map) => {
             for (key, value) in map {
+                // A schema's own keys start with `$`, which the pages' words leave out: `$schema`
+                // is `schema`. Other keys are checked whole.
                 if !value.is_object()
                     && !key
                         .chars()
                         .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
                 {
-                    named.insert(key.clone());
+                    named.insert(key.strip_prefix('$').unwrap_or(key).to_owned());
                 }
                 json_keys(value, named);
             }
@@ -859,7 +861,9 @@ env = { GITHUB_TOKEN = "x" }
 
 ```json
 {
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "model": "claude-opus-5-5",
+  "model-": "x",
   "permissions": { "deny": ["Read(./.env)"] },
   "mcpServers": { "playwright": { "command": "npx", "args": ["@playwright/mcp"] } },
   "env": { "CLAUDE_CODE_USE_BEDROCK": "1", "MY_FLAG": "1" }
@@ -885,16 +889,18 @@ env = { GITHUB_TOKEN = "x" }
                 "deny",
                 "gpt-6.1-terra",
                 "model",
+                "model-",
+                "schema",
                 UNPARSED,
             ]
         );
         let corpus: HashSet<&str> = words(
-            "Use --dangerously-skip-permissions, --output-format, --max-turns and --json. Set ANTHROPIC_BASE_URL or CLAUDE_CODE_USE_BEDROCK. model, approval_policy, command, args, deny. Models: claude-opus-5-5, gpt-6.1-terra.",
+            "Use --dangerously-skip-permissions, --output-format, --max-turns and --json. Set ANTHROPIC_BASE_URL or CLAUDE_CODE_USE_BEDROCK. model, approval_policy, command, args, deny, $schema. Models: claude-opus-5-5, gpt-6.1-terra.",
         )
         .collect();
         assert_eq!(
             unknown(body, &corpus),
-            ["--max-turnz", "approval_mode", UNPARSED]
+            ["--max-turnz", "approval_mode", "model-", UNPARSED]
         );
     }
 
