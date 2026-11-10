@@ -3947,7 +3947,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
 /// page, chapters, book and sitemap while its topic is shown, and nothing once it is hidden; and
 /// no writing while the topic collects nothing.
 #[tokio::test]
-#[ignore = "requires NEWS_XABC_TEST_DATABASE_URL and local test configuration"]
+#[ignore = "requires NEWS_HANDBOOK_TEST_DATABASE_URL and local test configuration"]
 async fn postgres_handbook_writes_checks_and_serves() {
     use crate::{
         articles::handbook::{CHAPTERS, TOPIC},
@@ -3957,7 +3957,7 @@ async fn postgres_handbook_writes_checks_and_serves() {
     use sha2::{Digest, Sha256};
     use std::sync::Mutex;
     let database_url =
-        std::env::var("NEWS_XABC_TEST_DATABASE_URL").expect("disposable database URL");
+        std::env::var("NEWS_HANDBOOK_TEST_DATABASE_URL").expect("disposable database URL");
     let asked: Arc<Mutex<Vec<Value>>> = Arc::default();
     // Whether the writer, bringing a chapter up to date, finds anything to change.
     let changes = Arc::new(AtomicBool::new(true));
@@ -4053,7 +4053,7 @@ async fn postgres_handbook_writes_checks_and_serves() {
         .fetch_one(&state.pool)
         .await
         .unwrap();
-    assert!(database.starts_with("news_xabc_test"));
+    assert!(database.starts_with("news_handbook_test"));
     sqlx::query("TRUNCATE articles, article_images CASCADE")
         .execute(&state.pool)
         .await
