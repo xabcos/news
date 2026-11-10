@@ -3,7 +3,7 @@ import { $, node, withBusy, toast, reportError, confirmDelete, formatTime } from
 const statusText = { draft: "草稿", pending: "待审", published: "已公开" };
 // Which article it is: a reader's 分享 or 调研, or one of XABC's lines.
 const kind = (article) => article.film ? "解说" : article.person ? "时代" : article.event ? "追踪" : article.product ? "评测"
-  : article.research ? "调研" : "分享";
+  : article.research ? "调研" : article.chapter ? "手册" : "分享";
 
 // 分享 in the workspace: the pen name, the reader's own articles and, for an administrator,
 // whom 时代 writes about next and the articles to review. Requests share the session's abort

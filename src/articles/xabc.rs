@@ -1,4 +1,4 @@
-//! XABC and XAI, the site's own pen names, write on six lines. For 分享, every hour, grok
+//! XABC and XAI, the site's own pen names, write on seven lines. For 分享, every hour, grok
 //! looks through X and the web, and the briefing model through the web, for things worth
 //! sharing; the writing model picks one subject from both sets of finds, reads further where it
 //! needs to and writes it up its own way. XAI does the same every hour for 分享 with what X's
@@ -8,13 +8,16 @@
 //! profile up to date, and first whoever an administrator names (`people`). For 追踪, every two
 //! hours, it follows the hottest event with something new, anew or in the article it already
 //! has (`tracker`). For 数码 · 评测, every two hours, it reviews the product 数码 discusses most
-//! from what reviewers and owners report, or brings its review up to date (`review`).
+//! from what reviewers and owners report, or brings its review up to date (`review`). For
+//! Codex & Claude, every six hours, it writes the handbook's chapters and keeps them in step
+//! with the official documentation (`handbook`).
 //! Articles go out at once under the line's pen name. Their pictures come from the pages the
 //! models cite or are drawn by an image model, and they link only to addresses the models found.
 //! XABC also researches the questions readers ask 调研 the same way, both looking a question up
 //! and the writer making of it a thorough article (`researched`), which goes out under the
 //! reader's pen name (`super::research`).
 mod film;
+mod handbook;
 mod people;
 mod review;
 mod tracker;
@@ -96,16 +99,19 @@ pub(super) enum Line {
     Tracker,
     /// A product reviewed for 数码 · 评测, anew or brought up to date.
     Review,
+    /// The Codex & Claude handbook's chapters, written or brought up to date.
+    Handbook,
 }
 
 impl Line {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Share,
         Self::Trending,
         Self::Film,
         Self::People,
         Self::Tracker,
         Self::Review,
+        Self::Handbook,
     ];
 
     /// The line's mark among the jobs in flight. XABC's and XAI's 分享 share one, so they take
@@ -117,6 +123,7 @@ impl Line {
             Self::People => "__xabc_people__",
             Self::Tracker => "__xabc_tracker__",
             Self::Review => "__xabc_review__",
+            Self::Handbook => "__xabc_handbook__",
         }
     }
 
@@ -124,17 +131,24 @@ impl Line {
     fn email(self) -> &'static str {
         match self {
             Self::Trending => XAI,
-            Self::Share | Self::Film | Self::People | Self::Tracker | Self::Review => EMAIL,
+            Self::Share
+            | Self::Film
+            | Self::People
+            | Self::Tracker
+            | Self::Review
+            | Self::Handbook => EMAIL,
         }
     }
 
     /// How long after its last article the line writes again: 解说 and 评测 follow what 影视
-    /// and 数码 gather through the day, 时代 who is talked about and 追踪 how events move.
+    /// and 数码 gather through the day, 时代 who is talked about and 追踪 how events move; the
+    /// handbook checks its official pages four times a day.
     fn interval(self) -> chrono::Duration {
         match self {
             Self::Share | Self::Trending | Self::People => chrono::Duration::hours(1),
             Self::Tracker | Self::Review => chrono::Duration::hours(2),
             Self::Film => chrono::Duration::hours(4),
+            Self::Handbook => chrono::Duration::hours(6),
         }
     }
 
@@ -150,7 +164,7 @@ impl Line {
                 ("x", "string"),
             ],
             Self::Tracker => &[("event", "string")],
-            Self::Share | Self::Trending | Self::Film | Self::Review => &[],
+            Self::Share | Self::Trending | Self::Film | Self::Review | Self::Handbook => &[],
         }
     }
 }
@@ -297,14 +311,14 @@ fn run(
     });
 }
 
-/// When the line last published, or for 解说, 时代 and 追踪 last revised. An article an
-/// administrator takes back keeps its time.
+/// When the line last published, or for 解说, 时代 and 追踪 last revised, or for the handbook
+/// last checked its chapters. An article an administrator takes back keeps its time.
 pub(super) async fn last(state: &AppState, line: Line) -> Result<Option<DateTime<Utc>>> {
     Ok(sqlx::query_scalar(match line {
         Line::Share | Line::Trending => {
             "SELECT max(a.published_at) FROM articles a JOIN users u ON u.id = a.author_id
              WHERE u.email = $1 AND a.film IS NULL AND a.person IS NULL AND a.event IS NULL
-               AND a.product IS NULL"
+               AND a.product IS NULL AND a.chapter IS NULL"
         }
         Line::Film => {
             "SELECT max(a.updated_at) FROM articles a JOIN users u ON u.id = a.author_id
@@ -322,6 +336,7 @@ pub(super) async fn last(state: &AppState, line: Line) -> Result<Option<DateTime
             "SELECT max(a.updated_at) FROM articles a JOIN users u ON u.id = a.author_id
              WHERE u.email = $1 AND a.product IS NOT NULL"
         }
+        Line::Handbook => return handbook::last(state).await,
     })
     .bind(line.email())
     .fetch_one(&state.pool)
@@ -356,6 +371,7 @@ pub(super) async fn write(
         Line::People => people::write(state, author, since).await.map(Some),
         Line::Tracker => tracker::write(state, author, since).await,
         Line::Review => review::write(state, author, since).await,
+        Line::Handbook => handbook::write(state, author).await,
     }
 }
 
@@ -381,7 +397,7 @@ async fn share(state: &AppState, line: Line, author: i64, since: DateTime<Utc>) 
     let lately: Vec<(String, String)> = sqlx::query_as(
         "SELECT a.title, a.body FROM articles a JOIN users u ON u.id = a.author_id
          WHERE u.email = ANY($1) AND a.film IS NULL AND a.person IS NULL AND a.event IS NULL
-           AND a.product IS NULL AND a.published_at >= NOW() - INTERVAL '7 days'
+           AND a.product IS NULL AND a.chapter IS NULL AND a.published_at >= NOW() - INTERVAL '7 days'
          ORDER BY a.published_at DESC",
     )
     .bind(SHARING)
@@ -698,6 +714,12 @@ impl Scout {
             }
             (Line::Tracker, Self::Web) => {
                 "用 web_search 检索全球中英文新闻媒体和通讯社的报道与跟进，以及当事方的公告、官方通报、监管和法院文件"
+            }
+            (Line::Handbook, Self::X) => {
+                "以 X 为主：用 x_search 按热度（mode 设为 Top）检索中英文开发者对这一章主题的实用分享、配置和经验，也看官方账号和核心成员的帖子，每条线索都要有 X 上的帖子作证据；再用 web_search 查证"
+            }
+            (Line::Handbook, Self::Web) => {
+                "用 web_search 检索官方文档、官方博客与更新日志，GitHub 上被大量收藏的配置与示例仓库，以及技术博客和中文社区（V2EX、知乎、掘金、少数派等）里有干货的文章"
             }
         }
     }
@@ -1440,26 +1462,29 @@ fn plain(text: &str) -> String {
     plain
 }
 
-/// What a 解说, a 时代 profile, a 追踪 article, a 评测 or a research is about: a work by its key
-/// in 影视, a person, a company or an event by theirs, a product by its key in 数码, a reader's
-/// question as asked. Each but a question has one article at most.
+/// What a 解说, a 时代 profile, a 追踪 article, a 评测, a research or a handbook chapter is
+/// about: a work by its key in 影视, a person, a company or an event by theirs, a product by its
+/// key in 数码, a reader's question as asked, a chapter by its key. Each but a question has one
+/// article at most.
 pub(super) enum Subject<'a> {
     Work(&'a str),
     Profile(&'a str),
     Event(&'a str),
     Product(&'a str),
     Question(&'a str),
+    Chapter(&'a str),
 }
 
 impl Subject<'_> {
-    /// The subject in its article's columns: film, person, event, product and question.
-    fn columns(&self) -> [Option<&str>; 5] {
+    /// The subject in its article's columns: film, person, event, product, question and chapter.
+    fn columns(&self) -> [Option<&str>; 6] {
         match *self {
-            Self::Work(key) => [Some(key), None, None, None, None],
-            Self::Profile(key) => [None, Some(key), None, None, None],
-            Self::Event(key) => [None, None, Some(key), None, None],
-            Self::Product(key) => [None, None, None, Some(key), None],
-            Self::Question(question) => [None, None, None, None, Some(question)],
+            Self::Work(key) => [Some(key), None, None, None, None, None],
+            Self::Profile(key) => [None, Some(key), None, None, None, None],
+            Self::Event(key) => [None, None, Some(key), None, None, None],
+            Self::Product(key) => [None, None, None, Some(key), None, None],
+            Self::Question(question) => [None, None, None, None, Some(question), None],
+            Self::Chapter(key) => [None, None, None, None, None, Some(key)],
         }
     }
 }
@@ -1473,7 +1498,8 @@ pub(super) async fn publish(
     subject: Option<Subject<'_>>,
     article: &Finished,
 ) -> Result<Uuid> {
-    let [film, person, event, product, _] = subject.as_ref().map_or([None; 5], Subject::columns);
+    let [film, person, event, product, _, chapter] =
+        subject.as_ref().map_or([None; 6], Subject::columns);
     let mut tx = state.pool.begin().await?;
     sqlx::query("SELECT 1 FROM authors WHERE user_id = $1 FOR UPDATE")
         .bind(author)
@@ -1482,7 +1508,8 @@ pub(super) async fn publish(
     if sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS (SELECT 1 FROM articles
            WHERE author_id = $1 AND published_at >= $2 AND (film IS NULL) = $3
-             AND (person IS NULL) = $4 AND (event IS NULL) = $5 AND (product IS NULL) = $6)",
+             AND (person IS NULL) = $4 AND (event IS NULL) = $5 AND (product IS NULL) = $6
+             AND (chapter IS NULL) = $7)",
     )
     .bind(author)
     .bind(since)
@@ -1490,6 +1517,7 @@ pub(super) async fn publish(
     .bind(person.is_none())
     .bind(event.is_none())
     .bind(product.is_none())
+    .bind(chapter.is_none())
     .fetch_one(&mut *tx)
     .await?
     {
@@ -1512,8 +1540,8 @@ pub(super) async fn save(
     subject: Option<Subject<'_>>,
     article: &Finished,
 ) -> Result<()> {
-    let [film, person, event, product, question] =
-        subject.as_ref().map_or([None; 5], Subject::columns);
+    let [film, person, event, product, question, chapter] =
+        subject.as_ref().map_or([None; 6], Subject::columns);
     let cover = article
         .cover
         .as_ref()
@@ -1521,8 +1549,8 @@ pub(super) async fn save(
         .or_else(|| super::pictures(&article.body, None).first().copied());
     let content = checked(&article.title, &article.body, cover)?;
     sqlx::query(
-        "INSERT INTO articles (id, author_id, title, body, excerpt, status, published_at, film, person, event, product, question)
-         VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $6 = 'published' THEN now() END, $7, $8, $9, $10, $11)",
+        "INSERT INTO articles (id, author_id, title, body, excerpt, status, published_at, film, person, event, product, question, chapter)
+         VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $6 = 'published' THEN now() END, $7, $8, $9, $10, $11, $12)",
     )
     .bind(id)
     .bind(author)
@@ -1535,6 +1563,7 @@ pub(super) async fn save(
     .bind(event)
     .bind(product)
     .bind(question)
+    .bind(chapter)
     .execute(&mut **tx)
     .await?;
     keep(tx, id, article.pictures.iter().chain(&article.cover)).await?;

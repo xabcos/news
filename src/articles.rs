@@ -6,8 +6,9 @@
 //! author's own pages show them through this server. A read counts once a day per browser,
 //! never the author's own. XABC and XAI, the site's own pen names, each publish one every hour
 //! (`xabc`), and XABC writes up what readers ask 调研 to look into under their pen names
-//! (`research`).
+//! (`research`) and keeps the Codex & Claude handbook (`handbook`).
 mod check;
+pub(crate) mod handbook;
 mod pages;
 pub(crate) mod research;
 pub(crate) mod xabc;
@@ -124,6 +125,7 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/api/admin/articles/{id}", patch(review))
         .route("/api/admin/people", post(profile))
         .merge(research::router())
+        .merge(handbook::router())
         .merge(pages::router())
 }
 
@@ -150,9 +152,11 @@ struct Listed {
     product: bool,
     /// Whether it answers a reader's question for 调研.
     research: bool,
+    /// Whether it is a chapter of the Codex & Claude handbook.
+    chapter: bool,
 }
 
-const LISTED: &str = "SELECT a.id, a.title, w.name AS author, a.status, a.held, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person, a.event IS NOT NULL AS event, a.product IS NOT NULL AS product, a.question IS NOT NULL AS research
+const LISTED: &str = "SELECT a.id, a.title, w.name AS author, a.status, a.held, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person, a.event IS NOT NULL AS event, a.product IS NOT NULL AS product, a.question IS NOT NULL AS research, a.chapter IS NOT NULL AS chapter
     FROM articles a JOIN authors w ON w.user_id = a.author_id JOIN users u ON u.id = a.author_id";
 
 /// A search of 分享 or one of XABC's lists: its words, as the page shows them, and the patterns each of

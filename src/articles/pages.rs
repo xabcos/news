@@ -1,9 +1,10 @@
 //! The 分享 pages: public articles newest first, one author's articles, an article, and the
-//! previews its author and an administrator read before readers do. 调研, 解说, 时代 and 追踪
-//! read on the same article page, and 调研's, 时代's and 追踪's lists are 分享's.
+//! previews its author and an administrator read before readers do. 调研, 解说, 时代, 追踪 and
+//! the Codex & Claude handbook's chapters read on the same article page, and 调研's, 时代's and
+//! 追踪's lists are 分享's; a chapter stands at its own address with the contents beside it.
 use super::{
-    COMMENTARY, MARKDOWN, PEOPLE, REVIEWS, Search, TRACKER, commentary_label, image_id, label,
-    missing, parse, people_label, research, reviews_label, tracker_label,
+    COMMENTARY, MARKDOWN, PEOPLE, REVIEWS, Search, TRACKER, commentary_label, handbook, image_id,
+    label, missing, parse, people_label, research, reviews_label, tracker_label,
 };
 use crate::{
     auth::User,
@@ -42,7 +43,7 @@ const FROM: &str = " FROM articles a JOIN authors w ON w.user_id = a.author_id J
 const LIST: Chrome<'static> = Chrome {
     current: "articles",
     section: "reads articles article-cards",
-    stylesheet: "/reads.css?v=22",
+    stylesheet: "/reads.css?v=23",
     script: "/reads.js?v=12",
     feed: ("News", "/feed.xml"),
 };
@@ -103,9 +104,16 @@ const REVIEW: Chrome<'static> = Chrome {
     current: "digital",
     ..ARTICLE
 };
+/// A chapter of the Codex & Claude handbook marks its topic's tab and lays the contents beside
+/// it.
+const CHAPTER: Chrome<'static> = Chrome {
+    current: handbook::TOPIC,
+    section: "reads articles handbook",
+    ..ARTICLE
+};
 
 /// The lists articles are on: 分享, which readers and XABC write, 调研, the research readers ask
-/// for, and XABC's 解说, 时代, 追踪 and 评测.
+/// for, XABC's 解说, 时代, 追踪 and 评测, and the handbook's contents.
 #[derive(Clone, Copy, PartialEq)]
 enum Shelf {
     Shared,
@@ -114,16 +122,25 @@ enum Shelf {
     People,
     Tracked,
     Reviewed,
+    Handbook,
 }
 
 impl Shelf {
-    fn of(film: bool, person: bool, event: bool, product: bool, research: bool) -> Self {
-        match (film, person, event, product, research) {
+    fn of(
+        film: bool,
+        person: bool,
+        event: bool,
+        product: bool,
+        research: bool,
+        chapter: bool,
+    ) -> Self {
+        match (film, person, event, product, research, chapter) {
             (true, ..) => Self::Explained,
             (_, true, ..) => Self::People,
             (_, _, true, ..) => Self::Tracked,
-            (_, _, _, true, _) => Self::Reviewed,
-            (.., true) => Self::Researched,
+            (_, _, _, true, ..) => Self::Reviewed,
+            (_, _, _, _, true, _) => Self::Researched,
+            (.., true) => Self::Handbook,
             _ => Self::Shared,
         }
     }
@@ -132,13 +149,14 @@ impl Shelf {
     fn articles(self) -> &'static str {
         match self {
             Self::Shared => {
-                " AND a.film IS NULL AND a.person IS NULL AND a.event IS NULL AND a.product IS NULL AND a.question IS NULL"
+                " AND a.film IS NULL AND a.person IS NULL AND a.event IS NULL AND a.product IS NULL AND a.question IS NULL AND a.chapter IS NULL"
             }
             Self::Researched => " AND a.question IS NOT NULL",
             Self::Explained => " AND a.film IS NOT NULL",
             Self::People => " AND a.person IS NOT NULL",
             Self::Tracked => " AND a.event IS NOT NULL",
             Self::Reviewed => " AND a.product IS NOT NULL",
+            Self::Handbook => " AND a.chapter IS NOT NULL",
         }
     }
 
@@ -151,6 +169,7 @@ impl Shelf {
             Self::People => (PEOPLE, people_label),
             Self::Tracked => (TRACKER, tracker_label),
             Self::Reviewed => (REVIEWS, reviews_label),
+            Self::Handbook => (handbook::PATH, handbook::label),
         }
     }
 
@@ -161,9 +180,12 @@ impl Shelf {
     }
 
     /// Whether an article on the shelf is as new as its last update: XABC brings profiles,
-    /// events and reviews up to date as they move.
+    /// events, reviews and the handbook's chapters up to date as they move.
     fn updated(self) -> bool {
-        matches!(self, Self::People | Self::Tracked | Self::Reviewed)
+        matches!(
+            self,
+            Self::People | Self::Tracked | Self::Reviewed | Self::Handbook
+        )
     }
 
     /// What dates an article on the shelf, and orders its list.
@@ -194,7 +216,8 @@ pub(super) fn router() -> Router<AppState> {
             .route(COMMENTARY, get(commentary))
             .route(PEOPLE, get(people))
             .route(TRACKER, get(tracker))
-            .route(REVIEWS, get(reviews)),
+            .route(REVIEWS, get(reviews))
+            .route("/agents/{chapter}", get(chapter)),
     )
     .route("/articles/sitemap.xml", get(sitemap))
     .route("/articles/worth.json", get(worth))
@@ -205,14 +228,16 @@ pub(super) fn router() -> Router<AppState> {
 /// The list and the public articles, at their Chinese addresses: an article is written in one
 /// language, and its English page only translates the site around it.
 async fn sitemap(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
-    let rows: Vec<(Uuid, DateTime<Utc>)> =
-        QueryBuilder::<Postgres>::new("SELECT a.id, a.updated_at")
-            .push(FROM)
-            .push(" AND a.status = 'published' ORDER BY a.published_at, a.id LIMIT ")
-            .push_bind(SITEMAP_SIZE)
-            .build_query_as()
-            .fetch_all(&state.pool)
-            .await?;
+    // A chapter has an address of its own, under the handbook's.
+    let rows: Vec<(Uuid, DateTime<Utc>)> = QueryBuilder::<Postgres>::new(
+        "SELECT a.id, a.updated_at",
+    )
+    .push(FROM)
+    .push(" AND a.status = 'published' AND a.chapter IS NULL ORDER BY a.published_at, a.id LIMIT ")
+    .push_bind(SITEMAP_SIZE)
+    .build_query_as()
+    .fetch_all(&state.pool)
+    .await?;
     let mut xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">".to_owned();
     for list in [
         "/articles",
@@ -226,6 +251,16 @@ async fn sitemap(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
             xml,
             "<url><loc>{}</loc></url>",
             escape(&absolute(&state, list))
+        );
+    }
+    for (path, updated_at) in handbook::listed(&state).await? {
+        let _ = write!(
+            xml,
+            "<url><loc>{}</loc>{}</url>",
+            escape(&absolute(&state, &path)),
+            updated_at
+                .map(|at| format!("<lastmod>{}</lastmod>", at.to_rfc3339()))
+                .unwrap_or_default()
         );
     }
     for (id, updated_at) in rows {
@@ -322,6 +357,8 @@ struct Article {
     product: bool,
     /// The reader's question it researches for 调研.
     question: Option<String>,
+    /// The handbook chapter it is, by key.
+    chapter: Option<String>,
 }
 
 #[derive(FromRow)]
@@ -683,7 +720,8 @@ struct Worth {
 /// 精选, which opens ALL: the four newest 分享 XABC and XAI wrote, newest first, then the four
 /// hottest of the last 30 days of 分享 and XABC's other lists together, ranked as 热读 is, each
 /// article once; while few are read, the newest fill the places. 解说 is among them, and its
-/// list among the page's links, while 影视, whose works it explains, is public.
+/// list among the page's links, while 影视, whose works it explains, is public. The handbook's
+/// chapters, kept up to date rather than news, are not.
 async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
     let commentary = state
         .digest
@@ -698,7 +736,7 @@ async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Resp
     .push_bind(super::xabc::SHARING)
     .push(
         ") AND u.status AND a.status = 'published' AND a.film IS NULL AND a.person IS NULL AND a.event IS NULL
-               AND a.product IS NULL
+               AND a.product IS NULL AND a.chapter IS NULL
              ORDER BY a.published_at DESC, a.id DESC LIMIT 4)
          SELECT a.id, a.title, a.views, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person,
                 a.event IS NOT NULL AS event, a.product IS NOT NULL AS product,
@@ -707,7 +745,8 @@ async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Resp
          FROM articles a JOIN users u ON u.id = a.author_id
          LEFT JOIN article_images i ON i.id = a.cover
          LEFT JOIN newest n ON n.id = a.id
-         WHERE u.status AND a.status = 'published' AND a.published_at >= NOW() - INTERVAL '30 days'",
+         WHERE u.status AND a.status = 'published' AND a.chapter IS NULL
+           AND a.published_at >= NOW() - INTERVAL '30 days'",
     )
     .push(if commentary { "" } else { " AND a.film IS NULL" })
     .push(" ORDER BY n.published_at DESC NULLS LAST, ")
@@ -1051,6 +1090,35 @@ async fn detail(
     ))
 }
 
+/// A chapter of the Codex & Claude handbook, at its own address.
+async fn chapter(
+    State(state): State<AppState>,
+    reader: Reader,
+    Path(key): Path<String>,
+    Query(params): Query<Params>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    let id: Uuid = match handbook::chapter(&key) {
+        Some(chapter) => sqlx::query_scalar("SELECT id FROM articles WHERE chapter = $1")
+            .bind(chapter.key)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or_else(missing)?,
+        None => return Err(missing()),
+    };
+    let mode = if reader.is_admin() {
+        Mode::Review
+    } else {
+        Mode::Public
+    };
+    let html = render(&state, id, params.english(), mode).await?;
+    Ok(conditional(
+        &headers,
+        &Rendered::new(html),
+        "text/html; charset=utf-8",
+    ))
+}
+
 /// The author's preview of their own article, or an administrator's of any, as it would read.
 async fn preview(
     State(state): State<AppState>,
@@ -1075,7 +1143,7 @@ async fn preview(
 
 async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<String> {
     let mut query = QueryBuilder::<Postgres>::new(
-        "SELECT a.id, a.author_id, w.name AS author, a.title, a.body, a.excerpt, a.cover, a.status, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person, a.event IS NOT NULL AS event, a.product IS NOT NULL AS product, a.question",
+        "SELECT a.id, a.author_id, w.name AS author, a.title, a.body, a.excerpt, a.cover, a.status, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person, a.event IS NOT NULL AS event, a.product IS NOT NULL AS product, a.question, a.chapter",
     );
     query.push(FROM).push(" AND a.id = ").push_bind(id);
     match mode {
@@ -1125,7 +1193,17 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
         article.event,
         article.product,
         article.question.is_some(),
+        article.chapter.is_some(),
     );
+    // A chapter is read while its topic is shown, as its contents are; an administrator also
+    // reads one hidden.
+    let chapter = article.chapter.as_deref().and_then(handbook::chapter);
+    if article.chapter.is_some()
+        && mode == Mode::Public
+        && Reader::Public.check(state, handbook::TOPIC).is_err()
+    {
+        return Err(missing());
+    }
     // A profile or an event is as new as its last update.
     let date = if shelf.updated() {
         article.updated_at
@@ -1214,8 +1292,22 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
             )
         })
         .unwrap_or_default();
+    // A chapter stands under its group in the handbook, dated by its last update.
+    let (crumb, updated) = chapter
+        .map(|chapter| {
+            (
+                format!(
+                    "<p class=handbook-crumb><a href=\"{}\">{}</a> · {}</p>",
+                    localized(handbook::PATH, en),
+                    escape(handbook::label(en)),
+                    chapter.group(en)
+                ),
+                choose(en, "更新于 ", "Updated "),
+            )
+        })
+        .unwrap_or_default();
     let mut content = format!(
-        "{notice}<article class=\"read article\">{}<header class=read-heading><div class=read-title><h1>{}</h1></div><div class=item-meta><a href=\"{}\">{}</a> · <time datetime=\"{}\">{}</time> · {views}</div>{asked}</header><div class=read-body>{body}</div></article>",
+        "{notice}<article class=\"read article\">{}<header class=read-heading>{crumb}<div class=read-title><h1>{}</h1></div><div class=item-meta><a href=\"{}\">{}</a> · <time datetime=\"{}\">{updated}{}</time> · {views}</div>{asked}</header><div class=read-body>{body}</div></article>",
         // A profile's cover, its subject's portrait, stands for it on the lists, and so does an
         // event's, the first picture it shows; the page opens with the writer's own pictures.
         cover
@@ -1235,14 +1327,29 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
         date.to_rfc3339(),
         date.with_timezone(&state.config.timezone).format(shelf.stamp()),
     );
+    let shown = match chapter {
+        Some(_) => handbook::shown(state).await?,
+        None => HashMap::new(),
+    };
+    if let Some(chapter) = chapter {
+        content.push_str(&handbook::steps(&shown, chapter.key, en));
+    }
     let _ = write!(
         content,
         "<div class=read-actions><a href=\"{}\">← {name}</a></div>",
         localized(list, en),
     );
-    let path = match mode {
-        Mode::Author(_) => format!("/api/articles/{}/preview", article.id),
-        Mode::Public | Mode::Review => format!("/articles/{}", article.id),
+    // The handbook's contents stand beside a chapter, whose address is its own.
+    if let Some(chapter) = chapter {
+        content = format!(
+            "<div class=handbook-layout>{}<div class=handbook-main>{content}</div></div>",
+            handbook::contents(&shown, chapter.key, en)
+        );
+    }
+    let path = match (mode, chapter) {
+        (Mode::Author(_), _) => format!("/api/articles/{}/preview", article.id),
+        (_, Some(chapter)) => chapter.path(),
+        (Mode::Public | Mode::Review, None) => format!("/articles/{}", article.id),
     };
     let canonical = absolute(state, &localized(&path, en));
     let mut structured = json!({
@@ -1274,6 +1381,7 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
             Shelf::People => &PROFILE,
             Shelf::Tracked => &TRACKING,
             Shelf::Reviewed => &REVIEW,
+            Shelf::Handbook => &CHAPTER,
         },
     ))
 }

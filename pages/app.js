@@ -631,8 +631,9 @@ function renderTabs() {
   el.lang?.setAttribute("href", `${other.pathname}${other.search}`);
   el.tabs.querySelectorAll("[data-own]").forEach((tab) => tab.remove());
   if (state.personal) el.tabs.append(...state.topics.filter((topic) => topic.own).map(ownTab));
+  // A tab that opens a page of its own may still name the topic whose feed this is.
   for (const tab of el.tabs.children) {
-    if (tabTopic(tab) === state.topic) tab.setAttribute("aria-current", "true");
+    if ((tab.dataset.topic ?? tabTopic(tab)) === state.topic) tab.setAttribute("aria-current", "true");
     else tab.removeAttribute("aria-current");
   }
   // Browser back/forward, a reader's own topics and the tabs' own links can all select a tab

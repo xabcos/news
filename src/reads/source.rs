@@ -37,6 +37,8 @@ pub(crate) enum Content {
     Html,
     Json,
     Feed,
+    /// A page's Markdown twin, as documentation sites give machine readers.
+    Markdown,
     Image(usize),
 }
 
@@ -54,6 +56,7 @@ pub(crate) async fn download(
         Content::Image(limit) => (&media::IMAGE_TYPES, limit as u64),
         Content::Json => (&["application/json"], MAX_BYTES),
         Content::Html => (&["text/html", "application/xhtml+xml"], MAX_BYTES),
+        Content::Markdown => (&["text/markdown", "text/plain"], MAX_BYTES),
         Content::Feed => (
             &[
                 "application/rss+xml",

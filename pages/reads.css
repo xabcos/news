@@ -24,7 +24,7 @@
 .read-deck { color: var(--muted); font-size: 1rem; line-height: 1.8; }
 .read-heading .item-meta a { text-decoration: none; }
 .read-body { font-size: 1.05rem; line-height: 1.95; overflow-wrap: anywhere; }
-.read-body p, .read-body ul, .read-body ol, .read-body pre, .read-body blockquote { margin: 0 0 1.5rem; }
+.read-body p, .read-body ul, .read-body ol, .read-body pre, .read-body blockquote, .read-body table { margin: 0 0 1.5rem; }
 .read-body h1, .read-body h2, .read-body h3 { margin: 2.3rem 0 .9rem; font-size: 1.2rem; line-height: 1.6; text-wrap: balance; }
 .read-body li + li { margin-top: .5rem; }
 .read-body a { text-decoration-color: var(--line-strong); text-underline-offset: .2em; }
@@ -80,8 +80,55 @@
 .article-status { white-space: nowrap; }
 .article-actions { display: flex; flex-wrap: wrap; gap: .5rem; color: var(--text); }
 .article-actions a { color: inherit; text-decoration: none; }
+/* Codex & Claude: the handbook's contents by group in two columns on a wide screen, then the latest news and the official documentation. */
+.handbook .reads-heading { flex-wrap: wrap; row-gap: .55rem; }
+.handbook .reads-heading p { order: 1; flex: 1 0 100%; white-space: normal; line-height: 1.7; }
+.handbook-book { margin-left: auto; color: var(--primary-strong); font-size: .85rem; text-decoration: none; white-space: nowrap; }
+.handbook-group { break-inside: avoid; margin-bottom: 2.2rem; }
+.handbook-group h2, .handbook-news h2, .handbook-docs h2 { display: flex; align-items: baseline; justify-content: space-between; margin: 0 0 .35rem; color: var(--muted); font-size: .8rem; font-weight: 500; letter-spacing: .04em; }
+.handbook-group ol, .handbook-news ol { margin: 0; padding: 0; list-style: none; }
+.handbook-group li { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 1rem; align-items: baseline; padding: .75rem 0; border-top: 1px solid var(--line); }
+.handbook-group li a { font-weight: 650; text-decoration: none; }
+.handbook-group li p { grid-column: 1 / -1; margin: .2rem 0 0; color: var(--muted); font-size: .85rem; line-height: 1.65; }
+.handbook-group time, .handbook-news time { color: var(--muted); font-size: .78rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.handbook-news, .handbook-docs { margin-top: 1rem; }
+.handbook-news h2 a { color: var(--primary-strong); font-size: .8rem; letter-spacing: 0; text-decoration: none; }
+.handbook-news li { display: flex; align-items: baseline; gap: .85rem; padding: .6rem 0; border-top: 1px solid var(--line); line-height: 1.6; }
+.handbook-news li a { flex: 1; min-width: 0; text-decoration: none; }
+.handbook-news li span { flex-shrink: 0; color: var(--muted); font-size: .75rem; }
+.handbook-docs { margin-top: 2.6rem; }
+.handbook-docs dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .65rem 1.6rem; margin: 0; padding-top: .75rem; border-top: 1px solid var(--line); font-size: .9rem; line-height: 1.6; }
+.handbook-docs dt { font-weight: 600; }
+.handbook-docs dd { margin: 0; color: var(--muted); }
+.handbook-docs a { color: var(--text); text-decoration: none; }
+:is(.handbook-group, .handbook-news, .handbook-docs) a:hover { color: var(--primary-strong); }
+@media (min-width: 960px) {
+  .public.handbook-hub .shell { max-width: 62rem; }
+  .public.handbook-hub .back-to-top { right: max(calc(1rem + env(safe-area-inset-right, 0px)), calc((100% - 62rem) / 2 - 3.75rem)); }
+  .handbook-groups { columns: 2; column-gap: 3.5rem; }
+}
+/* A chapter reads like an article under its group, the chapters before and after it at its end; on a wide screen the contents stand beside it, in view while it scrolls. */
+.handbook-crumb { margin: 0 0 .5rem; color: var(--muted); font-size: .8rem; }
+.handbook-crumb a { color: inherit; text-decoration: none; }
+.handbook-crumb a:hover, .handbook-steps a:hover { color: var(--primary-strong); }
+.handbook-steps { display: flex; justify-content: space-between; gap: 1rem; margin-top: 2.5rem; padding-top: 1.2rem; border-top: 1px solid var(--line); font-size: .9rem; }
+.handbook-steps a { max-width: 48%; text-decoration: none; }
+.handbook-steps [rel=next] { margin-left: auto; text-align: right; }
+.handbook-side { display: none; }
+@media (min-width: 1200px) {
+  .public.handbook .shell { max-width: 67rem; }
+  .public.handbook .back-to-top { right: max(calc(1rem + env(safe-area-inset-right, 0px)), calc((100% - 67rem) / 2 - 3.75rem)); }
+  .handbook-layout { display: grid; grid-template-columns: 15rem minmax(0, 46rem); gap: 3.5rem; align-items: start; }
+  .handbook-side { display: block; position: sticky; top: 4.5rem; max-height: calc(100vh - 6rem); overflow-y: auto; padding: 0 .4rem 1rem 0; font-size: .88rem; line-height: 1.55; }
+}
+.handbook-side h2 { margin: 1.3rem 0 .3rem .6rem; color: var(--muted); font-size: .76rem; font-weight: 500; }
+.handbook-side ul { margin: 0; padding: 0; list-style: none; }
+.handbook-side a { display: block; padding: .3rem .6rem; border-radius: var(--radius-m); color: var(--muted); text-decoration: none; }
+.handbook-side a:hover { color: var(--text); }
+.handbook-side .handbook-home { color: var(--text); font-weight: 650; }
+.handbook-side a[aria-current] { background: var(--surface-soft); color: var(--primary-strong); }
 @media (max-width: 768px) {
-  .reads-list, .read-heading, .read-source, .read-actions, .read-related,
+  .reads-list, .read-heading, .read-source, .read-actions, .read-related, .handbook-groups, .handbook-news, .handbook-docs,
   .read-body :is(p, h1, h2, h3, h4, h5, h6) { touch-action: pan-y pinch-zoom; }
   .reads-heading { flex-wrap: wrap; gap: .6rem .8rem; }
   .reads-heading p { flex: 1 1 0; }

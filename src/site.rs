@@ -119,7 +119,7 @@ async fn home(
   <script src="{STATS_SCRIPT}" data-track-url="{track_url}" defer></script>
   <script src="{PUBLIC_SCRIPT}" defer></script>
   <script src="/travel.js?v=13" defer></script>
-  <script src="/app.js?v=56" defer></script>
+  <script src="/app.js?v=57" defer></script>
   <!-- async: a slow third-party banner must not hold back DOMContentLoaded, which starts app.js. -->
   <script src="https://broadcast.xairouter.com/embed.js" async></script>
 </body>
@@ -785,8 +785,13 @@ pub(crate) fn tabs(topics: &[TopicMeta], current: &str, en: bool) -> String {
             }
             continue;
         }
+        // Codex & Claude's tab opens the handbook, which leads to the topic's feed here; there
+        // app.js marks it by its topic.
+        let handbook = id == crate::articles::handbook::TOPIC;
         let href = if PAGE_TOPICS.contains(&id.as_str()) {
             localized(&format!("/{id}"), en)
+        } else if handbook {
+            localized(crate::articles::handbook::PATH, en)
         } else {
             let mut query = url::form_urlencoded::Serializer::new(String::new());
             query.append_pair("topic", id);
@@ -797,8 +802,13 @@ pub(crate) fn tabs(topics: &[TopicMeta], current: &str, en: bool) -> String {
         };
         let _ = write!(
             tabs,
-            "<a class=tab href=\"{}\"{}>{}</a>",
+            "<a class=tab href=\"{}\"{}{}>{}</a>",
             escape(&href),
+            if handbook {
+                format!(" data-topic={id}")
+            } else {
+                String::new()
+            },
             marked(id),
             escape(choose(en, &topic.name, &topic.name_en))
         );

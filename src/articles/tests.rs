@@ -1,8 +1,12 @@
 use super::*;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU8, Ordering},
 };
+
+/// The edition the official pages on hooks are at, which the handbook's test moves on; the
+/// others stay as they are.
+static HOOKS_EDITION: AtomicU8 = AtomicU8::new(0);
 
 /// A JPEG of noise, which compresses badly: at 400×300 it is larger than the 64 KiB that other
 /// requests may carry.
@@ -181,6 +185,10 @@ async fn tmpfile(picture: Vec<u8>) -> (String, reqwest::Client, Arc<AtomicBool>)
         "x.com".into(),
         "pbs.twimg.com".into(),
         "abs.twimg.com".into(),
+        "code.claude.com".into(),
+        "learn.chatgpt.com".into(),
+        "platform.claude.com".into(),
+        "developers.openai.com".into(),
     ])
     .unwrap();
     let root = reqwest::Certificate::from_der(cert.cert.der()).unwrap();
@@ -275,6 +283,17 @@ async fn tmpfile(picture: Vec<u8>) -> (String, reqwest::Client, Arc<AtomicBool>)
                         "<html><head><meta property=\"og:image\" content=\"{picture}\"></head></html>"
                     );
                     ("text/html", page.into_bytes())
+                } else if path.contains(".md") {
+                    // An official documentation page, as its Markdown twin reads.
+                    let edition = if path.contains("hooks") {
+                        HOOKS_EDITION.load(Ordering::SeqCst)
+                    } else {
+                        0
+                    };
+                    let page = format!(
+                        "# {path}\n\nRun `claude -p` with `--output-format json`, set `CLAUDE_CODE_USE_BEDROCK` and `model` to claude-opus-5-5. Edition {edition}."
+                    );
+                    ("text/markdown; charset=utf-8", page.into_bytes())
                 } else if path.starts_with("/profile_images/") {
                     ("image/jpeg", jpeg(300, 300))
                 } else if path == "/files/scene.jpg" {
@@ -3918,4 +3937,427 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
             .unwrap()
             .contains("- 大家都在聊的一件事\n")
     }));
+}
+
+/// The Codex & Claude handbook from start to finish against stand-ins for the AI service and the
+/// official documentation: every chapter written in one round, the one whose code named an option
+/// the documentation lacks written again, and none drawn; nothing due the round after; a chapter
+/// whose official pages changed brought up to date, then left as it is when the writer finds
+/// nothing to change; a chapter the topic's news piles up on brought up to date; the handbook's
+/// page, chapters, book and sitemap while its topic is shown, and nothing once it is hidden; and
+/// no writing while the topic collects nothing.
+#[tokio::test]
+#[ignore = "requires NEWS_XABC_TEST_DATABASE_URL and local test configuration"]
+async fn postgres_handbook_writes_checks_and_serves() {
+    use crate::{
+        articles::handbook::{CHAPTERS, TOPIC},
+        config::Config,
+    };
+    use axum::routing::post;
+    use sha2::{Digest, Sha256};
+    use std::sync::Mutex;
+    let database_url =
+        std::env::var("NEWS_XABC_TEST_DATABASE_URL").expect("disposable database URL");
+    let asked: Arc<Mutex<Vec<Value>>> = Arc::default();
+    // Whether the writer, bringing a chapter up to date, finds anything to change.
+    let changes = Arc::new(AtomicBool::new(true));
+    // Whether the writer, told to check what the official pages lack, comes back empty.
+    let blank = Arc::new(AtomicBool::new(true));
+    // Whether an administrator saves the Hooks chapter while the writer checks it.
+    let saving = Arc::new(AtomicBool::new(false));
+    let admin = sqlx::PgPool::connect_lazy(&database_url).unwrap();
+    let reply = |text: Value| {
+        json!({
+            "id": "resp_handbook", "status": "completed",
+            "output": [{ "type": "message", "content": [{
+                "type": "output_text", "text": text.to_string(), "annotations": [],
+            }] }],
+            "usage": { "input_tokens": 100, "output_tokens": 50 },
+        })
+    };
+    let ai = axum::Router::new().route(
+        "/v1/responses",
+        post({
+            let (asked, changes, blank, saving) =
+                (asked.clone(), changes.clone(), blank.clone(), saving.clone());
+            move |Json(request): Json<Value>| {
+                let (asked, changes, blank, saving, admin) = (
+                    asked.clone(),
+                    changes.clone(),
+                    blank.clone(),
+                    saving.clone(),
+                    admin.clone(),
+                );
+                async move {
+                    asked.lock().unwrap().push(request.clone());
+                    if request["text"]["format"]["name"] == "finds" {
+                        return Json(reply(json!({ "finds": [{
+                            "title": "钩子的用法", "why": "有用", "points": "退出码 2 拦住动作",
+                            "sources": ["https://x.com/dev/status/1"], "pictures": [],
+                        }] })));
+                    }
+                    let input = request["input"][0]["content"].as_str().unwrap_or_default();
+                    let revising = request["instructions"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .contains("这次是更新");
+                    // A new Hooks chapter names an option no official page has, until it is told.
+                    let hooks = input.contains("这一章：「Hooks」");
+                    let checking = input.contains("都找不到");
+                    let odd = hooks && !revising && !checking;
+                    if hooks && revising && saving.load(Ordering::SeqCst) {
+                        sqlx::query(
+                            "UPDATE articles SET revision = revision + 1 WHERE chapter = 'hooks'",
+                        )
+                        .execute(&admin)
+                        .await
+                        .unwrap();
+                    }
+                    let body = if (revising && !changes.load(Ordering::SeqCst))
+                        || (checking && blank.load(Ordering::SeqCst))
+                    {
+                        String::new()
+                    } else {
+                        format!(
+                            "{}\n\n```bash\nclaude -p \"总结\" --output-format json{}\n```\n\n看[官方文档](https://code.claude.com/docs/zh-CN/hooks)和[别处](https://elsewhere.example/x)。",
+                            if revising { "更新后的内容，" } else { "这一章的内容，" }.repeat(80),
+                            if odd { " --made-up" } else { "" }
+                        )
+                    };
+                    Json(reply(json!({
+                        "title": "写作给的标题", "body": body,
+                        "pictures": [{ "page": "", "prompt": "一幅插图", "caption": "图" }],
+                        "cover": "封面",
+                    })))
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ai_base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, ai).await.unwrap() });
+    let mut config = Config::from_env().unwrap();
+    config.database_url = database_url;
+    config.redis_addr = None;
+    config.scheduler_enabled = false;
+    config.ai_base_url = ai_base.parse().unwrap();
+    config.ai_api_key = "fixture".into();
+    let (media, client, _) = tmpfile(jpeg(400, 300)).await;
+    config.tmpfile_base_url = media.parse().unwrap();
+    config.tmpfile_api_key = "fixture".into();
+    let mut state = AppState::new(config).await.unwrap();
+    // The official pages are read through the same local server.
+    state.origin_http = client.clone();
+    state.http = client;
+    let database: String = sqlx::query_scalar("SELECT current_database()")
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert!(database.starts_with("news_xabc_test"));
+    sqlx::query("TRUNCATE articles, article_images CASCADE")
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO topics (id, name, name_en, brief) VALUES ($1, 'Codex & Claude', 'Codex & Claude', 'Claude Code 与 Codex')
+         ON CONFLICT (id) DO UPDATE SET enabled = true, visible = true",
+    )
+    .bind(TOPIC)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM items WHERE topic_id = $1")
+        .bind(TOPIC)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    state.digest.reload_topics(&state).await.unwrap();
+    HOOKS_EDITION.store(0, Ordering::SeqCst);
+    let line = xabc::Line::Handbook;
+    let author = xabc::author(&state, line).await.unwrap();
+    assert_eq!(xabc::last(&state, line).await.unwrap(), None);
+
+    // A round writes the chapters in order until the writer, told to check the Hooks chapter's
+    // option the official pages lack, comes back empty: that draft doesn't go out.
+    assert!(matches!(
+        xabc::write(&state, line, Utc::now()).await,
+        Err(AppError::Internal(message)) if message.contains("核对后的正文是空的")
+    ));
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM articles WHERE chapter IS NOT NULL")
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        before as usize,
+        CHAPTERS
+            .iter()
+            .position(|chapter| chapter.key == "hooks")
+            .unwrap()
+    );
+    // The next round writes the rest under their own titles, without pictures, each checked
+    // against all its official pages; the Hooks chapter is written again without the option.
+    blank.store(false, Ordering::SeqCst);
+    let last = xabc::write(&state, line, Utc::now())
+        .await
+        .unwrap()
+        .unwrap();
+    #[derive(sqlx::FromRow)]
+    struct Chapter {
+        id: Uuid,
+        chapter: String,
+        title: String,
+        body: String,
+        status: String,
+        revision: i32,
+        author_id: i64,
+        sources: Value,
+        checked_at: DateTime<Utc>,
+    }
+    let chapters = || async {
+        sqlx::query_as::<_, Chapter>(
+            "SELECT id, chapter, title, body, status, revision, author_id, sources, checked_at
+             FROM articles WHERE chapter IS NOT NULL",
+        )
+        .fetch_all(&state.pool)
+        .await
+        .unwrap()
+    };
+    let written = chapters().await;
+    assert_eq!(written.len(), CHAPTERS.len());
+    for chapter in &CHAPTERS {
+        let article = written
+            .iter()
+            .find(|article| article.chapter == chapter.key)
+            .unwrap();
+        assert_eq!(
+            (
+                article.title.as_str(),
+                article.status.as_str(),
+                article.revision
+            ),
+            (chapter.title, "published", 1)
+        );
+        assert_eq!(article.author_id, author);
+        assert_eq!(
+            article.sources.as_object().unwrap().len(),
+            chapter.pages.len(),
+            "{}",
+            chapter.key
+        );
+    }
+    assert_eq!(
+        last,
+        written
+            .iter()
+            .find(|article| article.chapter == "sdk")
+            .unwrap()
+            .id
+    );
+    let hooks = written
+        .iter()
+        .find(|article| article.chapter == "hooks")
+        .unwrap();
+    assert!(hooks.body.contains("--output-format json\n```"));
+    assert!(!hooks.body.contains("--made-up"));
+    assert!(
+        hooks
+            .body
+            .contains("[官方文档](https://code.claude.com/docs/zh-CN/hooks)")
+    );
+    assert!(hooks.body.contains("和别处。"));
+    let requests = asked.lock().unwrap().clone();
+    let drafts: Vec<&str> = requests
+        .iter()
+        .filter(|request| request["text"]["format"]["name"] == "article")
+        .map(|request| request["input"][0]["content"].as_str().unwrap())
+        .collect();
+    // Every chapter's draft, and the Hooks chapter's first draft and its check twice.
+    assert_eq!(drafts.len(), CHAPTERS.len() + 3);
+    assert!(drafts.iter().any(|input| {
+        input.contains("这一章：「Hooks」") && input.contains("不是能解析的 JSON：--made-up")
+    }));
+    assert!(
+        drafts
+            .iter()
+            .all(|input| input.contains("官方文档原文（以此为准）"))
+    );
+    let pictures: i64 = sqlx::query_scalar("SELECT count(*) FROM article_images")
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(pictures, 0);
+    let checked = written.iter().map(|article| article.checked_at).max();
+    assert_eq!(xabc::last(&state, line).await.unwrap(), checked);
+
+    // Nothing changed: the next round leaves every chapter as it is.
+    assert_eq!(xabc::write(&state, line, Utc::now()).await.unwrap(), None);
+    assert!(chapters().await.iter().all(|article| article.revision == 1));
+
+    // The official pages on hooks change: their chapter is brought up to date, told which.
+    HOOKS_EDITION.store(1, Ordering::SeqCst);
+    let before = asked.lock().unwrap().len();
+    assert_eq!(
+        xabc::write(&state, line, Utc::now()).await.unwrap(),
+        Some(hooks.id)
+    );
+    let revised = chapters()
+        .await
+        .into_iter()
+        .find(|article| article.chapter == "hooks")
+        .unwrap();
+    assert_eq!(revised.revision, 2);
+    assert!(revised.body.starts_with("更新后的内容，"));
+    assert_ne!(revised.sources, hooks.sources);
+    let revision = asked.lock().unwrap()[before..].to_vec();
+    assert_eq!(revision.len(), 1);
+    let input = revision[0]["input"][0]["content"].as_str().unwrap();
+    assert!(input.contains("hooks-guide】（自上次核对以来有改动）"));
+    assert!(input.contains("现有全文：\n标题：Hooks"));
+
+    // They change again, and the writer finds nothing to change, but an administrator saved the
+    // chapter meanwhile: nothing is noted, and the next round checks it again. Then, with the
+    // writer still finding nothing to change, only the check moves.
+    HOOKS_EDITION.store(2, Ordering::SeqCst);
+    changes.store(false, Ordering::SeqCst);
+    saving.store(true, Ordering::SeqCst);
+    assert_eq!(xabc::write(&state, line, Utc::now()).await.unwrap(), None);
+    saving.store(false, Ordering::SeqCst);
+    let saved = chapters()
+        .await
+        .into_iter()
+        .find(|article| article.chapter == "hooks")
+        .unwrap();
+    assert_eq!(
+        (saved.revision, saved.checked_at, &saved.sources),
+        (3, revised.checked_at, &revised.sources)
+    );
+    assert_eq!(xabc::write(&state, line, Utc::now()).await.unwrap(), None);
+    let kept = chapters()
+        .await
+        .into_iter()
+        .find(|article| article.chapter == "hooks")
+        .unwrap();
+    assert_eq!((kept.revision, kept.body), (3, revised.body));
+    assert!(kept.checked_at > revised.checked_at);
+    assert_ne!(kept.sources, revised.sources);
+
+    // News on MCP piles up a day after its chapter's check: that chapter is brought up to date,
+    // from the news.
+    changes.store(true, Ordering::SeqCst);
+    let mcp = written
+        .iter()
+        .find(|article| article.chapter == "mcp")
+        .unwrap();
+    sqlx::query("UPDATE articles SET checked_at = now() - INTERVAL '2 days' WHERE id = $1")
+        .bind(mcp.id)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    for n in 1..=3 {
+        let url = format!("https://x.com/dev/status/{n}");
+        sqlx::query(
+            "INSERT INTO items (id, topic_id, day, fingerprint, title, summary, url)
+             VALUES ($1, $2, CURRENT_DATE, $3, $4, '配置写法', $5)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(TOPIC)
+        .bind(Sha256::digest(url.as_bytes()).to_vec())
+        .bind(format!("Claude Code 的 MCP 服务器配置 {n}"))
+        .bind(&url)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    }
+    let before = asked.lock().unwrap().len();
+    assert_eq!(
+        xabc::write(&state, line, Utc::now()).await.unwrap(),
+        Some(mcp.id)
+    );
+    let input = asked.lock().unwrap()[before]["input"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(input.contains("这一章：「MCP」"));
+    assert!(input.contains("｜Claude Code 的 MCP 服务器配置 3｜配置写法｜"));
+
+    // The handbook's page lists the chapters by group and the topic's news; a chapter stands at
+    // its own address with the contents beside it; the book holds them all in order.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let router = crate::web::router(state.clone());
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let get = |path: String| {
+        let request = http.get(format!("{base}{path}"));
+        async move {
+            let response = request.send().await.unwrap();
+            (response.status().as_u16(), response.text().await.unwrap())
+        }
+    };
+    let (status, hub) = get("/agents".into()).await;
+    assert_eq!(status, 200);
+    for chapter in &CHAPTERS {
+        assert!(hub.contains(&format!("href=\"/agents/{}\"", chapter.key)));
+    }
+    assert!(hub.contains("Claude Code 的 MCP 服务器配置 3"));
+    assert!(hub.contains("href=\"/agents.md\""));
+    assert!(hub.contains(
+        "href=\"/agents\" data-topic=agents aria-current=\"true\">Codex &amp; Claude</a>"
+    ));
+    let (status, page) = get("/agents/hooks".into()).await;
+    assert_eq!(status, 200);
+    assert!(page.contains("class=handbook-side"));
+    assert!(page.contains("aria-current=\"page\">Hooks</a>"));
+    assert!(page.contains(
+        "<p class=handbook-crumb><a href=\"/agents\">Codex &amp; Claude</a> · 配置与扩展</p>"
+    ));
+    assert!(page.contains("<a rel=prev href=\"/agents/extensions\">"));
+    assert!(page.contains("<a rel=next href=\"/agents/workflow\">"));
+    assert!(page.contains("/agents/hooks\"><link rel=\"alternate\""));
+    assert_eq!(get("/agents/unknown".into()).await.0, 404);
+    let (status, book) = get("/agents.md".into()).await;
+    assert_eq!(status, 200);
+    let start = book.find("\n# 上手、安装与登录\n").unwrap();
+    let hooks_at = book.find("\n# Hooks\n").unwrap();
+    assert!(start < hooks_at && book.contains("\n# Agent SDK\n"));
+    // Chapters are listed at their own addresses, and stay out of 分享 and 精选.
+    let (_, sitemap) = get("/articles/sitemap.xml".into()).await;
+    assert!(sitemap.contains("/agents/hooks</loc>"));
+    assert!(!sitemap.contains(&hooks.id.to_string()));
+    let (_, shared) = get("/articles".into()).await;
+    assert!(!shared.contains(&hooks.id.to_string()));
+    let (_, worth) = get("/articles/worth.json".into()).await;
+    assert!(!worth.contains(&hooks.id.to_string()));
+
+    // Hidden, the handbook has no page, chapter, book or place in the sitemap for readers.
+    sqlx::query("UPDATE topics SET visible = false WHERE id = $1")
+        .bind(TOPIC)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    state.digest.reload_topics(&state).await.unwrap();
+    for path in [
+        "/agents".to_owned(),
+        "/agents/hooks".to_owned(),
+        "/agents.md".to_owned(),
+        format!("/articles/{}", hooks.id),
+    ] {
+        assert_eq!(get(path.clone()).await.0, 404, "{path}");
+    }
+    assert!(
+        !get("/articles/sitemap.xml".into())
+            .await
+            .1
+            .contains("/agents")
+    );
+
+    // While the topic collects nothing, the handbook waits, whatever changed.
+    sqlx::query("UPDATE topics SET enabled = false WHERE id = $1")
+        .bind(TOPIC)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    HOOKS_EDITION.store(3, Ordering::SeqCst);
+    assert_eq!(xabc::write(&state, line, Utc::now()).await.unwrap(), None);
+    HOOKS_EDITION.store(0, Ordering::SeqCst);
 }
