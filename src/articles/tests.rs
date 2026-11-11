@@ -189,6 +189,7 @@ async fn tmpfile(picture: Vec<u8>) -> (String, reqwest::Client, Arc<AtomicBool>)
         "learn.chatgpt.com".into(),
         "platform.claude.com".into(),
         "developers.openai.com".into(),
+        "api-docs.deepseek.com".into(),
     ])
     .unwrap();
     let root = reqwest::Certificate::from_der(cert.cert.der()).unwrap();
@@ -290,9 +291,15 @@ async fn tmpfile(picture: Vec<u8>) -> (String, reqwest::Client, Arc<AtomicBool>)
                     } else {
                         0
                     };
-                    let page = format!(
-                        "# {path}\n\nRun `claude -p` with `--output-format json`, set `CLAUDE_CODE_USE_BEDROCK` and `model` to claude-opus-5-5. Edition {edition}."
-                    );
+                    // Edition 9 is the page gone, which DeepSeek's site answers with its HTML.
+                    let page = if edition == 9 {
+                        "<!doctype html>\n<html lang=\"en\"><body>DeepSeek API Docs</body></html>"
+                            .to_owned()
+                    } else {
+                        format!(
+                            "# {path}\n\nRun `claude -p` with `--output-format json`, set `CLAUDE_CODE_USE_BEDROCK` and `model` to claude-opus-5-5. Edition {edition}."
+                        )
+                    };
                     ("text/markdown; charset=utf-8", page.into_bytes())
                 } else if path.starts_with("/profile_images/") {
                     ("image/jpeg", jpeg(300, 300))
@@ -4334,6 +4341,58 @@ async fn postgres_handbook_writes_checks_and_serves() {
     // Nothing changed: the next round leaves every chapter as it is.
     assert_eq!(xabc::write(&state, line, Utc::now()).await.unwrap(), None);
     assert!(chapters().await.iter().all(|article| article.revision == 1));
+    // Nor when a page is gone and its site answers with HTML called Markdown: it isn't read, and
+    // the fingerprint noted stays.
+    HOOKS_EDITION.store(9, Ordering::SeqCst);
+    assert_eq!(xabc::write(&state, line, Utc::now()).await.unwrap(), None);
+    let standing = chapters().await;
+    assert!(standing.iter().all(|article| article.revision == 1));
+    assert_eq!(
+        standing
+            .iter()
+            .find(|article| article.chapter == "hooks")
+            .unwrap()
+            .sources,
+        hooks.sources
+    );
+    HOOKS_EDITION.store(0, Ordering::SeqCst);
+    // A chapter the book gains, as DeepSeek's was, is written in the next round, and the others
+    // stay as they were.
+    sqlx::query("DELETE FROM articles WHERE chapter = 'deepseek'")
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(xabc::last(&state, line).await.unwrap(), None);
+    let gained = xabc::write(&state, line, Utc::now())
+        .await
+        .unwrap()
+        .unwrap();
+    let after = chapters().await;
+    assert_eq!(after.len(), CHAPTERS.len());
+    for article in &after {
+        let before = standing
+            .iter()
+            .find(|before| before.chapter == article.chapter)
+            .unwrap();
+        if article.chapter == "deepseek" {
+            assert_eq!(article.id, gained);
+        } else {
+            assert_eq!(
+                (
+                    article.id,
+                    article.revision,
+                    article.checked_at,
+                    &article.sources
+                ),
+                (
+                    before.id,
+                    before.revision,
+                    before.checked_at,
+                    &before.sources
+                )
+            );
+        }
+    }
 
     // The official pages on hooks change: their chapter is brought up to date, told which.
     HOOKS_EDITION.store(1, Ordering::SeqCst);

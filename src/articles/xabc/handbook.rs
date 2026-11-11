@@ -54,9 +54,16 @@ const FRESH: usize = 3;
 const FRESH_DAYS: i64 = 1;
 const CHECK_DAYS: i64 = 7;
 /// Where a chapter's stories come from, and the names each must hold: news, problems and their
-/// fixes, open source and long reads on Claude, Codex and their makers.
+/// fixes, open source and long reads on Claude, Codex, DeepSeek and their makers.
 const SOURCES: [&str; 5] = [handbook::TOPIC, "issues", "overseas-ai", "github", "reads"];
-const PRODUCTS: [&str; 4] = ["%claude%", "%codex%", "%anthropic%", "%openai%"];
+const PRODUCTS: [&str; 6] = [
+    "%claude%",
+    "%codex%",
+    "%anthropic%",
+    "%openai%",
+    "%deepseek%",
+    "%深度求索%",
+];
 
 /// An official page as read this round, with its fingerprint.
 struct Page {
@@ -229,7 +236,7 @@ async fn official(state: &AppState) -> HashMap<&'static str, Page> {
     pages
 }
 
-/// An official page's Markdown, unless it moved off its site.
+/// An official page's Markdown, unless it moved off its site or is gone.
 async fn read(state: &AppState, url: &str) -> Result<Page> {
     let asked = Url::parse(url).map_err(|_| AppError::Internal("官方页面地址无效".into()))?;
     let (got, bytes) = reads::download(state, asked.clone(), reads::Content::Markdown).await?;
@@ -238,8 +245,22 @@ async fn read(state: &AppState, url: &str) -> Result<Page> {
     }
     let text = String::from_utf8(bytes)
         .map_err(|_| AppError::Internal("官方页面不是 UTF-8 文本".into()))?;
+    if html(&text) {
+        return Err(AppError::Internal("官方页面不是 Markdown".into()));
+    }
     let print = hex::encode(&Sha256::digest(text.as_bytes())[..16]);
     Ok(Page { text, print })
+}
+
+/// Whether text served as Markdown is a web page: DeepSeek's site answers so, as Markdown, for
+/// a page it doesn't have.
+fn html(text: &str) -> bool {
+    let start = text.trim_start().as_bytes();
+    ["<!doctype html", "<html"].iter().any(|tag| {
+        start
+            .get(..tag.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(tag.as_bytes()))
+    })
 }
 
 /// Writes a chapter for the first time and publishes it, checked at `cutoff` against the pages
@@ -746,7 +767,7 @@ fn variable(word: &str) -> bool {
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
-/// A model's ID: `claude-` and a family, or `gpt-` and a number.
+/// A model's ID: `claude-` and a family, `gpt-` and a number, or DeepSeek's.
 fn model(word: &str) -> bool {
     word.strip_prefix("claude-").is_some_and(|rest| {
         ["opus", "sonnet", "haiku", "fable", "mythos"]
@@ -755,6 +776,7 @@ fn model(word: &str) -> bool {
     }) || word
         .strip_prefix("gpt-")
         .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+        || word.len() > "deepseek-".len() && word.starts_with("deepseek-")
 }
 
 /// The key a line of TOML sets, the last of a dotted one; not a table's name, a quoted key or
@@ -805,7 +827,7 @@ const SCOUTING: &str = "你是 XABC 的资料编辑。XABC 在 xabcnews.com 维�
 ";
 
 /// How the writer writes a chapter.
-const WRITING: &str = "你是 XABC，在 xabcnews.com 维护「Codex & Claude」手册：写给中文开发者的 Claude Code 与 Codex 实用手册，以官方文档为准，汇集官方与网友的最佳实践和实用配置，官方一更新就跟着改。手册分四组、十六章，每章讲透一个主题。输入里有这一章的主题和范围、它登记的官方文档原文、本站收集的相关动态与网友实践，写新的一章时还有两位编辑从 X 和全网找来的线索。多用 web_search 补全和核实，写出这一章完整的中文正文。
+const WRITING: &str = "你是 XABC，在 xabcnews.com 维护「Codex & Claude」手册：写给中文开发者的 Claude Code 与 Codex 实用手册，以官方文档为准，汇集官方与网友的最佳实践和实用配置，官方一更新就跟着改。手册分四组、十七章，每章讲透一个主题。输入里有这一章的主题和范围、它登记的官方文档原文、本站收集的相关动态与网友实践，写新的一章时还有两位编辑从 X 和全网找来的线索。多用 web_search 补全和核实，写出这一章完整的中文正文。
 怎么写：
 - 开头两三句话说清这一章解决什么、结论是什么，写明对应的版本（如「Claude Code 2.1.3xx、Codex 0.17x」），拿不准版本就写日期。
 - 按读者要做的事组织：操作步骤、可以直接复制的配置、网友的做法、常见的坑；最后两节依次是「近期变化」（最近一两个月影响用法的变化，每条写日期和版本，没有就省略这一节）和「参考来源」（列表，每条是指向原始页面的 Markdown 链接，后面一句话说明它是什么）。小标题用 ## 和 ###。
@@ -813,7 +835,7 @@ const WRITING: &str = "你是 XABC，在 xabcnews.com 维护「Codex & Claude」
 - 以官方文档为准：命令、参数、环境变量、配置项、文件路径和模型 ID 的写法与官方原文逐字一致，官方没有的不写进代码块。分清官方的说法、网友的经验和你的建议；网友的做法写明出自谁，链接原帖或原文。
 - 可复制的配置放进代码块并标明语言（json、toml、bash 等），代码块前用一句话说明文件放在哪、起什么作用；json 代码块写成严格 JSON（不加注释、不用省略号），只给片段时标成 jsonc；密钥和账号写成占位符。
 - 只写现在有效的做法；改名、弃用或过时的，只在「近期变化」或注意事项里点明。
-- 链接官方文档时链到读者看的页面（地址去掉 .md）；Claude Code 与 Claude API 的页面优先链官方中文版（地址里的 /docs/en/ 换成 /docs/zh-CN/）。
+- 链接官方文档时链到读者看的页面（地址去掉 .md）；Claude Code 与 Claude API 的页面优先链官方中文版（地址里的 /docs/en/ 换成 /docs/zh-CN/），DeepSeek 的页面链中文版（域名后面加 /zh-cn）。
 - 不配图：正文不放图片，pictures 留空，cover 留空。
 - 篇幅以讲清为准，信息要密，不写空话；title 照写这一章的标题。
 ";
@@ -833,6 +855,7 @@ mod tests {
 
 ```bash
 export ANTHROPIC_BASE_URL=https://gateway.example
+export ANTHROPIC_MODEL=deepseek-flash[1m]
 export GITHUB_TOKEN=secret
 claude -p "总结" --output-format json --max-turnz 3
 codex exec --json "修复测试"
@@ -853,6 +876,7 @@ claude -p "长任务" \
 
 ```toml
 model = "gpt-6.1-terra"
+review_model = "deepseek-v4-pros"
 approval_mode = "never"
 [mcp_servers.github]
 command = "npx"
@@ -881,27 +905,45 @@ env = { GITHUB_TOKEN = "x" }
                 "--max-turnz",
                 "--output-format",
                 "ANTHROPIC_BASE_URL",
+                "ANTHROPIC_MODEL",
                 "CLAUDE_CODE_USE_BEDROCK",
                 "approval_mode",
                 "args",
                 "claude-opus-5-5",
                 "command",
+                "deepseek-flash",
+                "deepseek-v4-pros",
                 "deny",
                 "gpt-6.1-terra",
                 "model",
                 "model-",
+                "review_model",
                 "schema",
                 UNPARSED,
             ]
         );
         let corpus: HashSet<&str> = words(
-            "Use --dangerously-skip-permissions, --output-format, --max-turns and --json. Set ANTHROPIC_BASE_URL or CLAUDE_CODE_USE_BEDROCK. model, approval_policy, command, args, deny, $schema. Models: claude-opus-5-5, gpt-6.1-terra.",
+            "Use --dangerously-skip-permissions, --output-format, --max-turns and --json. Set ANTHROPIC_BASE_URL, ANTHROPIC_MODEL or CLAUDE_CODE_USE_BEDROCK. model, review_model, approval_policy, command, args, deny, $schema. Models: claude-opus-5-5, gpt-6.1-terra, deepseek-flash, deepseek-v4-pro.",
         )
         .collect();
         assert_eq!(
             unknown(body, &corpus),
-            ["--max-turnz", "approval_mode", "model-", UNPARSED]
+            [
+                "--max-turnz",
+                "approval_mode",
+                "deepseek-v4-pros",
+                "model-",
+                UNPARSED
+            ]
         );
+    }
+
+    #[test]
+    fn a_web_page_served_as_markdown_is_not_read() {
+        assert!(html("<!doctype html>\n<html lang=\"en\">"));
+        assert!(html("\n  <HTML>"));
+        assert!(!html("# 接入 Claude Code\n\n<details>"));
+        assert!(!html("# Integrate with Codex"));
     }
 
     #[test]

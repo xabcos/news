@@ -1,4 +1,5 @@
-//! Codex & Claude: a handbook on Claude Code and Codex in sixteen chapters and four groups, each
+//! Codex & Claude: a handbook on Claude Code and Codex, and on DeepSeek's models in them, in
+//! seventeen chapters and four groups, each
 //! an article XABC keeps in step with the official documentation and what developers share
 //! (`xabc::handbook`). The topic `agents` collects that news; its tab leads to the handbook's
 //! page: the contents, the latest news and the official documentation. A chapter reads like an
@@ -72,7 +73,7 @@ impl Chapter {
 }
 
 /// The handbook in reading order.
-pub(crate) const CHAPTERS: [Chapter; 16] = [
+pub(crate) const CHAPTERS: [Chapter; 17] = [
     Chapter {
         key: "start",
         group: 0,
@@ -476,6 +477,27 @@ pub(crate) const CHAPTERS: [Chapter; 16] = [
         ],
     },
     Chapter {
+        key: "deepseek",
+        group: 3,
+        title: "DeepSeek 接入与 API",
+        about: "在 Claude Code 与 Codex 里用 DeepSeek 模型；DeepSeek API 的 Anthropic 与 OpenAI 兼容接口、思考模式、工具调用、上下文缓存、联网搜索、价格与限流",
+        pages: &[
+            "https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code.md",
+            "https://api-docs.deepseek.com/quick_start/agent_integrations/codex.md",
+            "https://api-docs.deepseek.com/guides/anthropic_api.md",
+            "https://api-docs.deepseek.com/guides/responses_api.md",
+            "https://api-docs.deepseek.com/guides/thinking_mode.md",
+            "https://api-docs.deepseek.com/guides/tool_calls.md",
+            "https://api-docs.deepseek.com/guides/kv_cache.md",
+            "https://api-docs.deepseek.com/guides/search.md",
+            "https://api-docs.deepseek.com/quick_start/pricing.md",
+            "https://api-docs.deepseek.com/quick_start/rate_limit.md",
+            "https://api-docs.deepseek.com/quick_start/error_codes.md",
+            "https://api-docs.deepseek.com/updates.md",
+        ],
+        words: &["DeepSeek", "深度求索"],
+    },
+    Chapter {
         key: "sdk",
         group: 3,
         title: "Agent SDK",
@@ -503,14 +525,21 @@ pub(crate) fn chapter(key: &str) -> Option<&'static Chapter> {
     CHAPTERS.iter().find(|chapter| chapter.key == key)
 }
 
+/// Where DeepSeek's documentation is, its Chinese under `zh-cn/`.
+const DEEPSEEK: &str = "https://api-docs.deepseek.com/";
+
 /// Where readers read an official page whose Markdown twin is registered, and its Chinese
-/// version where Anthropic writes one: the address without `.md`, `/docs/en/` as `/docs/zh-CN/`.
+/// version where Anthropic or DeepSeek write one: the address without `.md`, Anthropic's
+/// `/docs/en/` as `/docs/zh-CN/`, DeepSeek's under `zh-cn/`.
 pub(crate) fn readable(page: &str) -> [String; 2] {
     let page = match page.split_once('?') {
         Some((path, query)) => format!("{}?{query}", path.trim_end_matches(".md")),
         None => page.trim_end_matches(".md").to_owned(),
     };
-    let chinese = page.replace("/docs/en/", "/docs/zh-CN/");
+    let chinese = match page.strip_prefix(DEEPSEEK) {
+        Some(path) => format!("{DEEPSEEK}zh-cn/{path}"),
+        None => page.replace("/docs/en/", "/docs/zh-CN/"),
+    };
     [page, chinese]
 }
 
@@ -519,7 +548,7 @@ type Link = (&'static str, &'static str, &'static str);
 
 /// The official documentation the handbook's page leads to, readers' pages in Chinese where
 /// there are.
-const OFFICIAL: [(&str, &[Link]); 5] = [
+const OFFICIAL: [(&str, &[Link]); 6] = [
     (
         "Claude Code",
         &[
@@ -584,6 +613,17 @@ const OFFICIAL: [(&str, &[Link]); 5] = [
                 "模型",
                 "Models",
                 "https://developers.openai.com/api/docs/models",
+            ),
+        ],
+    ),
+    (
+        "DeepSeek",
+        &[
+            ("中文文档", "Docs", "https://api-docs.deepseek.com/zh-cn/"),
+            (
+                "更新日志",
+                "Updates",
+                "https://api-docs.deepseek.com/zh-cn/updates",
             ),
         ],
     ),
@@ -990,6 +1030,7 @@ mod tests {
                         "https://learn.chatgpt.com/docs/",
                         "https://platform.claude.com/docs/en/",
                         "https://developers.openai.com/api/docs/",
+                        DEEPSEEK,
                     ]
                     .iter()
                     .any(|docs| page.starts_with(docs)),
@@ -1004,12 +1045,19 @@ mod tests {
     }
 
     #[test]
-    fn an_official_page_reads_without_md_and_in_chinese_where_anthropic_writes_it() {
+    fn an_official_page_reads_without_md_and_in_chinese_where_its_maker_writes_it() {
         assert_eq!(
             readable("https://code.claude.com/docs/en/hooks.md"),
             [
                 "https://code.claude.com/docs/en/hooks",
                 "https://code.claude.com/docs/zh-CN/hooks"
+            ]
+        );
+        assert_eq!(
+            readable("https://api-docs.deepseek.com/guides/kv_cache.md"),
+            [
+                "https://api-docs.deepseek.com/guides/kv_cache",
+                "https://api-docs.deepseek.com/zh-cn/guides/kv_cache"
             ]
         );
         assert_eq!(

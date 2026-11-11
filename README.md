@@ -185,13 +185,13 @@ Reads 默认按收录时间连续展示，不按天分组，每页 24 篇。列�
 
 ## Codex & Claude
 
-导航里「Codex & Claude」（`/agents`）是一本 Claude Code 与 Codex 的中文实用手册：XABC 以官方文档为准，汇集官方与网友的最佳实践和实用配置，写成四组十六章，每章一篇持续更新的长文。
+导航里「Codex & Claude」（`/agents`）是一本 Claude Code 与 Codex 的中文实用手册：XABC 以官方文档为准，汇集官方与网友的最佳实践和实用配置，写成四组十七章，每章一篇持续更新的长文。
 - 上手与选型：上手、安装与登录；模型与思考强度；额度、计费与成本。
 - 配置与扩展：CLAUDE.md、AGENTS.md 与上下文；settings.json 与 config.toml；权限与沙箱；MCP；Skills、插件与命令；Hooks。
 - 开发工作流：日常开发、评审与测试；大型仓库、长任务与并行；远程、云端与多端；无头模式与 CI。
-- API 与 SDK：Claude API；OpenAI API；Agent SDK。
+- API 与 SDK：Claude API；OpenAI API；DeepSeek 接入与 API（在 Claude Code 与 Codex 里用 DeepSeek 模型，以及 DeepSeek API，以 DeepSeek 官方文档为准）；Agent SDK。
 
-手册页依次是目录（每章的更新日期和一句话范围，宽屏分两栏）、最新动态（`agents` 栏目最新的 10 条，「全部」进入栏目的信息流 `/?topic=agents`）和官方文档入口（Claude Code 与 Claude API 的官方中文文档、更新日志与每周更新，Codex 文档、每周更新与版本发布，OpenAI API 文档与模型，𝑳𝑳𝑴 的价格与规格）。章节在 `/agents/{章}`（如 `/agents/hooks`），和分享的文章页一样读，标题上方写着所属的组，日期是最近一次更新；宽屏时左侧是手册目录，正文后是上一章、下一章和返回手册。标题右侧的「复制页面」像官方文档那样把这一章的 Markdown 原文（标题、来源与更新日期、正文）复制到剪贴板，方便贴给 Claude Code、Codex 这类 agent；同一个地址加 `.md`（如 `/agents/hooks.md`）就是这份 Markdown，agent 也可以直接读，它不进搜索引擎。各章不进分享的列表、热读、作者页和首页精选，站点地图收录手册页和各章的地址。
+手册页依次是目录（每章的更新日期和一句话范围，宽屏分两栏）、最新动态（`agents` 栏目最新的 10 条，「全部」进入栏目的信息流 `/?topic=agents`）和官方文档入口（Claude Code 与 Claude API 的官方中文文档、更新日志与每周更新，Codex 文档、每周更新与版本发布，OpenAI API 文档与模型，DeepSeek 中文文档与更新日志，𝑳𝑳𝑴 的价格与规格）。章节在 `/agents/{章}`（如 `/agents/hooks`），和分享的文章页一样读，标题上方写着所属的组，日期是最近一次更新；宽屏时左侧是手册目录，正文后是上一章、下一章和返回手册。标题右侧的「复制页面」像官方文档那样把这一章的 Markdown 原文（标题、来源与更新日期、正文）复制到剪贴板，方便贴给 Claude Code、Codex 这类 agent；同一个地址加 `.md`（如 `/agents/hooks.md`）就是这份 Markdown，agent 也可以直接读，它不进搜索引擎。各章不进分享的列表、热读、作者页和首页精选，站点地图收录手册页和各章的地址。
 
 `agents` 栏目由原来的技巧改名而来，在工作台维护：按 brief 全网收集官方的版本更新、文档改动、博客与工程文章、模型与 API 的变化，以及 X、GitHub、技术博客和中文社区里有步骤的实践与配置，照常进 ALL、订阅和 XAI 日报。它的导航标签打开手册，在它的信息流里同样标为当前。栏目停止采集时手册停写，不公开时手册页、章节、章节的 Markdown 与站点地图里的手册一并不公开。
 
