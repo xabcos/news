@@ -1071,7 +1071,8 @@ pub(crate) fn consistent(prices: &[Price]) -> Result<(), &'static str> {
                 && price.tier == other.tier
                 && price.label == other.label
                 && price.mode == other.mode;
-            // Longer prompts never cost less: long over short, and a later tier over an earlier one.
+            // Longer prompts never cost less: long over short, and a later tier over an earlier
+            // one.
             let longer = price.context == Band::Long
                 && (other.context == Band::Short
                     || (other.context == Band::Long

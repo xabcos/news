@@ -180,8 +180,8 @@ struct Listed {
 const LISTED: &str = "SELECT a.id, a.title, w.name AS author, a.status, a.held, a.revision, a.views, a.updated_at, a.published_at, a.kind
     FROM articles a JOIN authors w ON w.user_id = a.author_id JOIN users u ON u.id = a.author_id";
 
-/// A search of 分享 or one of XABC's lists: its words, as the page shows them, and the patterns each of
-/// which an article's title or opening must hold.
+/// A search of 分享 or one of XABC's lists: its words, as the page shows them, and the patterns
+/// each of which an article's title or opening must hold.
 struct Search {
     words: String,
     patterns: Vec<String>,

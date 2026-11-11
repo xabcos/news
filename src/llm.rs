@@ -2,7 +2,7 @@
 //! language models, and the image, video, audio, embedding and rerank models of the same
 //! providers. Official pages are read as text. The model only turns them into rows; a price,
 //! a limit or a date is published only when the page states it verbatim, and a provider
-//! whose pages have not changed is not read again.
+//! whose pages have not changed is not sent to the model again.
 use crate::{error::Result, fetch::Usage, state::AppState, topics::Topic};
 use axum::Router;
 use serde::{Deserialize, Serialize};

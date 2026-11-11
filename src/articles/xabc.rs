@@ -1084,8 +1084,8 @@ fn slot(destination: &str) -> Option<Slot> {
     }
 }
 
-/// For a revision, the body with each figure it shows, a picture leading a paragraph of its own with the
-/// caption line under it, standing as `![](keep:N)`; and the figures as they were.
+/// For a revision, the body with each figure it shows, a picture leading a paragraph of its own
+/// with the caption line under it, standing as `![](keep:N)`; and the figures as they were.
 fn figures(body: &str) -> (String, Vec<String>) {
     let mut paragraph = None;
     let mut found = Vec::new();
@@ -1541,8 +1541,8 @@ pub(super) async fn save(
     Ok(())
 }
 
-/// Saves a revised 解说, profile, 追踪 article or 评测 with `cover` over the revision XABC read, unless
-/// an administrator saved it or took it back meanwhile; a new cover picture comes with it.
+/// Saves an article XABC revised, with `cover`, over the revision it read, unless an administrator
+/// saved it or took it back meanwhile; a new cover picture comes with it.
 pub(super) async fn revise(
     state: &AppState,
     id: Uuid,

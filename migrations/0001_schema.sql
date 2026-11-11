@@ -103,7 +103,8 @@ CREATE TABLE topics (
     CONSTRAINT topics_name_valid CHECK (char_length(name) BETWEEN 1 AND 60),
     CONSTRAINT topics_name_en_valid CHECK (char_length(name_en) <= 60),
     CONSTRAINT topics_description_valid CHECK (char_length(description) <= 200),
-    CONSTRAINT topics_brief_valid CHECK (char_length(brief) BETWEEN 1 AND 2000),
+    -- Room for a broad direction with its sources.
+    CONSTRAINT topics_brief_valid CHECK (char_length(brief) BETWEEN 1 AND 8192),
     CONSTRAINT topics_interval_valid CHECK (interval_minutes BETWEEN 15 AND 1440),
     CONSTRAINT topics_window_valid CHECK (window_start BETWEEN 0 AND 23 AND window_end BETWEEN 1 AND 24 AND window_start <> window_end),
     CONSTRAINT topics_weekdays_valid CHECK (cardinality(weekdays) BETWEEN 1 AND 7 AND weekdays <@ ARRAY[1,2,3,4,5,6,7]::smallint[]),
@@ -268,9 +269,11 @@ CREATE TABLE maintenance_state (
 );
 
 -- 𝑳𝑳𝑴 keeps mainstream model prices and specs from each provider's own documentation.
--- Providers come and go without an administrator: listed providers are read every day, and
--- a weekly pass adds providers the news reports with an official API, retries candidates and
--- retires providers whose pages stay unreadable. `enabled` is the workspace's pause switch.
+-- Providers come and go without an administrator. Listed providers are read every day; one
+-- whose pages have not confirmed its catalogue for two weeks is looked for again and retired
+-- if it is gone. About once a week the news is searched for providers with an official API,
+-- and candidates and providers that left are tried again. `enabled` is the workspace's pause
+-- switch.
 CREATE TABLE llm_vendors (
     id text PRIMARY KEY CONSTRAINT llm_vendors_id_valid CHECK (id ~ '^[a-z0-9][a-z0-9-]{0,31}$'),
     name text NOT NULL CONSTRAINT llm_vendors_name_valid CHECK (char_length(name) BETWEEN 1 AND 60),
@@ -309,8 +312,9 @@ CREATE TABLE llm_sources (
     -- Prices are read only from pricing pages, in the currency that page states.
     currency text CONSTRAINT llm_sources_currency_valid CHECK (currency IN ('USD', 'CNY')),
     sort_weight integer NOT NULL DEFAULT 0,
-    -- Text and digest of the last complete read. An unchanged page is not read again, and
-    -- a model the previous text already named is not reported as new.
+    -- The page's text as last kept, and the digest of the text the model last read in full. A
+    -- page is fetched every day; while no page of a provider changes the model isn't asked
+    -- again, and a model the kept text already named is not reported as new.
     content text,
     content_hash bytea,
     checked_at timestamptz,
@@ -451,18 +455,22 @@ CREATE INDEX items_catalog_order_idx ON items (topic_id, first_seen_at DESC, id 
     WHERE NOT hidden AND topic_id IN ('movie', 'music', 'game', 'book', 'eink', 'ai-hardware',
                                       'robots', 'digital');
 
--- Articles readers write in the workspace (分享). An article is public once an administrator gives
--- it a ❤️, and an author's edit takes it back to review. Authors write under a pen name; their
--- email address is never shown.
+-- Articles: 分享, which readers write in the workspace and XABC and XAI write on their own, the
+-- research readers ask of 调研, and XABC's lines. A reader's article is reviewed by the AI when
+-- it is submitted and goes public at once if it passes; one the AI holds waits for an
+-- administrator's ❤️. Authors write under a pen name; their email address is never shown.
 CREATE TABLE authors (
     user_id bigint PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     name text NOT NULL
         CONSTRAINT authors_name_valid CHECK (char_length(name) BETWEEN 2 AND 24 AND name = btrim(name)),
-    -- What the author started on `day`, the site's date: new articles and uploaded pictures.
-    -- Deleting an article gives neither back.
+    -- What the author started on `day`, the site's date: new articles, uploaded pictures, AI
+    -- reviews of their articles and questions, and research asked for. Deleting an article gives
+    -- none back; a question taken back or not written gives its research back.
     day date,
     articles smallint NOT NULL DEFAULT 0,
-    images smallint NOT NULL DEFAULT 0
+    images smallint NOT NULL DEFAULT 0,
+    reviews smallint NOT NULL DEFAULT 0,
+    research smallint NOT NULL DEFAULT 0
 );
 CREATE UNIQUE INDEX authors_name_idx ON authors (lower(name));
 
@@ -485,28 +493,38 @@ CREATE TABLE articles (
     updated_at timestamptz NOT NULL DEFAULT now(),
     -- When it first went public; later edits and reviews keep its place in the list.
     published_at timestamptz,
-    -- XABC's lines each give their articles a subject, and one subject has one article; 分享's
-    -- articles have none. 文娱 · 解说 explains a film or series and revises it as more is known:
-    -- `film` is the work's key in 影视 (`catalog::work_key`), so either finds the other.
-    film text,
-    -- 时代 profiles a person or a company people talk about: `xabc::key` of the English name,
-    -- after `company:` for a company.
-    person text,
-    -- 追踪 follows a hot event as it develops: `xabc::key` of the slug the searches give it.
-    event text,
-    -- 数码 · 评测 reviews a product 数码 collects as new reviews come: its `catalog_entries.key`,
-    -- brand and model, wherever 数码 files it.
-    product text,
+    -- Why it waits for an administrator: the AI's reason for not passing it, that its author's
+    -- AI reviews for the day are used up, or that an administrator took it back. While it is
+    -- set, the AI doesn't review the article again, whatever its author changes; a ❤️ clears it.
+    held text,
+    -- Counts those ❤️: a refusal from a review that began before the latest holds nothing.
+    approvals integer NOT NULL DEFAULT 0,
+    -- A handbook chapter's check against the official pages it rests on: the fingerprint of each
+    -- page as last read, and when. A check that finds nothing to change moves them without
+    -- touching the article.
+    sources jsonb,
+    checked_at timestamptz,
+    -- What the article is (articles::Kind): 分享's `share`, or of a line that gives it a
+    -- `subject`. `film`, a 解说 of a film or series: the work's key in 影视
+    -- (`catalog::work_key`), so either finds the other. `person`, a 时代 profile: `xabc::key` of
+    -- the English name, after `company:` for a company. `event`, a 追踪 article: `xabc::key` of
+    -- the slug the searches give the event. `product`, a 评测: the product's
+    -- `catalog_entries.key`, brand and model, wherever 数码 files it. `question`, a 调研: the
+    -- question as its reader asked it. `chapter`, a chapter of the Codex & Claude handbook: its
+    -- key (articles::handbook::CHAPTERS). A new line adds a kind, not a column.
+    kind text NOT NULL DEFAULT 'share',
+    subject text,
     CONSTRAINT articles_published_valid CHECK (status <> 'published' OR published_at IS NOT NULL),
-    CONSTRAINT articles_subject_valid CHECK (num_nonnulls(film, person, event, product) <= 1)
+    CONSTRAINT articles_kind_valid
+        CHECK (kind IN ('share', 'film', 'person', 'event', 'product', 'question', 'chapter')),
+    CONSTRAINT articles_subject_valid CHECK ((kind = 'share') = (subject IS NULL))
 );
 CREATE INDEX articles_public_idx ON articles (published_at DESC, id DESC) WHERE status = 'published';
 CREATE INDEX articles_author_idx ON articles (author_id, updated_at DESC);
 CREATE INDEX articles_pending_idx ON articles (updated_at) WHERE status = 'pending';
-CREATE UNIQUE INDEX articles_film_idx ON articles (film) WHERE film IS NOT NULL;
-CREATE UNIQUE INDEX articles_person_idx ON articles (person) WHERE person IS NOT NULL;
-CREATE UNIQUE INDEX articles_event_idx ON articles (event) WHERE event IS NOT NULL;
-CREATE UNIQUE INDEX articles_product_idx ON articles (product) WHERE product IS NOT NULL;
+-- One subject of a kind has one article, but a question may be asked twice.
+CREATE UNIQUE INDEX articles_subject_idx ON articles (kind, subject)
+    WHERE kind NOT IN ('share', 'question');
 
 -- tmpfile keeps the pictures and can't delete them, so their links go only to public pages,
 -- administrators' previews and text the author copies out of the editor.
@@ -524,13 +542,33 @@ CREATE TABLE article_images (
 ALTER TABLE articles ADD CONSTRAINT articles_cover_fkey
     FOREIGN KEY (id, cover) REFERENCES article_images (article_id, id);
 
+-- 调研: the questions readers ask XABC to look up, waiting: those a restart cut off first, then
+-- Pro before Free, each in the order asked. A question leaves when its article, which takes its
+-- id and goes out under its reader's pen name, is written, or when its reader takes it back; one
+-- that could not be written stays, failed, until its reader clears it.
+CREATE TABLE research (
+    id uuid PRIMARY KEY,
+    author_id bigint NOT NULL REFERENCES authors(user_id) ON DELETE CASCADE,
+    question text NOT NULL CONSTRAINT research_question_valid CHECK (char_length(question) BETWEEN 1 AND 1000),
+    -- The line it waits in: Pro, or an administrator, as it was asked.
+    pro boolean NOT NULL,
+    -- Whether its article goes public; only Pro and administrators may keep one to themselves.
+    public boolean NOT NULL,
+    -- The site's date its asker's allowance counted it on, which taking it back or failing gives
+    -- back; none for an administrator's.
+    day date,
+    asked_at timestamptz NOT NULL DEFAULT now(),
+    started_at timestamptz,
+    failed boolean NOT NULL DEFAULT false
+);
+
 INSERT INTO plans (code, name, price_fen, duration_days, description, sort_weight) VALUES
     ('free', 'Free', 0, 0, '可阅读公共主题，新建个人抓取任务需 Pro', 10),
     ('pro', 'Pro', 9900, 31, '最多 4 个主题，最短 64 分钟抓取间隔', 20);
 
 
--- Public topics, in the order of the navigation. Their settings and briefs are admin data from
--- here on.
+-- Public topics, in the order the feed lists them: by weight, then by creation. Their settings
+-- and briefs are admin data from here on.
 INSERT INTO topics (
     id, name, name_en, description, brief, enabled, visible, interval_minutes, window_start,
     window_start_minute, window_end, weekdays, model, reasoning_effort, max_items, lookback_hours,
@@ -681,7 +719,10 @@ INSERT INTO llm_sources (vendor_id, kind, url, currency, sort_weight) VALUES
     ('baidu', 'pricing', 'https://cloud.baidu.com/doc/qianfan/s/wmh4sv6ya', 'CNY', 10),
     ('stepfun', 'pricing', 'https://platform.stepfun.com/docs/zh/guides/pricing/details', 'CNY', 10);
 
--- XABC, the site's own pen name, writes 分享, 解说, 时代, 追踪 and 评测 (articles::xabc). Its
--- account never signs in, because no mail reaches an .invalid address.
+-- The site's own pen names (articles::xabc). XABC writes 分享, 解说, 时代, 追踪, 评测 and the
+-- handbook, and researches what readers ask 调研; XAI writes 分享 on what X's tech circle talks
+-- about most. Their accounts never sign in, because no mail reaches an .invalid address.
 INSERT INTO users (email) VALUES ('xabc@xabcnews.invalid');
 INSERT INTO authors (user_id, name) SELECT id, 'XABC' FROM users WHERE email = 'xabc@xabcnews.invalid';
+INSERT INTO users (email) VALUES ('xai@xabcnews.invalid');
+INSERT INTO authors (user_id, name) SELECT id, 'XAI' FROM users WHERE email = 'xai@xabcnews.invalid';

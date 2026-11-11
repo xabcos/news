@@ -449,7 +449,8 @@ async fn compose(
             left = ?unknown(&again.article.body, corpus),
             "XABC wrote a handbook chapter again over what the official pages don't name"
         );
-        // A check that came back empty is not done, and the draft it was asked about doesn't go out.
+        // A check that came back empty is not done, and the draft it was asked about doesn't go
+        // out.
         if again.article.body.trim().is_empty() {
             return Err(AppError::Internal("核对后的正文是空的".into()));
         }

@@ -89,7 +89,8 @@ pub(crate) async fn pages(
         );
         bodies.push(response.text().await.unwrap());
     }
-    // A page readers can't see sends an administrator on to its preview, without caching the redirect.
+    // A page readers can't see sends an administrator on to its preview, without caching the
+    // redirect.
     let page = || {
         http.get(format!("{base}{}", paths[0]))
             .header("cookie", &admin)

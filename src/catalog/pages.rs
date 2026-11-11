@@ -766,9 +766,9 @@ fn search_form(section: Section, words: &str, en: bool) -> String {
     )
 }
 /// Entries whose name, English name, creator or a story's title holds the words, and stories
-/// whose title does, across the section's topics; or, with a topic and no words, all of that topic's entries. The
-/// most talked-about entries come first, and the newest stories. Pages for words stay out of
-/// search engines; a topic's full list is meant to be found.
+/// whose title does, across the section's topics; or, with a topic and no words, all of that
+/// topic's entries. The most talked-about entries come first, and the newest stories. Pages for
+/// words stay out of search engines; a topic's full list is meant to be found.
 async fn search(
     Extension(section): Extension<Section>,
     State(state): State<AppState>,
