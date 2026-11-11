@@ -749,9 +749,7 @@ async fn execute(
         "tool_choice": "auto",
         "instructions": instructions(),
         "input": [{ "role": "user", "content": content }],
-        "text": { "format": {
-            "type": "json_schema", "name": "news_insight", "strict": true, "schema": schema(&sources, &candidates),
-        } },
+        "text": crate::ai::format("news_insight", schema(&sources, &candidates)),
     });
     let (analysis, research_sources) =
         generate_analysis(state, body, &sources, &candidates).await?;

@@ -74,7 +74,9 @@ async fn review(state: &AppState, id: Uuid, revision: i32) -> Result<()> {
     // What to review, and how many ❤️ the article had when its review began.
     let Some((author, approvals, title, body, cover, question)) =
         sqlx::query_as::<_, (i64, i32, String, String, Option<Uuid>, Option<String>)>(
-            "SELECT author_id, approvals, title, body, cover, question FROM articles
+            "SELECT author_id, approvals, title, body, cover,
+                    CASE WHEN kind = 'question' THEN subject END
+             FROM articles
              WHERE id = $1 AND revision = $2 AND status = 'pending' AND held IS NULL",
         )
         .bind(id)
@@ -160,10 +162,10 @@ async fn refusal(
         "store": false,
         "instructions": instructions.replace("{risks}", RISKS),
         "input": [{ "role": "user", "content": content }],
-        "text": { "format": {
-            "type": "json_schema", "name": "review", "strict": true,
-            "schema": ai::object(json!({ "pass": { "type": "boolean" }, "reason": { "type": "string" } })),
-        } },
+        "text": ai::format(
+            "review",
+            ai::object(json!({ "pass": { "type": "boolean" }, "reason": { "type": "string" } })),
+        ),
     });
     let reply = tokio::time::timeout(TIME, ai::request(state, request))
         .await

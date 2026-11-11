@@ -18,6 +18,7 @@ mod tests;
 
 use crate::{
     auth::{self, User},
+    digest::unchanged,
     error::{ApiJson, AppError, Result},
     state::AppState,
 };
@@ -88,6 +89,30 @@ pub(crate) fn reviews_label(en: bool) -> &'static str {
     crate::site::choose(en, "评测", "𝑹𝒆𝒗𝒊𝒆𝒘𝒔")
 }
 
+/// What an article is, as `articles.kind` keeps it: one of 分享, or of a line that gives it a
+/// subject (`articles.subject`), which one article has, though a question may be asked twice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, sqlx::Type)]
+#[serde(rename_all = "lowercase")]
+#[sqlx(type_name = "text", rename_all = "lowercase")]
+enum Kind {
+    /// 分享, which readers, XABC and XAI write: no subject.
+    Share,
+    /// 文娱 · 解说 explains a film or series: the work's key in 影视 (`catalog::work_key`), so
+    /// either finds the other.
+    Film,
+    /// 时代 profiles a person or a company: `xabc::key` of the English name, after `company:`
+    /// for a company.
+    Person,
+    /// 追踪 follows an event: `xabc::key` of the slug the searches give it.
+    Event,
+    /// 数码 · 评测 reviews a product: its `catalog_entries.key`, wherever 数码 files it.
+    Product,
+    /// 调研 answers a reader's question: the question as asked.
+    Question,
+    /// A chapter of the Codex & Claude handbook: its key (`handbook::CHAPTERS`).
+    Chapter,
+}
+
 /// The section's name, in the page's language.
 pub(crate) fn label(en: bool) -> &'static str {
     crate::site::choose(en, "分享", "𝑨𝒓𝒕𝒊𝒄𝒍𝒆𝒔")
@@ -149,21 +174,10 @@ struct Listed {
     views: i64,
     updated_at: DateTime<Utc>,
     published_at: Option<DateTime<Utc>>,
-    /// Whether it is a 解说.
-    film: bool,
-    /// Whether it is a 时代 profile.
-    person: bool,
-    /// Whether it follows an event for 追踪.
-    event: bool,
-    /// Whether it reviews a product for 评测.
-    product: bool,
-    /// Whether it answers a reader's question for 调研.
-    research: bool,
-    /// Whether it is a chapter of the Codex & Claude handbook.
-    chapter: bool,
+    kind: Kind,
 }
 
-const LISTED: &str = "SELECT a.id, a.title, w.name AS author, a.status, a.held, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person, a.event IS NOT NULL AS event, a.product IS NOT NULL AS product, a.question IS NOT NULL AS research, a.chapter IS NOT NULL AS chapter
+const LISTED: &str = "SELECT a.id, a.title, w.name AS author, a.status, a.held, a.revision, a.views, a.updated_at, a.published_at, a.kind
     FROM articles a JOIN authors w ON w.user_id = a.author_id JOIN users u ON u.id = a.author_id";
 
 /// A search of 分享 or one of XABC's lists: its words, as the page shows them, and the patterns each of
@@ -281,7 +295,7 @@ async fn mine(State(state): State<AppState>, user: User) -> Result<Json<Value>> 
         .fetch_optional(&state.pool)
         .await?;
     let mut articles: Vec<Listed> = sqlx::QueryBuilder::new(LISTED)
-        .push(" WHERE a.question IS NULL AND a.author_id = ")
+        .push(" WHERE a.kind <> 'question' AND a.author_id = ")
         .push_bind(user.id)
         .push(" ORDER BY a.updated_at DESC, a.id DESC")
         .build_query_as()
@@ -389,7 +403,7 @@ async fn save(
              revision = revision + 1, updated_at = now(),
              status = CASE WHEN $8 THEN status WHEN status = 'pending' THEN 'draft'
                            WHEN status = 'published' THEN 'pending' ELSE status END
-         WHERE id = $1 AND (author_id = $2 AND question IS NULL OR $8) AND revision = $3
+         WHERE id = $1 AND (author_id = $2 AND kind <> 'question' OR $8) AND revision = $3
          RETURNING status, revision, updated_at",
     )
     .bind(id)
@@ -494,9 +508,9 @@ async fn upload(
             AppError::BadRequest("图片没有传完整，请重试".into())
         }
     })?;
-    let (content_type, (width, height)) = kind(&bytes)?;
+    let (content_type, (width, height)) = image_kind(&bytes)?;
     if !sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS (SELECT 1 FROM articles WHERE id = $1 AND (author_id = $2 AND question IS NULL OR $3))",
+        "SELECT EXISTS (SELECT 1 FROM articles WHERE id = $1 AND (author_id = $2 AND kind <> 'question' OR $3))",
     )
     .bind(article)
     .bind(user.id)
@@ -872,7 +886,7 @@ async fn owned(state: &AppState, user: &User, id: &str) -> Result<Draft> {
 /// Why a save matched nothing: someone else's article or research, or a revision saved since.
 async fn stale(state: &AppState, user: &User, id: Uuid) -> AppError {
     match sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS (SELECT 1 FROM articles WHERE id = $1 AND (author_id = $2 AND question IS NULL OR $3))",
+        "SELECT EXISTS (SELECT 1 FROM articles WHERE id = $1 AND (author_id = $2 AND kind <> 'question' OR $3))",
     )
     .bind(id)
     .bind(user.id)
@@ -1017,7 +1031,7 @@ fn excerpt(body: &str) -> String {
 
 /// A picture's type, read from its bytes, and its size: JPEG, PNG, WebP or GIF only. The bytes
 /// are kept as uploaded; tmpfile serves them with this type and `nosniff`.
-fn kind(bytes: &[u8]) -> Result<(&'static str, (i32, i32))> {
+fn image_kind(bytes: &[u8]) -> Result<(&'static str, (i32, i32))> {
     let content_type = match image::guess_format(bytes) {
         Ok(image::ImageFormat::Jpeg) => "image/jpeg",
         Ok(image::ImageFormat::Png) => "image/png",
@@ -1034,17 +1048,4 @@ fn kind(bytes: &[u8]) -> Result<(&'static str, (i32, i32))> {
         .filter(|(width, height)| *width > 0 && *height > 0)
         .ok_or_else(|| AppError::BadRequest("这张图片读不出来".into()))?;
     Ok((content_type, size))
-}
-
-/// Whether the browser already holds `tag`, as `If-None-Match` says.
-fn unchanged(headers: &HeaderMap, tag: &str) -> bool {
-    headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value.split(',').any(|candidate| {
-                let candidate = candidate.trim();
-                candidate.strip_prefix("W/").unwrap_or(candidate) == tag
-            })
-        })
 }

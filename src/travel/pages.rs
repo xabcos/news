@@ -277,22 +277,20 @@ async fn destination(
 /// the other destinations of the same country, the most visited first. Only destinations with
 /// a page are named: a guide or a moment.
 async fn onward(state: &AppState, place: &Place, en: bool) -> Result<String> {
+    // The lateral join gives a destination its photograph and leaves out one without; the
+    // limit comes after it.
     let nearby = sqlx::query_as::<_, (String, String, String, String, String, f64, Value)>(
         "SELECT n.slug, n.name, n.name_en, n.country, n.country_en, n.km, c.image
          FROM (SELECT p.id, p.slug, p.name, p.name_en, p.country, p.country_en,
                       12742 * asin(sqrt(LEAST(1, power(sin(radians(p.latitude - $1) / 2), 2)
                           + cos(radians($1)) * cos(radians(p.latitude))
                           * power(sin(radians(p.longitude - $2) / 2), 2)))) AS km
-               FROM travel_places p
-               WHERE p.slug <> $3 AND EXISTS (SELECT 1 FROM travel_moments m
-                   JOIN items i ON i.id = m.item_id WHERE m.place_id = p.id AND NOT i.hidden
-                   AND jsonb_typeof(i.image) = 'object')
-               ORDER BY km LIMIT $4) n
+               FROM travel_places p WHERE p.slug <> $3 ORDER BY km) n
          CROSS JOIN LATERAL (SELECT i.image - 'origin_url' - 'content_hash' - 'expires_at' AS image
                FROM travel_moments m JOIN items i ON i.id = m.item_id
                WHERE m.place_id = n.id AND NOT i.hidden AND jsonb_typeof(i.image) = 'object'
                ORDER BY i.importance DESC, i.first_seen_at DESC LIMIT 1) c
-         ORDER BY n.km",
+         ORDER BY n.km LIMIT $4",
     )
     .bind(place.latitude)
     .bind(place.longitude)

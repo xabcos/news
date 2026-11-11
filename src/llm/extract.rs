@@ -202,7 +202,7 @@ pub(crate) fn body(
         "store": false,
         "instructions": instructions,
         "input": input.to_string(),
-        "text": {"format": {"type": "json_schema", "name": name, "strict": true, "schema": schema}},
+        "text": crate::ai::format(name, schema),
     })
 }
 

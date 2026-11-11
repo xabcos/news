@@ -114,30 +114,30 @@ fn an_article_shows_at_most_its_allowance_of_pictures_with_the_cover_counted_onc
 
 #[test]
 fn only_jpeg_png_webp_and_gif_pictures_are_taken_and_their_size_is_read() {
-    assert_eq!(kind(&jpeg(64, 48)).unwrap(), ("image/jpeg", (64, 48)));
+    assert_eq!(image_kind(&jpeg(64, 48)).unwrap(), ("image/jpeg", (64, 48)));
     let mut png = std::io::Cursor::new(Vec::new());
     image::DynamicImage::ImageRgba8(image::RgbaImage::new(3, 2))
         .write_to(&mut png, image::ImageFormat::Png)
         .unwrap();
-    assert_eq!(kind(png.get_ref()).unwrap(), ("image/png", (3, 2)));
+    assert_eq!(image_kind(png.get_ref()).unwrap(), ("image/png", (3, 2)));
     let mut gif = std::io::Cursor::new(Vec::new());
     image::DynamicImage::ImageRgba8(image::RgbaImage::new(5, 4))
         .write_to(&mut gif, image::ImageFormat::Gif)
         .unwrap();
-    assert_eq!(kind(gif.get_ref()).unwrap(), ("image/gif", (5, 4)));
+    assert_eq!(image_kind(gif.get_ref()).unwrap(), ("image/gif", (5, 4)));
     for refused in [
         b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>".as_slice(),
         b"<html><script>alert(1)</script></html>",
         b"",
     ] {
         assert!(matches!(
-            kind(refused),
+            image_kind(refused),
             Err(AppError::UnsupportedMediaType(_))
         ));
     }
     // A picture's signature without a readable picture behind it.
     assert!(matches!(
-        kind(b"\xFF\xD8\xFF\xE0broken"),
+        image_kind(b"\xFF\xD8\xFF\xE0broken"),
         Err(AppError::BadRequest(_))
     ));
 }
@@ -814,7 +814,7 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
             "{find}"
         );
         if found > 0 {
-            assert_eq!(queue["published"][0]["film"], false);
+            assert_eq!(queue["published"][0]["kind"], "share");
         }
     }
 
@@ -1610,7 +1610,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                         let tracker = instructions.contains("「追踪」");
                         if request["text"]["format"]["name"] == "finds" && tracker {
                             if saving.load(Ordering::SeqCst) {
-                                sqlx::query("UPDATE articles SET updated_at = now() WHERE event = 'binance-hack-2026-10'")
+                                sqlx::query("UPDATE articles SET updated_at = now() WHERE kind = 'event' AND subject = 'binance-hack-2026-10'")
                                     .execute(&admin)
                                     .await
                                     .unwrap();
@@ -2022,7 +2022,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         .unwrap()
         .unwrap();
     let (film, title, body, cover, revision): (Option<String>, String, String, Option<Uuid>, i32) =
-        sqlx::query_as("SELECT film, title, body, cover, revision FROM articles WHERE id = $1")
+        sqlx::query_as("SELECT subject, title, body, cover, revision FROM articles WHERE id = $1")
             .bind(explained)
             .fetch_one(&state.pool)
             .await
@@ -2086,7 +2086,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         .unwrap();
     covers_fail.store(false, Ordering::SeqCst);
     let (film, body, standing): (Option<String>, String, Option<Uuid>) =
-        sqlx::query_as("SELECT film, body, cover FROM articles WHERE id = $1")
+        sqlx::query_as("SELECT subject, body, cover FROM articles WHERE id = $1")
             .bind(second)
             .fetch_one(&state.pool)
             .await
@@ -2135,7 +2135,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         .await
         .unwrap()
         .unwrap();
-    let film: Option<String> = sqlx::query_scalar("SELECT film FROM articles WHERE id = $1")
+    let film: Option<String> = sqlx::query_scalar("SELECT subject FROM articles WHERE id = $1")
         .bind(loudest)
         .fetch_one(&state.pool)
         .await
@@ -2244,7 +2244,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         .map(|article| {
             (
                 article["id"].as_str().unwrap().to_owned(),
-                article["film"].as_bool().unwrap(),
+                article["kind"] == "film",
             )
         })
         .collect();
@@ -2316,7 +2316,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     type Profile = (Option<String>, String, String, Option<Uuid>, Option<i32>);
     let profiled = |id: Uuid| {
         sqlx::query_as::<_, Profile>(
-            "SELECT a.person, a.title, a.body, a.cover, i.width FROM articles a
+            "SELECT a.subject, a.title, a.body, a.cover, i.width FROM articles a
              LEFT JOIN article_images i ON i.id = a.cover WHERE a.id = $1",
         )
         .bind(id)
@@ -2383,7 +2383,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         .unwrap();
     assert_eq!(photos(), photos_before);
     let (person, body, portrait): (Option<String>, String, Option<i32>) = sqlx::query_as(
-        "SELECT a.person, a.body, i.width FROM articles a
+        "SELECT a.subject, a.body, i.width FROM articles a
          LEFT JOIN article_images i ON i.id = a.cover WHERE a.id = $1",
     )
     .bind(other)
@@ -2543,11 +2543,13 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     // 精选 ranks profiles with the rest.
     let worth: Value =
         serde_json::from_str(&page(format!("{base}/articles/worth.json")).await).unwrap();
-    assert!(worth["articles"].as_array().unwrap().iter().any(|article| {
-        article["id"] == profile.to_string()
-            && article["person"] == true
-            && article["film"] == false
-    }));
+    assert!(
+        worth["articles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|article| { article["id"] == profile.to_string() && article["kind"] == "person" })
+    );
 
     // Brought up to date, a profile asks Wikipedia for its portrait again. It shows a photograph,
     // its comic and an illustration: the first picture drawn is its comic, which the writer hears
@@ -2603,12 +2605,10 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     // A round of leaders passes over every person profiled, however long ago; a round of
     // companies writes up a company under a key of its own, with a comic, shown by a photograph
     // grok looked at, and only once.
-    sqlx::query(
-        "UPDATE articles SET updated_at = now() - INTERVAL '4 days' WHERE person IS NOT NULL",
-    )
-    .execute(&state.pool)
-    .await
-    .unwrap();
+    sqlx::query("UPDATE articles SET updated_at = now() - INTERVAL '4 days' WHERE kind = 'person'")
+        .execute(&state.pool)
+        .await
+        .unwrap();
     let leader = xabc::write(&state, xabc::Line::People, leaders)
         .await
         .unwrap()
@@ -2771,10 +2771,12 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     let photos_before = photos();
     next().await;
     next().await;
-    let satya: Uuid = sqlx::query_scalar("SELECT id FROM articles WHERE person = 'satya-nadella'")
-        .fetch_one(&state.pool)
-        .await
-        .unwrap();
+    let satya: Uuid = sqlx::query_scalar(
+        "SELECT id FROM articles WHERE kind = 'person' AND subject = 'satya-nadella'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
     let (_, title, body, _, width) = profiled(satya).await.unwrap();
     assert_eq!(
         (title.as_str(), width, photos()),
@@ -3091,7 +3093,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     );
     let article = |id: &Value| {
         sqlx::query_as::<_, (i64, String, Option<String>, Option<Uuid>, String)>(
-            "SELECT author_id, status, question, cover, body FROM articles WHERE id = $1",
+            "SELECT author_id, status, subject, cover, body FROM articles WHERE id = $1",
         )
         .bind(Uuid::parse_str(id.as_str().unwrap()).unwrap())
         .fetch_one(&state.pool)
@@ -3165,15 +3167,15 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     .execute(&state.pool)
     .await
     .unwrap();
-    // A question XABC can't write is tried once more, then marked, its allowance given back; its
-    // reader clears it.
+    // A question XABC can't write is marked, not paid for twice, and its allowance given back;
+    // its reader clears it.
     let asked_before = asked_log.lock().unwrap().len();
     researched().await;
     let understandings = asked_log.lock().unwrap()[asked_before..]
         .iter()
         .filter(|request| request["text"]["format"]["name"] == "understanding")
         .count();
-    assert_eq!(understandings, 2);
+    assert_eq!(understandings, 1);
     let (_, mine) = listed(free_cookie.clone()).await;
     assert_eq!(
         (
@@ -3456,7 +3458,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     let followed = tracker(state.clone()).await.unwrap().unwrap();
     let (event, title, body, cover): (Option<String>, String, String, Option<String>) =
         sqlx::query_as(
-            "SELECT a.event, a.title, a.body, i.url FROM articles a
+            "SELECT a.subject, a.title, a.body, i.url FROM articles a
              LEFT JOIN article_images i ON i.id = a.cover WHERE a.id = $1",
         )
         .bind(followed)
@@ -3479,7 +3481,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     // Then the other one grok named, while the first waits; then neither may be written about,
     // which is no failure. The scouts hear of the events followed by their keys.
     let selloff = tracker(state.clone()).await.unwrap().unwrap();
-    let event: Option<String> = sqlx::query_scalar("SELECT event FROM articles WHERE id = $1")
+    let event: Option<String> = sqlx::query_scalar("SELECT subject FROM articles WHERE id = $1")
         .bind(selloff)
         .fetch_one(&state.pool)
         .await
@@ -3558,7 +3560,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     sqlx::query(
         "UPDATE articles SET updated_at = now() - INTERVAL '7 hours',
            status = CASE WHEN id = $1 THEN 'pending' ELSE status END
-         WHERE event IS NOT NULL",
+         WHERE kind = 'event'",
     )
     .bind(followed)
     .execute(&state.pool)
@@ -3573,7 +3575,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     // as if brought up to date, so the other one goes next.
     sqlx::query(
         "UPDATE articles SET status = 'published', updated_at = now() - INTERVAL '7 hours'
-         WHERE event IS NOT NULL",
+         WHERE kind = 'event'",
     )
     .execute(&state.pool)
     .await
@@ -3644,8 +3646,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         .await
         .unwrap();
     let shared: Uuid = sqlx::query_scalar(
-        "SELECT id FROM articles WHERE author_id = $1
-           AND num_nonnulls(film, person, event, product, question) = 0
+        "SELECT id FROM articles WHERE author_id = $1 AND kind = 'share'
          ORDER BY published_at DESC LIMIT 1",
     )
     .bind(author)
@@ -3656,14 +3657,16 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         serde_json::from_str(&page(format!("{base}/articles/worth.json")).await).unwrap();
     let worth = worth["articles"].as_array().unwrap();
     assert_eq!(worth[0]["id"], shared.to_string());
-    assert!(worth.iter().any(|article| {
-        article["id"] == selloff.to_string()
-            && article["event"] == true
-            && article["person"] == false
-    }));
-    assert!(worth.iter().any(|article| {
-        article["id"] == first["id"] && article["research"] == true && article["event"] == false
-    }));
+    assert!(
+        worth
+            .iter()
+            .any(|article| { article["id"] == selloff.to_string() && article["kind"] == "event" })
+    );
+    assert!(
+        worth
+            .iter()
+            .any(|article| { article["id"] == first["id"] && article["kind"] == "question" })
+    );
 
     // An administrator names events for 追踪, which lines them up, each once, and follows them
     // one after another before its own rounds: anew, or in the article an event has however
@@ -3746,7 +3749,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     let events = || {
         let state = state.clone();
         async move {
-            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM articles WHERE event IS NOT NULL")
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM articles WHERE kind = 'event'")
                 .fetch_one(&state.pool)
                 .await
                 .unwrap()
@@ -3757,7 +3760,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     assert_eq!(events().await, before);
     next_event().await;
     let (title, status): (String, String) = sqlx::query_as(
-        "SELECT title, status FROM articles WHERE event = 'chip-export-probe-2026-11'",
+        "SELECT title, status FROM articles WHERE kind = 'event' AND subject = 'chip-export-probe-2026-11'",
     )
     .fetch_one(&state.pool)
     .await
@@ -3811,7 +3814,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         xabc::publish(&state, author, shared, None, &finished("丁")).await,
         Err(AppError::Conflict(_))
     ));
-    let event = Some(xabc::Subject::Event("guard-2026-10"));
+    let event = Some((Kind::Event, "guard-2026-10"));
     xabc::publish(&state, author, shared, event, &finished("戊"))
         .await
         .unwrap();
@@ -3924,7 +3927,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         .unwrap()
         .unwrap();
     let (key, title, body, cover): (Option<String>, String, String, Option<Uuid>) =
-        sqlx::query_as("SELECT product, title, body, cover FROM articles WHERE id = $1")
+        sqlx::query_as("SELECT subject, title, body, cover FROM articles WHERE id = $1")
             .bind(reviewed)
             .fetch_one(&state.pool)
             .await
@@ -4156,7 +4159,7 @@ async fn postgres_handbook_writes_checks_and_serves() {
                     let odd = hooks && !revising && !checking;
                     if hooks && revising && saving.load(Ordering::SeqCst) {
                         sqlx::query(
-                            "UPDATE articles SET revision = revision + 1 WHERE chapter = 'hooks'",
+                            "UPDATE articles SET revision = revision + 1 WHERE kind = 'chapter' AND subject = 'hooks'",
                         )
                         .execute(&admin)
                         .await
@@ -4232,7 +4235,7 @@ async fn postgres_handbook_writes_checks_and_serves() {
         xabc::write(&state, line, Utc::now()).await,
         Err(AppError::Internal(message)) if message.contains("核对后的正文是空的")
     ));
-    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM articles WHERE chapter IS NOT NULL")
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM articles WHERE kind = 'chapter'")
         .fetch_one(&state.pool)
         .await
         .unwrap();
@@ -4264,8 +4267,9 @@ async fn postgres_handbook_writes_checks_and_serves() {
     }
     let chapters = || async {
         sqlx::query_as::<_, Chapter>(
-            "SELECT id, chapter, title, body, status, revision, author_id, sources, checked_at
-             FROM articles WHERE chapter IS NOT NULL",
+            "SELECT id, subject AS chapter, title, body, status, revision, author_id, sources,
+                    checked_at
+             FROM articles WHERE kind = 'chapter'",
         )
         .fetch_all(&state.pool)
         .await
@@ -4358,7 +4362,7 @@ async fn postgres_handbook_writes_checks_and_serves() {
     HOOKS_EDITION.store(0, Ordering::SeqCst);
     // A chapter the book gains, as DeepSeek's was, is written in the next round, and the others
     // stay as they were.
-    sqlx::query("DELETE FROM articles WHERE chapter = 'deepseek'")
+    sqlx::query("DELETE FROM articles WHERE kind = 'chapter' AND subject = 'deepseek'")
         .execute(&state.pool)
         .await
         .unwrap();

@@ -107,6 +107,11 @@ pub(crate) fn object(properties: Value) -> Value {
     json!({"type": "object", "additionalProperties": false, "required": required, "properties": properties})
 }
 
+/// How a reply is to be written: as JSON keeping strictly to `schema`, which goes by `name`.
+pub(crate) fn format(name: &str, schema: Value) -> Value {
+    json!({ "format": { "type": "json_schema", "name": name, "strict": true, "schema": schema } })
+}
+
 pub(crate) fn parse_payload(reply: &Value) -> Result<Value> {
     if let Some(error) = reply.get("error").filter(|error| !error.is_null()) {
         let message: String = error.to_string().chars().take(MAX_ERROR).collect();

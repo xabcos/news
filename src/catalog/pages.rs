@@ -439,15 +439,19 @@ async fn shelved(
     shelf: Shelf<'_>,
     limit: i64,
 ) -> Result<Vec<Shelved>> {
-    let talked = format!(
-        "(SELECT COUNT(*) FROM catalog_items c JOIN items i ON i.id = c.item_id
-          WHERE c.entry_id = e.id AND NOT i.hidden AND c.role IN ('review', 'share')
-            AND COALESCE(i.published_at, i.first_seen_at) >= NOW() - INTERVAL '{TALKED_DAYS} days')"
-    );
+    // An entry's visible items, counted once: how many there are, how many reviews and posts
+    // came lately, and when the latest was published.
     let mut query = sqlx::QueryBuilder::new(format!(
-        "SELECT e.id, e.topic_id, e.slug, e.name, e.name_en, e.kind, {} AS image, e.guide,
-                {talked} AS talked
-         FROM catalog_entries e WHERE (e.guide IS NOT NULL OR {LISTED}) AND ",
+        "SELECT e.id, e.topic_id, e.slug, e.name, e.name_en, e.kind, {} AS image, e.guide, s.talked
+         FROM catalog_entries e
+         CROSS JOIN LATERAL (SELECT COUNT(*) AS items,
+                 MAX(COALESCE(i.published_at, i.first_seen_at)) AS recent,
+                 COUNT(*) FILTER (WHERE c.role IN ('review', 'share')
+                     AND COALESCE(i.published_at, i.first_seen_at)
+                         >= NOW() - INTERVAL '{TALKED_DAYS} days') AS talked
+             FROM catalog_items c JOIN items i ON i.id = c.item_id
+             WHERE c.entry_id = e.id AND NOT i.hidden) s
+         WHERE (e.guide IS NOT NULL OR s.items > 0) AND ",
         cover(section)
     ));
     match shelf {
@@ -497,22 +501,16 @@ async fn shelved(
                 .push(")");
         }
     }
-    let recent = "(SELECT MAX(COALESCE(i.published_at, i.first_seen_at)) FROM catalog_items c
-         JOIN items i ON i.id = c.item_id WHERE c.entry_id = e.id AND NOT i.hidden) DESC NULLS LAST";
-    if let Shelf::Talked(..) = shelf {
-        query.push(format!(
-            " AND {talked} >= {TALKED_ITEMS} ORDER BY {talked} DESC, {recent}, e.guide_at DESC NULLS LAST LIMIT "
-        ));
-    } else if let Shelf::Found(..) = shelf {
-        query.push(format!(
-            " ORDER BY {talked} DESC, {recent}, e.guide_at DESC NULLS LAST LIMIT "
-        ));
-    } else {
-        query.push(format!(
-            " ORDER BY {recent}, e.guide_at DESC NULLS LAST LIMIT "
-        ));
-    }
-    query.push_bind(limit);
+    query
+        .push(match shelf {
+            Shelf::Talked(..) => {
+                format!(" AND s.talked >= {TALKED_ITEMS} ORDER BY s.talked DESC, ")
+            }
+            Shelf::Found(..) => " ORDER BY s.talked DESC, ".to_owned(),
+            Shelf::Topic(..) | Shelf::Creator(..) | Shelf::Kind(..) => " ORDER BY ".to_owned(),
+        })
+        .push("s.recent DESC NULLS LAST, e.guide_at DESC NULLS LAST LIMIT ")
+        .push_bind(limit);
     Ok(query.build_query_as().fetch_all(&state.pool).await?)
 }
 /// Entries as shelf cards: picture, kind, name and first facts.

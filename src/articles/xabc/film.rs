@@ -4,8 +4,8 @@
 //! is revised. While 影视 collects nothing, 解说 writes nothing. Searching, writing and pictures
 //! are 分享's (`super`).
 use super::{
-    Finished, KEEPING, Line, Subject, draft, figures, finish, identity, linked, listed, look,
-    publish, revise,
+    Finished, KEEPING, Kind, Line, draft, figures, finish, identity, linked, listed, look, publish,
+    revise,
 };
 use crate::{
     error::{AppError, Result},
@@ -137,7 +137,7 @@ pub(super) async fn write(
         state,
         author,
         since,
-        Some(Subject::Work(&work.key)),
+        Some((Kind::Film, &work.key)),
         &article,
     )
     .await?;
@@ -156,7 +156,7 @@ async fn next(state: &AppState, author: i64) -> Result<Option<Next>> {
          JOIN topics t ON t.id = e.topic_id AND t.enabled
          JOIN catalog_items c ON c.entry_id = e.id
          JOIN items i ON i.id = c.item_id AND NOT i.hidden
-         LEFT JOIN articles a ON a.film = e.key
+         LEFT JOIN articles a ON a.kind = 'film' AND a.subject = e.key
          WHERE e.topic_id = 'movie'
            AND i.first_seen_at > COALESCE(a.updated_at, now() - INTERVAL '30 days')
            AND (a.id IS NULL
@@ -181,7 +181,7 @@ async fn due(state: &AppState, id: Uuid, revision: i32) -> Result<Due> {
     sqlx::query_as(
         "SELECT a.id, a.title, a.body, a.revision, a.cover, a.updated_at, e.id AS entry,
                 e.key, e.kind, e.name, e.name_en, e.creator, e.guide
-         FROM articles a JOIN catalog_entries e ON e.topic_id = 'movie' AND e.key = a.film
+         FROM articles a JOIN catalog_entries e ON e.topic_id = 'movie' AND e.key = a.subject
          WHERE a.id = $1 AND a.revision = $2",
     )
     .bind(id)

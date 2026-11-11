@@ -151,28 +151,18 @@ pub(crate) fn instructions(topic: &Topic) -> String {
 pub(crate) fn schema() -> Value {
     let text = json!({ "type": "string" });
     let list = json!({ "type": "array", "items": text });
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["items", "cover"],
-        "properties": {
-            "cover": { "type": "null" },
-            "items": { "type": "array", "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["title", "summary", "title_en", "summary_en", "url", "source",
-                    "published_at", "tags", "tags_en", "importance", "place", "place_en"],
-                "properties": {
-                    "title": text, "summary": text, "title_en": text, "summary_en": text,
-                    "url": text, "source": text,
-                    "published_at": { "type": ["string", "null"] },
-                    "tags": list, "tags_en": list,
-                    "importance": { "type": "integer" },
-                    "place": text, "place_en": text
-                }
-            } }
-        }
-    })
+    let item = crate::ai::object(json!({
+        "title": text, "summary": text, "title_en": text, "summary_en": text,
+        "url": text, "source": text,
+        "published_at": { "type": ["string", "null"] },
+        "tags": list, "tags_en": list,
+        "importance": { "type": "integer" },
+        "place": text, "place_en": text,
+    }));
+    crate::ai::object(json!({
+        "cover": { "type": "null" },
+        "items": { "type": "array", "items": item },
+    }))
 }
 
 /// A confirmed post: its destination, the place it names, and its photographs in order. The

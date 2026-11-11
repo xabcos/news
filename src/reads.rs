@@ -259,18 +259,13 @@ fn editorial_request(model: &str, source: &source::Source) -> Value {
             "url": source.url, "source_title": source.title, "author": source.author,
             "source_language": source.language, "source_blocks": cleanup::blocks(&source.body),
         }).to_string(),
-        "text": {"format": {"type": "json_schema", "name": "reads_editorial", "strict": true,
-            "schema": {"type":"object", "additionalProperties":false,
-                "required":["worthy","remove_blocks","source_language","title","title_en","summary","summary_en","body","body_en","tags","tags_en"],
-                "properties":{
-                    "worthy":{"type":"boolean"}, "source_language":{"type":"string"}, "title":{"type":"string"}, "title_en":{"type":"string"},
-                    "remove_blocks":{"type":"array","items":{"type":"integer","minimum":0}},
-                    "summary":{"type":"string"}, "summary_en":{"type":"string"},
-                    "body":{"type":"string"}, "body_en":{"type":"string"},
-                    "tags":{"type":"array","items":{"type":"string"}}, "tags_en":{"type":"array","items":{"type":"string"}}
-                }
-            }
-        }}
+        "text": crate::ai::format("reads_editorial", crate::ai::object(json!({
+            "worthy":{"type":"boolean"}, "source_language":{"type":"string"}, "title":{"type":"string"}, "title_en":{"type":"string"},
+            "remove_blocks":{"type":"array","items":{"type":"integer","minimum":0}},
+            "summary":{"type":"string"}, "summary_en":{"type":"string"},
+            "body":{"type":"string"}, "body_en":{"type":"string"},
+            "tags":{"type":"array","items":{"type":"string"}}, "tags_en":{"type":"array","items":{"type":"string"}}
+        })))
     })
 }
 

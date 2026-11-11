@@ -444,14 +444,11 @@ pub(crate) fn request_body(
             known.len(),
             collected,
         ),
-        "text": { "format": {
-            "type": "json_schema", "name": "news_digest", "strict": true,
-            "schema": match crate::catalog::section(topic) {
-                _ if travel => crate::travel::schema(),
-                Some(section) => crate::catalog::schema(schema(), topic, section),
-                None => schema(),
-            },
-        } },
+        "text": crate::ai::format("news_digest", match crate::catalog::section(topic) {
+            _ if travel => crate::travel::schema(),
+            Some(section) => crate::catalog::schema(schema(), topic, section),
+            None => schema(),
+        }),
     })
 }
 
@@ -508,42 +505,28 @@ fn instructions(topic: &Topic) -> String {
 }
 
 fn schema() -> Value {
-    let image = json!({
-        "type": ["object", "null"], "additionalProperties": false,
-        "required": ["url", "source_url", "caption", "caption_en", "credit"],
-        "properties": {
-            "url": { "type": "string" },
-            "source_url": { "type": "string" },
-            "caption": { "type": "string" },
-            "caption_en": { "type": "string" },
-            "credit": { "type": "string" }
-        }
-    });
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["items", "cover"],
-        "properties": {
-            "cover": image,
-            "items": { "type": "array", "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["title", "summary", "title_en", "summary_en", "url", "source", "published_at", "tags", "tags_en", "importance", "image"],
-            "properties": {
-                "title": { "type": "string" },
-                "summary": { "type": "string" },
-                "title_en": { "type": "string" },
-                "summary_en": { "type": "string" },
-                "url": { "type": "string" },
-                "source": { "type": "string" },
-                "published_at": { "type": ["string", "null"] },
-                "tags": { "type": "array", "items": { "type": "string" } },
-                "tags_en": { "type": "array", "items": { "type": "string" } },
-                "importance": { "type": "integer" },
-                "image": image
-            }
-        } } }
-    })
+    let mut image = crate::ai::object(json!({
+        "url": { "type": "string" },
+        "source_url": { "type": "string" },
+        "caption": { "type": "string" },
+        "caption_en": { "type": "string" },
+        "credit": { "type": "string" },
+    }));
+    image["type"] = json!(["object", "null"]);
+    let item = crate::ai::object(json!({
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "title_en": { "type": "string" },
+        "summary_en": { "type": "string" },
+        "url": { "type": "string" },
+        "source": { "type": "string" },
+        "published_at": { "type": ["string", "null"] },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "tags_en": { "type": "array", "items": { "type": "string" } },
+        "importance": { "type": "integer" },
+        "image": image,
+    }));
+    crate::ai::object(json!({ "cover": image, "items": { "type": "array", "items": item } }))
 }
 
 pub(crate) fn parse_reply(reply: Value) -> Result<Fetched> {

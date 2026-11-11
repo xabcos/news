@@ -1324,25 +1324,28 @@ async fn feed(
     ))
 }
 
-/// Serves a rendered body, or 304 when the client already holds this exact version.
+/// Whether the client already holds the version `etag` names, as `If-None-Match` says.
 /// Proxies that recompress the body (Cloudflare does) downgrade the tag to W/"...";
 /// If-None-Match is defined as a weak comparison anyway.
-pub(crate) fn conditional(
-    headers: &HeaderMap,
-    rendered: &Rendered,
-    content_type: &'static str,
-) -> Response {
-    let unchanged = headers
+pub(crate) fn unchanged(headers: &HeaderMap, etag: &str) -> bool {
+    headers
         .get(header::IF_NONE_MATCH)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| {
             value.split(',').any(|candidate| {
                 let candidate = candidate.trim();
-                candidate == "*"
-                    || candidate.strip_prefix("W/").unwrap_or(candidate) == rendered.etag
+                candidate == "*" || candidate.strip_prefix("W/").unwrap_or(candidate) == etag
             })
-        });
-    let mut response = if unchanged {
+        })
+}
+
+/// Serves a rendered body, or 304 when the client already holds this exact version.
+pub(crate) fn conditional(
+    headers: &HeaderMap,
+    rendered: &Rendered,
+    content_type: &'static str,
+) -> Response {
+    let mut response = if unchanged(headers, &rendered.etag) {
         StatusCode::NOT_MODIFIED.into_response()
     } else {
         (

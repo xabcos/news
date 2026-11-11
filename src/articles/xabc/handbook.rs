@@ -10,7 +10,7 @@
 //! name too: a draft naming others, or JSON that doesn't parse, is written again once. Writing,
 //! links and saving are 分享's (`super`); a chapter shows no pictures.
 use super::{
-    KEEPING, Line, Subject, draft, figures, finish, identity, linked, listed, log, look, publish,
+    KEEPING, Kind, Line, draft, figures, finish, identity, linked, listed, log, look, publish,
     revise,
 };
 use crate::{
@@ -112,7 +112,8 @@ struct Story {
 pub(super) async fn last(state: &AppState) -> Result<Option<DateTime<Utc>>> {
     let keys: Vec<&str> = CHAPTERS.iter().map(|chapter| chapter.key).collect();
     Ok(sqlx::query_scalar(
-        "SELECT CASE WHEN count(*) = $2 THEN max(checked_at) END FROM articles WHERE chapter = ANY($1)",
+        "SELECT CASE WHEN count(*) = $2 THEN max(checked_at) END FROM articles
+         WHERE kind = 'chapter' AND subject = ANY($1)",
     )
     .bind(&keys)
     .bind(keys.len() as i64)
@@ -135,9 +136,9 @@ pub(super) async fn write(state: &AppState, author: i64) -> Result<Option<Uuid>>
     let cutoff = Utc::now();
     let pages = official(state).await;
     let kept: Vec<Kept> = sqlx::query_as(
-        "SELECT id, chapter, title, body, revision, status = 'published' AS published, updated_at,
-                sources, checked_at
-         FROM articles WHERE chapter IS NOT NULL",
+        "SELECT id, subject AS chapter, title, body, revision, status = 'published' AS published,
+                updated_at, sources, checked_at
+         FROM articles WHERE kind = 'chapter'",
     )
     .fetch_all(&state.pool)
     .await?;
@@ -303,7 +304,7 @@ async fn create(
         state,
         author,
         begun,
-        Some(Subject::Chapter(chapter.key)),
+        Some((Kind::Chapter, chapter.key)),
         &article,
     )
     .await?;

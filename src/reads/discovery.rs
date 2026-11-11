@@ -230,14 +230,10 @@ fn shortlist_request(topic: &Topic, seeds: &[Seed], now: DateTime<Utc>) -> Value
             "now": now, "topic": topic.brief,
             "candidates": seeds.iter().enumerate().map(|(id, seed)| json!({"id": id, "url": seed.url, "title": seed.title, "source": seed.source, "language": seed.language, "published_at": seed.published_at})).collect::<Vec<_>>()
         }).to_string(),
-        "text": {"format": {"type": "json_schema", "name": "reads_shortlist", "strict": true,
-            "schema": {"type": "object", "additionalProperties": false, "required": ["selected", "reason"],
-                "properties": {
-                    "selected": {"type": "array", "maxItems": CANDIDATE_LIMIT, "items": {"type": "integer", "minimum": 0, "maximum": seeds.len().saturating_sub(1)}},
-                    "reason": {"type": "string"}
-                }
-            }
-        }}
+        "text": crate::ai::format("reads_shortlist", crate::ai::object(json!({
+            "selected": {"type": "array", "maxItems": CANDIDATE_LIMIT, "items": {"type": "integer", "minimum": 0, "maximum": seeds.len().saturating_sub(1)}},
+            "reason": {"type": "string"}
+        })))
     })
 }
 

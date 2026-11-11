@@ -2,13 +2,13 @@
 //! under the reader's pen name. Questions wait in one queue in the database, so a restart loses
 //! none: those being written first, then Pro before Free, each in the order asked; XABC writes up
 //! to `NEWS_MAX_CONCURRENT_RESEARCH` at once (`tick`), beside the run slots collection and its
-//! other lines share, so a reader's question never waits behind them. A reader asks as many a day as their plan allows, an
-//! administrator, who waits with Pro, as many as they like; a question taken back before XABC
-//! starts on it, or one it could not write, gives its allowance back. The AI looks at a question
-//! before it joins the queue, and at the article, the question with it, before it goes public, as
-//! at 分享's. Pro readers and administrators may keep their articles to themselves. The words are
-//! XABC's: only an administrator edits them.
-use super::{Quota, check, parse, take, xabc};
+//! other lines share, so a reader's question never waits behind them. A reader asks as many a day
+//! as their plan allows, an administrator, who waits with Pro, as many as they like; a question
+//! taken back before XABC starts on it, or one it could not write, gives its allowance back. The
+//! AI looks at a question before it joins the queue, and at the article, the question with it,
+//! before it goes public, as at 分享's. Pro readers and administrators may keep their articles to
+//! themselves. The words are XABC's: only an administrator edits them.
+use super::{Kind, Quota, check, parse, take, xabc};
 use crate::{
     auth::User,
     error::{ApiJson, AppError, Result},
@@ -180,7 +180,7 @@ async fn list(State(state): State<AppState>, user: User) -> Result<Json<Value>> 
         "SELECT a.id, a.title, w.name AS author, a.author_id = $1 AS mine, a.status, a.held,
                 a.views, a.created_at, u.role = 'admin' OR COALESCE(u.pro_until > now(), false) AS pro
          FROM articles a JOIN authors w ON w.user_id = a.author_id JOIN users u ON u.id = a.author_id
-         WHERE a.question IS NOT NULL AND (a.author_id = $1 OR $2)
+         WHERE a.kind = 'question' AND (a.author_id = $1 OR $2)
          ORDER BY a.created_at DESC, a.id DESC LIMIT $3",
     )
     .bind(user.id)
@@ -341,7 +341,7 @@ async fn publicize(
     let revision: i32 = sqlx::query_scalar(
         "UPDATE articles SET status = $3, revision = revision + 1,
              published_at = CASE WHEN $3 = 'published' THEN COALESCE(published_at, now()) ELSE published_at END
-         WHERE id = $1 AND author_id = $2 AND question IS NOT NULL AND (status = 'draft') = $4
+         WHERE id = $1 AND author_id = $2 AND kind = 'question' AND (status = 'draft') = $4
          RETURNING revision",
     )
     .bind(id)
@@ -438,16 +438,11 @@ pub(crate) async fn tick(state: &AppState) {
     }
 }
 
-/// Researches the question and saves the article, each once more if it fails; then a reader's
-/// article that goes public is reviewed by the AI, the question with it.
+/// Researches the question and saves the article, saving once more if that fails, since the
+/// article is paid for by then; then a reader's article that goes public is reviewed by the AI,
+/// the question with it.
 async fn write(state: &AppState, id: Uuid, question: &str) -> Result<()> {
-    let article = match xabc::researched(state, id, question).await {
-        Ok(article) => article,
-        Err(error) => {
-            tracing::info!(%id, %error, "XABC researches a question again");
-            xabc::researched(state, id, question).await?
-        }
-    };
+    let article = xabc::researched(state, id, question).await?;
     let status = match save(state, id, question, &article).await {
         Ok(status) => status,
         Err(error) => {
@@ -493,7 +488,7 @@ async fn save(
                 .await?,
         );
     };
-    let subject = Some(xabc::Subject::Question(question));
+    let subject = Some((Kind::Question, question));
     xabc::save(&mut tx, id, author, &status, subject, article).await?;
     tx.commit().await?;
     tracing::info!(%id, %status, "XABC wrote a research");

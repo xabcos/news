@@ -157,16 +157,14 @@ pub(crate) fn schema(mut base: Value, topic: &Topic, section: Section) -> Value 
     item["properties"]["role"] = json!({"type":"string", "enum":["review","share","news"]});
     item["properties"]["image_page_url"] = json!({"type":["string","null"]});
     item["properties"]["published_at"] = json!({"type":"string"});
-    item["properties"]["work"] = json!({
-        "type": ["object", "null"], "additionalProperties": false,
-        "required": ["name", "name_en", "creator", "kind", "source_urls"],
-        "properties": {
-            "name": {"type":"string"}, "name_en": {"type":"string"},
-            "creator": {"type":"string"},
-            "kind": {"type":"string", "enum": section.kinds(&topic.id)},
-            "source_urls": {"type":"array", "items":{"type":"string"}, "maxItems":3}
-        }
-    });
+    let mut work = crate::ai::object(json!({
+        "name": {"type":"string"}, "name_en": {"type":"string"},
+        "creator": {"type":"string"},
+        "kind": {"type":"string", "enum": section.kinds(&topic.id)},
+        "source_urls": {"type":"array", "items":{"type":"string"}, "maxItems":3}
+    }));
+    work["type"] = json!(["object", "null"]);
+    item["properties"]["work"] = work;
     base
 }
 
@@ -642,10 +640,9 @@ struct Pending {
 
 fn guide_request(topic: &Topic, section: Section, entry: &Pending, sources: &[Source]) -> Value {
     let string = json!({"type":"string"});
-    let field = json!({"type":"object", "additionalProperties":false,
-        "required":["label","label_en","text","text_en","source","quote"],
-        "properties":{"label":string,"label_en":string,"text":string,"text_en":string,
-            "source":{"type":"integer"},"quote":string}});
+    let field = crate::ai::object(json!({"label":string,"label_en":string,"text":string,
+        "text_en":string,"source":{"type":"integer"},"quote":string}));
+    let link = crate::ai::object(json!({"label":string,"label_en":string,"url":string}));
     let (instructions, effort) = match section {
         Section::Culture => culture::guide(topic),
         Section::Gadgets => gadgets::guide(&topic.id, &entry.kind),
@@ -653,13 +650,9 @@ fn guide_request(topic: &Topic, section: Section, entry: &Pending, sources: &[So
     json!({"model":topic.model,"store":false,"reasoning":{"effort":effort},
     "instructions":instructions,
     "input":json!({"name":entry.name,"name_en":entry.name_en,"creator":entry.creator,"sources":sources}).to_string(),
-    "text":{"format":{"type":"json_schema","name":"catalog_guide","strict":true,"schema":{
-        "type":"object","additionalProperties":false,"required":["intro","intro_en","facts","sections","links"],
-        "properties":{"intro":string,"intro_en":string,
-            "facts":{"type":"array","items":field},"sections":{"type":"array","items":field},
-            "links":{"type":"array","items":{"type":"object","additionalProperties":false,
-                "required":["label","label_en","url"],"properties":{"label":string,"label_en":string,"url":string}}}}
-    }}}})
+    "text":crate::ai::format("catalog_guide", crate::ai::object(json!({"intro":string,"intro_en":string,
+        "facts":{"type":"array","items":field},"sections":{"type":"array","items":field},
+        "links":{"type":"array","items":link}})))})
 }
 
 /// A guide written from changed sources, or the same sources; either way with the official

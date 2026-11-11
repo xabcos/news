@@ -3,8 +3,8 @@
 //! the Codex & Claude handbook's chapters read on the same article page, and 调研's, 时代's and
 //! 追踪's lists are 分享's; a chapter stands at its own address with the contents beside it.
 use super::{
-    COMMENTARY, MARKDOWN, PEOPLE, REVIEWS, Search, TRACKER, commentary_label, handbook, image_id,
-    label, missing, parse, people_label, research, reviews_label, tracker_label,
+    COMMENTARY, Kind, MARKDOWN, PEOPLE, REVIEWS, Search, TRACKER, commentary_label, handbook,
+    image_id, label, missing, parse, people_label, research, reviews_label, tracker_label,
 };
 use crate::{
     auth::User,
@@ -46,7 +46,7 @@ const LIST: Chrome<'static> = Chrome {
     current: "articles",
     section: "reads articles article-cards",
     stylesheet: "/reads.css?v=24",
-    script: "/reads.js?v=12",
+    script: "/reads.js?v=13",
     feed: ("News", "/feed.xml"),
 };
 /// An article counts its reads, and its review takes a ❤️.
@@ -114,83 +114,38 @@ const CHAPTER: Chrome<'static> = Chrome {
     ..ARTICLE
 };
 
-/// The lists articles are on: 分享, which readers and XABC write, 调研, the research readers ask
-/// for, XABC's 解说, 时代, 追踪 and 评测, and the handbook's contents.
-#[derive(Clone, Copy, PartialEq)]
-enum Shelf {
-    Shared,
-    Researched,
-    Explained,
-    People,
-    Tracked,
-    Reviewed,
-    Handbook,
-}
-
-impl Shelf {
-    fn of(
-        film: bool,
-        person: bool,
-        event: bool,
-        product: bool,
-        research: bool,
-        chapter: bool,
-    ) -> Self {
-        match (film, person, event, product, research, chapter) {
-            (true, ..) => Self::Explained,
-            (_, true, ..) => Self::People,
-            (_, _, true, ..) => Self::Tracked,
-            (_, _, _, true, ..) => Self::Reviewed,
-            (_, _, _, _, true, _) => Self::Researched,
-            (.., true) => Self::Handbook,
-            _ => Self::Shared,
-        }
-    }
-
-    /// The condition keeping to the shelf's articles.
-    fn articles(self) -> &'static str {
-        match self {
-            Self::Shared => {
-                " AND a.film IS NULL AND a.person IS NULL AND a.event IS NULL AND a.product IS NULL AND a.question IS NULL AND a.chapter IS NULL"
-            }
-            Self::Researched => " AND a.question IS NOT NULL",
-            Self::Explained => " AND a.film IS NOT NULL",
-            Self::People => " AND a.person IS NOT NULL",
-            Self::Tracked => " AND a.event IS NOT NULL",
-            Self::Reviewed => " AND a.product IS NOT NULL",
-            Self::Handbook => " AND a.chapter IS NOT NULL",
-        }
-    }
-
-    /// Where the shelf's list is, and its name.
+/// Each kind of article has a list: 分享, which readers and XABC write, 调研, the research
+/// readers ask for, XABC's 解说, 时代, 追踪 and 评测, and the handbook's contents.
+impl Kind {
+    /// Where the kind's list is, and its name.
     fn list(self) -> (&'static str, fn(bool) -> &'static str) {
         match self {
-            Self::Shared => ("/articles", label),
-            Self::Researched => (research::PATH, research::label),
-            Self::Explained => (COMMENTARY, commentary_label),
-            Self::People => (PEOPLE, people_label),
-            Self::Tracked => (TRACKER, tracker_label),
-            Self::Reviewed => (REVIEWS, reviews_label),
-            Self::Handbook => (handbook::PATH, handbook::label),
+            Self::Share => ("/articles", label),
+            Self::Question => (research::PATH, research::label),
+            Self::Film => (COMMENTARY, commentary_label),
+            Self::Person => (PEOPLE, people_label),
+            Self::Event => (TRACKER, tracker_label),
+            Self::Product => (REVIEWS, reviews_label),
+            Self::Chapter => (handbook::PATH, handbook::label),
         }
     }
 
-    /// Whether readers write the shelf's articles under their pen names, so its list shows their
+    /// Whether readers write the kind's articles under their pen names, so its list shows their
     /// names and has a page for each; XABC alone writes the others.
     fn readers(self) -> bool {
-        matches!(self, Self::Shared | Self::Researched)
+        matches!(self, Self::Share | Self::Question)
     }
 
-    /// Whether an article on the shelf is as new as its last update: XABC brings profiles,
+    /// Whether an article of the kind is as new as its last update: XABC brings profiles,
     /// events, reviews and the handbook's chapters up to date as they move.
     fn updated(self) -> bool {
         matches!(
             self,
-            Self::People | Self::Tracked | Self::Reviewed | Self::Handbook
+            Self::Person | Self::Event | Self::Product | Self::Chapter
         )
     }
 
-    /// What dates an article on the shelf, and orders its list.
+    /// What dates an article of the kind, and orders its list.
     fn dated(self) -> &'static str {
         if self.updated() {
             "a.updated_at"
@@ -199,11 +154,11 @@ impl Shelf {
         }
     }
 
-    /// How an article on the shelf shows its date: 追踪's to the minute, as events move by the
+    /// How an article of the kind shows its date: 追踪's to the minute, as events move by the
     /// hour.
     fn stamp(self) -> &'static str {
         match self {
-            Self::Tracked => "%Y-%m-%d %H:%M",
+            Self::Event => "%Y-%m-%d %H:%M",
             _ => "%Y-%m-%d",
         }
     }
@@ -234,7 +189,9 @@ async fn sitemap(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         "SELECT a.id, a.updated_at",
     )
     .push(FROM)
-    .push(" AND a.status = 'published' AND a.chapter IS NULL ORDER BY a.published_at, a.id LIMIT ")
+    .push(
+        " AND a.status = 'published' AND a.kind <> 'chapter' ORDER BY a.published_at, a.id LIMIT ",
+    )
     .push_bind(SITEMAP_SIZE)
     .build_query_as()
     .fetch_all(&state.pool)
@@ -316,17 +273,17 @@ const CARD: &str =
     "SELECT a.id, a.author_id, w.name AS author, a.title, a.excerpt, a.views, a.published_at,
         a.updated_at, CASE WHEN i.expires_at > now() THEN i.url END AS cover, i.width, i.height";
 
-/// The public articles on `shelf` holding the words searched; `select` names what to take of
+/// The public articles of `kind` holding the words searched; `select` names what to take of
 /// them.
-fn listed(select: &str, shelf: Shelf, by: Option<i64>, search: &Search) -> QueryBuilder<Postgres> {
+fn listed(select: &str, kind: Kind, by: Option<i64>, search: &Search) -> QueryBuilder<Postgres> {
     let mut query = QueryBuilder::new(select);
     query
         .push(
             " FROM articles a JOIN authors w ON w.user_id = a.author_id JOIN users u ON u.id = a.author_id
               LEFT JOIN article_images i ON i.id = a.cover
-              WHERE u.status AND a.status = 'published'",
+              WHERE u.status AND a.status = 'published' AND a.kind = ",
         )
-        .push(shelf.articles());
+        .push_bind(kind);
     if let Some(by) = by {
         query.push(" AND a.author_id = ").push_bind(by);
     }
@@ -348,18 +305,9 @@ struct Article {
     views: i64,
     updated_at: DateTime<Utc>,
     published_at: Option<DateTime<Utc>>,
-    /// Whether it is a 解说, which belongs to Culture.
-    film: bool,
-    /// Whether it is a 时代 profile.
-    person: bool,
-    /// Whether it follows an event for 追踪.
-    event: bool,
-    /// Whether it reviews a product for 评测.
-    product: bool,
-    /// The reader's question it researches for 调研.
-    question: Option<String>,
-    /// The handbook chapter it is, by key.
-    chapter: Option<String>,
+    kind: Kind,
+    /// What it is about: for 调研 the reader's question, for the handbook the chapter's key.
+    subject: Option<String>,
 }
 
 #[derive(FromRow)]
@@ -399,7 +347,7 @@ async fn index(
     Query(params): Query<Params>,
     headers: HeaderMap,
 ) -> Result<Response> {
-    readers(&state, Shelf::Shared, &params, &headers).await
+    readers(&state, Kind::Share, &params, &headers).await
 }
 
 // So is 调研's.
@@ -409,14 +357,14 @@ async fn asked(
     Query(params): Query<Params>,
     headers: HeaderMap,
 ) -> Result<Response> {
-    readers(&state, Shelf::Researched, &params, &headers).await
+    readers(&state, Kind::Question, &params, &headers).await
 }
 
 /// 分享's list or 调研's: readers' articles newest first, 热读's, one author's or those holding
 /// some words. 分享's leads to writing one; 调研's asks a question in the middle of its heading.
 async fn readers(
     state: &AppState,
-    shelf: Shelf,
+    kind: Kind,
     params: &Params,
     headers: &HeaderMap,
 ) -> Result<Response> {
@@ -440,12 +388,12 @@ async fn readers(
         ),
         None => None,
     };
-    let (path, name) = shelf.list();
+    let (path, name) = kind.list();
     let name = name(en);
     // What the list's articles are, what it says of itself and while it is empty, and what its
     // heading holds besides: 调研's question box in the middle, 分享's link to write beside the
     // search.
-    let (noun, about, first, middle, beside) = if shelf == Shelf::Researched {
+    let (noun, about, first, middle, beside) = if kind == Kind::Question {
         (
             ("调研", "Research"),
             choose(
@@ -481,14 +429,14 @@ async fn readers(
             ),
         )
     };
-    let mut query = listed(CARD, shelf, params.by, &search);
+    let mut query = listed(CARD, kind, params.by, &search);
     if hot {
         query
             .push(" AND a.views > 0 AND a.published_at >= NOW() - INTERVAL '30 days' ORDER BY ")
             .push(HOT)
             .push(" DESC, a.published_at DESC, a.id DESC LIMIT 24");
     } else {
-        search.order(&mut query, shelf.dated());
+        search.order(&mut query, kind.dated());
         query
             .push(" LIMIT ")
             .push_bind(PAGE_SIZE + 1)
@@ -514,7 +462,7 @@ async fn readers(
         &search,
         page,
         en,
-        listed("SELECT count(*)", shelf, params.by, &search).build_query_scalar(),
+        listed("SELECT count(*)", kind, params.by, &search).build_query_scalar(),
         state,
     )
     .await?;
@@ -557,7 +505,7 @@ async fn readers(
             row,
             en,
             hot.then_some(index + 1),
-            shelf,
+            kind,
             state.config.timezone,
         ));
     }
@@ -634,7 +582,7 @@ async fn readers(
         &description,
         &content,
         None,
-        if shelf == Shelf::Researched {
+        if kind == Kind::Question {
             &RESEARCH_LIST
         } else {
             &LIST
@@ -708,11 +656,7 @@ struct Worth {
     id: Uuid,
     title: String,
     views: i64,
-    film: bool,
-    person: bool,
-    event: bool,
-    product: bool,
-    research: bool,
+    kind: Kind,
     cover: Option<String>,
     width: Option<i32>,
     height: Option<i32>,
@@ -736,20 +680,21 @@ async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Resp
     )
     .push_bind(super::xabc::SHARING)
     .push(
-        ") AND u.status AND a.status = 'published' AND a.film IS NULL AND a.person IS NULL AND a.event IS NULL
-               AND a.product IS NULL AND a.chapter IS NULL
+        ") AND u.status AND a.status = 'published' AND a.kind = 'share'
              ORDER BY a.published_at DESC, a.id DESC LIMIT 4)
-         SELECT a.id, a.title, a.views, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person,
-                a.event IS NOT NULL AS event, a.product IS NOT NULL AS product,
-                a.question IS NOT NULL AS research,
+         SELECT a.id, a.title, a.views, a.kind,
                 CASE WHEN i.expires_at > now() THEN i.url END AS cover, i.width, i.height
          FROM articles a JOIN users u ON u.id = a.author_id
          LEFT JOIN article_images i ON i.id = a.cover
          LEFT JOIN newest n ON n.id = a.id
-         WHERE u.status AND a.status = 'published' AND a.chapter IS NULL
+         WHERE u.status AND a.status = 'published' AND a.kind <> 'chapter'
            AND a.published_at >= NOW() - INTERVAL '30 days'",
     )
-    .push(if commentary { "" } else { " AND a.film IS NULL" })
+    .push(if commentary {
+        ""
+    } else {
+        " AND a.kind <> 'film'"
+    })
     .push(" ORDER BY n.published_at DESC NULLS LAST, ")
     .push(HOT)
     .push(" DESC, a.published_at DESC, a.id DESC LIMIT 8")
@@ -763,16 +708,16 @@ async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Resp
     ))
 }
 
-/// A page of `shelf`'s public articles holding the words searched, newest first, and whether
+/// A page of `kind`'s public articles holding the words searched, newest first, and whether
 /// more follow; a page past the last is not found.
 async fn shelved(
     state: &AppState,
-    shelf: Shelf,
+    kind: Kind,
     search: &Search,
     page: u32,
 ) -> Result<(Vec<Card>, bool)> {
-    let mut query = listed(CARD, shelf, None, search);
-    search.order(&mut query, shelf.dated());
+    let mut query = listed(CARD, kind, None, search);
+    search.order(&mut query, kind.dated());
     let mut rows: Vec<Card> = query
         .push(" LIMIT ")
         .push_bind(PAGE_SIZE + 1)
@@ -793,7 +738,7 @@ async fn shelved(
 /// tabs (文娱 · 解说, 数码 · 评测), or else heading a page of its own, tiled as 分享's are (时代,
 /// 追踪). Its words are in Chinese and English.
 struct List {
-    shelf: Shelf,
+    kind: Kind,
     /// The catalogue section it sits under, if any.
     section: Option<crate::catalog::Section>,
     path: &'static str,
@@ -810,7 +755,7 @@ struct List {
 
 /// 文娱 · 解说: XABC's articles on films and series.
 const EXPLANATIONS: List = List {
-    shelf: Shelf::Explained,
+    kind: Kind::Film,
     section: Some(crate::catalog::Section::Culture),
     path: COMMENTARY,
     name: commentary_label,
@@ -829,7 +774,7 @@ const EXPLANATIONS: List = List {
 
 /// 数码 · 评测: XABC's reviews of the products 数码 collects.
 const REVIEWS_LIST: List = List {
-    shelf: Shelf::Reviewed,
+    kind: Kind::Product,
     section: Some(crate::catalog::Section::Gadgets),
     path: REVIEWS,
     name: reviews_label,
@@ -848,7 +793,7 @@ const REVIEWS_LIST: List = List {
 
 /// 时代: XABC's profiles of the people and the companies of this age.
 const PROFILES: List = List {
-    shelf: Shelf::People,
+    kind: Kind::Person,
     section: None,
     path: PEOPLE,
     name: people_label,
@@ -867,7 +812,7 @@ const PROFILES: List = List {
 
 /// 追踪: XABC's articles following the events the whole web talks about.
 const EVENTS: List = List {
-    shelf: Shelf::Tracked,
+    kind: Kind::Event,
     section: None,
     path: TRACKER,
     name: tracker_label,
@@ -933,14 +878,14 @@ async fn list(
     let say = |(zh, english): (&'static str, &'static str)| choose(en, zh, english);
     let page = page(params)?;
     let search = Search::new(params.q.as_deref());
-    let (rows, more) = shelved(state, list.shelf, &search, page).await?;
+    let (rows, more) = shelved(state, list.kind, &search, page).await?;
     let name = (list.name)(en);
     let description = say(list.description);
     let found = found(
         &search,
         page,
         en,
-        listed("SELECT count(*)", list.shelf, None, &search).build_query_scalar(),
+        listed("SELECT count(*)", list.kind, None, &search).build_query_scalar(),
         state,
     )
     .await?;
@@ -968,7 +913,7 @@ async fn list(
         ),
     };
     for row in &rows {
-        content.push_str(&card(row, en, None, list.shelf, state.config.timezone));
+        content.push_str(&card(row, en, None, list.kind, state.config.timezone));
     }
     content.push_str("</div>");
     if rows.is_empty() {
@@ -1020,13 +965,7 @@ fn reads(id: Uuid, views: i64, en: bool) -> String {
 
 /// An article's card: its cover, then 热读's place, the author on readers' lists (the others are
 /// all XABC's), the date, the reads, the title and the opening.
-fn card(
-    item: &Card,
-    en: bool,
-    rank: Option<usize>,
-    shelf: Shelf,
-    timezone: chrono_tz::Tz,
-) -> String {
+fn card(item: &Card, en: bool, rank: Option<usize>, kind: Kind, timezone: chrono_tz::Tz) -> String {
     let href = localized(&format!("/articles/{}", item.id), en);
     let cover = item
         .cover
@@ -1043,11 +982,11 @@ fn card(
     let rank = rank
         .map(|rank| format!("<span class=read-rank aria-hidden=true>{rank:02}</span>"))
         .unwrap_or_default();
-    let author = if shelf.readers() {
+    let author = if kind.readers() {
         format!(
             "<a href=\"{}\">{}</a> · ",
             escape(&localized(
-                &format!("{}?by={}", shelf.list().0, item.author_id),
+                &format!("{}?by={}", kind.list().0, item.author_id),
                 en
             )),
             escape(&item.author)
@@ -1055,7 +994,7 @@ fn card(
     } else {
         String::new()
     };
-    let date = if shelf.updated() {
+    let date = if kind.updated() {
         item.updated_at
     } else {
         item.published_at
@@ -1063,7 +1002,7 @@ fn card(
     format!(
         "<article class=\"item image-news-card catalog-card\">{cover}<div class=catalog-card-body><p class=item-meta>{rank}{author}<time datetime=\"{}\">{}</time>{}</p><h2 class=item-title><a href=\"{href}\">{}</a></h2><p class=item-summary>{}</p></div></article>",
         date.to_rfc3339(),
-        date.with_timezone(&timezone).format(shelf.stamp()),
+        date.with_timezone(&timezone).format(kind.stamp()),
         reads(item.id, item.views, en),
         escape(&item.title),
         escape(&item.excerpt)
@@ -1115,7 +1054,7 @@ async fn preview(
 
 pub(super) async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<String> {
     let mut query = QueryBuilder::<Postgres>::new(
-        "SELECT a.id, a.author_id, w.name AS author, a.title, a.body, a.excerpt, a.cover, a.status, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person, a.event IS NOT NULL AS event, a.product IS NOT NULL AS product, a.question, a.chapter",
+        "SELECT a.id, a.author_id, w.name AS author, a.title, a.body, a.excerpt, a.cover, a.status, a.revision, a.views, a.updated_at, a.published_at, a.kind, a.subject",
     );
     query.push(FROM).push(" AND a.id = ").push_bind(id);
     match mode {
@@ -1159,25 +1098,20 @@ pub(super) async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> 
     } else {
         &article.title
     };
-    let shelf = Shelf::of(
-        article.film,
-        article.person,
-        article.event,
-        article.product,
-        article.question.is_some(),
-        article.chapter.is_some(),
-    );
+    let kind = article.kind;
+    // What the article is about, when it is of the kind asked for.
+    let subject = |of: Kind| article.subject.as_deref().filter(|_| kind == of);
     // A chapter is read while its topic is shown, as its contents are; an administrator also
     // reads one hidden.
-    let chapter = article.chapter.as_deref().and_then(handbook::chapter);
-    if article.chapter.is_some()
+    let chapter = subject(Kind::Chapter).and_then(handbook::chapter);
+    if kind == Kind::Chapter
         && mode == Mode::Public
         && Reader::Public.check(state, handbook::TOPIC).is_err()
     {
         return Err(missing());
     }
     // A profile or an event is as new as its last update.
-    let date = if shelf.updated() {
+    let date = if kind.updated() {
         article.updated_at
     } else {
         article.published_at.unwrap_or(article.updated_at)
@@ -1231,7 +1165,7 @@ pub(super) async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> 
         Mode::Author(author) => format!(
             "<div class=article-notice><span class=article-status>{} · {status}</span><span class=article-actions>{}{}</span></div>",
             choose(en, "预览", "Preview"),
-            if author.is_some() && shelf == Shelf::Researched {
+            if author.is_some() && kind == Kind::Question {
                 String::new()
             } else {
                 edit(choose(en, "继续编辑", "Edit"))
@@ -1245,17 +1179,15 @@ pub(super) async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> 
     };
     // The author's name leads to their articles on readers' lists; XABC's own lists lead back
     // to themselves: all their articles are XABC's.
-    let (list, name) = shelf.list();
+    let (list, name) = kind.list();
     let name = name(en);
-    let by = if shelf.readers() {
+    let by = if kind.readers() {
         localized(&format!("{list}?by={}", article.author_id), en)
     } else {
         localized(list, en)
     };
     // A research article shows the question it answers, as its reader asked it.
-    let asked = article
-        .question
-        .as_deref()
+    let asked = subject(Kind::Question)
         .map(|question| {
             format!(
                 "<p class=research-question><b>{}</b><span>{}</span></p>",
@@ -1296,7 +1228,7 @@ pub(super) async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> 
         // event's, the first picture it shows; the page opens with the writer's own pictures.
         cover
             .as_ref()
-            .filter(|_| !shelf.updated())
+            .filter(|_| !kind.updated())
             .map(|cover| {
                 let (width, height) = cover.size.unwrap_or_default();
                 format!(
@@ -1309,7 +1241,7 @@ pub(super) async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> 
         escape(&by),
         escape(&article.author),
         date.to_rfc3339(),
-        date.with_timezone(&state.config.timezone).format(shelf.stamp()),
+        date.with_timezone(&state.config.timezone).format(kind.stamp()),
     );
     let shown = match chapter {
         Some(_) => handbook::shown(state).await?,
@@ -1358,14 +1290,14 @@ pub(super) async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> 
         &article.excerpt,
         &content,
         Some(structured),
-        match shelf {
-            Shelf::Shared => &ARTICLE,
-            Shelf::Researched => &RESEARCH,
-            Shelf::Explained => &EXPLANATION,
-            Shelf::People => &PROFILE,
-            Shelf::Tracked => &TRACKING,
-            Shelf::Reviewed => &REVIEW,
-            Shelf::Handbook => &CHAPTER,
+        match kind {
+            Kind::Share => &ARTICLE,
+            Kind::Question => &RESEARCH,
+            Kind::Film => &EXPLANATION,
+            Kind::Person => &PROFILE,
+            Kind::Event => &TRACKING,
+            Kind::Product => &REVIEW,
+            Kind::Chapter => &CHAPTER,
         },
     ))
 }

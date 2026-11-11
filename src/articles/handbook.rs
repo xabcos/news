@@ -48,7 +48,7 @@ const GROUPS: [(&str, &str); 4] = [
     ("API 与 SDK", "API and SDK"),
 ];
 
-/// A chapter: its key in addresses and in `articles.chapter`, its group, its title and what it
+/// A chapter: its key in addresses and as its article's subject, its group, its title and what it
 /// covers; the official pages it rests on, whose text the writer is given and whose changes
 /// bring it up to date; and words a story on its subject holds.
 pub(crate) struct Chapter {
@@ -635,7 +635,7 @@ const HUB: Chrome<'static> = Chrome {
     current: TOPIC,
     section: "reads handbook-hub",
     stylesheet: "/reads.css?v=24",
-    script: "/reads.js?v=12",
+    script: "/reads.js?v=13",
     feed: ("Codex & Claude", "/feed.xml?topic=agents"),
 };
 
@@ -655,8 +655,8 @@ struct Params {
 /// The chapters readers can read, by key, with when each was last brought up to date.
 pub(super) async fn shown(state: &AppState) -> Result<HashMap<String, DateTime<Utc>>> {
     Ok(sqlx::query_as::<_, (String, DateTime<Utc>)>(
-        "SELECT a.chapter, a.updated_at FROM articles a JOIN users u ON u.id = a.author_id
-         WHERE a.chapter IS NOT NULL AND a.status = 'published' AND u.status",
+        "SELECT a.subject, a.updated_at FROM articles a JOIN users u ON u.id = a.author_id
+         WHERE a.kind = 'chapter' AND a.status = 'published' AND u.status",
     )
     .fetch_all(&state.pool)
     .await?
@@ -908,11 +908,12 @@ async fn read(
         }
         return markdown(&state, chapter, reader.is_admin(), &headers).await;
     }
-    let id: Uuid = sqlx::query_scalar("SELECT id FROM articles WHERE chapter = $1")
-        .bind(chapter.key)
-        .fetch_optional(&state.pool)
-        .await?
-        .ok_or_else(missing)?;
+    let id: Uuid =
+        sqlx::query_scalar("SELECT id FROM articles WHERE kind = 'chapter' AND subject = $1")
+            .bind(chapter.key)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or_else(missing)?;
     let mode = if reader.is_admin() {
         Mode::Review
     } else {
@@ -937,7 +938,7 @@ async fn markdown(
 ) -> Result<Response> {
     let (id, body, updated_at): (Uuid, String, DateTime<Utc>) = sqlx::query_as(
         "SELECT a.id, a.body, a.updated_at FROM articles a JOIN users u ON u.id = a.author_id
-         WHERE a.chapter = $1 AND u.status
+         WHERE a.kind = 'chapter' AND a.subject = $1 AND u.status
            AND (a.status = 'published' OR ($2 AND a.status = 'pending'))",
     )
     .bind(chapter.key)

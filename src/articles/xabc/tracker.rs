@@ -7,7 +7,7 @@
 //! shows only pictures from pages, and its cover is the first of them, or for the lists alone one
 //! a page the finds name gives (`cover_from`).
 use super::{
-    Find, Found, KEEPING, Line, Picture, Scout, Subject, draft, figures, finish, found, linked,
+    Find, Found, KEEPING, Kind, Line, Picture, Scout, draft, figures, finish, found, linked,
     listed, log, look, photographed, pick, publish, revise, uploaded,
 };
 use crate::{
@@ -120,8 +120,8 @@ pub(super) async fn named(state: &AppState, author: i64, name: &str) -> Result<O
 /// brought up to date last first.
 async fn tracked(state: &AppState, days: Option<i32>) -> Result<Vec<Tracked>> {
     Ok(sqlx::query_as(
-        "SELECT event, title, status = 'published' AS published, updated_at FROM articles
-         WHERE event IS NOT NULL
+        "SELECT subject AS event, title, status = 'published' AS published, updated_at FROM articles
+         WHERE kind = 'event'
            AND (status <> 'published' OR $1::int IS NULL
                 OR updated_at > now() - make_interval(days => $1))
          ORDER BY updated_at DESC",
@@ -157,7 +157,7 @@ async fn follow(
     let material = format!("{}事件：{event}\n", clock(state));
     let due: Option<Due> = sqlx::query_as(
         "SELECT id, title, body, revision, cover, status = 'published' AS published, updated_at
-         FROM articles WHERE event = $1",
+         FROM articles WHERE kind = 'event' AND subject = $1",
     )
     .bind(&event)
     .fetch_optional(&state.pool)
@@ -171,7 +171,7 @@ async fn follow(
         if crate::articles::pictures(&article.body, None).is_empty() {
             article.cover = cover_from(state, &found.finds).await;
         }
-        let id = publish(state, author, since, Some(Subject::Event(&event)), &article).await?;
+        let id = publish(state, author, since, Some((Kind::Event, &event)), &article).await?;
         log(id, "XABC's 追踪 written", &event, &article, found.usage);
         return Ok(Some(id));
     };

@@ -174,9 +174,9 @@ window.addEventListener("pageshow", (event) => {
   form.append(told);
   try { input.value ||= localStorage.getItem(KEPT) || ""; } catch { /* The box works without storage. */ }
   if (PublicPage.role()) {
-    fetch("/api/research")
+    fetch("/api/me")
       .then((response) => (response.ok ? response.json() : null))
-      .then((data) => { choice.hidden = !data?.private; })
+      .then((data) => { choice.hidden = data?.user?.role !== "admin" && data?.user?.plan !== "pro"; })
       .catch(() => {});
   }
   const workspace = (text) => Object.assign(document.createElement("a"), { href: "/me/", textContent: text });

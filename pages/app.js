@@ -973,6 +973,8 @@ async function loadWorth() {
 }
 
 const worthShown = () => !state.topic && !state.day;
+// The name, among the page's words, of the list each kind of article is on.
+const WORTH_LISTS = { share: "articles", question: "research", film: "commentary", person: "people", event: "tracker", product: "reviews" };
 
 function renderWorth() {
   el.worth.hidden = !worthShown() || !state.worth.length;
@@ -1007,8 +1009,7 @@ function renderWorth() {
     }
     const meta = document.createElement("p");
     meta.className = "item-meta";
-    meta.textContent = article.film ? t().commentary : article.person ? t().people : article.event ? t().tracker
-      : article.product ? t().reviews : article.research ? t().research : t().articles;
+    meta.textContent = t()[WORTH_LISTS[article.kind]];
     if (article.views > 0) {
       const views = document.createElement("span");
       views.className = "read-views";

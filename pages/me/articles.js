@@ -1,9 +1,8 @@
 import { $, node, withBusy, toast, reportError, confirmDelete, formatTime } from "./ui.js";
 
 const statusText = { draft: "草稿", pending: "待审", published: "已公开" };
-// Which article it is: a reader's 分享 or 调研, or one of XABC's lines.
-const kind = (article) => article.film ? "解说" : article.person ? "时代" : article.event ? "追踪" : article.product ? "评测"
-  : article.research ? "调研" : article.chapter ? "手册" : "分享";
+// What an article's kind is called: a reader's 分享 or 调研, or one of XABC's lines.
+const KINDS = { share: "分享", question: "调研", film: "解说", person: "时代", event: "追踪", product: "评测", chapter: "手册" };
 
 // 分享 in the workspace: the pen name, the reader's own articles and, for an administrator,
 // what 时代 and 追踪 write next and the articles to review. Requests share the session's abort
@@ -125,7 +124,7 @@ export function createArticles(session) {
     };
     const finding = Boolean(find.day || find.q);
     const recent = section(finding ? `找到 ${published.length} 篇` : "最近公开", published,
-      (article) => `${kind(article)} · 阅读 ${article.views} · 公开于 ${formatTime(article.published_at, session.timezone)}`);
+      (article) => `${KINDS[article.kind]} · 阅读 ${article.views} · 公开于 ${formatTime(article.published_at, session.timezone)}`);
     recent.querySelector("h3").after(finder(finding));
     if (!published.length) recent.append(node("p", "muted small", finding ? "没有找到。" : "还没有公开的文章。"));
     lists.replaceChildren(
@@ -138,7 +137,7 @@ export function createArticles(session) {
   // back, which keeps its line off the subject; deleted, the line may take the subject up again.
   // Readers' 分享 and 调研 have no such lines.
   function removal(article) {
-    const line = kind(article);
+    const line = KINDS[article.kind];
     const again = ["分享", "调研"].includes(line) ? "" : `留在待审，${line}就不会再写这个选题；删除后可能再写。`;
     const remove = node("button", "button button-quiet button-small danger-text", "删除");
     remove.type = "button";

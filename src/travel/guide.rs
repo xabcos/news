@@ -323,12 +323,9 @@ fn request(topic: &Topic, place: &Pending, materials: &[Material], feedback: &st
         .collect::<Vec<_>>()
         .join("\n\n");
     let text = json!({ "type": "string" });
-    let entries = json!({ "type": "array", "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["name", "name_en", "text", "text_en"],
-        "properties": { "name": text, "name_en": text, "text": text, "text_en": text },
-    } });
+    let entries = json!({ "type": "array", "items": crate::ai::object(
+        json!({ "name": text, "name_en": text, "text": text, "text_en": text }),
+    ) });
     let mut properties = serde_json::Map::new();
     for field in [
         "tagline", "origin", "history", "culture", "season", "customs", "fact",
@@ -367,15 +364,7 @@ fn request(topic: &Topic, place: &Pending, materials: &[Material], feedback: &st
             "目的地：{}（{}）\n{feedback}资料：\n{material}",
             place.name, place.name_en
         ),
-        "text": { "format": {
-            "type": "json_schema", "name": "travel_guide", "strict": true,
-            "schema": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": properties.keys().cloned().collect::<Vec<_>>(),
-                "properties": properties,
-            },
-        } },
+        "text": crate::ai::format("travel_guide", crate::ai::object(properties.into())),
     })
 }
 

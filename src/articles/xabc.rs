@@ -22,7 +22,7 @@ mod people;
 mod review;
 mod tracker;
 
-use super::{ARTICLE_IMAGES, MARKDOWN, checked, kind, words};
+use super::{ARTICLE_IMAGES, Kind, MARKDOWN, checked, image_kind, words};
 use crate::{
     ai,
     error::{AppError, Result},
@@ -124,6 +124,18 @@ impl Line {
             Self::Tracker => "__xabc_tracker__",
             Self::Review => "__xabc_review__",
             Self::Handbook => "__xabc_handbook__",
+        }
+    }
+
+    /// The kind of article the line writes.
+    fn kind(self) -> Kind {
+        match self {
+            Self::Share | Self::Trending => Kind::Share,
+            Self::Film => Kind::Film,
+            Self::People => Kind::Person,
+            Self::Tracker => Kind::Event,
+            Self::Review => Kind::Product,
+            Self::Handbook => Kind::Chapter,
         }
     }
 
@@ -319,31 +331,15 @@ fn run(
 /// When the line last published, or for 解说, 时代 and 追踪 last revised, or for the handbook
 /// last checked its chapters. An article an administrator takes back keeps its time.
 pub(super) async fn last(state: &AppState, line: Line) -> Result<Option<DateTime<Utc>>> {
-    Ok(sqlx::query_scalar(match line {
-        Line::Share | Line::Trending => {
-            "SELECT max(a.published_at) FROM articles a JOIN users u ON u.id = a.author_id
-             WHERE u.email = $1 AND a.film IS NULL AND a.person IS NULL AND a.event IS NULL
-               AND a.product IS NULL AND a.chapter IS NULL"
-        }
-        Line::Film => {
-            "SELECT max(a.updated_at) FROM articles a JOIN users u ON u.id = a.author_id
-             WHERE u.email = $1 AND a.film IS NOT NULL"
-        }
-        Line::People => {
-            "SELECT max(a.updated_at) FROM articles a JOIN users u ON u.id = a.author_id
-             WHERE u.email = $1 AND a.person IS NOT NULL"
-        }
-        Line::Tracker => {
-            "SELECT max(a.updated_at) FROM articles a JOIN users u ON u.id = a.author_id
-             WHERE u.email = $1 AND a.event IS NOT NULL"
-        }
-        Line::Review => {
-            "SELECT max(a.updated_at) FROM articles a JOIN users u ON u.id = a.author_id
-             WHERE u.email = $1 AND a.product IS NOT NULL"
-        }
-        Line::Handbook => return handbook::last(state).await,
-    })
+    if line == Line::Handbook {
+        return handbook::last(state).await;
+    }
+    Ok(sqlx::query_scalar(
+        "SELECT max(CASE WHEN a.kind = 'share' THEN a.published_at ELSE a.updated_at END)
+         FROM articles a JOIN users u ON u.id = a.author_id WHERE u.email = $1 AND a.kind = $2",
+    )
     .bind(line.email())
+    .bind(line.kind())
     .fetch_one(&state.pool)
     .await?)
 }
@@ -401,8 +397,8 @@ async fn share(state: &AppState, line: Line, author: i64, since: DateTime<Utc>) 
     // about a page those articles linked to is left out.
     let lately: Vec<(String, String)> = sqlx::query_as(
         "SELECT a.title, a.body FROM articles a JOIN users u ON u.id = a.author_id
-         WHERE u.email = ANY($1) AND a.film IS NULL AND a.person IS NULL AND a.event IS NULL
-           AND a.product IS NULL AND a.chapter IS NULL AND a.published_at >= NOW() - INTERVAL '7 days'
+         WHERE u.email = ANY($1) AND a.kind = 'share'
+           AND a.published_at >= NOW() - INTERVAL '7 days'
          ORDER BY a.published_at DESC",
     )
     .bind(SHARING)
@@ -494,10 +490,10 @@ async fn understood(state: &AppState, asked: &str) -> Result<(String, Vec<String
         "tool_choice": "auto",
         "instructions": UNDERSTANDING,
         "input": [{ "role": "user", "content": asked }],
-        "text": { "format": {
-            "type": "json_schema", "name": "understanding", "strict": true,
-            "schema": ai::object(json!({ "understanding": { "type": "string" } })),
-        } },
+        "text": ai::format(
+            "understanding",
+            ai::object(json!({ "understanding": { "type": "string" } })),
+        ),
     });
     let reply = tokio::time::timeout(SEARCH_TIME, ai::request(state, body))
         .await
@@ -798,10 +794,10 @@ async fn search(
         "tool_choice": "auto",
         "instructions": format!("{}{FINDS}", brief.replace("{scope}", scout.scope(line))),
         "input": [{ "role": "user", "content": input }],
-        "text": { "format": {
-            "type": "json_schema", "name": "finds", "strict": true,
-            "schema": ai::object(json!({ "finds": { "type": "array", "items": find } })),
-        } },
+        "text": ai::format(
+            "finds",
+            ai::object(json!({ "finds": { "type": "array", "items": find } })),
+        ),
     });
     let reply = tokio::time::timeout(SEARCH_TIME, ai::request(state, body))
         .await
@@ -855,15 +851,15 @@ async fn draft(state: &AppState, instructions: &str, material: &str) -> Result<D
         "tool_choice": "auto",
         "instructions": format!("{instructions}{RULES}"),
         "input": [{ "role": "user", "content": material }],
-        "text": { "format": {
-            "type": "json_schema", "name": "article", "strict": true,
-            "schema": ai::object(json!({
+        "text": ai::format(
+            "article",
+            ai::object(json!({
                 "title": { "type": "string" },
                 "body": { "type": "string" },
                 "pictures": { "type": "array", "items": picture },
                 "cover": { "type": "string" },
             })),
-        } },
+        ),
     });
     let reply = tokio::time::timeout(WRITE_TIME, ai::request(state, body))
         .await
@@ -1171,7 +1167,7 @@ async fn uploaded(
     bytes: Vec<u8>,
     credit: Option<(String, String)>,
 ) -> Option<Picture> {
-    let (content_type, (width, height)) = kind(&bytes).ok()?;
+    let (content_type, (width, height)) = image_kind(&bytes).ok()?;
     let stored = media::upload_image(state, bytes, content_type).await?;
     Some(Picture {
         id: Uuid::new_v4(),
@@ -1208,7 +1204,7 @@ async fn found(state: &AppState, page: &str) -> Option<(Vec<u8>, (String, String
         let Some((bytes, _)) = media::download_image(state, &image.url, ACCEPT).await else {
             continue;
         };
-        if media::image_is_usable(&bytes) && kind(&bytes).is_ok() {
+        if media::image_is_usable(&bytes) && image_kind(&bytes).is_ok() {
             let by = image.credit.trim();
             let credit = if post {
                 format!("{by} / X")
@@ -1467,44 +1463,17 @@ fn plain(text: &str) -> String {
     plain
 }
 
-/// What a 解说, a 时代 profile, a 追踪 article, a 评测, a research or a handbook chapter is
-/// about: a work by its key in 影视, a person, a company or an event by theirs, a product by its
-/// key in 数码, a reader's question as asked, a chapter by its key. Each but a question has one
-/// article at most.
-pub(super) enum Subject<'a> {
-    Work(&'a str),
-    Profile(&'a str),
-    Event(&'a str),
-    Product(&'a str),
-    Question(&'a str),
-    Chapter(&'a str),
-}
-
-impl Subject<'_> {
-    /// The subject in its article's columns: film, person, event, product, question and chapter.
-    fn columns(&self) -> [Option<&str>; 6] {
-        match *self {
-            Self::Work(key) => [Some(key), None, None, None, None, None],
-            Self::Profile(key) => [None, Some(key), None, None, None, None],
-            Self::Event(key) => [None, None, Some(key), None, None, None],
-            Self::Product(key) => [None, None, None, Some(key), None, None],
-            Self::Question(question) => [None, None, None, None, Some(question), None],
-            Self::Chapter(key) => [None, None, None, None, None, Some(key)],
-        }
-    }
-}
-
-/// Publishes the article with its pictures, unless its author published one on the line since
-/// `since` meanwhile; 分享's articles have no subject.
+/// Publishes the article with its pictures, unless its author published one of its kind since
+/// `since` meanwhile. `subject` is what it is about, with the kind that makes it: a work by its
+/// key in 影视, a person, a company or an event by theirs, a product by its key in 数码, a
+/// chapter by its key; 分享's articles have none.
 pub(super) async fn publish(
     state: &AppState,
     author: i64,
     since: DateTime<Utc>,
-    subject: Option<Subject<'_>>,
+    subject: Option<(Kind, &str)>,
     article: &Finished,
 ) -> Result<Uuid> {
-    let [film, person, event, product, _, chapter] =
-        subject.as_ref().map_or([None; 6], Subject::columns);
     let mut tx = state.pool.begin().await?;
     sqlx::query("SELECT 1 FROM authors WHERE user_id = $1 FOR UPDATE")
         .bind(author)
@@ -1512,17 +1481,11 @@ pub(super) async fn publish(
         .await?;
     if sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS (SELECT 1 FROM articles
-           WHERE author_id = $1 AND published_at >= $2 AND (film IS NULL) = $3
-             AND (person IS NULL) = $4 AND (event IS NULL) = $5 AND (product IS NULL) = $6
-             AND (chapter IS NULL) = $7)",
+           WHERE author_id = $1 AND published_at >= $2 AND kind = $3)",
     )
     .bind(author)
     .bind(since)
-    .bind(film.is_none())
-    .bind(person.is_none())
-    .bind(event.is_none())
-    .bind(product.is_none())
-    .bind(chapter.is_none())
+    .bind(subject.map_or(Kind::Share, |(kind, _)| kind))
     .fetch_one(&mut *tx)
     .await?
     {
@@ -1542,11 +1505,10 @@ pub(super) async fn save(
     id: Uuid,
     author: i64,
     status: &str,
-    subject: Option<Subject<'_>>,
+    subject: Option<(Kind, &str)>,
     article: &Finished,
 ) -> Result<()> {
-    let [film, person, event, product, question, chapter] =
-        subject.as_ref().map_or([None; 6], Subject::columns);
+    let (kind, subject) = subject.unzip();
     let cover = article
         .cover
         .as_ref()
@@ -1554,8 +1516,8 @@ pub(super) async fn save(
         .or_else(|| super::pictures(&article.body, None).first().copied());
     let content = checked(&article.title, &article.body, cover)?;
     sqlx::query(
-        "INSERT INTO articles (id, author_id, title, body, excerpt, status, published_at, film, person, event, product, question, chapter)
-         VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $6 = 'published' THEN now() END, $7, $8, $9, $10, $11, $12)",
+        "INSERT INTO articles (id, author_id, title, body, excerpt, status, published_at, kind, subject)
+         VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $6 = 'published' THEN now() END, $7, $8)",
     )
     .bind(id)
     .bind(author)
@@ -1563,12 +1525,8 @@ pub(super) async fn save(
     .bind(&content.body)
     .bind(&content.excerpt)
     .bind(status)
-    .bind(film)
-    .bind(person)
-    .bind(event)
-    .bind(product)
-    .bind(question)
-    .bind(chapter)
+    .bind(kind.unwrap_or(Kind::Share))
+    .bind(subject)
     .execute(&mut **tx)
     .await?;
     keep(tx, id, article.pictures.iter().chain(&article.cover)).await?;

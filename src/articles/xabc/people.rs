@@ -13,8 +13,8 @@
 //! picture of that account (`shared`), or else by a photograph grok found and looked at, which
 //! is how a company is shown too (`sighted`).
 use super::{
-    ACCEPT, Drafted, Found, KEEPING, KEPT, Line, Picture, SEARCH_TIME, Slot, Subject, Wanted,
-    draft, drawn, figures, finish, identity, images, key, linked, listed, log, look, pick, placed,
+    ACCEPT, Drafted, Found, KEEPING, KEPT, Kind, Line, Picture, SEARCH_TIME, Slot, Wanted, draft,
+    drawn, figures, finish, identity, images, key, linked, listed, log, look, pick, placed,
     publish, revise, uncited, uploaded,
 };
 use crate::{
@@ -100,7 +100,7 @@ pub(super) async fn write(state: &AppState, author: i64, since: DateTime<Utc>) -
     // profiled lately and those an administrator took back; for leaders every person profiled,
     // and for companies every company, since those are written once.
     let written: Vec<String> = sqlx::query_scalar(
-        "SELECT person FROM articles WHERE person IS NOT NULL AND starts_with(person, $1) = $2
+        "SELECT subject FROM articles WHERE kind = 'person' AND starts_with(subject, $1) = $2
            AND ($3 OR status <> 'published' OR updated_at > now() - make_interval(days => $4))
          ORDER BY updated_at DESC",
     )
@@ -182,7 +182,8 @@ async fn profile(
     }
     let due: Option<Due> = if revisable {
         sqlx::query_as(
-            "SELECT id, title, body, revision, cover, updated_at FROM articles WHERE person = $1",
+            "SELECT id, title, body, revision, cover, updated_at FROM articles
+             WHERE kind = 'person' AND subject = $1",
         )
         .bind(&subject)
         .fetch_optional(&state.pool)
@@ -201,7 +202,7 @@ async fn profile(
             state,
             author,
             since,
-            Some(Subject::Profile(&subject)),
+            Some((Kind::Person, &subject)),
             &article,
         )
         .await?;
@@ -433,13 +434,10 @@ async fn sighted(state: &AppState, name: &str, title: &str, company: bool) -> Op
         "tool_choice": "auto",
         "instructions": if company { COMPANY_PHOTO } else { PORTRAIT },
         "input": [{ "role": "user", "content": format!("{name}\n文章标题：{title}") }],
-        "text": { "format": {
-            "type": "json_schema", "name": "photo", "strict": true,
-            "schema": ai::object(json!({
-                "image": { "type": "string" },
-                "page": { "type": "string" },
-            })),
-        } },
+        "text": ai::format(
+            "photo",
+            ai::object(json!({ "image": { "type": "string" }, "page": { "type": "string" } })),
+        ),
     });
     // Only grok looks at the pictures it finds, so no other model is asked; without its answer
     // the cover is the article's first picture.

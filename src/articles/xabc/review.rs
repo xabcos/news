@@ -8,7 +8,7 @@
 //! product's official photographs that 数码 keeps (`official`). Searching, writing and pictures
 //! are 分享's (`super`).
 use super::{
-    Finished, KEEPING, Line, Picture, Subject, draft, figure, figures, finish, identity, linked,
+    Finished, KEEPING, Kind, Line, Picture, draft, figure, figures, finish, identity, linked,
     listed, log, look, photographed, publish, revise,
 };
 use crate::{
@@ -167,7 +167,7 @@ pub(super) async fn write(
         state,
         author,
         since,
-        Some(Subject::Product(&product.key)),
+        Some((Kind::Product, &product.key)),
         &article,
     )
     .await?;
@@ -197,7 +197,7 @@ async fn next(state: &AppState, author: i64) -> Result<Option<Next>> {
         "SELECT e.key, a.id AS article, a.revision FROM catalog_entries e
          JOIN catalog_items c ON c.entry_id = e.id
          JOIN items i ON i.id = c.item_id AND NOT i.hidden
-         LEFT JOIN articles a ON a.product = e.key
+         LEFT JOIN articles a ON a.kind = 'product' AND a.subject = e.key
          WHERE e.topic_id = ANY($1)
            AND i.first_seen_at > COALESCE(a.updated_at, now() - make_interval(days => $2))
            AND (a.id IS NULL
@@ -280,7 +280,7 @@ async fn official(state: &AppState, product: &Product) -> (Vec<String>, Vec<Pict
             move |slot| async move {
                 let _slot = slot;
                 let (bytes, _) = media::download_image(&state, &image.url, super::ACCEPT).await?;
-                let (content_type, (width, height)) = crate::articles::kind(&bytes).ok()?;
+                let (content_type, (width, height)) = crate::articles::image_kind(&bytes).ok()?;
                 let picture = Picture {
                     id: Uuid::new_v4(),
                     url: image.url,

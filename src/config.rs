@@ -274,16 +274,8 @@ fn validate_tenant_code(value: &str) -> Result<()> {
 }
 
 fn parse_public_base_url(value: &str) -> Result<Url> {
-    let url = Url::parse(value)
-        .map_err(|_| AppError::Config("PUBLIC_BASE_URL 必须是有效的 HTTP(S) URL".into()))?;
-    if !matches!(url.scheme(), "http" | "https")
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-        || url.path() != "/"
-    {
+    let url = parse_http_url("PUBLIC_BASE_URL", value)?;
+    if url.path() != "/" {
         return Err(AppError::Config(
             "PUBLIC_BASE_URL 必须是站点根目录的 HTTP(S) URL".into(),
         ));

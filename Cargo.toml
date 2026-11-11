@@ -43,8 +43,7 @@ rcgen = { version = "0.14", default-features = false, features = ["crypto", "aws
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12"] }
 
 [profile.release]
-codegen-units = 1
-lto = "fat"
+lto = "thin"
 opt-level = 3
 panic = "abort"
 strip = true
