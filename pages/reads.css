@@ -83,7 +83,6 @@
 /* Codex & Claude: the handbook's contents by group in two columns on a wide screen, then the latest news and the official documentation. */
 .handbook .reads-heading { flex-wrap: wrap; row-gap: .55rem; }
 .handbook .reads-heading p { order: 1; flex: 1 0 100%; white-space: normal; line-height: 1.7; }
-.handbook-book { margin-left: auto; color: var(--primary-strong); font-size: .85rem; text-decoration: none; white-space: nowrap; }
 .handbook-group { break-inside: avoid; margin-bottom: 2.2rem; }
 .handbook-group h2, .handbook-news h2, .handbook-docs h2 { display: flex; align-items: baseline; justify-content: space-between; margin: 0 0 .35rem; color: var(--muted); font-size: .8rem; font-weight: 500; letter-spacing: .04em; }
 .handbook-group ol, .handbook-news ol { margin: 0; padding: 0; list-style: none; }
@@ -111,6 +110,9 @@
 .handbook-crumb { margin: 0 0 .5rem; color: var(--muted); font-size: .8rem; }
 .handbook-crumb a { color: inherit; text-decoration: none; }
 .handbook-crumb a:hover, .handbook-steps a:hover { color: var(--primary-strong); }
+/* 「复制页面」 stands right of the chapter's title, level with its first line. */
+.handbook-copy { flex-shrink: 0; align-self: flex-start; margin-top: .55rem; color: var(--muted); font-weight: 500; }
+.handbook-copy:hover:not(:disabled) { color: var(--text); }
 .handbook-steps { display: flex; justify-content: space-between; gap: 1rem; margin-top: 2.5rem; padding-top: 1.2rem; border-top: 1px solid var(--line); font-size: .9rem; }
 .handbook-steps a { max-width: 48%; text-decoration: none; }
 .handbook-steps [rel=next] { margin-left: auto; text-align: right; }

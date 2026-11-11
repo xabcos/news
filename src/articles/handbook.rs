@@ -2,9 +2,12 @@
 //! an article XABC keeps in step with the official documentation and what developers share
 //! (`xabc::handbook`). The topic `agents` collects that news; its tab leads to the handbook's
 //! page: the contents, the latest news and the official documentation. A chapter reads like an
-//! article, with the contents beside it on a wide screen, and the whole handbook is one Markdown
-//! file for readers to hand to an agent.
-use super::{image_id, missing};
+//! article, with the contents beside it on a wide screen; at the same address with `.md` it is
+//! Markdown, which its 「复制页面」 copies for a reader to hand to an agent and agents read.
+use super::{
+    image_id, missing,
+    pages::{Mode, render},
+};
 use crate::{
     digest::{Rendered, conditional},
     error::Result,
@@ -14,8 +17,8 @@ use crate::{
 };
 use axum::{
     Router,
-    extract::{Query, State},
-    http::HeaderMap,
+    extract::{Path, Query, State},
+    http::{HeaderMap, HeaderValue, header},
     response::Response,
     routing::get,
 };
@@ -26,9 +29,8 @@ use uuid::Uuid;
 
 /// The topic whose news the chapters are brought up to date from, and whose tab leads here.
 pub(crate) const TOPIC: &str = "agents";
-/// Where the handbook is, a chapter at `{PATH}/{key}`, and the whole of it in Markdown.
+/// Where the handbook is, a chapter at `{PATH}/{key}` and as Markdown at `{PATH}/{key}.md`.
 pub(crate) const PATH: &str = "/agents";
-const BOOK: &str = "/agents.md";
 /// The news the handbook's page shows, the newest first.
 const NEWS: i64 = 10;
 
@@ -58,7 +60,7 @@ pub(crate) struct Chapter {
 }
 
 impl Chapter {
-    /// The chapter's group in the page's language; the book and the writer read Chinese.
+    /// The chapter's group in the page's language; the writer reads it in Chinese.
     pub(crate) fn group(&self, en: bool) -> &'static str {
         let (zh, english) = GROUPS[self.group];
         choose(en, zh, english)
@@ -592,13 +594,17 @@ const OFFICIAL: [(&str, &[Link]); 5] = [
 const HUB: Chrome<'static> = Chrome {
     current: TOPIC,
     section: "reads handbook-hub",
-    stylesheet: "/reads.css?v=23",
+    stylesheet: "/reads.css?v=24",
     script: "/reads.js?v=12",
     feed: ("Codex & Claude", "/feed.xml?topic=agents"),
 };
 
 pub(super) fn router() -> Router<AppState> {
-    reading::pages(Router::new().route(PATH, get(hub)).route(BOOK, get(book)))
+    reading::pages(
+        Router::new()
+            .route(PATH, get(hub))
+            .route("/agents/{chapter}", get(read)),
+    )
 }
 
 #[derive(Deserialize)]
@@ -718,23 +724,14 @@ async fn hub(
     .fetch_all(&state.pool)
     .await?;
     let zone = state.config.timezone;
-    // The book is there once a chapter is.
     let mut html = format!(
-        "<header class=reads-heading><h1>{}</h1><p>{}</p>{}</header>",
+        "<header class=reads-heading><h1>{}</h1><p>{}</p></header>",
         escape(label(en)),
         choose(
             en,
             "Claude Code 与 Codex 的中文实用手册：以官方文档为准，汇集官方与网友的最佳实践和实用配置，官方一更新就跟着改。",
             "A handbook on Claude Code and Codex, kept to the official documentation: the vendors' and developers' best practices and working configurations, updated as the documentation changes.",
         ),
-        if shown.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "<a class=handbook-book href=\"{BOOK}\">{}</a>",
-                choose(en, "整本 Markdown", "Whole book in Markdown")
-            )
-        },
     );
     if shown.is_empty() {
         let _ = write!(
@@ -850,75 +847,91 @@ async fn hub(
     ))
 }
 
-/// The handbook as one Markdown file, the chapters in order under their titles, each with where
-/// and when it was last brought up to date; its pictures, if an administrator added any, by
-/// their addresses.
-async fn book(
+/// A chapter: its page, or at its address with `.md` its Markdown.
+async fn read(
     State(state): State<AppState>,
     reader: Reader,
+    Path(key): Path<String>,
+    Query(params): Query<Params>,
     headers: HeaderMap,
 ) -> Result<Response> {
-    /// A chapter as the book prints it.
-    #[derive(sqlx::FromRow)]
-    struct Written {
-        id: Uuid,
-        chapter: String,
-        body: String,
-        updated_at: DateTime<Utc>,
+    let (chapter, twin) = match key.strip_suffix(".md") {
+        Some(key) => (chapter(key), true),
+        None => (chapter(&key), false),
+    };
+    let chapter = chapter.ok_or_else(missing)?;
+    // As the page, its Markdown is read while the topic is shown; an administrator reads both
+    // whatever the topic does.
+    if twin {
+        if !reader.is_admin() {
+            reader.check(&state, TOPIC)?;
+        }
+        return markdown(&state, chapter, reader.is_admin(), &headers).await;
     }
-    reader.check(&state, TOPIC)?;
-    let written: Vec<Written> = sqlx::query_as(
-        "SELECT a.id, a.chapter, a.body, a.updated_at FROM articles a JOIN users u ON u.id = a.author_id
-         WHERE a.chapter IS NOT NULL AND a.status = 'published' AND u.status",
+    let id: Uuid = sqlx::query_scalar("SELECT id FROM articles WHERE chapter = $1")
+        .bind(chapter.key)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(missing)?;
+    let mode = if reader.is_admin() {
+        Mode::Review
+    } else {
+        Mode::Public
+    };
+    let html = render(&state, id, params.lang.as_deref() == Some("en"), mode).await?;
+    Ok(conditional(
+        &headers,
+        &Rendered::new(html),
+        "text/html; charset=utf-8",
+    ))
+}
+
+/// A chapter as Markdown: its title, where it is and when it was last brought up to date, and
+/// its body, its own pictures at their addresses. Its page, not this, is for search engines;
+/// an administrator also reads a chapter that waits for a ❤️.
+async fn markdown(
+    state: &AppState,
+    chapter: &Chapter,
+    admin: bool,
+    headers: &HeaderMap,
+) -> Result<Response> {
+    let (id, body, updated_at): (Uuid, String, DateTime<Utc>) = sqlx::query_as(
+        "SELECT a.id, a.body, a.updated_at FROM articles a JOIN users u ON u.id = a.author_id
+         WHERE a.chapter = $1 AND u.status
+           AND (a.status = 'published' OR ($2 AND a.status = 'pending'))",
     )
-    .fetch_all(&state.pool)
-    .await?;
-    if written.is_empty() {
-        return Err(missing());
-    }
+    .bind(chapter.key)
+    .bind(admin)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(missing)?;
     let images: HashMap<Uuid, String> = sqlx::query_as::<_, (Uuid, String)>(
-        "SELECT id, url FROM article_images WHERE article_id = ANY($1) AND expires_at > now()",
+        "SELECT id, url FROM article_images WHERE article_id = $1 AND expires_at > now()",
     )
-    .bind(written.iter().map(|written| written.id).collect::<Vec<_>>())
+    .bind(id)
     .fetch_all(&state.pool)
     .await?
     .into_iter()
     .collect();
-    let zone = state.config.timezone;
-    let mut text = format!(
-        "# Codex & Claude 手册\n\nXABC 以官方文档为准整理的 Claude Code 与 Codex 中文实用手册，随官方更新。网页版：{}\n\n## 目录\n\n",
-        absolute(&state, PATH)
+    let text = format!(
+        "# {}\n\n> 来源：{} · 更新于 {}\n\n{}\n",
+        chapter.title,
+        absolute(state, &chapter.path()),
+        updated_at
+            .with_timezone(&state.config.timezone)
+            .format("%Y-%m-%d"),
+        with_pictures(&body, &images).trim()
     );
-    let chapters: Vec<(&Chapter, &Written)> = CHAPTERS
-        .iter()
-        .filter_map(|chapter| {
-            Some((
-                chapter,
-                written
-                    .iter()
-                    .find(|written| written.chapter == chapter.key)?,
-            ))
-        })
-        .collect();
-    for (chapter, _) in &chapters {
-        let _ = writeln!(text, "- {} · {}", chapter.group(false), chapter.title);
-    }
-    for (chapter, written) in chapters {
-        let _ = write!(
-            text,
-            "\n\n# {}\n\n> {} · 更新于 {} · {}\n\n{}\n",
-            chapter.title,
-            chapter.group(false),
-            written.updated_at.with_timezone(&zone).format("%Y-%m-%d"),
-            absolute(&state, &chapter.path()),
-            with_pictures(&written.body, &images).trim()
-        );
-    }
-    Ok(conditional(
-        &headers,
+    let mut response = conditional(
+        headers,
         &Rendered::new(text),
         "text/markdown; charset=utf-8",
-    ))
+    );
+    response.headers_mut().insert(
+        header::HeaderName::from_static("x-robots-tag"),
+        HeaderValue::from_static("noindex"),
+    );
+    Ok(response)
 }
 
 /// The body with each of its own pictures, `image:<id>`, at its address; one tmpfile no longer
@@ -1009,7 +1022,7 @@ mod tests {
     }
 
     #[test]
-    fn the_book_links_its_own_pictures_and_leaves_others_alone() {
+    fn a_chapters_markdown_links_its_own_pictures_and_leaves_others_alone() {
         let id = Uuid::new_v4();
         let gone = Uuid::new_v4();
         let images = HashMap::from([(id, "https://media.example/a.png".to_owned())]);

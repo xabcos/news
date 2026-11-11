@@ -32,6 +32,8 @@ use std::{collections::HashMap, fmt::Write};
 use uuid::Uuid;
 
 const PAGE_SIZE: i64 = 24;
+/// The icon of a handbook chapter's 「复制页面」.
+const COPY: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>"#;
 /// How 热读 and 精选 rank articles: by reads, halving with each week since publication.
 const HOT: &str = "ln(1 + a.views::float8) * power(2, -extract(epoch FROM NOW() - a.published_at)::float8 / 604800)";
 /// The most addresses one sitemap may list.
@@ -43,14 +45,14 @@ const FROM: &str = " FROM articles a JOIN authors w ON w.user_id = a.author_id J
 const LIST: Chrome<'static> = Chrome {
     current: "articles",
     section: "reads articles article-cards",
-    stylesheet: "/reads.css?v=23",
+    stylesheet: "/reads.css?v=24",
     script: "/reads.js?v=12",
     feed: ("News", "/feed.xml"),
 };
 /// An article counts its reads, and its review takes a ❤️.
 const ARTICLE: Chrome<'static> = Chrome {
     section: "reads articles",
-    script: "/articles.js?v=5",
+    script: "/articles.js?v=6",
     ..LIST
 };
 /// 调研 has a tab of its own after 分享's.
@@ -216,8 +218,7 @@ pub(super) fn router() -> Router<AppState> {
             .route(COMMENTARY, get(commentary))
             .route(PEOPLE, get(people))
             .route(TRACKER, get(tracker))
-            .route(REVIEWS, get(reviews))
-            .route("/agents/{chapter}", get(chapter)),
+            .route(REVIEWS, get(reviews)),
     )
     .route("/articles/sitemap.xml", get(sitemap))
     .route("/articles/worth.json", get(worth))
@@ -372,7 +373,7 @@ struct Image {
 
 /// Who reads the page, which decides what it shows and where its pictures load from.
 #[derive(Clone, Copy, PartialEq)]
-enum Mode {
+pub(super) enum Mode {
     /// Readers: published articles, pictures from tmpfile.
     Public,
     /// An administrator's preview, with the ❤️.
@@ -1090,35 +1091,6 @@ async fn detail(
     ))
 }
 
-/// A chapter of the Codex & Claude handbook, at its own address.
-async fn chapter(
-    State(state): State<AppState>,
-    reader: Reader,
-    Path(key): Path<String>,
-    Query(params): Query<Params>,
-    headers: HeaderMap,
-) -> Result<Response> {
-    let id: Uuid = match handbook::chapter(&key) {
-        Some(chapter) => sqlx::query_scalar("SELECT id FROM articles WHERE chapter = $1")
-            .bind(chapter.key)
-            .fetch_optional(&state.pool)
-            .await?
-            .ok_or_else(missing)?,
-        None => return Err(missing()),
-    };
-    let mode = if reader.is_admin() {
-        Mode::Review
-    } else {
-        Mode::Public
-    };
-    let html = render(&state, id, params.english(), mode).await?;
-    Ok(conditional(
-        &headers,
-        &Rendered::new(html),
-        "text/html; charset=utf-8",
-    ))
-}
-
 /// The author's preview of their own article, or an administrator's of any, as it would read.
 async fn preview(
     State(state): State<AppState>,
@@ -1141,7 +1113,7 @@ async fn preview(
     Ok(response)
 }
 
-async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<String> {
+pub(super) async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<String> {
     let mut query = QueryBuilder::<Postgres>::new(
         "SELECT a.id, a.author_id, w.name AS author, a.title, a.body, a.excerpt, a.cover, a.status, a.revision, a.views, a.updated_at, a.published_at, a.film IS NOT NULL AS film, a.person IS NOT NULL AS person, a.event IS NOT NULL AS event, a.product IS NOT NULL AS product, a.question, a.chapter",
     );
@@ -1292,8 +1264,9 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
             )
         })
         .unwrap_or_default();
-    // A chapter stands under its group in the handbook, dated by its last update.
-    let (crumb, updated) = chapter
+    // A chapter stands under its group in the handbook, dated by its last update, and copies
+    // itself as Markdown for a reader to hand to an agent.
+    let (crumb, updated, copy) = chapter
         .map(|chapter| {
             (
                 format!(
@@ -1303,11 +1276,22 @@ async fn render(state: &AppState, id: Uuid, en: bool, mode: Mode) -> Result<Stri
                     chapter.group(en)
                 ),
                 choose(en, "更新于 ", "Updated "),
+                format!(
+                    "<button class=\"button button-small button-secondary handbook-copy\" type=button data-copy-page=\"{}.md\" data-copied=\"{}\" title=\"{}\">{COPY}<span>{}</span></button>",
+                    chapter.path(),
+                    choose(en, "已复制", "Copied"),
+                    choose(
+                        en,
+                        "复制这一章的 Markdown，贴给 agent",
+                        "Copy this chapter as Markdown for an agent"
+                    ),
+                    choose(en, "复制页面", "Copy page"),
+                ),
             )
         })
         .unwrap_or_default();
     let mut content = format!(
-        "{notice}<article class=\"read article\">{}<header class=read-heading>{crumb}<div class=read-title><h1>{}</h1></div><div class=item-meta><a href=\"{}\">{}</a> · <time datetime=\"{}\">{updated}{}</time> · {views}</div>{asked}</header><div class=read-body>{body}</div></article>",
+        "{notice}<article class=\"read article\">{}<header class=read-heading>{crumb}<div class=read-title><h1>{}</h1>{copy}</div><div class=item-meta><a href=\"{}\">{}</a> · <time datetime=\"{}\">{updated}{}</time> · {views}</div>{asked}</header><div class=read-body>{body}</div></article>",
         // A profile's cover, its subject's portrait, stands for it on the lists, and so does an
         // event's, the first picture it shows; the page opens with the writer's own pictures.
         cover

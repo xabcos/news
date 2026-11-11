@@ -4281,7 +4281,7 @@ async fn postgres_handbook_writes_checks_and_serves() {
     assert!(input.contains("｜Claude Code 的 MCP 服务器配置 3｜配置写法｜"));
 
     // The handbook's page lists the chapters by group and the topic's news; a chapter stands at
-    // its own address with the contents beside it; the book holds them all in order.
+    // its own address with the contents beside it and copies itself as Markdown.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let router = crate::web::router(state.clone());
@@ -4300,7 +4300,7 @@ async fn postgres_handbook_writes_checks_and_serves() {
         assert!(hub.contains(&format!("href=\"/agents/{}\"", chapter.key)));
     }
     assert!(hub.contains("Claude Code 的 MCP 服务器配置 3"));
-    assert!(hub.contains("href=\"/agents.md\""));
+    assert!(!hub.contains(".md\""));
     assert!(hub.contains(
         "href=\"/agents\" data-topic=agents aria-current=\"true\">Codex &amp; Claude</a>"
     ));
@@ -4314,12 +4314,30 @@ async fn postgres_handbook_writes_checks_and_serves() {
     assert!(page.contains("<a rel=prev href=\"/agents/extensions\">"));
     assert!(page.contains("<a rel=next href=\"/agents/workflow\">"));
     assert!(page.contains("/agents/hooks\"><link rel=\"alternate\""));
+    assert!(page.contains("data-copy-page=\"/agents/hooks.md\" data-copied=\"已复制\""));
     assert_eq!(get("/agents/unknown".into()).await.0, 404);
-    let (status, book) = get("/agents.md".into()).await;
-    assert_eq!(status, 200);
-    let start = book.find("\n# 上手、安装与登录\n").unwrap();
-    let hooks_at = book.find("\n# Hooks\n").unwrap();
-    assert!(start < hooks_at && book.contains("\n# Agent SDK\n"));
+    // The chapter as Markdown, which 「复制页面」 copies, for agents rather than search engines;
+    // the handbook has no whole book.
+    let markdown = http
+        .get(format!("{base}/agents/hooks.md"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            markdown.status().as_u16(),
+            markdown.headers()["content-type"].to_str().unwrap(),
+            markdown.headers()["x-robots-tag"].to_str().unwrap(),
+        ),
+        (200, "text/markdown; charset=utf-8", "noindex")
+    );
+    let markdown = markdown.text().await.unwrap();
+    assert!(markdown.starts_with("# Hooks\n\n> 来源：http"));
+    assert!(markdown.contains("/agents/hooks · 更新于 "));
+    assert!(markdown.contains("更新后的内容，"));
+    assert!(markdown.contains("```bash\nclaude -p \"总结\" --output-format json\n```"));
+    assert_eq!(get("/agents/unknown.md".into()).await.0, 404);
+    assert_eq!(get("/agents.md".into()).await.0, 404);
     // Chapters are listed at their own addresses, and stay out of 分享 and 精选.
     let (_, sitemap) = get("/articles/sitemap.xml".into()).await;
     assert!(sitemap.contains("/agents/hooks</loc>"));
@@ -4329,7 +4347,7 @@ async fn postgres_handbook_writes_checks_and_serves() {
     let (_, worth) = get("/articles/worth.json".into()).await;
     assert!(!worth.contains(&hooks.id.to_string()));
 
-    // Hidden, the handbook has no page, chapter, book or place in the sitemap for readers.
+    // Hidden, the handbook has no page, chapter, Markdown or place in the sitemap for readers.
     sqlx::query("UPDATE topics SET visible = false WHERE id = $1")
         .bind(TOPIC)
         .execute(&state.pool)
@@ -4339,7 +4357,7 @@ async fn postgres_handbook_writes_checks_and_serves() {
     for path in [
         "/agents".to_owned(),
         "/agents/hooks".to_owned(),
-        "/agents.md".to_owned(),
+        "/agents/hooks.md".to_owned(),
         format!("/articles/{}", hooks.id),
     ] {
         assert_eq!(get(path.clone()).await.0, 404, "{path}");
@@ -4360,4 +4378,24 @@ async fn postgres_handbook_writes_checks_and_serves() {
     HOOKS_EDITION.store(3, Ordering::SeqCst);
     assert_eq!(xabc::write(&state, line, Utc::now()).await.unwrap(), None);
     HOOKS_EDITION.store(0, Ordering::SeqCst);
+    // Readers still find nothing, while an administrator reads a chapter and copies its Markdown.
+    state.digest.reload_topics(&state).await.unwrap();
+    let (_, admin) = account(&state, "admin").await;
+    for path in ["/agents/hooks", "/agents/hooks.md"] {
+        assert_eq!(get(path.into()).await.0, 404, "{path}");
+        let preview = http
+            .get(format!("{base}/api/admin/preview{path}"))
+            .header("cookie", &admin)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            (
+                preview.status().as_u16(),
+                preview.headers()["cache-control"].to_str().unwrap()
+            ),
+            (200, "private, no-store"),
+            "{path}"
+        );
+    }
 }

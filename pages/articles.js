@@ -120,3 +120,36 @@ PublicPage.page();
     });
   }
 })();
+
+// A handbook chapter copies itself as Markdown, as the official documentation's pages do, for
+// a reader to hand to an agent. The clipboard takes the Markdown while it is fetched, so the
+// click still counts as the reader's where a browser asks for one.
+(() => {
+  const control = document.querySelector("[data-copy-page]");
+  if (!control) return;
+  const label = control.querySelector("span");
+  const words = label.textContent;
+  control.addEventListener("click", async () => {
+    control.disabled = true;
+    const markdown = fetch(PublicPage.readPath(control.dataset.copyPage), { credentials: "same-origin" })
+      .then((response) => (response.ok ? response.text() : Promise.reject(new Error(`HTTP ${response.status}`))));
+    try {
+      try {
+        await navigator.clipboard.write([new ClipboardItem({
+          "text/plain": markdown.then((text) => new Blob([text], { type: "text/plain" })),
+        })]);
+      } catch {
+        // Some browsers take only plain text, once it is there.
+        await navigator.clipboard.writeText(await markdown);
+      }
+      label.textContent = control.dataset.copied;
+      setTimeout(() => {
+        label.textContent = words;
+        control.disabled = false;
+      }, 1500);
+    } catch (error) {
+      control.disabled = false;
+      window.alert(error.message);
+    }
+  });
+})();
