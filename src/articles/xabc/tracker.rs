@@ -1,12 +1,14 @@
 //! 追踪: XABC follows the events the whole web talks about, one article an event, brought up to
 //! date as it develops. Each round both scouts rank the events talked about most now, those XABC
 //! follows among them, and the hottest one with something new is written about (`pick`): anew,
-//! or in the article it has once that has stood `WAIT_HOURS`. Searching, writing and pictures
-//! are 分享's (`super`); like 时代's, an article shows only pictures from pages, and its cover is
-//! the first of them, or for the lists alone one a page the finds name gives (`cover_from`).
+//! or in the article it has once that has stood `WAIT_HOURS`. The events an administrator names
+//! go first, one after another (`named`), each written about anew or brought up to date however
+//! lately it was. Searching, writing and pictures are 分享's (`super`); like 时代's, an article
+//! shows only pictures from pages, and its cover is the first of them, or for the lists alone one
+//! a page the finds name gives (`cover_from`).
 use super::{
-    Find, KEEPING, Line, Picture, Scout, Subject, draft, figures, finish, found, linked, listed,
-    log, look, photographed, pick, publish, revise, uploaded,
+    Find, Found, KEEPING, Line, Picture, Scout, Subject, draft, figures, finish, found, linked,
+    listed, log, look, photographed, pick, publish, revise, uploaded,
 };
 use crate::{
     error::{AppError, Result},
@@ -64,20 +66,13 @@ pub(super) async fn write(
     author: i64,
     since: DateTime<Utc>,
 ) -> Result<Option<Uuid>> {
-    let tracked: Vec<Tracked> = sqlx::query_as(
-        "SELECT event, title, status = 'published' AS published, updated_at FROM articles
-         WHERE event IS NOT NULL
-           AND (status <> 'published' OR updated_at > now() - make_interval(days => $1))
-         ORDER BY updated_at DESC",
-    )
-    .bind(TRACKED_DAYS)
-    .fetch_all(&state.pool)
-    .await?;
-    let zone = state.config.timezone;
-    let at = |time: DateTime<Utc>| time.with_timezone(&zone).format("%Y-%m-%d %H:%M");
+    let tracked = tracked(state, Some(TRACKED_DAYS)).await?;
     let now = Utc::now();
-    let clock = format!("现在是 {}（{}）。\n", at(now), zone.name());
-    let input = format!("{clock}{}", scouting(&tracked, at));
+    let input = format!(
+        "{}{HOT}{}",
+        clock(state),
+        scouting(&tracked, |time| at(state, time))
+    );
     let mut found = look(state, Line::Tracker, SEARCHING, &input, &HashSet::new()).await;
     if found.answered == 0 {
         return Err(AppError::Internal("两路检索都失败了".into()));
@@ -91,10 +86,75 @@ pub(super) async fn write(
         .map(|tracked| tracked.event.clone())
         .collect();
     passed.extend(checked(now - wait));
-    let Some((event, finds)) = pick(found.finds, &passed, TOP) else {
+    let Some((event, finds)) = pick(std::mem::take(&mut found.finds), &passed, TOP) else {
         return Ok(None);
     };
-    let material = format!("{clock}事件：{event}\n");
+    found.finds = finds;
+    follow(state, author, since, event, found, Some(wait)).await
+}
+
+/// Follows the event an administrator named, in a new article or in the one it has however
+/// lately that was brought up to date; none when its article is taken back or has nothing new
+/// to take. The scouts hear of every event followed, however long ago, so that one named months
+/// later lands in its article.
+pub(super) async fn named(state: &AppState, author: i64, name: &str) -> Result<Option<Uuid>> {
+    let since = Utc::now();
+    let tracked = tracked(state, None).await?;
+    let input = format!(
+        "{}{}{NAMED}{name}",
+        clock(state),
+        scouting(&tracked, |time| at(state, time))
+    );
+    let mut found = look(state, Line::Tracker, SEARCHING, &input, &HashSet::new()).await;
+    let event;
+    (event, found.finds) = pick(
+        std::mem::take(&mut found.finds),
+        &HashSet::new(),
+        usize::MAX,
+    )
+    .ok_or_else(|| AppError::Internal(format!("两路检索都没有查到「{name}」").into()))?;
+    follow(state, author, since, event, found, None).await
+}
+
+/// The events followed in the last `days` days, or ever, and every event taken back, the one
+/// brought up to date last first.
+async fn tracked(state: &AppState, days: Option<i32>) -> Result<Vec<Tracked>> {
+    Ok(sqlx::query_as(
+        "SELECT event, title, status = 'published' AS published, updated_at FROM articles
+         WHERE event IS NOT NULL
+           AND (status <> 'published' OR $1::int IS NULL
+                OR updated_at > now() - make_interval(days => $1))
+         ORDER BY updated_at DESC",
+    )
+    .bind(days)
+    .fetch_all(&state.pool)
+    .await?)
+}
+
+/// A time as the scouts and the writer read it, in the site's time zone.
+fn at(state: &AppState, time: DateTime<Utc>) -> impl std::fmt::Display + use<> {
+    time.with_timezone(&state.config.timezone)
+        .format("%Y-%m-%d %H:%M")
+}
+
+/// Now, as the scouts and the writer hear it.
+fn clock(state: &AppState) -> String {
+    let zone = state.config.timezone;
+    format!("现在是 {}（{}）。\n", at(state, Utc::now()), zone.name())
+}
+
+/// Writes about the event from the finds about it, or brings the article it has up to date:
+/// unless an administrator took that back, or, with a `wait`, it was brought up to date within
+/// it.
+async fn follow(
+    state: &AppState,
+    author: i64,
+    since: DateTime<Utc>,
+    event: String,
+    mut found: Found,
+    wait: Option<chrono::Duration>,
+) -> Result<Option<Uuid>> {
+    let material = format!("{}事件：{event}\n", clock(state));
     let due: Option<Due> = sqlx::query_as(
         "SELECT id, title, body, revision, cover, status = 'published' AS published, updated_at
          FROM articles WHERE event = $1",
@@ -103,20 +163,20 @@ pub(super) async fn write(
     .fetch_optional(&state.pool)
     .await?;
     let Some(due) = due else {
-        let material = format!("{material}线索：\n{}", listed(&finds));
+        let material = format!("{material}线索：\n{}", listed(&found.finds));
         let drafted = photographed(draft(state, WRITING, &material).await?);
         found.usage += drafted.usage;
         found.known.extend(drafted.cited);
         let mut article = finish(state, drafted.article, found.known, &[], false).await?;
         if crate::articles::pictures(&article.body, None).is_empty() {
-            article.cover = cover_from(state, &finds).await;
+            article.cover = cover_from(state, &found.finds).await;
         }
         let id = publish(state, author, since, Some(Subject::Event(&event)), &article).await?;
         log(id, "XABC's 追踪 written", &event, &article, found.usage);
         return Ok(Some(id));
     };
     // An administrator may have saved or taken back the article while the scouts searched.
-    if !due.published || Utc::now() - due.updated_at < wait {
+    if !due.published || wait.is_some_and(|wait| Utc::now() - due.updated_at < wait) {
         return Ok(None);
     }
     // The article's links were checked when it went out.
@@ -124,9 +184,9 @@ pub(super) async fn write(
     let (body, kept) = figures(&due.body);
     let material = format!(
         "{material}这篇追踪上次更新于 {}，现有全文：\n标题：{}\n\n{body}\n\n最新的线索：\n{}",
-        at(due.updated_at),
+        at(state, due.updated_at),
         due.title,
-        listed(&finds)
+        listed(&found.finds)
     );
     let drafted =
         photographed(draft(state, &format!("{WRITING}{REVISING}{KEEPING}"), &material).await?);
@@ -154,7 +214,7 @@ pub(super) async fn write(
         .copied()
         .or(due.cover);
     if cover.is_none() {
-        article.cover = cover_from(state, &finds).await;
+        article.cover = cover_from(state, &found.finds).await;
         cover = article.cover.as_ref().map(|picture| picture.id);
     }
     revise(state, due.id, due.revision, cover, &article).await?;
@@ -236,12 +296,23 @@ fn checked(after: DateTime<Utc>) -> Vec<String> {
     checked.keys().cloned().collect()
 }
 
+/// What both scouts are told in every round; what a round looks for is in its input, `HOT` or
+/// `NAMED`.
 const SEARCHING: &str = "你是 XABC「追踪」栏目的选题编辑。XABC 在 xabcnews.com 为全网最受关注的热点事件各写一篇持续更新的追踪：事情怎么发生的、现在到了哪一步、各方怎么说、接下来会怎样，有了新进展就在同一篇上更新；读者是关心科技的中文读者。
-今天请你{scope}，放眼全球科技圈的网络热点，找出最近一两天讨论最多、传播最广、还在发酵的事件，按热度从高到低排列，最多 10 件。美国、中国、欧洲、日本、韩国、印度等各地的事件都要看，中英文的讨论都要搜。只收科技事件：AI、互联网与开源，网络安全与数据泄露，服务宕机与事故复盘，芯片与硬件，科技公司的诉讼、监管、出口管制、并购与市场震荡，加密货币平台的被盗与安全事件，科学与航天任务。交通与工业事故、自然灾害、战争与政治事件、娱乐圈和社会新闻都不收。
-一件事要有起点、还会有后续：比如一次被盗、宕机、泄露或事故，一场诉讼或调查，一笔收购或一道禁令，一次翻车的发布，一项政策或法案的推进。一次性的发布、财报和融资，只有引发了连锁反应、各方还在跟进时才算；同一波连锁反应算一件事，要有来源说明它们出自同一个起因。
-输入里列出了正在追踪的事件。它们和别的事件一样按热度排进来，原样使用它的标识，不要换个说法另起标识；points 只写它上次更新之后（往前多看两个小时）的新进展，没有新进展就留空。不再追踪的事件不要列出，也不要换个标识再列。
-每条线索是一件事：event 是它的标识，用三五个英文词加事件起始的年月（不用这次报道或更新的年月），比如 binance-hack-2026-10，只写标识；title 一句话说明发生了什么、现在到了哪一步；why 写热度依据，比如讨论、转发、报道和跟进；points 写时间线上的关键事实（带日期，能确定时带时间）、各方的说法和数字，注明出自谁，说法有变化的写清先后，数字写清是什么口径（比如受影响、被盗、冻结、追回、赔付）；pictures 优先给有现场照片的报道页面或 X 帖子。
+今天请你{scope}，按输入里这一轮的要求找线索。
+输入里会列出正在追踪和不再追踪的事件：正在追踪的事件原样使用它的标识，不要换个说法另起标识；不再追踪的事件不要列出，也不要换个标识再列。
+每条线索是一件事：event 是它的标识，用三五个英文词加事件起始的年月（不用这次报道或更新的年月），比如 binance-hack-2026-10，只写标识；title 一句话说明发生了什么、现在到了哪一步；why 写它受关注的依据，比如讨论、转发、报道和跟进；points 写时间线上的关键事实（带日期，能确定时带时间）、各方的说法和数字，注明出自谁，说法有变化的写清先后，数字写清是什么口径（比如受影响、被盗、冻结、追回、赔付）；pictures 优先给有现场照片的报道页面或 X 帖子。
 ";
+
+/// The round of the events talked about most now, before the events followed and taken back.
+const HOT: &str = "这一轮按热度找事件：放眼全球科技圈的网络热点，找出最近一两天讨论最多、传播最广、还在发酵的事件，按热度从高到低排列，最多 10 件。美国、中国、欧洲、日本、韩国、印度等各地的事件都要看，中英文的讨论都要搜。只收科技事件：AI、互联网与开源，网络安全与数据泄露，服务宕机与事故复盘，芯片与硬件，科技公司的诉讼、监管、出口管制、并购与市场震荡，加密货币平台的被盗与安全事件，科学与航天任务。交通与工业事故、自然灾害、战争与政治事件、娱乐圈和社会新闻都不收。
+一件事要有起点、还会有后续：比如一次被盗、宕机、泄露或事故，一场诉讼或调查，一笔收购或一道禁令，一次翻车的发布，一项政策或法案的推进。一次性的发布、财报和融资，只有引发了连锁反应、各方还在跟进时才算；同一波连锁反应算一件事，要有来源说明它们出自同一个起因。
+正在追踪的事件和别的事件一样按热度排进来；它的 points 只写上次更新之后（往前多看两个小时）的新进展，没有新进展就留空。
+";
+
+/// The round of an event an administrator names, after the events followed and taken back;
+/// the name follows.
+const NAMED: &str = "这一轮不按热度挑选，只追踪管理员点名的这一件事，它不必是科技事件：先确认指的是哪一件事，相近的有好几件时，选最近、最受关注的那一件；它若在正在追踪的事件里，原样使用它的标识。再把这件事查全，交回关于它的线索，每条的 event 都写同一个标识；points 写它的关键事实和最新进展，即使它正在追踪也不留空。点名的若是中国的政治事件，或者是不再追踪的事件，就不交回线索。\n点名：";
 
 const WRITING: &str = "你是 XABC，在 xabcnews.com 的「追踪」栏目追踪热点事件，读者是关心科技的中文读者。
 下面是这次要追踪的事件和两位编辑找来的线索。多用 web_search 把这件事查全：当事方的公告和声明、官方通报、监管与法院文件、通讯社和权威媒体的报道与跟进、调查者和研究机构的报告、当事人和亲历者的发言；然后写一篇完整的中文追踪。

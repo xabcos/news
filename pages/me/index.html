@@ -10,7 +10,7 @@
   <title>𝑵𝒆𝒘𝒔 · 工作台</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
   <link rel="stylesheet" href="/styles.css?v=sides">
-  <link rel="stylesheet" href="/me/styles.css?v=tabs">
+  <link rel="stylesheet" href="/me/styles.css?v=lines">
 </head>
 <body>
   <main class="workspace-shell">
@@ -75,8 +75,8 @@
           <p class="field-hint muted">读者只看到笔名，看不到邮箱。</p>
         </form>
         <form id="askForm" class="ask-form hidden">
-          <label class="ask-title" for="askText">让 XABC 写时代</label>
-          <div class="ask-row"><input id="askText" maxlength="200" placeholder="人物或企业的名字" required><button class="button button-secondary button-small" type="submit">立即写</button></div>
+          <div class="ask-head"><span class="ask-title">让 XABC 写</span><span class="ask-lines" role="radiogroup" aria-label="写在哪一栏"><label><input type="radio" name="line" value="people" checked>时代</label><label><input type="radio" name="line" value="tracker">追踪</label></span></div>
+          <div class="ask-row"><input id="askText" maxlength="200" aria-label="让 XABC 写什么" required><button class="button button-secondary button-small" type="submit">立即写</button></div>
         </form>
         <div id="reviewLists" class="review-lists hidden"></div>
         <p id="articlesMessage" class="empty-state hidden" role="status"></p><ul id="articleList" class="item-list"></ul>
@@ -166,6 +166,6 @@
     <div class="dialog-actions"><button class="button button-quiet" type="button" data-close-dialog>取消</button><button id="confirmActionButton" class="button button-danger" type="button">确认删除</button></div>
   </dialog>
   <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
-  <script src="/me/app.js?v=33" type="module"></script>
+  <script src="/me/app.js?v=34" type="module"></script>
 </body>
 </html>

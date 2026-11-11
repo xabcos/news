@@ -1597,7 +1597,9 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                             );
                         }
                         // 追踪: grok names two events, the first by a slug in other words, and
-                        // the briefing model the first.
+                        // the briefing model the first; in a round an administrator asks for,
+                        // both name the event they name, unless nothing can be found, and know
+                        // 币安被盗 by its slug only when they hear of it.
                         let tracker = instructions.contains("「追踪」");
                         if request["text"]["format"]["name"] == "finds" && tracker {
                             if saving.load(Ordering::SeqCst) {
@@ -1610,7 +1612,15 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                                 return (StatusCode::BAD_REQUEST, Json(json!({})));
                             }
                             let grok = request["tools"].as_array().unwrap().len() == 2;
-                            let named = if grok {
+                            let input = request["input"][0]["content"].as_str().unwrap_or_default();
+                            let named = if let Some((_, event)) = input.split_once("点名：") {
+                                let event = match event {
+                                    "币安被盗" if input.contains("\n- binance-hack-2026-10｜") => "binance-hack-2026-10",
+                                    "币安被盗" => "binance-theft-2026-10",
+                                    event => event,
+                                };
+                                if event == "查无此事" { Vec::new() } else { vec![(event, "最新进展")] }
+                            } else if grok {
                                 vec![("Binance hack 2026-10", "被盗约 63 亿美元"), ("ai-capex-selloff-2026-10", "科技股下跌")]
                             } else {
                                 vec![("binance-hack-2026-10", "币安称全额赔付")]
@@ -3470,6 +3480,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     assert_eq!(event.as_deref(), Some("ai-capex-selloff-2026-10"));
     assert_eq!(tracker(state.clone()).await.unwrap(), None);
     let heard = searched();
+    assert!(heard.starts_with("现在是 ") && heard.contains("这一轮按热度找事件"));
     assert!(heard.contains("正在追踪的事件（标识｜标题｜上次更新）：\n- ai-capex-selloff-2026-10｜ai-capex-selloff-2026-10 的追踪｜"));
     assert!(heard.contains("\n- binance-hack-2026-10｜binance-hack-2026-10 的追踪｜"));
     // Both searches failing is a failure.
@@ -3646,6 +3657,137 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     assert!(worth.iter().any(|article| {
         article["id"] == first["id"] && article["research"] == true && article["event"] == false
     }));
+
+    // An administrator names events for 追踪, which lines them up, each once, and follows them
+    // one after another before its own rounds: anew, or in the article an event has however
+    // lately that was brought up to date, but never in one taken back.
+    let name_event = |name: &str| {
+        http.post(format!("{base}/api/admin/tracker"))
+            .header("cookie", &administrator)
+            .header("origin", &origin)
+            .json(&json!({ "name": name }))
+            .send()
+    };
+    let event_ahead = |event: &'static str| {
+        let request = name_event(event);
+        async move { request.await.unwrap().json::<Value>().await.unwrap()["ahead"].clone() }
+    };
+    let next_event = || {
+        let state = &state;
+        async move {
+            xabc::start(state, xabc::Line::Tracker).await;
+            tokio::time::timeout(std::time::Duration::from_secs(60), async {
+                while state.in_flight().contains("__xabc_tracker__") {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+    };
+    let standing_of = |id: Uuid| {
+        let state = state.clone();
+        async move {
+            sqlx::query_as::<_, (i32, DateTime<Utc>, String)>(
+                "SELECT revision, updated_at, status FROM articles WHERE id = $1",
+            )
+            .bind(id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(name_event(" ").await.unwrap().status(), 400);
+    state.in_flight().insert("__xabc_tracker__".into());
+    assert_eq!(event_ahead("ai-capex-selloff-2026-10").await, 0);
+    assert_eq!(event_ahead("查无此事").await, 1);
+    assert_eq!(event_ahead("Chip export probe 2026-11").await, 2);
+    assert_eq!(event_ahead("binance-hack-2026-10").await, 3);
+    assert_eq!(event_ahead(" ai-capex-selloff-2026-10 ").await, 0);
+    xabc::start(&state, xabc::Line::Tracker).await;
+    state.in_flight().remove("__xabc_tracker__");
+    // The event brought up to date a moment ago is brought up to date again. The scouts hear
+    // what was named after the events followed, and nothing of the round's own demands: not of
+    // heat, nor of technology alone.
+    let (revision, ..) = standing_of(selloff).await;
+    next_event().await;
+    assert_eq!(standing_of(selloff).await.0, revision + 1);
+    let heard = searched();
+    assert!(heard.contains("正在追踪的事件（标识｜标题｜上次更新）："));
+    assert!(heard.contains("只追踪管理员点名的这一件事"));
+    assert!(heard.ends_with("点名：ai-capex-selloff-2026-10"), "{heard}");
+    let told = asked_log
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|request| request["text"]["format"]["name"] == "finds")
+        .unwrap()["instructions"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for demand in ["这一轮按热度找事件", "只收科技事件", "没有新进展就留空"]
+    {
+        assert!(
+            !heard.contains(demand) && !told.contains(demand),
+            "{demand}"
+        );
+    }
+    // An event the scouts cannot find is dropped, and the next goes on though 追踪 failed: an
+    // event not followed yet, written about anew though an article was brought up to date a
+    // moment ago.
+    let events = || {
+        let state = state.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM articles WHERE event IS NOT NULL")
+                .fetch_one(&state.pool)
+                .await
+                .unwrap()
+        }
+    };
+    let before = events().await;
+    next_event().await;
+    assert_eq!(events().await, before);
+    next_event().await;
+    let (title, status): (String, String) = sqlx::query_as(
+        "SELECT title, status FROM articles WHERE event = 'chip-export-probe-2026-11'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (title.as_str(), status.as_str()),
+        ("chip-export-probe-2026-11 的追踪", "published")
+    );
+    // An event whose article an administrator took back stays as it is, though named.
+    sqlx::query("UPDATE articles SET status = 'pending' WHERE id = $1")
+        .bind(followed)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    let before = standing_of(followed).await;
+    next_event().await;
+    assert_eq!(standing_of(followed).await, before);
+    assert!(searched().ends_with("点名：binance-hack-2026-10"));
+    // Followed again but last brought up to date months ago, it is named in other words and
+    // lands in its article all the same: the scouts hear of every event ever followed.
+    sqlx::query(
+        "UPDATE articles SET status = 'published', updated_at = now() - INTERVAL '40 days'
+         WHERE id = $1",
+    )
+    .bind(followed)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    let (revision, ..) = standing_of(followed).await;
+    let before = events().await;
+    name_event("币安被盗").await.unwrap();
+    next_event().await;
+    assert!(searched().contains("\n- binance-hack-2026-10｜"));
+    assert_eq!(
+        (standing_of(followed).await.0, events().await),
+        (revision + 1, before)
+    );
 
     // Each line waits for its own articles: a 分享 just out keeps another 分享 back, not 追踪.
     let finished = |title: &str| xabc::Finished {

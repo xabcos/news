@@ -123,7 +123,14 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/api/articles/views", get(views))
         .route("/api/admin/articles", get(queue))
         .route("/api/admin/articles/{id}", patch(review))
-        .route("/api/admin/people", post(profile))
+        .route(
+            "/api/admin/people",
+            post(|user, ApiJson(request)| ask(user, request, xabc::Line::People)),
+        )
+        .route(
+            "/api/admin/tracker",
+            post(|user, ApiJson(request)| ask(user, request, xabc::Line::Tracker)),
+        )
         .merge(research::router())
         .merge(handbook::router())
         .merge(pages::router())
@@ -747,15 +754,22 @@ async fn review(
     Ok(Json(json!({ "status": status, "revision": revision })))
 }
 
-/// Puts the person or the company an administrator names on 时代's list, which it writes
-/// before its own rounds, and tells how many names wait ahead.
-async fn profile(user: User, ApiJson(request): ApiJson<Name>) -> Result<Json<Value>> {
+/// Puts what an administrator names on the line's list, a person or a company on 时代's, an
+/// event on 追踪's, which the line writes before its own rounds, and tells how many names wait
+/// ahead.
+async fn ask(user: User, request: Name, line: xabc::Line) -> Result<Json<Value>> {
     auth::require_admin(&user)?;
     let name = request.name.trim();
     if name.is_empty() {
-        return Err(AppError::BadRequest("写上人物或企业的名字".into()));
+        return Err(AppError::BadRequest(
+            match line {
+                xabc::Line::Tracker => "写上要追踪的事",
+                _ => "写上人物或企业的名字",
+            }
+            .into(),
+        ));
     }
-    Ok(Json(json!({ "ahead": xabc::name(name.to_owned()) })))
+    Ok(Json(json!({ "ahead": xabc::name(line, name.to_owned()) })))
 }
 
 /// What an author does a number of times a day: start articles, upload pictures, have the AI

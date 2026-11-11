@@ -6,7 +6,7 @@ const kind = (article) => article.film ? "解说" : article.person ? "时代" : 
   : article.research ? "调研" : article.chapter ? "手册" : "分享";
 
 // 分享 in the workspace: the pen name, the reader's own articles and, for an administrator,
-// whom 时代 writes about next and the articles to review. Requests share the session's abort
+// what 时代 and 追踪 write next and the articles to review. Requests share the session's abort
 // signal.
 export function createArticles(session) {
   const signal = session.controller.signal;
@@ -22,19 +22,28 @@ export function createArticles(session) {
     editName();
     toast("写文章前先设置笔名");
   }, { signal });
-  // A person or a company an administrator names joins 时代's list, written before its own
-  // rounds.
+  // What an administrator names joins the picked line's list, written before its own rounds: a
+  // person or a company 时代 writes about, or an event 追踪 follows.
+  const lines = {
+    people: { path: "/api/admin/people", hint: "人物或企业的名字", told: "时代" },
+    tracker: { path: "/api/admin/tracker", hint: "一件事，如「英伟达涉谍调查」", told: "追踪" },
+  };
   const ask = $("#askForm");
   const text = $("#askText");
+  const line = () => lines[ask.elements.line.value];
+  const hint = () => { text.placeholder = line().hint; };
+  hint();
   ask.classList.toggle("hidden", !session.admin);
+  ask.addEventListener("change", hint, { signal });
   ask.addEventListener("submit", (event) => {
     event.preventDefault();
+    const { path, told } = line();
     void withBusy($("#askForm button"), "提交中…", async () => {
       const name = text.value.trim();
-      const { ahead } = await session.request("/api/admin/people", { method: "POST", body: { name } });
-      // Whatever was typed meanwhile stays.
+      const { ahead } = await session.request(path, { method: "POST", body: { name } });
+      // Whatever was typed meanwhile, for either line, stays.
       if (text.value.trim() === name) text.value = "";
-      toast(`「${name}」已排进时代，${ahead ? `前面还有 ${ahead} 个` : "下一篇就写它"}`);
+      toast(`「${name}」已排进${told}，${ahead ? `前面还有 ${ahead} 个` : "下一篇就写它"}`);
     });
   }, { signal });
   $("#penNameForm").addEventListener("submit", (event) => {

@@ -85,7 +85,7 @@ const MIN_TEXT: usize = 400;
 const LINK_ROUNDS: usize = 8;
 
 /// XABC's lines of writing.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Line {
     /// An article for 分享.
     Share,
@@ -206,56 +206,61 @@ fn progress<T>(line: Line, change: impl FnOnce(&mut Progress) -> T) -> T {
     )
 }
 
-/// The people and the companies administrators named for 时代, the first named first, kept in
-/// the process.
-static NAMES: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
+/// What administrators named for 时代 and 追踪, a person, a company or an event, each with its
+/// line, the first named first, kept in the process.
+static NAMES: Mutex<VecDeque<(Line, String)>> = Mutex::new(VecDeque::new());
 
-/// Puts a person or a company an administrator names on 时代's list, unless it is there
-/// already, and tells how many names wait ahead of it.
-pub(super) fn name(name: String) -> usize {
+/// Puts what an administrator names on the line's list, unless it is there already, and tells
+/// how many of the line's names wait ahead of it.
+pub(super) fn name(line: Line, name: String) -> usize {
     let mut named = NAMES.lock().unwrap_or_else(PoisonError::into_inner);
-    named
-        .iter()
-        .position(|waiting| *waiting == name)
-        .unwrap_or_else(|| {
-            named.push_back(name);
-            named.len() - 1
-        })
+    let waiting = || named.iter().filter(|(waiting, _)| *waiting == line);
+    match waiting().position(|(_, waiting)| *waiting == name) {
+        Some(ahead) => ahead,
+        None => {
+            let ahead = waiting().count();
+            named.push_back((line, name));
+            ahead
+        }
+    }
 }
 
-/// The first name on 时代's list, taken off it.
-fn named() -> Option<String> {
-    NAMES
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .pop_front()
+/// The first name on the line's list, taken off it.
+fn named(line: Line) -> Option<String> {
+    let mut named = NAMES.lock().unwrap_or_else(PoisonError::into_inner);
+    let first = named.iter().position(|(waiting, _)| *waiting == line)?;
+    named.remove(first).map(|(_, name)| name)
 }
 
 /// Starts each line's next article once its last is due, unless XABC is writing one for the
-/// line or is waiting after a failure; 时代 writes whom an administrator named first, one after
-/// another. The scheduler calls this on every tick.
+/// line or is waiting after a failure; 时代 and 追踪 write what an administrator named first,
+/// one after another. The scheduler calls this on every tick.
 pub(crate) async fn tick(state: &AppState) {
     for line in Line::ALL {
         start(state, line).await;
     }
 }
 
-/// Starts the line's next article: for 时代 the first name an administrator gave, whenever the
-/// line is free; otherwise the line's own once it is due.
+/// Starts the line's next article: for 时代 and 追踪 the first name an administrator gave,
+/// whenever the line is free; otherwise the line's own once it is due.
 pub(super) async fn start(state: &AppState, line: Line) {
     let now = Utc::now();
     if state.in_flight().contains(line.job()) {
         return;
     }
-    if matches!(line, Line::People)
-        && let Some(name) = named()
+    if matches!(line, Line::People | Line::Tracker)
+        && let Some(name) = named(line)
     {
-        tracing::info!(name, "XABC writes about whom an administrator named");
+        tracing::info!(name, ?line, "XABC writes what an administrator named");
         let worker = state.clone();
         return run(state, line, async move {
             let _turn = turn(&worker).await?;
             let author = author(&worker, line).await?;
-            people::named(&worker, author, &name).await.map(Some)
+            if line == Line::People {
+                people::named(&worker, author, &name).await.map(Some)
+            } else {
+                tracker::named(&worker, author, &name).await
+            }
         });
     }
     if progress(line, |progress| progress.next > now) {
@@ -704,7 +709,7 @@ impl Scout {
                 "用 web_search 检索全球中英文网络的新闻、百科、官方介绍、访谈、演讲、论文、财报和行业榜单"
             }
             (Line::Tracker, Self::X) => {
-                "用 x_search 看 X 上各种语言里此刻被大量讨论、转发和引用的事件，以及当事方、调查者和权威媒体的最新发言，也用 web_search 查全网的新闻"
+                "用 x_search 看 X 上各种语言里对事件的讨论、转发和引用，以及当事方、调查者和权威媒体的最新发言，也用 web_search 查全网的新闻"
             }
             (Line::Review, Self::X) => {
                 "用 x_search 看 X 上用户亲自拍摄的开箱、实拍和长期使用体验，以及评测作者的帖子，也用 web_search 查全网"
@@ -1896,12 +1901,19 @@ mod tests {
     }
 
     #[test]
-    fn names_are_taken_in_turn_each_once() {
-        assert_eq!(name("Lisa Su".into()), 0);
-        assert_eq!(name("Huawei".into()), 1);
-        assert_eq!(name("Lisa Su".into()), 0);
-        let taken: Vec<Option<String>> = (0..3).map(|_| named()).collect();
+    fn names_are_taken_in_turn_each_once_by_their_own_line() {
+        assert_eq!(name(Line::People, "Lisa Su".into()), 0);
+        assert_eq!(name(Line::Tracker, "Binance hack".into()), 0);
+        assert_eq!(name(Line::People, "Huawei".into()), 1);
+        assert_eq!(name(Line::People, "Lisa Su".into()), 0);
+        assert_eq!(name(Line::Tracker, "Huawei".into()), 1);
+        let taken: Vec<Option<String>> = (0..3).map(|_| named(Line::People)).collect();
         assert_eq!(taken, [Some("Lisa Su".into()), Some("Huawei".into()), None]);
+        let taken: Vec<Option<String>> = (0..3).map(|_| named(Line::Tracker)).collect();
+        assert_eq!(
+            taken,
+            [Some("Binance hack".into()), Some("Huawei".into()), None]
+        );
     }
 
     #[test]

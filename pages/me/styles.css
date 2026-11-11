@@ -148,9 +148,15 @@ fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
 .pen-name-form { margin-bottom: 1rem; }
 .pen-name-form .inline { flex-wrap: nowrap; }
 .pen-name-form input { max-width: 18rem; }
-/* Whom 时代 writes about next. */
+/* What XABC writes next: one box, the line picked above it. */
 .ask-form { display: grid; gap: .45rem; margin-bottom: 1.25rem; padding-bottom: 1.25rem; border-bottom: 1px solid var(--line); }
-.ask-title { margin: 0; font-size: .85rem; font-weight: 650; }
+.ask-head { display: flex; align-items: center; gap: .75rem; }
+.ask-title { font-size: .85rem; font-weight: 650; }
+.ask-lines { display: inline-flex; padding: .15rem; border-radius: 999px; background: var(--surface-soft); }
+.ask-lines label { position: relative; margin: 0; padding: .15rem .75rem; border-radius: 999px; color: var(--muted); font-size: .8rem; cursor: pointer; }
+.ask-lines input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; opacity: 0; pointer-events: none; }
+.ask-lines label:has(input:checked) { background: var(--surface-solid); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / .08); }
+.ask-lines label:has(input:focus-visible) { outline: 2px solid var(--primary); outline-offset: 1px; }
 .ask-row { display: flex; align-items: center; gap: .5rem; }
 .ask-row input { max-width: 24rem; }
 .review-lists { display: grid; gap: 1.25rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line); }
