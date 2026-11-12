@@ -177,7 +177,7 @@ p { margin-top: 0; }
 .back-to-top {
   position: fixed;
   z-index: 9;
-  right: max(calc(1rem + env(safe-area-inset-right, 0px)), calc((100% - 46rem) / 2 - 3.75rem));
+  right: max(calc(1rem + env(safe-area-inset-right, 0px)), calc((100% - 46rem) / 2 - var(--clear, 3.75rem)));
   top: 61.8%;
   width: 44px;
   height: 44px;
@@ -314,6 +314,12 @@ p { margin-top: 0; }
   .worth-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem; }
   .worth-card .item-title a { -webkit-line-clamp: 3; }
 }
+/* On a wide screen 精选 opens the page as a band across the margins, six cards to a row. */
+@media (min-width: 76rem) {
+  .worth { --band: min(86rem, 100vw - 6rem); width: var(--band); margin-left: calc((100% - var(--band)) / 2); }
+  .worth-cards { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .worth-card .item-title a { -webkit-line-clamp: 3; }
+}
 /* Read counts and list pages, shared by Reads, 分享 and 解说. */
 .read-views { display: inline-flex; align-items: center; vertical-align: middle; gap: .3rem; white-space: nowrap; color: var(--muted); font-size: .75rem; font-variant-numeric: tabular-nums; }
 .reads-pagination, .read-actions { display: flex; align-items: center; gap: 1.5rem; margin-top: 2rem; font-size: .85rem; }
@@ -369,6 +375,19 @@ p { margin-top: 0; }
 .item-summary { margin: 0; color: color-mix(in srgb, var(--text) 82%, var(--muted)); font-size: .95rem; line-height: 1.65; }
 .item-tags { display: flex; flex-wrap: wrap; gap: .25rem .65rem; margin-top: .55rem; }
 .tag { color: var(--muted); font-size: .72rem; }
+/* On a wide screen a story's source and time hang in the left margin and its tags in the
+   right, which leaves the column to its headline and summary. The source floats there, so a
+   long one makes room for itself; a day's block paints nothing outside itself, so it widens
+   to hold the notes; and the way back to the top stands clear of them. */
+@media (min-width: 76rem) {
+  .day-block { margin-inline: -12rem; padding-inline: 12rem; }
+  .day-block .item:not(.image-news-card) { display: flow-root; }
+  .item:not(.image-news-card) > .item-meta { float: left; flex-flow: column; align-items: flex-end; gap: .2rem; width: 10rem; margin: .25rem 2rem 0 -12rem; text-align: right; overflow-wrap: anywhere; }
+  .item:not(.image-news-card) > .item-meta > .item-source { color: var(--text); font-weight: 600; }
+  .item:not(.image-news-card) > .item-meta > .item-dot { display: none; }
+  .item:not(.image-news-card) > .item-tags { position: absolute; top: 1.42rem; left: calc(100% + 2rem); width: 10rem; margin: 0; }
+  .feed .back-to-top { --clear: 15.75rem; }
+}
 .empty { padding: 3rem 1rem; text-align: center; }
 .empty .button { margin-top: .8rem; }
 

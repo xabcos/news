@@ -1363,7 +1363,7 @@ function card(item, reading = false) {
   meta.className = "item-meta";
   // Publication dates are often only known to the day and arrive as midnight UTC;
   // the collection time is the reliable freshness signal shown in the feed.
-  meta.append(span(item.source || hostOf(item.url), "item-source"), "·", span(relativeTime(item.first_seen_at), "item-time"));
+  meta.append(span(item.source || hostOf(item.url), "item-source"), span("·", "item-dot"), span(relativeTime(item.first_seen_at), "item-time"));
   // Only industry-level events (5): a 4 went to two items in five, too many to stand out.
   if (item.importance === 5) meta.append(span(t().top, "badge badge-top"));
   if (Date.parse(item.first_seen_at) > state.lastVisit) meta.append(span(t().fresh, "badge badge-new"));

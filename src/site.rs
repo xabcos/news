@@ -27,7 +27,7 @@ const PAGE_TOPICS: [&str; 2] = ["reads", "llm"];
 pub(crate) const ARTICLES_WEIGHT: i32 = 42;
 
 /// What every public page loads, with the versions that refresh caches.
-const STYLES: &str = "/styles.css?v=worth";
+const STYLES: &str = "/styles.css?v=margins";
 const PUBLIC_SCRIPT: &str = "/public.js?v=12";
 const STATS_SCRIPT: &str = "/stats.js?v=3";
 /// How the news page introduces the site where it is found and shared.
@@ -104,7 +104,7 @@ async fn home(
   <link rel="stylesheet" href="/catalog.css?v=9">
   {preloads}
 </head>
-<body class="public">
+<body class="public feed">
   {topbar}
   <main class="shell">
     <div class="broadcast-strip" data-broadcast-url="https://broadcast.xairouter.com/feed_news?mode=sequence" hidden>
@@ -119,7 +119,7 @@ async fn home(
   <script src="{STATS_SCRIPT}" data-track-url="{track_url}" defer></script>
   <script src="{PUBLIC_SCRIPT}" defer></script>
   <script src="/travel.js?v=13" defer></script>
-  <script src="/app.js?v=58" defer></script>
+  <script src="/app.js?v=59" defer></script>
   <!-- async: a slow third-party banner must not hold back DOMContentLoaded, which starts app.js. -->
   <script src="https://broadcast.xairouter.com/embed.js" async></script>
 </body>
