@@ -3638,7 +3638,9 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
             .await
             .contains("/tracker</loc>")
     );
-    // 精选 ranks 追踪 and 调研 with the rest, but opens with XABC's 分享 alone, the newest first.
+    // 精选 opens with XABC's 分享 alone, the newest first, ranks 调研 with the rest, and closes
+    // with the two articles that head 追踪's list, then the two that head 时代's: however well
+    // read, they show there and not among the hottest.
     sqlx::query("UPDATE articles SET views = 80 WHERE id = $1 OR id = $2")
         .bind(selloff)
         .bind(Uuid::parse_str(first["id"].as_str().unwrap()).unwrap())
@@ -3656,16 +3658,21 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     let worth: Value =
         serde_json::from_str(&page(format!("{base}/articles/worth.json")).await).unwrap();
     let worth = worth["articles"].as_array().unwrap();
+    assert_eq!(worth.len(), 12);
     assert_eq!(worth[0]["id"], shared.to_string());
+    let (ranked, heads) = worth.split_at(8);
     assert!(
-        worth
-            .iter()
-            .any(|article| { article["id"] == selloff.to_string() && article["kind"] == "event" })
-    );
-    assert!(
-        worth
+        ranked
             .iter()
             .any(|article| { article["id"] == first["id"] && article["kind"] == "question" })
+    );
+    assert!(ranked.iter().all(|article| article["kind"] != "event"));
+    assert_eq!(
+        heads
+            .iter()
+            .map(|article| article["id"].clone())
+            .collect::<Vec<_>>(),
+        [selloff, followed, firm, satya].map(|id| id.to_string())
     );
 
     // An administrator names events for 追踪, which lines them up, each once, and follows them

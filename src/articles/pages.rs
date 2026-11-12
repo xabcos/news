@@ -662,11 +662,13 @@ struct Worth {
     height: Option<i32>,
 }
 
-/// 精选, which opens ALL: the four newest 分享 XABC and XAI wrote, newest first, then the four
-/// hottest of the last 30 days of 分享 and XABC's other lists together, ranked as 热读 is, each
-/// article once; while few are read, the newest fill the places. 解说 is among them, and its
-/// list among the page's links, while 影视, whose works it explains, is public. The handbook's
-/// chapters, kept up to date rather than news, are not.
+/// 精选, which opens ALL, in twelve cards: the four newest 分享 XABC and XAI wrote; the four
+/// hottest of the last 30 days of 分享 and XABC's other lists together, ranked as 热读 is, the
+/// newest filling the places while few are read; then the two articles that head 追踪's list
+/// and the two that head 时代's, in the lists' order. An article shows once, where it heads a
+/// list if it does, and while a list has fewer the hottest make up the twelve. 解说 is among
+/// the hottest, and its list among the page's links, while 影视, whose works it explains, is
+/// public. The handbook's chapters, kept up to date rather than news, are not.
 async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
     let commentary = state
         .digest
@@ -674,30 +676,47 @@ async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Resp
         .iter()
         .any(|topic| topic.id == "movie");
     let articles: Vec<Worth> = QueryBuilder::<Postgres>::new(
-        "WITH newest AS (
-             SELECT a.id, a.published_at FROM articles a JOIN users u ON u.id = a.author_id
-             WHERE u.email = ANY(",
+        "WITH heads AS (
+             (SELECT a.id, 1 AS part, a.published_at AS dated
+              FROM articles a JOIN users u ON u.id = a.author_id
+              WHERE u.status AND a.status = 'published' AND a.kind = 'share' AND u.email = ANY(",
     )
     .push_bind(super::xabc::SHARING)
     .push(
-        ") AND u.status AND a.status = 'published' AND a.kind = 'share'
-             ORDER BY a.published_at DESC, a.id DESC LIMIT 4)
-         SELECT a.id, a.title, a.views, a.kind,
+        ") ORDER BY a.published_at DESC, a.id DESC LIMIT 4)
+             UNION ALL
+             (SELECT a.id, 3, a.updated_at
+              FROM articles a JOIN users u ON u.id = a.author_id
+              WHERE u.status AND a.status = 'published' AND a.kind = 'event'
+              ORDER BY a.updated_at DESC, a.id DESC LIMIT 2)
+             UNION ALL
+             (SELECT a.id, 4, a.updated_at
+              FROM articles a JOIN users u ON u.id = a.author_id
+              WHERE u.status AND a.status = 'published' AND a.kind = 'person'
+              ORDER BY a.updated_at DESC, a.id DESC LIMIT 2))
+         SELECT p.id, p.title, p.views, p.kind,
                 CASE WHEN i.expires_at > now() THEN i.url END AS cover, i.width, i.height
-         FROM articles a JOIN users u ON u.id = a.author_id
-         LEFT JOIN article_images i ON i.id = a.cover
-         LEFT JOIN newest n ON n.id = a.id
-         WHERE u.status AND a.status = 'published' AND a.kind <> 'chapter'
-           AND a.published_at >= NOW() - INTERVAL '30 days'",
+         FROM (
+             SELECT a.id, a.title, a.views, a.kind, a.cover, coalesce(h.part, 2) AS part,
+                    row_number() OVER (ORDER BY h.part, h.dated DESC, h.id DESC, ",
+    )
+    .push(HOT)
+    .push(
+        " DESC, a.published_at DESC, a.id DESC) AS place
+             FROM articles a JOIN users u ON u.id = a.author_id
+             LEFT JOIN heads h ON h.id = a.id
+             WHERE u.status AND a.status = 'published' AND a.kind <> 'chapter'
+               AND (h.id IS NOT NULL OR a.published_at >= NOW() - INTERVAL '30 days')",
     )
     .push(if commentary {
         ""
     } else {
         " AND a.kind <> 'film'"
     })
-    .push(" ORDER BY n.published_at DESC NULLS LAST, ")
-    .push(HOT)
-    .push(" DESC, a.published_at DESC, a.id DESC LIMIT 8")
+    .push(
+        ") p LEFT JOIN article_images i ON i.id = p.cover
+         WHERE p.place <= 12 ORDER BY p.part, p.place",
+    )
     .build_query_as()
     .fetch_all(&state.pool)
     .await?;
