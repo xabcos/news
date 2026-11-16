@@ -4,9 +4,9 @@ const statusText = { draft: "草稿", pending: "待审", published: "已公开" 
 // What an article's kind is called: a reader's 分享 or 调研, or one of XABC's lines.
 const KINDS = { share: "分享", question: "调研", film: "解说", person: "时代", event: "追踪", product: "评测", chapter: "手册" };
 
-// 分享 in the workspace: the pen name, the reader's own articles and, for an administrator,
-// what 时代 and 追踪 write next and the articles to review. Requests share the session's abort
-// signal.
+// 分享 in the workspace: the pen name, the key an agent writes with, the reader's own articles
+// and, for an administrator, what 时代 and 追踪 write next and the articles to review. Requests
+// share the session's abort signal.
 export function createArticles(session) {
   const signal = session.controller.signal;
   let author = null;
@@ -21,6 +21,13 @@ export function createArticles(session) {
     editName();
     toast("写文章前先设置笔名");
   }, { signal });
+  // The server keeps only the key's hash: a new one shows until the page is left, and replaces
+  // the one before it.
+  for (const [id, action] of [
+    ["keyMake", () => setKey("POST")],
+    ["keyRevoke", () => setKey("DELETE")],
+    ["keyCopy", async () => { await navigator.clipboard.writeText($("#keyValue").value); toast("密钥已复制"); }],
+  ]) $(`#${id}`).addEventListener("click", () => withBusy($(`#${id}`), null, action), { signal });
   // What an administrator names joins the picked line's list, written before its own rounds: a
   // person or a company 时代 writes about, or an event 追踪 follows.
   const lines = {
@@ -58,6 +65,21 @@ export function createArticles(session) {
     if (document.visibilityState === "visible") void load().catch(reportError);
   }, { signal });
 
+  async function setKey(method) {
+    const { key } = await session.request("/api/auth/key", { method });
+    showKey(Boolean(key), key || "");
+    toast(key ? "密钥已生成，只显示这一次" : "密钥已撤销");
+    // A list asked for before this knows nothing of it: a new one takes its place.
+    await load();
+  }
+
+  function showKey(has, key) {
+    $("#keyValue").value = key;
+    $("#keyValue").placeholder = has ? "已有密钥，只在生成时显示一次" : "还没有密钥";
+    $("#keyCopy").classList.toggle("hidden", !key);
+    $("#keyRevoke").classList.toggle("hidden", !has);
+  }
+
   function editName() {
     $("#penName").value = author?.name || "";
     $("#penNameForm").classList.remove("hidden");
@@ -75,6 +97,7 @@ export function createArticles(session) {
     author = mine.author;
     $("#authorLine").textContent = author ? `笔名：${author.name}` : "写文章前先设置笔名，读者只看到笔名";
     $("#penNameButton").textContent = author ? "修改笔名" : "设置笔名";
+    showKey(mine.key, mine.key ? $("#keyValue").value : "");
     renderMine(mine.articles);
     if (review) renderReview(review);
   }
@@ -203,6 +226,8 @@ export function createArticles(session) {
       $("#reviewLists").classList.add("hidden");
       $("#penNameForm").classList.add("hidden");
       $("#askForm").classList.add("hidden");
+      $("#keyBox").open = false;
+      $("#keyValue").value = "";
       $("#authorLine").textContent = "";
       $("#articlesMessage").classList.add("hidden");
     },

@@ -6,8 +6,8 @@ use crate::{
 };
 use axum::{
     Json,
-    extract::{FromRequestParts, State},
-    http::{HeaderMap, HeaderValue, header, request::Parts},
+    extract::{FromRequestParts, OriginalUri, State},
+    http::{HeaderMap, HeaderValue, Method, header, request::Parts},
     response::{IntoResponse, Response},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -120,9 +120,42 @@ struct PublicUser<'a> {
 impl FromRequestParts<AppState> for User {
     type Rejection = AppError;
 
+    /// A key is its account as an ordinary author; an administrator's also reads the editorial
+    /// back office, which is every GET under /api/admin.
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self> {
-        authenticate(state, &parts.headers).await
+        let mut user = authenticate(state, &parts.headers).await?;
+        let office = matches!(parts.method, Method::GET | Method::HEAD)
+            && parts
+                .extensions
+                .get::<OriginalUri>()
+                .is_some_and(|uri| uri.path().starts_with("/api/admin/"));
+        if keyed(&parts.headers) && !office {
+            user.role = "user".into();
+        }
+        Ok(user)
     }
+}
+
+/// Whether a request names a key, which then is all it is known by: its cookies count for
+/// nothing, and a browser sends no key on its own, so it needs no same-origin check.
+pub(crate) fn keyed(headers: &HeaderMap) -> bool {
+    headers.contains_key(header::AUTHORIZATION)
+}
+
+/// Makes the account's key for an agent in place of the one it had, or on DELETE takes that
+/// away. Only its hash is kept, so the key is told this once.
+pub(crate) async fn key(
+    State(state): State<AppState>,
+    user: User,
+    method: Method,
+) -> Result<Json<serde_json::Value>> {
+    let key = (method == Method::POST).then(|| format!("xabc_{}", new_token()));
+    sqlx::query("UPDATE users SET key_hash = $2 WHERE id = $1")
+        .bind(user.id)
+        .bind(key.as_deref().map(hash_token))
+        .execute(&state.pool)
+        .await?;
+    Ok(Json(serde_json::json!({ "key": key })))
 }
 
 pub(crate) async fn start_email_login(
@@ -319,21 +352,30 @@ pub(crate) async fn logout(State(state): State<AppState>, headers: HeaderMap) ->
 }
 
 async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<User> {
-    let token = read_session_token(headers, &state.config.session_cookie_name)
-        .ok_or_else(|| AppError::Unauthorized("请先登录".into()))?;
-    let user = sqlx::query_as::<_, User>(
-        r#"
-        SELECT users.id, users.email, users.status, users.role, users.pro_until
-        FROM sessions
-        JOIN users ON users.id = sessions.user_id
-        WHERE sessions.token_hash = $1
-          AND sessions.expires_at > NOW()
-        "#,
-    )
-    .bind(hash_token(&token))
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::Unauthorized("登录状态已失效".into()))?;
+    let (found, token, lost) = match headers.get(header::AUTHORIZATION) {
+        Some(key) => (
+            "SELECT id, email, status, role, pro_until FROM users WHERE key_hash = $1",
+            key.to_str()
+                .ok()
+                .and_then(|key| key.strip_prefix("Bearer "))
+                .unwrap_or_default()
+                .to_owned(),
+            "密钥无效",
+        ),
+        None => (
+            "SELECT users.id, users.email, users.status, users.role, users.pro_until
+             FROM sessions JOIN users ON users.id = sessions.user_id
+             WHERE sessions.token_hash = $1 AND sessions.expires_at > NOW()",
+            read_session_token(headers, &state.config.session_cookie_name)
+                .ok_or_else(|| AppError::Unauthorized("请先登录".into()))?,
+            "登录状态已失效",
+        ),
+    };
+    let user = sqlx::query_as::<_, User>(found)
+        .bind(hash_token(&token))
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::Unauthorized(lost.into()))?;
     if !user.status {
         return Err(AppError::Forbidden("当前账户不可用".into()));
     }

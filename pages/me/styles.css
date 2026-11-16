@@ -148,6 +148,9 @@ fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
 .pen-name-form { margin-bottom: 1rem; }
 .pen-name-form .inline { flex-wrap: nowrap; }
 .pen-name-form input { max-width: 18rem; }
+/* The key an agent writes with: as wide as the key where there is room. */
+.key-box { margin-bottom: 1rem; }
+.key-box input { flex: 1 1 14rem; max-width: 30rem; }
 /* What XABC writes next: one box, the line picked above it. */
 .ask-form { display: grid; gap: .45rem; margin-bottom: 1.25rem; padding-bottom: 1.25rem; border-bottom: 1px solid var(--line); }
 .ask-head { display: flex; align-items: center; gap: .75rem; }

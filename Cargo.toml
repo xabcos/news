@@ -6,7 +6,7 @@ rust-version = "1.98"
 license = "AGPL-3.0-only"
 
 [dependencies]
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "original-uri", "query", "tokio"] }
 base64 = "0.23"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"

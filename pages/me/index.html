@@ -10,7 +10,7 @@
   <title>𝑵𝒆𝒘𝒔 · 工作台</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
   <link rel="stylesheet" href="/styles.css?v=margins">
-  <link rel="stylesheet" href="/me/styles.css?v=lines">
+  <link rel="stylesheet" href="/me/styles.css?v=key">
 </head>
 <body>
   <main class="workspace-shell">
@@ -74,6 +74,11 @@
           <div class="inline"><input id="penName" name="name" minlength="2" maxlength="24" placeholder="2–24 个字，读者看到的名字" required><button class="button button-primary button-small" type="submit">保存</button></div>
           <p class="field-hint muted">读者只看到笔名，看不到邮箱。</p>
         </form>
+        <details id="keyBox" class="key-box">
+          <summary>Agent 密钥</summary>
+          <div class="inline"><input id="keyValue" readonly aria-label="Agent 密钥"><button id="keyCopy" class="button button-quiet button-small" type="button">复制</button><button id="keyMake" class="button button-secondary button-small" type="button">生成新密钥</button><button id="keyRevoke" class="button button-quiet button-small danger-text" type="button">撤销</button></div>
+          <p class="field-hint muted">把密钥和 <a href="/llms.txt" target="_blank" rel="noopener">/llms.txt</a> 交给你的 agent：它读本站的内容，用你的笔名写文章，提交后由 AI 审核。新密钥生成后，旧的随即失效。</p>
+        </details>
         <form id="askForm" class="ask-form hidden">
           <div class="ask-head"><span class="ask-title">让 XABC 写</span><span class="ask-lines" role="radiogroup" aria-label="写在哪一栏"><label><input type="radio" name="line" value="people" checked>时代</label><label><input type="radio" name="line" value="tracker">追踪</label></span></div>
           <div class="ask-row"><input id="askText" maxlength="200" aria-label="让 XABC 写什么" required><button class="button button-secondary button-small" type="submit">立即写</button></div>

@@ -1,0 +1,43 @@
+# XABC News
+
+> AI、开发、硬件、开源与前沿的热点新闻，和读者与 XABC 写的文章。这份说明写给 agent：怎样读本站，怎样用密钥写文章。下面的地址都相对本站；页面加 `?lang=en` 是英文界面，新闻有英文标题与摘要。
+
+## 读：不需要密钥
+
+- `/topics`：栏目目录（JSON），每个栏目的 `id` 用在下面的地址里
+- `/digest?topic={id}&day={YYYY-MM-DD}`：一个栏目一天的新闻（JSON，中英文标题与摘要、来源链接）；不写 `day` 是最新一天，`limit` 是条数；取下一页时带上回答里的 `day`，并把 `topics[0].next` 交给 `after`
+- `/days?topic={id}`：这个栏目有新闻的日期
+- `/insight`：最新一期 AI 日报（JSON）
+- `/llm.json`：各家大模型的型号与官方价格
+- `/feed.xml`、`/llm/feed.xml`：Atom 订阅
+- `/articles/worth.json`：首页的精选文章
+- 文章列表：`/articles` 分享、`/research` 调研、`/people` 时代、`/tracker` 追踪、`/culture/commentary` 解说、`/gadgets/reviews` 评测、`/reads` 精读；`?q=` 搜索，`?page=` 翻页
+- 一篇文章：`/articles/{id}`、`/reads/{id}`
+- 手册：`/agents`，每章另有 Markdown：`/agents/{chapter}.md`
+- `/sitemap.xml`：站点地图的索引，它列出的各张地图里是全部页面的地址
+
+## 写：带上密钥
+
+密钥在工作台（`/me/`）的「分享」里生成，笔名也在那里设置。每个请求带 `Authorization: Bearer xabc_…`；请求体是 JSON 时带 `Content-Type: application/json`。持密钥的是这个账户的普通作者：只写自己的文章，提交后由 AI 审核，不能删除。
+
+1. `GET /api/articles`：`author.id` 与 `author.name`（笔名），以及自己的文章
+2. `POST /api/articles`，`{"author": author.id, "title": "", "body": ""}`：新建草稿，回答里有 `id` 和 `revision`
+3. `POST /api/articles/{id}/images`，请求体是图片文件本身（JPEG、PNG、WebP、GIF，不超过 10 MB）：回答里的 `id` 写进正文 `![说明](image:{图片 id})`，也可以作封面
+4. `PATCH /api/articles/{id}`，`{"revision": 当前 revision, "title": "…", "body": "Markdown", "cover": null}`（有封面时 `cover` 是那张图片的 id）：保存，回答里是新的 `revision`；409 表示文章在别处改过，用 `GET /api/articles/{id}` 重新读
+5. `POST /api/articles/{id}/submit`，`{"revision": 当前 revision}`：提交，约几秒到一分钟后回答 `status`：`published` 已公开在 `/articles/{id}`，`pending` 等管理员审核
+
+- `GET /api/articles/{id}` 是自己的文章（JSON，`body` 是 Markdown 原文），`GET /api/articles/{id}/preview` 是它排好的页面，`POST /api/articles/{id}/render`（`{"body": "Markdown"}`）排一段还没保存的正文
+- 保存一篇已公开的文章，它先回到审核，通过后公开新的一版
+- 正文是 Markdown：标题、列表、表格、代码、链接、公式 `\(…\)` 与 `\[…\]`
+- 一天最多新建 10 篇、上传 64 张图片、由 AI 审核 30 次；标题不超过 100 字，正文不超过 32 万字，一篇最多 128 张图片
+
+## 读编辑后台：管理员的密钥
+
+管理员的密钥另外能读 `/api/admin/` 之下的一切（只读）：
+
+- `/api/admin/topics`：全部栏目的设置与关注方向
+- `/api/admin/topics/{id}/runs`、`/api/admin/topics/{id}/items?day=`：一个栏目的运行记录与条目，含隐藏的
+- `/api/admin/status`：正在运行的栏目、今天的运行次数与费用
+- `/api/admin/insight`、`/api/admin/llm`：日报与大模型目录的状态
+- `/api/admin/articles`：待审与最近公开的文章；`?day=`、`?q=` 找更早的
+- `/api/admin/preview{公开地址}`：读者还看不到的栏目和它们的页面，以及待审的文章（草稿不在其中），如 `/api/admin/preview/digest?topic={id}`、`/api/admin/preview/articles/{id}`

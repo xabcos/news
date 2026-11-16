@@ -47,6 +47,7 @@ pub(crate) fn router() -> Router<AppState> {
     .route("/sitemap.xml", get(sitemap))
     .route("/reads/sitemap/{page}", get(sitemap_page))
     .route("/robots.txt", get(robots))
+    .route("/llms.txt", get(llms))
     .layer(tower_http::compression::CompressionLayer::new())
 }
 
@@ -518,6 +519,15 @@ async fn robots(State(state): State<AppState>, headers: HeaderMap) -> Response {
             "User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /me/\nSitemap: {}\n",
             absolute(&state, "/sitemap.xml")
         )),
+        "text/plain; charset=utf-8",
+    )
+}
+
+/// What the site tells an agent: where it reads, and how it writes with a key.
+async fn llms(headers: HeaderMap) -> Response {
+    conditional(
+        &headers,
+        &Rendered::new(include_str!("../llms.txt").into()),
         "text/plain; charset=utf-8",
     )
 }

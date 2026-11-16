@@ -1,4 +1,10 @@
-use crate::{auth, digest, error::Result, insight, payment, state::AppState, topics};
+use crate::{
+    auth, digest,
+    error::{AppError, Result},
+    insight, payment,
+    state::AppState,
+    topics,
+};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Request, State},
@@ -30,6 +36,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/api/auth/email/start", post(auth::start_email_login))
         .route("/api/auth/email/consume", post(auth::consume_email_login))
         .route("/api/auth/logout", post(auth::logout))
+        .route("/api/auth/key", post(auth::key).delete(auth::key))
         .route("/api/me", get(auth::me))
         .route("/api/plans", get(payment::list_plans))
         .route(
@@ -93,6 +100,16 @@ async fn validate_origin(State(state): State<AppState>, request: Request, next: 
             Method::GET | Method::HEAD | Method::OPTIONS
         )
     {
+        // A key writes its author's articles and nothing else.
+        if auth::keyed(request.headers()) {
+            let writes = matches!(*request.method(), Method::POST | Method::PATCH)
+                && request.uri().path().starts_with("/api/articles");
+            return if writes {
+                next.run(request).await
+            } else {
+                AppError::Forbidden("密钥只能写文章".into()).into_response()
+            };
+        }
         let expected = state.config.public_base_url.origin().ascii_serialization();
         let origin = request
             .headers()

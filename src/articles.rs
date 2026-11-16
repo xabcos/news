@@ -288,12 +288,16 @@ struct Review {
     revision: i32,
 }
 
-/// The signed-in reader's pen name and articles, newest edit first; their research is 调研's.
+/// The signed-in reader's pen name, whether they have a key, and their articles, newest edit
+/// first; their research is 调研's.
 async fn mine(State(state): State<AppState>, user: User) -> Result<Json<Value>> {
-    let name: Option<String> = sqlx::query_scalar("SELECT name FROM authors WHERE user_id = $1")
-        .bind(user.id)
-        .fetch_optional(&state.pool)
-        .await?;
+    let (name, key): (Option<String>, bool) = sqlx::query_as(
+        "SELECT w.name, u.key_hash IS NOT NULL
+         FROM users u LEFT JOIN authors w ON w.user_id = u.id WHERE u.id = $1",
+    )
+    .bind(user.id)
+    .fetch_one(&state.pool)
+    .await?;
     let mut articles: Vec<Listed> = sqlx::QueryBuilder::new(LISTED)
         .push(" WHERE a.kind <> 'question' AND a.author_id = ")
         .push_bind(user.id)
@@ -308,6 +312,7 @@ async fn mine(State(state): State<AppState>, user: User) -> Result<Json<Value>> 
     Ok(Json(json!({
         "author": name.map(|name| json!({ "id": user.id, "name": name })),
         "admin": user.is_admin(),
+        "key": key,
         "articles": articles,
     })))
 }

@@ -1314,6 +1314,139 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
             .unwrap();
         assert_eq!(status(response), expected);
     }
+
+    // An agent's key is made in the workspace and is all its requests carry: no cookie, no
+    // origin. A wrong one isn't helped by a session.
+    let (chief, boss) = account(&state, "admin").await;
+    let response = send(reqwest::Method::PUT, "/api/author", &boss)
+        .json(&json!({ "name": "主编" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(status(response), 200);
+    let made: Value = send(reqwest::Method::POST, "/api/auth/key", &boss)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let key = made["key"].as_str().unwrap();
+    assert!(key.starts_with("xabc_"));
+    let agent = |method: reqwest::Method, path: &str| {
+        http.request(method, format!("{base}{path}"))
+            .bearer_auth(key)
+    };
+    let read = |path: &str| agent(reqwest::Method::GET, path);
+    let mine: Value = read("/api/articles")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        (&mine["key"], &mine["admin"]),
+        (&json!(true), &json!(false))
+    );
+    assert_eq!(mine["author"]["id"], chief);
+    let wrong = get("/api/me", &boss).bearer_auth("xabc_wrong");
+    assert_eq!(status(wrong.send().await.unwrap()), 401);
+    // A reader's key stays a reader's beside an administrator's cookies.
+    let theirs: Value = send(reqwest::Method::POST, "/api/auth/key", &reader)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let beside = get("/api/admin/articles", &boss).bearer_auth(theirs["key"].as_str().unwrap());
+    assert_eq!(status(beside.send().await.unwrap()), 403);
+
+    // An administrator's key reads the editorial back office, nested routes too, and elsewhere
+    // is an ordinary author: someone's draft, which the administrator's browser opens, isn't
+    // the key's to read or to change.
+    for path in [
+        "/api/admin/articles",
+        "/api/admin/topics",
+        "/api/admin/preview/topics",
+    ] {
+        assert_eq!(status(read(path).send().await.unwrap()), 200, "{path}");
+    }
+    let draft = format!("/api/articles/{}", Uuid::new_v4());
+    sqlx::query("INSERT INTO articles (id, author_id, title, body, excerpt) VALUES ($1::uuid, $2, '草稿', '', '')")
+        .bind(&draft["/api/articles/".len()..])
+        .bind(writer)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(status(get(&draft, &boss).send().await.unwrap()), 200);
+    assert_eq!(status(read(&draft).send().await.unwrap()), 404);
+    let change = json!({ "revision": 1, "title": "改", "body": "", "cover": null });
+    let response = agent(reqwest::Method::PATCH, &draft).json(&change);
+    assert_eq!(status(response.send().await.unwrap()), 404);
+
+    // A key changes nothing but its author's articles: no line of XABC's, no key, no pen name,
+    // and it deletes nothing.
+    for (method, path) in [
+        (reqwest::Method::POST, "/api/admin/people"),
+        (reqwest::Method::POST, "/api/auth/key"),
+        (reqwest::Method::DELETE, "/api/auth/key"),
+        (reqwest::Method::PUT, "/api/author"),
+        (reqwest::Method::DELETE, draft.as_str()),
+    ] {
+        let response = agent(method, path).send().await.unwrap();
+        assert_eq!(status(response), 403, "{path}");
+    }
+
+    // What it writes the AI reviews, though an administrator's own submit goes straight out.
+    let asked = reviews.lock().unwrap().len();
+    let written = json!({ "author": chief, "title": "来自 agent", "body": "正文" });
+    let created: Value = agent(reqwest::Method::POST, "/api/articles")
+        .json(&written)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let submitted: Value = agent(
+        reqwest::Method::POST,
+        &format!("/api/articles/{}/submit", created["id"].as_str().unwrap()),
+    )
+    .json(&json!({ "revision": created["revision"] }))
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(submitted["status"], "published");
+    assert_eq!(reviews.lock().unwrap().len(), asked + 1);
+
+    // A new key puts out the one before it, and taken away, a key opens nothing.
+    let renewed: Value = send(reqwest::Method::POST, "/api/auth/key", &boss)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(status(read("/api/me").send().await.unwrap()), 401);
+    let fresh = || {
+        http.get(format!("{base}/api/me"))
+            .bearer_auth(renewed["key"].as_str().unwrap())
+    };
+    assert_eq!(status(fresh().send().await.unwrap()), 200);
+    let gone: Value = send(reqwest::Method::DELETE, "/api/auth/key", &boss)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(gone, json!({ "key": null }));
+    assert_eq!(status(fresh().send().await.unwrap()), 401);
 }
 
 /// XABC's lines from start to finish against stand-ins for the AI service and tmpfile: a 分享
