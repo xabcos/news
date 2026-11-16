@@ -1423,7 +1423,7 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
     assert_eq!(submitted["status"], "published");
     assert_eq!(reviews.lock().unwrap().len(), asked + 1);
 
-    // What a person wrote isn't XABC's to bring up to date, an administrator's own included.
+    // What a person wrote is XABC's to bring up to date once an administrator asks, like its own.
     let listed: Value = get("/api/admin/articles", &boss)
         .send()
         .await
@@ -1436,10 +1436,7 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
         .filter(|article| article["id"] == created["id"])
         .collect();
     assert_eq!(own.len(), 1);
-    assert_eq!(own[0]["updatable"], false);
-    let asked = json!({ "question": "更新一下", "public": true, "article": created["id"] });
-    let response = send(reqwest::Method::POST, "/api/research", &boss).json(&asked);
-    assert_eq!(status(response.send().await.unwrap()), 400);
+    assert_eq!(own[0]["updatable"], true);
 
     // A new key puts out the one before it.
     let renewed: Value = send(reqwest::Method::POST, "/api/auth/key", &boss)
@@ -4267,9 +4264,9 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
             .contains("- 大家都在聊的一件事\n")
     }));
 
-    // 更新: an administrator asks XABC to bring up to date an article it wrote, leaning where
-    // they say. What they ask waits in 调研's queue, once for an article, which must be public and
-    // a 时代 profile, a research or 分享 of XABC's; the lists tell which are.
+    // 更新: an administrator asks XABC to bring an article up to date, leaning where they say.
+    // What they ask waits in 调研's queue, once for an article, which must be public and a 时代
+    // profile, a research or 分享, whoever wrote it; the lists tell which are.
     let update = |article: Uuid, request: &'static str, cookie: String| {
         answer(
             http.post(format!("{base}/api/research"))
@@ -4308,7 +4305,6 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
             .header("cookie", administrator.clone()),
     )
     .await;
-    // Every 分享 here is XABC's or XAI's.
     for article in reviewed["published"].as_array().unwrap() {
         let kind = article["kind"].as_str().unwrap();
         assert_eq!(
@@ -4464,6 +4460,27 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     let (_, body, _, cover) = shown(research).await.unwrap();
     assert_eq!(figures(&body), 1);
     assert!(cover == Some(first(&body)) && cover != Some(old));
+    // What a person wrote, without a picture, is brought up to date the same way, and takes the
+    // first picture it gains for a cover.
+    let own = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO articles (id, author_id, title, body, status, published_at)
+         VALUES ($1, $2, '站长自己写的', $3, 'published', now())",
+    )
+    .bind(own)
+    .bind(administrator_id)
+    .bind("自己写的正文，".repeat(80))
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        update(own, "补上最近的事", administrator.clone()).await.0,
+        200
+    );
+    researched().await;
+    let (title, body, revised, cover) = shown(own).await.unwrap();
+    assert_eq!((title.as_str(), revised), ("更新后的文章", 2));
+    assert_eq!(cover, Some(first(&body)));
 }
 
 /// The Codex & Claude handbook from start to finish against stand-ins for the AI service and the

@@ -34,7 +34,7 @@ export function createArticles(session) {
     await navigator.clipboard.writeText($("#keyValue").value);
     toast("密钥已复制");
   }), { signal });
-  // What an administrator asks of an article XABC wrote joins 调研's queue: XABC looks again and
+  // What an administrator asks of an article joins 调研's queue: XABC looks again and
   // brings the article up to date, leaning where the words say.
   let updating = null;
   $("#updateForm").addEventListener("submit", (event) => {

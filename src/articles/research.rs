@@ -8,8 +8,8 @@
 //! AI looks at a question before it joins the queue, and at the article, the question with it,
 //! before it goes public, as at 分享's. Pro readers and administrators may keep their articles to
 //! themselves. The words are XABC's: only an administrator edits them. An administrator's request
-//! to bring an article XABC wrote up to date (`xabc::updated`) waits in the same queue.
-use super::{Kind, Listed, Quota, check, listed, parse, take, xabc};
+//! to bring an article up to date (`xabc::updated`) waits in the same queue.
+use super::{Kind, LISTED, Listed, Quota, check, parse, take, xabc};
 use crate::{
     auth::User,
     error::{ApiJson, AppError, Result},
@@ -253,7 +253,7 @@ async fn ask(
     }
     if let Some(article) = request.article {
         let updatable = user.is_admin()
-            && listed()
+            && QueryBuilder::new(LISTED)
                 .push(" WHERE a.id = ")
                 .push_bind(article)
                 .build_query_as::<Listed>()
@@ -262,7 +262,7 @@ async fn ask(
                 .is_some_and(|article| article.updatable);
         if !updatable {
             return Err(AppError::BadRequest(
-                "XABC 只更新它写的、已公开的时代、调研和分享".into(),
+                "XABC 只更新已公开的时代、调研和分享".into(),
             ));
         }
     }
