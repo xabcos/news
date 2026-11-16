@@ -205,6 +205,7 @@ a.button { text-decoration: none; }
 .research-panel .item-row:first-child { border-top: 0; }
 .research-panel .research-asked { margin: 0; color: var(--text); font-size: 1rem; font-weight: 650; overflow-wrap: anywhere; }
 .research-asked::before { content: "问 "; color: var(--primary-strong); }
+.research-update::before { content: "更新 "; }
 .research-panel .badge { margin-right: .35rem; padding: 0 .4rem; font-size: .62rem; vertical-align: .05em; }
 .badge-pro { color: var(--primary-strong); background: var(--primary-soft); }
 .badge-free { color: var(--muted); background: var(--surface-soft); }

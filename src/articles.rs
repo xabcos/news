@@ -175,10 +175,24 @@ struct Listed {
     updated_at: DateTime<Utc>,
     published_at: Option<DateTime<Utc>>,
     kind: Kind,
+    /// Whether XABC brings it up to date when an administrator asks (`xabc::updated`).
+    updatable: bool,
 }
 
-const LISTED: &str = "SELECT a.id, a.title, w.name AS author, a.status, a.held, a.revision, a.views, a.updated_at, a.published_at, a.kind
-    FROM articles a JOIN authors w ON w.user_id = a.author_id JOIN users u ON u.id = a.author_id";
+/// Starts a query for articles as lists show them. XABC brings up to date what it wrote and is
+/// public: a 时代 profile, a research, or 分享 under its own pen names.
+fn listed() -> sqlx::QueryBuilder<sqlx::Postgres> {
+    let mut query = sqlx::QueryBuilder::new(
+        "SELECT a.id, a.title, w.name AS author, a.status, a.held, a.revision, a.views, a.updated_at,
+            a.published_at, a.kind, a.status = 'published' AND (a.kind IN ('person', 'question')
+                OR a.kind = 'share' AND u.email = ANY(",
+    );
+    query.push_bind(xabc::SHARING).push(
+        ")) AS updatable
+         FROM articles a JOIN authors w ON w.user_id = a.author_id JOIN users u ON u.id = a.author_id",
+    );
+    query
+}
 
 /// A search of 分享 or one of XABC's lists: its words, as the page shows them, and the patterns
 /// each of which an article's title or opening must hold.
@@ -298,7 +312,7 @@ async fn mine(State(state): State<AppState>, user: User) -> Result<Json<Value>> 
     .bind(user.id)
     .fetch_one(&state.pool)
     .await?;
-    let mut articles: Vec<Listed> = sqlx::QueryBuilder::new(LISTED)
+    let mut articles: Vec<Listed> = listed()
         .push(" WHERE a.kind <> 'question' AND a.author_id = ")
         .push_bind(user.id)
         .push(" ORDER BY a.updated_at DESC, a.id DESC")
@@ -717,13 +731,13 @@ async fn queue(
     Query(find): Query<Find>,
 ) -> Result<Json<Value>> {
     auth::require_admin(&user)?;
-    let pending: Vec<Listed> = sqlx::QueryBuilder::new(LISTED)
+    let pending: Vec<Listed> = listed()
         .push(" WHERE a.status = 'pending' AND u.status ORDER BY a.updated_at, a.id")
         .build_query_as()
         .fetch_all(&state.pool)
         .await?;
     let search = Search::new(find.q.as_deref());
-    let mut query = sqlx::QueryBuilder::new(LISTED);
+    let mut query = listed();
     query.push(" WHERE a.status = 'published' AND u.status");
     if let Some(day) = find.day {
         query

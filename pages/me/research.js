@@ -3,7 +3,8 @@ import { $, node, button, toast, confirmDelete, formatTime } from "./ui.js";
 const statusText = { draft: "不公开", pending: "待审", published: "已公开" };
 
 // 调研 in the workspace: the reader's questions in the queue and the articles written for them,
-// or for an administrator everyone's, with who asked, Pro or Free, and what isn't public. Pro
+// or for an administrator everyone's, with who asked, Pro or Free, and what isn't public, and
+// the articles XABC was asked to bring up to date, each with what was asked of it. Pro
 // readers switch whether their own go public; the words are XABC's, which only an administrator
 // edits. The panel shows only while it has something, and looks again every minute while a
 // question waits or is written.
@@ -54,7 +55,7 @@ export function createResearch(session) {
     meta.append(...badges(asked.pro, ...(asked.public ? [] : [badge("不公开", "badge-private")])),
       [...asker(asked), state, `提交于 ${formatTime(asked.asked_at, session.timezone)}`].join(" · "));
     const actions = node("div", "item-actions");
-    if (data.private && asked.mine && !asked.failed) actions.append(publicity(asked.id, asked.public));
+    if (data.private && asked.mine && !asked.failed && !asked.updating) actions.append(publicity(asked.id, asked.public));
     // A reader takes back what waits or clears what failed; an administrator removes any.
     if (session.admin || asked.failed || !asked.started_at) {
       actions.append(button(asked.failed ? "清除" : asked.mine ? "取消" : "删除", async () => {
@@ -62,7 +63,9 @@ export function createResearch(session) {
         await load();
       }, "button-quiet danger-text"));
     }
-    row.append(node("p", "research-asked", asked.question), meta, actions);
+    row.append(...(asked.updating
+      ? [node("p", "research-asked research-update", asked.updating), node("p", "item-meta muted", asked.question)]
+      : [node("p", "research-asked", asked.question)]), meta, actions);
     return row;
   }
 

@@ -10,7 +10,7 @@
   <title>𝑵𝒆𝒘𝒔 · 工作台</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
   <link rel="stylesheet" href="/styles.css?v=margins">
-  <link rel="stylesheet" href="/me/styles.css?v=key">
+  <link rel="stylesheet" href="/me/styles.css?v=update">
 </head>
 <body>
   <main class="workspace-shell">
@@ -165,6 +165,13 @@
       <div class="panel-heading"><h3 id="ordersTitle">最近订单</h3><button id="refreshOrdersButton" class="button button-quiet button-small" type="button">刷新</button></div>
       <p id="ordersMessage" class="muted small" role="status"></p><ul id="ordersList" class="orders-list"></ul>
     </section>
+  </dialog>
+  <dialog id="updateDialog" class="dialog-card" aria-labelledby="updateHeading">
+    <form id="updateForm">
+      <h2 id="updateHeading">让 XABC 更新</h2><p id="updateTitle" class="muted"></p>
+      <div class="field"><textarea id="updateRequest" rows="4" maxlength="1000" aria-label="这次侧重什么" placeholder="这次侧重什么，例如：补上他在 CUDA 之前的经历" required></textarea><p class="field-hint muted">XABC 重新检索后在原文上改写，封面和配图按需要更新；写好后直接替换线上的这一篇。</p></div>
+      <div class="dialog-actions"><button class="button button-quiet" type="button" data-close-dialog>取消</button><button class="button button-primary" type="submit">更新</button></div>
+    </form>
   </dialog>
   <dialog id="confirmDialog" class="dialog-card confirm-dialog" role="alertdialog" aria-labelledby="confirmTitle" aria-describedby="confirmMessage">
     <h2 id="confirmTitle"></h2><p id="confirmMessage" class="muted"></p>

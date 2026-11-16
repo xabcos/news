@@ -475,6 +475,78 @@ pub(super) async fn researched(state: &AppState, id: Uuid, question: &str) -> Re
     Ok(article)
 }
 
+/// A public article brought up to date as an administrator asks, leaning where they say: both
+/// scouts read it with the request and look for what it lacks, and the writer revises it as it
+/// stands. With the revision read, for `revised` to save over, and its cover: its figures change
+/// as it needs, a 时代 profile keeps its comic and draws no cover, and elsewhere a cover the
+/// writer asks for is drawn.
+pub(super) async fn updated(
+    state: &AppState,
+    id: Uuid,
+    request: &str,
+) -> Result<(i32, Option<Uuid>, Finished)> {
+    type Due = (String, String, i32, Option<Uuid>, Kind, Option<String>);
+    let (title, body, revision, cover, kind, subject): Due = sqlx::query_as(
+        "SELECT title, body, revision, cover, kind, subject FROM articles
+         WHERE id = $1 AND status = 'published'",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| AppError::Conflict("文章已经不在线上".into()))?;
+    let today = Utc::now()
+        .with_timezone(&state.config.timezone)
+        .date_naive();
+    let (text, kept) = figures(&body);
+    let subject = subject.unwrap_or_default();
+    // A research answers its reader's question, which the page shows above it.
+    let question = if kind == Kind::Question {
+        format!("读者的问题：{subject}\n")
+    } else {
+        String::new()
+    };
+    let input = format!(
+        "今天是 {today}。\n管理员的要求：{request}\n{question}现有全文：\n标题：{title}\n\n{text}"
+    );
+    let mut found = look(state, Line::Share, LOOKING, &input, &HashSet::new()).await;
+    if found.finds.is_empty() {
+        return Err(AppError::Internal("两路检索都没有查到资料".into()));
+    }
+    // The article's links were checked when it went out.
+    found.known.extend(linked(&body));
+    let profile = kind == Kind::Person;
+    let (shown, note) = if profile {
+        people::shown(&kept)
+    } else {
+        Default::default()
+    };
+    let material = format!("{input}\n\n{note}新的线索：\n{}", listed(&found.finds));
+    let mut drafted = draft(state, &format!("{UPDATING}{KEEPING}"), &material).await?;
+    if profile {
+        drafted = people::comic(drafted, shown, subject.starts_with(people::COMPANY));
+    }
+    found.usage += drafted.usage;
+    found.known.extend(drafted.cited);
+    let article = finish(state, drafted.article, found.known, &kept, !profile).await?;
+    // A cover the writer asked for and got, or else the cover of its own the article has; one
+    // that was the body's first picture follows the body, as when the article was saved.
+    let own = cover.filter(|cover| !super::pictures(&body, None).contains(cover));
+    let cover = article
+        .cover
+        .as_ref()
+        .map(|cover| cover.id)
+        .or(own)
+        .or_else(|| super::pictures(&article.body, None).first().copied());
+    log(
+        id,
+        "XABC brought an article up to date as asked",
+        request,
+        &article,
+        found.usage,
+    );
+    Ok((revision, cover, article))
+}
+
 /// What a reader's question really asks, as the writing model reads it, looking up what it
 /// doesn't know; with the pages it cited and what that cost.
 async fn understood(state: &AppState, asked: &str) -> Result<(String, Vec<String>, Usage)> {
@@ -1550,10 +1622,23 @@ pub(super) async fn revise(
     cover: Option<Uuid>,
     article: &Finished,
 ) -> Result<()> {
-    let content = checked(&article.title, &article.body, cover)?;
     let mut tx = state.pool.begin().await?;
+    revised(&mut tx, id, revision, cover, article).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// `revise` within a transaction, which whoever opened it commits.
+pub(super) async fn revised(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    id: Uuid,
+    revision: i32,
+    cover: Option<Uuid>,
+    article: &Finished,
+) -> Result<()> {
+    let content = checked(&article.title, &article.body, cover)?;
     // The pictures go in first: the cover may be one of them.
-    keep(&mut tx, id, article.pictures.iter().chain(&article.cover)).await?;
+    keep(tx, id, article.pictures.iter().chain(&article.cover)).await?;
     let saved = sqlx::query(
         "UPDATE articles SET title = $3, body = $4, excerpt = $5, cover = $6,
            revision = revision + 1, updated_at = now()
@@ -1565,13 +1650,12 @@ pub(super) async fn revise(
     .bind(&content.body)
     .bind(&content.excerpt)
     .bind(content.cover)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?
     .rows_affected();
     if saved == 0 {
         return Err(AppError::Conflict("文章刚被改过".into()));
     }
-    tx.commit().await?;
     Ok(())
 }
 
@@ -1641,6 +1725,23 @@ const GUIDE: &str = "你是 XABC，在 xabcnews.com 的「调研」栏目写文�
 - 以一手资料为准，事实、数字和引语都要查得到出处，写明对应的版本或日期；第三方的说法写明出自谁，说法不一致时讲清各方和差别；他问到的事查不到公开、可靠的答案时，简短说明没有公开或无法证实，不猜。
 - 越详细越好，篇幅不限，但每一段都要有信息量，不为凑字数重复或空谈。
 - 最后一节是「参考来源」：用列表列出正文用到的资料，每条是指向原始页面的 Markdown 链接，后面用一句话说明它是什么。
+";
+
+/// What both scouts look up for an article an administrator asks XABC to bring up to date: the
+/// same for both, which look through what their tools reach.
+const LOOKING: &str = "你是 XABC 的资料编辑。管理员要 XABC 更新 xabcnews.com 上一篇已经发表的文章，输入里有他的要求和文章的现有全文；有读者的问题时，文章是在回答它。请你围绕管理员的要求，用 web_search 检索全网，能用 x_search 时也在 X 上找，把更新用得上、现有全文里还没有的资料查全、查准：要求侧重的方面优先，也找最近的新进展和需要更正的地方；一手资料优先（官方网站与文档、原始论文与数据、当事人的说法），也找别人的实际经验、评测、讨论和不同看法。最可靠、最有价值的排在前面，不为凑数重复，也不偏到别的主题；每条线索是一份具体的资料，比如一页文档、一篇文章、一个仓库或一条帖子。
+";
+
+/// How the writer brings an article up to date as an administrator asks, whatever line wrote it:
+/// the article shows what kind of writing it is.
+const UPDATING: &str = "你是 XABC。管理员要你更新 xabcnews.com 上一篇已经发表的文章：下面是他的要求、文章的现有全文，以及两位编辑围绕这个要求从 X 和全网新找来的线索；有读者的问题时，文章是在回答它。多用 web_search 把要求侧重的方面查透、查准，然后在现有全文上把它更新好。
+怎么写：
+- 现有全文是底稿，更新只增不减：管理员要侧重的方面写深、写足，文章因此变长是应该的；其余内容全部留着，每一节的事实、细节、数字、引语、小故事和链接都在，不为突出侧重而删减、压缩或合并，只改掉过时或不准确的地方。
+- 现有全文里固定的小节，比如「你可能不知道」「轶事与个人生活」「近况」「参考来源」，保留原来的名字和位置，新的内容该进哪一节就写进哪一节；其他小节可以调整顺序，也可以增设小节安放新内容。
+- 更新后还是同一种文章、讲同一个对象：体裁、读者和口吻照旧；有读者的问题时，仍然完整地回答它。标题在文章的重心变了时才改，改了也仍然点明原来的对象。
+- 事实、数字和引语都要查得到出处，写明日期；新内容融进正文，不写「本次更新」「更新说明」这类话。
+- 交回更新后的完整全文，不是修改清单。
+- cover：管理员要换封面，或者文章的重心变了、封面该跟着变时，写新封面的画面描述；否则留空，沿用原来的封面。
 ";
 
 /// How a revision treats the figures the article shows (`figures`), after the line's words on

@@ -1,12 +1,12 @@
-import { $, node, withBusy, toast, reportError, confirmDelete, formatTime } from "./ui.js";
+import { $, node, withBusy, toast, reportError, confirmDelete, formatTime, openDialog, closeDialog } from "./ui.js";
 
 const statusText = { draft: "草稿", pending: "待审", published: "已公开" };
 // What an article's kind is called: a reader's 分享 or 调研, or one of XABC's lines.
 const KINDS = { share: "分享", question: "调研", film: "解说", person: "时代", event: "追踪", product: "评测", chapter: "手册" };
 
 // 分享 in the workspace: the pen name, the key an agent writes with, the reader's own articles
-// and, for an administrator, what 时代 and 追踪 write next and the articles to review. Requests
-// share the session's abort signal.
+// and, for an administrator, what 时代 and 追踪 write next, the articles to review and what
+// XABC brings up to date when asked. Requests share the session's abort signal.
 export function createArticles(session) {
   const signal = session.controller.signal;
   let author = null;
@@ -34,6 +34,20 @@ export function createArticles(session) {
     await navigator.clipboard.writeText($("#keyValue").value);
     toast("密钥已复制");
   }), { signal });
+  // What an administrator asks of an article XABC wrote joins 调研's queue: XABC looks again and
+  // brings the article up to date, leaning where the words say.
+  let updating = null;
+  $("#updateForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    void withBusy($("#updateForm [type=submit]"), "提交中…", async () => {
+      const { ahead, now } = await session.request("/api/research", {
+        method: "POST", body: { question: $("#updateRequest").value, public: true, article: updating },
+      });
+      closeDialog($("#updateDialog"));
+      toast(now ? "XABC 马上开始更新" : `已排进调研的队列，前面还有 ${ahead} 个`);
+      await session.research.load();
+    });
+  }, { signal });
   // What an administrator names joins the picked line's list, written before its own rounds: a
   // person or a company 时代 writes about, or an event 追踪 follows.
   const lines = {
@@ -135,6 +149,7 @@ export function createArticles(session) {
         title.rel = "noopener";
         const actions = node("div", "item-actions");
         actions.append(link("编辑", `/me/write.html?id=${encodeURIComponent(article.id)}`));
+        if (article.updatable) actions.append(update(article));
         if (removable) actions.append(removal(article));
         row.append(title, node("p", "item-meta muted", `${article.author} · ${extra(article)}`), actions);
         return row;
@@ -151,6 +166,18 @@ export function createArticles(session) {
       ...(pending.length ? [section(`待审（${pending.length}）`, pending, (article) => [`更新于 ${formatTime(article.updated_at, session.timezone)}`, article.held].filter(Boolean).join(" · "), true)] : []),
       recent,
     );
+  }
+
+  function update(article) {
+    const ask = node("button", "button button-quiet button-small", "更新");
+    ask.type = "button";
+    ask.addEventListener("click", () => {
+      updating = article.id;
+      $("#updateTitle").textContent = article.title;
+      $("#updateRequest").value = "";
+      openDialog($("#updateDialog"));
+    });
+    return ask;
   }
 
   // Deleting can't be undone. An article of XABC's lines waits for a ❤️ only once it was taken

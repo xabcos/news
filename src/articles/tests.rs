@@ -1423,6 +1423,24 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
     assert_eq!(submitted["status"], "published");
     assert_eq!(reviews.lock().unwrap().len(), asked + 1);
 
+    // What a person wrote isn't XABC's to bring up to date, an administrator's own included.
+    let listed: Value = get("/api/admin/articles", &boss)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let own = listed["published"].as_array().unwrap().iter();
+    let own: Vec<_> = own
+        .filter(|article| article["id"] == created["id"])
+        .collect();
+    assert_eq!(own.len(), 1);
+    assert_eq!(own[0]["updatable"], false);
+    let asked = json!({ "question": "更新一下", "public": true, "article": created["id"] });
+    let response = send(reqwest::Method::POST, "/api/research", &boss).json(&asked);
+    assert_eq!(status(response.send().await.unwrap()), 400);
+
     // A new key puts out the one before it.
     let renewed: Value = send(reqwest::Method::POST, "/api/auth/key", &boss)
         .send()
@@ -1523,6 +1541,36 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                     async move {
                         asked.lock().unwrap().push(request.clone());
                         let instructions = request["instructions"].as_str().unwrap_or_default();
+                        // 更新: the writer hands the article back under a new title, with every
+                        // figure it showed and one more, and a new cover only when asked for one;
+                        // asked to replace the figures it keeps none, and told to wait it does.
+                        if request["text"]["format"]["name"] == "article"
+                            && instructions.contains("管理员要你更新")
+                        {
+                            let material = request["input"][0]["content"].as_str().unwrap();
+                            if material.contains("等一等") {
+                                gate.acquire().await.unwrap().forget();
+                            }
+                            let kept: String = (1..)
+                                .take_while(|number| {
+                                    !material.contains("换图")
+                                        && material.contains(&format!("![](keep:{number})"))
+                                })
+                                .map(|number| format!("![](keep:{number})\n\n"))
+                                .collect();
+                            return (
+                                StatusCode::OK,
+                                Json(reply(
+                                    json!({
+                                        "title": "更新后的文章",
+                                        "body": format!("{}\n\n{kept}![](img:1)\n\n看[工具](https://known.example/tool)。", "更新后的内容，".repeat(80)),
+                                        "pictures": [{ "page": "", "prompt": "一幅新图", "caption": "新图" }],
+                                        "cover": if material.contains("换封面") { "封面插画" } else { "" },
+                                    }),
+                                    "https://cited.example/writer",
+                                )),
+                            );
+                        }
                         let film = instructions.contains("文娱 · 解说");
                         if request["text"]["format"]["name"] == "finds" && film {
                             return (
@@ -2705,7 +2753,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     assert_eq!(drawings_log.lock().unwrap().len(), drawn_before);
     assert!(
         writing(&asked_log.lock().unwrap())
-            .contains("其中 ![](keep:2) 是四格漫画，留在「你可能不知道」后面，不再画新的。")
+            .contains("其中 ![](keep:2) 是四格漫画，留在「你可能不知道」后面，不再画新的；新的 AI 插图都放在它后面。")
     );
     let (_, _, body, after, _) = profiled(other).await.unwrap();
     assert!(before.is_some() && after.is_some() && after != before);
@@ -4218,6 +4266,204 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
             .unwrap()
             .contains("- 大家都在聊的一件事\n")
     }));
+
+    // 更新: an administrator asks XABC to bring up to date an article it wrote, leaning where
+    // they say. What they ask waits in 调研's queue, once for an article, which must be public and
+    // a 时代 profile, a research or 分享 of XABC's; the lists tell which are.
+    let update = |article: Uuid, request: &'static str, cookie: String| {
+        answer(
+            http.post(format!("{base}/api/research"))
+                .header("cookie", cookie)
+                .header("origin", &origin)
+                .json(&json!({ "question": request, "public": true, "article": article })),
+        )
+    };
+    let shown = |id: Uuid| {
+        sqlx::query_as::<_, (String, String, i32, Option<Uuid>)>(
+            "SELECT title, body, revision, cover FROM articles WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_one(&state.pool)
+    };
+    // A 解说, and a 分享 of XABC's with a cover of its own, drawn for it.
+    let film: Uuid = sqlx::query_scalar(
+        "SELECT id FROM articles WHERE kind = 'film' AND status = 'published'
+         ORDER BY published_at, id LIMIT 1",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
+    let share: Uuid = sqlx::query_scalar(
+        "SELECT a.id FROM articles a JOIN users u ON u.id = a.author_id
+         WHERE a.kind = 'share' AND a.status = 'published' AND u.email = $1
+           AND position(a.cover::text IN a.body) = 0
+         ORDER BY a.published_at, a.id LIMIT 1",
+    )
+    .bind(xabc::EMAIL)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
+    let (_, reviewed) = answer(
+        http.get(format!("{base}/api/admin/articles"))
+            .header("cookie", administrator.clone()),
+    )
+    .await;
+    // Every 分享 here is XABC's or XAI's.
+    for article in reviewed["published"].as_array().unwrap() {
+        let kind = article["kind"].as_str().unwrap();
+        assert_eq!(
+            article["updatable"],
+            matches!(kind, "person" | "question" | "share"),
+            "{article}"
+        );
+    }
+    assert_eq!(update(film, "多写结局", administrator.clone()).await.0, 400);
+    assert_eq!(update(firm, "多写芯片", free_cookie.clone()).await.0, 400);
+    let (before, body, revision, cover) = shown(firm).await.unwrap();
+    assert_eq!(
+        update(firm, "多写它的芯片", administrator.clone()).await.0,
+        200
+    );
+    assert_eq!(update(firm, "再来一次", administrator.clone()).await.0, 409);
+    let (_, queued) = listed(administrator.clone()).await;
+    let waiting: Vec<_> = queued["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|asked| !asked["updating"].is_null())
+        .map(|asked| (asked["updating"].clone(), asked["question"].clone()))
+        .collect();
+    assert_eq!(waiting, [(json!(before), json!("多写它的芯片"))]);
+    // Both scouts and the writer read what is asked with the article as it stands. A profile
+    // keeps its comic and the picture it has for a cover, and shows the figure the writer adds.
+    let figures = |body: &str| body.matches("](image:").count();
+    let asked_before = asked_log.lock().unwrap().len();
+    researched().await;
+    let (title, updated, revised, kept) = shown(firm).await.unwrap();
+    assert_eq!(
+        (title.as_str(), revised, kept, figures(&updated)),
+        ("更新后的文章", revision + 1, cover, figures(&body) + 1)
+    );
+    let requests = asked_log.lock().unwrap()[asked_before..].to_vec();
+    let asks = format!("管理员的要求：多写它的芯片\n现有全文：\n标题：{before}\n\n");
+    assert_eq!(requests.len(), 3);
+    for request in &requests {
+        let input = request["input"][0]["content"].as_str().unwrap();
+        assert!(input.contains(&asks), "{input}");
+    }
+    let material = writing(&requests);
+    assert!(
+        material.contains("其中 ![](keep:1) 是四格漫画，留在「你可能不知道」后面，不再画新的；新的 AI 插图都放在它后面。")
+            && material.contains("新的线索：\n1.【"),
+        "{material}"
+    );
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM research WHERE article IS NOT NULL")
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+    // A research hears its reader's question again, and takes the cover the writer asks for.
+    let research = Uuid::parse_str(by_admin["id"].as_str().unwrap()).unwrap();
+    let (_, _, _, cover) = shown(research).await.unwrap();
+    assert_eq!(
+        update(research, "换封面，多写原理", administrator.clone())
+            .await
+            .0,
+        200
+    );
+    researched().await;
+    let (title, _, _, redrawn) = shown(research).await.unwrap();
+    assert_eq!(title, "更新后的文章");
+    assert!(redrawn.is_some() && redrawn != cover);
+    assert!(
+        writing(&asked_log.lock().unwrap())
+            .contains("管理员的要求：换封面，多写原理\n读者的问题：站长的问题\n现有全文：")
+    );
+    // 分享 of XABC's keeps the cover it has when the writer asks for none. Taken back while what
+    // was asked of it waits, it isn't touched: the request stays, failed, until it is cleared.
+    let (_, _, revision, cover) = shown(share).await.unwrap();
+    assert_eq!(
+        update(share, "补上最新的版本", administrator.clone())
+            .await
+            .0,
+        200
+    );
+    researched().await;
+    let (_, _, revised, kept) = shown(share).await.unwrap();
+    assert_eq!((revised, kept), (revision + 1, cover));
+    let (_, again) = update(share, "再补一点", administrator.clone()).await;
+    sqlx::query("UPDATE articles SET status = 'pending' WHERE id = $1")
+        .bind(share)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    researched().await;
+    assert_eq!(shown(share).await.unwrap().2, revised);
+    let failed: bool = sqlx::query_scalar("SELECT failed FROM research WHERE id = $1::uuid")
+        .bind(again["id"].as_str().unwrap())
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert!(failed);
+    // Cleared, the article may be asked about again. A request an administrator takes back while
+    // XABC writes it changes nothing.
+    let taken = |asked: Value| {
+        http.delete(format!(
+            "{base}/api/research/{}",
+            asked["id"].as_str().unwrap()
+        ))
+        .header("cookie", administrator.clone())
+        .header("origin", &origin)
+        .send()
+    };
+    assert_eq!(taken(again).await.unwrap().status(), 204);
+    sqlx::query("UPDATE articles SET status = 'published' WHERE id = $1")
+        .bind(share)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    let (_, held) = update(share, "等一等再写", administrator.clone()).await;
+    research::tick(&state).await;
+    let writes = || {
+        let asked = asked_log.lock().unwrap();
+        let held = |request: &Value| {
+            request["text"]["format"]["name"] == "article"
+                && request["input"][0]["content"]
+                    .as_str()
+                    .is_some_and(|input| input.contains("等一等再写"))
+        };
+        asked.iter().any(held)
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        while !writes() {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(taken(held).await.unwrap().status(), 204);
+    gate.add_permits(1);
+    idle().await;
+    assert_eq!(shown(share).await.unwrap().2, revised);
+    // A cover that was the body's first picture follows the body: with its figures replaced, the
+    // article shows the first of the new ones.
+    let (_, body, _, _) = shown(research).await.unwrap();
+    let first = |body: &str| -> Uuid {
+        let (_, picture) = body.split_once("](image:").unwrap();
+        picture[..36].parse().unwrap()
+    };
+    let old = first(&body);
+    sqlx::query("UPDATE articles SET cover = $2 WHERE id = $1")
+        .bind(research)
+        .bind(old)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(update(research, "换图", administrator.clone()).await.0, 200);
+    researched().await;
+    let (_, body, _, cover) = shown(research).await.unwrap();
+    assert_eq!(figures(&body), 1);
+    assert!(cover == Some(first(&body)) && cover != Some(old));
 }
 
 /// The Codex & Claude handbook from start to finish against stand-ins for the AI service and the

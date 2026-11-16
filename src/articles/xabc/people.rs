@@ -38,7 +38,7 @@ use uuid::Uuid;
 /// A profile is brought up to date once this many days have passed since it last was.
 const REVISE_AFTER_DAYS: i32 = 3;
 /// A company's key starts so, which tells it from a person's.
-const COMPANY: &str = "company:";
+pub(super) const COMPANY: &str = "company:";
 /// Where X keeps the pictures of its accounts.
 const PROFILE_IMAGES: &str = "https://pbs.twimg.com/profile_images/";
 /// The scouts hear of this many of the subjects a round passes over, the latest first, so their
@@ -162,10 +162,10 @@ async fn profile(
 ) -> Result<Uuid> {
     let finds = &found.finds;
     let name = finds[0].1.subject.trim();
-    let (kind, prefix, writing, style) = if company {
-        ("企业", COMPANY, COMPANY_WRITING, format!("{COMIC}{NOBODY}"))
+    let (kind, prefix, writing) = if company {
+        ("企业", COMPANY, COMPANY_WRITING)
     } else {
-        ("人物", "", WRITING, COMIC.to_owned())
+        ("人物", "", WRITING)
     };
     let subject = format!("{prefix}{}", key(name));
     let zone = state.config.timezone;
@@ -193,7 +193,7 @@ async fn profile(
     };
     let Some(due) = due else {
         let material = format!("{material}线索：\n{}", listed(finds));
-        let drafted = comic(draft(state, writing, &material).await?, None, &style);
+        let drafted = comic(draft(state, writing, &material).await?, None, company);
         found.usage += drafted.usage;
         found.known.extend(drafted.cited);
         let mut article = finish(state, drafted.article, found.known, &[], false).await?;
@@ -218,15 +218,7 @@ async fn profile(
     // The profile's links were checked when it went out.
     found.known.extend(linked(&due.body));
     let (body, kept) = figures(&due.body);
-    // The comic the profile shows, which the writer hears to keep: the first picture drawn for
-    // it, since the comic follows 「你可能不知道」 and illustrations come after it.
-    let shown = kept
-        .iter()
-        .position(|figure| drawn(figure))
-        .map(|index| index + 1);
-    let note = shown.map_or_else(String::new, |number| {
-        format!("其中 ![]({KEPT}{number}) 是四格漫画，留在「你可能不知道」后面，不再画新的。\n\n")
-    });
+    let (shown, note) = shown(&kept);
     let last = due.updated_at.with_timezone(&zone).format("%Y-%m-%d");
     let material = format!(
         "{material}这篇{kind}介绍上次更新于 {last}，现有全文：\n标题：{}\n\n{body}\n\n{note}最近的线索：\n{}",
@@ -236,7 +228,7 @@ async fn profile(
     let drafted = comic(
         draft(state, &format!("{writing}{REVISING}{KEEPING}"), &material).await?,
         shown,
-        &style,
+        company,
     );
     found.usage += drafted.usage;
     found.known.extend(drafted.cited);
@@ -264,12 +256,31 @@ async fn profile(
     Ok(due.id)
 }
 
+/// The comic a profile shows among the figures a revision keeps, by its number, and what the
+/// writer hears to keep it: the first picture drawn for the profile, since the comic follows
+/// 「你可能不知道」 and illustrations come after it.
+pub(super) fn shown(kept: &[String]) -> (Option<usize>, String) {
+    let shown = kept
+        .iter()
+        .position(|figure| drawn(figure))
+        .map(|index| index + 1);
+    let note = shown.map_or_else(String::new, |number| {
+        format!("其中 ![]({KEPT}{number}) 是四格漫画，留在「你可能不知道」后面，不再画新的；新的 AI 插图都放在它后面。\n\n")
+    });
+    (shown, note)
+}
+
 /// A draft whose pictures come from pages or are drawn as 分享's are, but for its comic: the
-/// first picture the body places whose prompt starts with `COMIC_MARK`, drawn in 时代's style
-/// (`style`). No other is drawn, nor any while the body keeps the comic the profile shows
-/// (`shown`, its number among the figures kept). The body is read as `finish` will place its
-/// pictures, without search marks.
-fn comic(mut drafted: Drafted, shown: Option<usize>, style: &str) -> Drafted {
+/// first picture the body places whose prompt starts with `COMIC_MARK`, drawn in 时代's style,
+/// a company's without anyone in particular. No other comic is drawn, nor any while the body
+/// keeps the comic the profile shows (`shown`, its number among the figures kept). The body is
+/// read as `finish` will place its pictures, without search marks.
+pub(super) fn comic(mut drafted: Drafted, shown: Option<usize>, company: bool) -> Drafted {
+    let style = if company {
+        format!("{COMIC}{NOBODY}")
+    } else {
+        COMIC.to_owned()
+    };
     let article = &mut drafted.article;
     let body = uncited(&article.body);
     let keeps = shown.is_some_and(|number| {
@@ -697,7 +708,7 @@ mod tests {
                 cited: Vec::new(),
                 usage: Usage::default(),
             };
-            comic(drafted, shown, COMIC)
+            comic(drafted, shown, false)
                 .article
                 .pictures
                 .into_iter()

@@ -7,8 +7,9 @@
 //! taken back before XABC starts on it, or one it could not write, gives its allowance back. The
 //! AI looks at a question before it joins the queue, and at the article, the question with it,
 //! before it goes public, as at 分享's. Pro readers and administrators may keep their articles to
-//! themselves. The words are XABC's: only an administrator edits them.
-use super::{Kind, Quota, check, parse, take, xabc};
+//! themselves. The words are XABC's: only an administrator edits them. An administrator's request
+//! to bring an article XABC wrote up to date (`xabc::updated`) waits in the same queue.
+use super::{Kind, Listed, Quota, check, listed, parse, take, xabc};
 use crate::{
     auth::User,
     error::{ApiJson, AppError, Result},
@@ -45,12 +46,14 @@ pub(super) fn router() -> Router<AppState> {
         .route("/api/research/{id}", patch(publicize).delete(remove))
 }
 
-/// A question, and whether its article goes public: only Pro may say no.
+/// A question, and whether its article goes public: only Pro may say no. With `article`, what
+/// an administrator asks of that article as XABC brings it up to date.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Asked {
     question: String,
     public: bool,
+    article: Option<Uuid>,
 }
 
 #[derive(Deserialize)]
@@ -60,11 +63,13 @@ struct Public {
 }
 
 /// A question waiting, being written or failed, whether the reader asked it, and how it stands
-/// while it waits (`standing`).
+/// while it waits (`standing`); for a request to bring an article up to date, that article's
+/// title.
 #[derive(FromRow, Serialize)]
 struct Queued {
     id: Uuid,
     question: String,
+    updating: Option<String>,
     author: String,
     mine: bool,
     pro: bool,
@@ -157,7 +162,9 @@ fn allowance(state: &AppState, user: &User, private: bool) -> Option<u8> {
 async fn list(State(state): State<AppState>, user: User) -> Result<Json<Value>> {
     let admin = user.is_admin();
     let (written, writers) = (writing(&state), state.config.max_concurrent_research);
-    let mut query = QueryBuilder::new("SELECT r.id, r.question, w.name AS author, r.author_id = ");
+    let mut query = QueryBuilder::new(
+        "SELECT r.id, r.question, a.title AS updating, w.name AS author, r.author_id = ",
+    );
     query
         .push_bind(user.id)
         .push(" AS mine, r.pro, r.public, r.asked_at, r.started_at, r.id = ANY(")
@@ -165,7 +172,10 @@ async fn list(State(state): State<AppState>, user: User) -> Result<Json<Value>> 
         .push(") AS writing, r.failed, ");
     standing(&mut query, written.len(), writers);
     // Only what waits stands somewhere: what is being written, or failed, waits for nothing.
-    query.push(" FROM research r JOIN authors w ON w.user_id = r.author_id LEFT JOIN (");
+    query.push(
+        " FROM research r JOIN authors w ON w.user_id = r.author_id
+          LEFT JOIN articles a ON a.id = r.article LEFT JOIN (",
+    );
     queue(&mut query, &written);
     let queue: Vec<Queued> = query
         .push(") q ON q.id = r.id WHERE r.author_id = ")
@@ -216,7 +226,8 @@ async fn list(State(state): State<AppState>, user: User) -> Result<Json<Value>> 
 
 /// Puts a reader's question in the queue, against their allowance for the day, unless the AI
 /// finds pornography, gambling, drugs or political risk in it; tells how it stands (`standing`).
-/// The AI's look counts as one of the reviews the reader has a day, so no one keeps it busy.
+/// The AI's look counts as one of the reviews the reader has a day, so no one keeps it busy. An
+/// administrator may name an article XABC brings up to date as the words ask, once at a time.
 async fn ask(
     State(state): State<AppState>,
     user: User,
@@ -239,6 +250,21 @@ async fn ask(
         return Err(AppError::Conflict(
             "调研以笔名公开发布，请先在工作台设置笔名".into(),
         ));
+    }
+    if let Some(article) = request.article {
+        let updatable = user.is_admin()
+            && listed()
+                .push(" WHERE a.id = ")
+                .push_bind(article)
+                .build_query_as::<Listed>()
+                .fetch_optional(&state.pool)
+                .await?
+                .is_some_and(|article| article.updatable);
+        if !updatable {
+            return Err(AppError::BadRequest(
+                "XABC 只更新它写的、已公开的时代、调研和分享".into(),
+            ));
+        }
     }
     let pro = private(&user);
     if !request.public && !pro {
@@ -277,7 +303,8 @@ async fn ask(
         None => None,
     };
     sqlx::query(
-        "INSERT INTO research (id, author_id, question, pro, public, day) VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO research (id, author_id, question, pro, public, day, article)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(id)
     .bind(user.id)
@@ -285,8 +312,15 @@ async fn ask(
     .bind(pro)
     .bind(request.public)
     .bind(day)
+    .bind(request.article)
     .execute(&mut *tx)
-    .await?;
+    .await
+    .map_err(|error| match &error {
+        sqlx::Error::Database(database) if database.is_unique_violation() => {
+            AppError::Conflict("这篇文章已经在等 XABC 更新".into())
+        }
+        _ => error.into(),
+    })?;
     let written = writing(&state);
     let mut query = QueryBuilder::new("SELECT ");
     standing(
@@ -406,8 +440,8 @@ pub(crate) async fn tick(state: &AppState) {
     let next = query
         .push(") q ORDER BY ahead LIMIT ")
         .push_bind(free as i64)
-        .push(") RETURNING id, question")
-        .build_query_as::<(Uuid, String)>()
+        .push(") RETURNING id, question, article")
+        .build_query_as::<(Uuid, String, Option<Uuid>)>()
         .fetch_all(&state.pool)
         .await;
     let next = match next {
@@ -417,14 +451,14 @@ pub(crate) async fn tick(state: &AppState) {
             return;
         }
     };
-    for (id, question) in next {
+    for (id, question, article) in next {
         let job = format!("{JOB}{id}");
         state.in_flight().insert(job.clone());
         let worker = state.clone();
         state.spawn_worker(async move {
             tokio::select! {
                 _ = worker.shutdown.cancelled() => {}
-                written = write(&worker, id, &question) => {
+                written = write(&worker, id, &question, article) => {
                     if let Err(error) = written {
                         tracing::warn!(%id, %error, "XABC could not write a research");
                         if let Err(error) = fail(&worker, id).await {
@@ -440,8 +474,26 @@ pub(crate) async fn tick(state: &AppState) {
 
 /// Researches the question and saves the article, saving once more if that fails, since the
 /// article is paid for by then; then a reader's article that goes public is reviewed by the AI,
-/// the question with it.
-async fn write(state: &AppState, id: Uuid, question: &str) -> Result<()> {
+/// the question with it. A request to bring `article` up to date leaves the queue as the article
+/// is saved over the revision XABC read; taken back while it was written, it changes nothing.
+async fn write(state: &AppState, id: Uuid, question: &str, article: Option<Uuid>) -> Result<()> {
+    if let Some(article) = article {
+        let (revision, cover, updated) = xabc::updated(state, article, question).await?;
+        // The article first, then the request, as deleting the article takes them.
+        let mut tx = state.pool.begin().await?;
+        xabc::revised(&mut tx, article, revision, cover, &updated).await?;
+        let waiting = sqlx::query("DELETE FROM research WHERE id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if waiting == 0 {
+            tracing::info!(%id, "an update was taken back while XABC wrote it");
+            return Ok(());
+        }
+        tx.commit().await?;
+        return Ok(());
+    }
     let article = xabc::researched(state, id, question).await?;
     let status = match save(state, id, question, &article).await {
         Ok(status) => status,
