@@ -129,7 +129,7 @@ pub(super) async fn write(
         return Err(AppError::Internal("两路检索都没有找到资料".into()));
     }
     let material = format!("{}\n线索：\n{}", work.material(), listed(&found.finds));
-    let drafted = draft(state, WRITING, &material).await?;
+    let drafted = draft(state, WRITING, &material, &[]).await?;
     found.usage += drafted.usage;
     found.known.extend(drafted.cited);
     let article = finish(state, drafted.article, found.known, &[], true).await?;
@@ -228,7 +228,13 @@ async fn revised(state: &AppState, due: Due) -> Result<Uuid> {
         due.title,
         listed(&found.finds)
     );
-    let drafted = draft(state, &format!("{WRITING}{REVISING}{KEEPING}"), &material).await?;
+    let drafted = draft(
+        state,
+        &format!("{WRITING}{REVISING}{KEEPING}"),
+        &material,
+        &[],
+    )
+    .await?;
     found.usage += drafted.usage;
     found.known.extend(drafted.cited);
     let article = finish(state, drafted.article, found.known, &kept, false).await?;

@@ -164,7 +164,7 @@ async fn follow(
     .await?;
     let Some(due) = due else {
         let material = format!("{material}线索：\n{}", listed(&found.finds));
-        let drafted = photographed(draft(state, WRITING, &material).await?);
+        let drafted = photographed(draft(state, WRITING, &material, &[]).await?);
         found.usage += drafted.usage;
         found.known.extend(drafted.cited);
         let mut article = finish(state, drafted.article, found.known, &[], false).await?;
@@ -188,8 +188,15 @@ async fn follow(
         due.title,
         listed(&found.finds)
     );
-    let drafted =
-        photographed(draft(state, &format!("{WRITING}{REVISING}{KEEPING}"), &material).await?);
+    let drafted = photographed(
+        draft(
+            state,
+            &format!("{WRITING}{REVISING}{KEEPING}"),
+            &material,
+            &[],
+        )
+        .await?,
+    );
     found.usage += drafted.usage;
     if drafted.article.body.trim().is_empty() {
         tracing::info!(

@@ -18,7 +18,9 @@ use crate::{
     state::AppState,
     topics::Topic,
 };
-pub(crate) use images::{from_page as page_pictures, prepare as prepare_images};
+pub(crate) use images::{
+    from_page as page_pictures, prepare as prepare_images, shown as shown_pictures,
+};
 pub(crate) use pages::{articles_tabs, listed, router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

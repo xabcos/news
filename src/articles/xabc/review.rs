@@ -158,7 +158,7 @@ pub(super) async fn write(
         "数码栏目收集的评测和用户分享：\n{stories}\n线索：\n{}",
         listed(&found.finds)
     );
-    let drafted = photographed(draft(state, WRITING, &material).await?);
+    let drafted = photographed(draft(state, WRITING, &material, &[]).await?);
     found.usage += drafted.usage;
     found.known.extend(drafted.cited);
     let mut article = finish(state, drafted.article, found.known, &kept, false).await?;
@@ -341,8 +341,15 @@ async fn revised(state: &AppState, product: &Product, due: Due) -> Result<Uuid> 
         due.title,
         listed(&found.finds)
     );
-    let drafted =
-        photographed(draft(state, &format!("{WRITING}{REVISING}{KEEPING}"), &material).await?);
+    let drafted = photographed(
+        draft(
+            state,
+            &format!("{WRITING}{REVISING}{KEEPING}"),
+            &material,
+            &[],
+        )
+        .await?,
+    );
     found.usage += drafted.usage;
     found.known.extend(drafted.cited);
     let article = finish(state, drafted.article, found.known, &kept, false).await?;

@@ -173,8 +173,9 @@ fn an_article_renders_only_its_own_pictures_and_no_markup() {
 /// A local tmpfile over HTTPS: uploads get a link under its origin, and every file is `picture`.
 /// While the returned switch is on, it refuses uploads. The same server plays English Wikipedia,
 /// whose every entry but Satya Nadella's leads with a photograph; X, where every account but
-/// `NoFace` shares a profile picture, 300 pixels square; and news pages under `/news/`, each
-/// sharing the scene photograph as its picture, a file large enough to show.
+/// `NoFace` shares a profile picture, 300 pixels square; news pages under `/news/`, each
+/// sharing the scene photograph as its picture, a file large enough to show; and pages under
+/// `/shown/`, whose own text shows a logo and that photograph.
 async fn tmpfile(picture: Vec<u8>) -> (String, reqwest::Client, Arc<AtomicBool>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_rustls::{TlsAcceptor, rustls};
@@ -305,6 +306,12 @@ async fn tmpfile(picture: Vec<u8>) -> (String, reqwest::Client, Arc<AtomicBool>)
                     ("image/jpeg", jpeg(300, 300))
                 } else if path == "/files/scene.jpg" {
                     ("image/jpeg", jpeg(640, 400))
+                } else if path.starts_with("/shown/") {
+                    // A page whose own text shows a logo and a photograph, which it also shares.
+                    let page = "<html><head><meta property=\"og:image\" content=\"https://media.example/files/scene.jpg\"></head>\
+                        <body><article><img src=\"https://media.example/assets/logo.png\">\
+                        <img src=\"https://media.example/files/scene.jpg\"></article></body></html>";
+                    ("text/html", page.as_bytes().to_vec())
                 } else if path.starts_with("/news/") {
                     let page = "<html><head><meta property=\"og:image\" content=\"https://media.example/files/scene.jpg\"></head></html>";
                     ("text/html", page.as_bytes().to_vec())
@@ -1541,10 +1548,35 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                         // 更新: the writer hands the article back under a new title, with every
                         // figure it showed and one more, and a new cover only when asked for one;
                         // asked to replace the figures it keeps none, and told to wait it does.
+                        // Shown pictures, it takes the first for a picture it never places,
+                        // then twice more, and one it was never shown.
                         if request["text"]["format"]["name"] == "article"
                             && instructions.contains("管理员要你更新")
                         {
-                            let material = request["input"][0]["content"].as_str().unwrap();
+                            let content = &request["input"][0]["content"];
+                            let material = content
+                                .as_str()
+                                .or_else(|| content[0]["text"].as_str())
+                                .unwrap();
+                            if content.is_array() {
+                                return (
+                                    StatusCode::OK,
+                                    Json(reply(
+                                        json!({
+                                            "title": "更新后的文章",
+                                            "body": format!("{}\n\n![](img:2)\n\n![](img:3)\n\n![](img:4)", "看着图写的内容，".repeat(80)),
+                                            "pictures": [
+                                                { "page": "", "prompt": "", "caption": "没放进正文的", "pick": 1 },
+                                                { "page": "", "prompt": "", "caption": "看得见的图", "pick": 1 },
+                                                { "page": "", "prompt": "", "caption": "又用一次", "pick": 1 },
+                                                { "page": "", "prompt": "", "caption": "没给过的", "pick": 9 },
+                                            ],
+                                            "cover": "",
+                                        }),
+                                        "https://cited.example/writer",
+                                    )),
+                                );
+                            }
                             if material.contains("等一等") {
                                 gate.acquire().await.unwrap().forget();
                             }
@@ -1852,9 +1884,15 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                                 1 if grok => return (StatusCode::BAD_REQUEST, Json(json!({}))),
                                 _ => {}
                             }
+                            let asked = request["input"][0]["content"].as_str().unwrap_or_default();
+                            let pictures: &[&str] = if asked.contains("看图") {
+                                &["https://media.example/shown/demo"]
+                            } else {
+                                &[]
+                            };
                             let mut finds = vec![json!({
                                 "title": "一个好玩的工具", "why": "好玩", "points": "能做很多事",
-                                "sources": ["https://known.example/tool"], "pictures": [],
+                                "sources": ["https://known.example/tool"], "pictures": pictures,
                             })];
                             if trending {
                                 finds.push(json!({
@@ -2395,13 +2433,25 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         "<a class=tab href=\"/culture\" data-last=\"/culture/book\" aria-current=\"true\">文娱</a>"
     ));
 
-    // 精选 opens with XABC's newest 分享, newest first, however well a 解说 is read; the rest
-    // rank 分享 and 解说 together as 热读 does, unread ones following newest first.
+    // 精选 opens with the newest 分享 a reader wrote, however well a 解说 is read; the rest,
+    // XABC's own 分享 among them, rank together as 热读 does, unread ones following newest first.
     sqlx::query("UPDATE articles SET views = 100 WHERE id = $1")
         .bind(explained)
         .execute(&state.pool)
         .await
         .unwrap();
+    let (reader, _) = account(&state, "user").await;
+    let readers = Uuid::new_v4();
+    sqlx::query(
+        "WITH pen AS (INSERT INTO authors (user_id, name) VALUES ($2, '读者'))
+         INSERT INTO articles (id, author_id, title, body, status, published_at)
+         VALUES ($1, $2, '读者写的', '', 'published', now() - INTERVAL '1 day')",
+    )
+    .bind(readers)
+    .bind(reader)
+    .execute(&state.pool)
+    .await
+    .unwrap();
     let worth: Value =
         serde_json::from_str(&page(format!("{base}/articles/worth.json")).await).unwrap();
     let ranked: Vec<(String, bool)> = worth["articles"]
@@ -2415,15 +2465,23 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
             )
         })
         .collect();
-    assert_eq!(ranked.len(), 5);
-    assert_eq!(ranked[0], (id.to_string(), false));
-    assert!(!ranked[1].1);
+    assert_eq!(ranked.len(), 6);
     assert_eq!(
-        ranked[2..],
+        ranked[..2],
+        [(readers.to_string(), false), (explained.to_string(), true)]
+    );
+    assert!(ranked[2..].contains(&(id.to_string(), false)));
+    let films: Vec<&str> = ranked
+        .iter()
+        .filter(|(_, film)| *film)
+        .map(|(id, _)| id.as_str())
+        .collect();
+    assert_eq!(
+        films,
         [
-            (explained.to_string(), true),
-            (loudest.to_string(), true),
-            (second.to_string(), true)
+            explained.to_string(),
+            loudest.to_string(),
+            second.to_string()
         ]
     );
     assert_eq!(worth["commentary"], true);
@@ -2443,7 +2501,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     let worth: Value =
         serde_json::from_str(&page(format!("{base}/articles/worth.json")).await).unwrap();
     assert_eq!(worth["commentary"], false);
-    assert_eq!(worth["articles"].as_array().unwrap().len(), 2);
+    assert_eq!(worth["articles"].as_array().unwrap().len(), 3);
     movie_shown(true).await;
 
     // 时代's round goes by the hour it starts, an hour after `since`: at midnight it looks for
@@ -3805,7 +3863,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
             .await
             .contains("/tracker</loc>")
     );
-    // 精选 opens with XABC's 分享 alone, the newest first, ranks 调研 with the rest, and closes
+    // 精选 opens with the reader's 分享, ranks XABC's own and 调研 with the rest, and closes
     // with the two articles that head 追踪's list, then the two that head 时代's: however well
     // read, they show there and not among the hottest.
     sqlx::query("UPDATE articles SET views = 80 WHERE id = $1 OR id = $2")
@@ -3814,19 +3872,11 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         .execute(&state.pool)
         .await
         .unwrap();
-    let shared: Uuid = sqlx::query_scalar(
-        "SELECT id FROM articles WHERE author_id = $1 AND kind = 'share'
-         ORDER BY published_at DESC LIMIT 1",
-    )
-    .bind(author)
-    .fetch_one(&state.pool)
-    .await
-    .unwrap();
     let worth: Value =
         serde_json::from_str(&page(format!("{base}/articles/worth.json")).await).unwrap();
     let worth = worth["articles"].as_array().unwrap();
     assert_eq!(worth.len(), 12);
-    assert_eq!(worth[0]["id"], shared.to_string());
+    assert_eq!(worth[0]["id"], readers.to_string());
     let (ranked, heads) = worth.split_at(8);
     assert!(
         ranked
@@ -4246,9 +4296,6 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
             .unwrap()
             .is_some_and(|at| at > shared)
     );
-    let worth: Value =
-        serde_json::from_str(&page(format!("{base}/articles/worth.json")).await).unwrap();
-    assert_eq!(worth["articles"][0]["id"], talked.to_string());
     // XABC hears what XAI shared, too.
     let asked_before = asked_log.lock().unwrap().len();
     assert!(matches!(
@@ -4347,6 +4394,13 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         let input = request["input"][0]["content"].as_str().unwrap();
         assert!(input.contains(&asks), "{input}");
     }
+    // Shown no pictures, the writer is asked as it always was.
+    let asked = &requests[2];
+    assert!(!asked["instructions"].as_str().unwrap().contains("候选图"));
+    assert!(
+        asked["text"]["format"]["schema"]["properties"]["pictures"]["items"]["properties"]["pick"]
+            .is_null()
+    );
     let material = writing(&requests);
     assert!(
         material.contains("其中 ![](keep:1) 是四格漫画，留在「你可能不知道」后面，不再画新的；新的 AI 插图都放在它后面。")
@@ -4481,6 +4535,51 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     let (title, body, revised, cover) = shown(own).await.unwrap();
     assert_eq!((title.as_str(), revised), ("更新后的文章", 2));
     assert_eq!(cover, Some(first(&body)));
+    // The writer is shown the pictures the finds' pages show in their own text, a logo left out,
+    // each numbered with its page, and may take one by its number: the picture it saw goes into
+    // the article with the page's credit, once, where the body first places it; a number it
+    // was never shown brings nothing.
+    let asked_before = asked_log.lock().unwrap().len();
+    assert_eq!(
+        update(own, "看图：补上截图", administrator.clone()).await.0,
+        200
+    );
+    researched().await;
+    let requests = asked_log.lock().unwrap()[asked_before..].to_vec();
+    let writer = &requests[2];
+    let parts = writer["input"][0]["content"].as_array().unwrap();
+    let kinds: Vec<_> = parts
+        .iter()
+        .map(|part| part["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["input_text", "input_text", "input_image"]);
+    assert_eq!(
+        parts[1]["text"],
+        "候选图 1，来自 https://media.example/shown/demo"
+    );
+    assert!(
+        parts[2]["image_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/jpeg;base64,")
+    );
+    assert!(
+        writer["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("候选图：输入最后附了一组候选图")
+    );
+    assert_eq!(
+        writer["text"]["format"]["schema"]["properties"]["pictures"]["items"]["properties"]["pick"],
+        json!({ "type": "integer" })
+    );
+    let (_, body, revised, _) = shown(own).await.unwrap();
+    assert_eq!(revised, 3);
+    assert_eq!(figures(&body), 1);
+    assert!(
+        body.contains("*看得见的图（图：[media.example](<https://media.example/shown/demo>)）*"),
+        "{body}"
+    );
 }
 
 /// The Codex & Claude handbook from start to finish against stand-ins for the AI service and the

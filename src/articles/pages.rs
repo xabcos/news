@@ -662,9 +662,10 @@ struct Worth {
     height: Option<i32>,
 }
 
-/// 精选, which opens ALL, in twelve cards: the four newest 分享 XABC and XAI wrote; the four
-/// hottest of the last 30 days of 分享 and XABC's other lists together, ranked as 热读 is, the
-/// newest filling the places while few are read; then the two articles that head 追踪's list
+/// 精选, which opens ALL, in twelve cards: the four newest 分享 readers wrote, XABC's and XAI's
+/// own left to the hottest; the four hottest of the last 30 days of 分享 and XABC's other lists
+/// together, ranked as 热读 is, the newest filling the places while few are read; then the two
+/// articles that head 追踪's list
 /// and the two that head 时代's, in the lists' order. An article shows once, where it heads a
 /// list if it does, and while a list has fewer the hottest make up the twelve. 解说 is among
 /// the hottest, and its list among the page's links, while 影视, whose works it explains, is
@@ -679,7 +680,7 @@ async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Resp
         "WITH heads AS (
              (SELECT a.id, 1 AS part, a.published_at AS dated
               FROM articles a JOIN users u ON u.id = a.author_id
-              WHERE u.status AND a.status = 'published' AND a.kind = 'share' AND u.email = ANY(",
+              WHERE u.status AND a.status = 'published' AND a.kind = 'share' AND u.email <> ALL(",
     )
     .push_bind(super::xabc::SHARING)
     .push(

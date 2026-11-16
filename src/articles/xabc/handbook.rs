@@ -425,7 +425,7 @@ async fn compose(
     shown: &[String],
     corpus: &HashSet<&str>,
 ) -> Result<(Option<super::Finished>, Usage)> {
-    let mut drafted = draft(state, instructions, material).await?;
+    let mut drafted = draft(state, instructions, material, &[]).await?;
     let mut usage = std::mem::take(&mut drafted.usage);
     if drafted.article.body.trim().is_empty() {
         return Ok((None, usage));
@@ -440,6 +440,7 @@ async fn compose(
                 drafted.article.body,
                 odd.join("、")
             ),
+            &[],
         )
         .await?;
         usage += std::mem::take(&mut again.usage);

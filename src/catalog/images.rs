@@ -141,37 +141,107 @@ pub(crate) async fn from_page(
     let url = Url::parse(page).expect("validated image page");
     if let Some(id) = reads::x_status(&url) {
         let post = x::read_post(state, &id).await?;
-        if post.sensitive() {
-            return Ok(Vec::new());
-        }
-        return Ok(post
-            .photos()
-            .filter(|(_, size)| {
-                size.width >= media::MIN_IMAGE_DIMENSION
-                    && size.height >= media::MIN_IMAGE_DIMENSION
-            })
-            .take(2)
-            .map(|(key, size)| NewsImage {
-                url: x::photo_url(&key),
-                source_url: page.into(),
-                credit: post.user.name.clone(),
-                width: Some(size.width),
-                height: Some(size.height),
-                ..template.clone()
-            })
-            .collect());
+        return Ok(photographs(&post, page, template).take(2).collect());
     }
     let (url, bytes) = reads::download(state, url, reads::Content::Html).await?;
     let html = String::from_utf8_lossy(&bytes);
-    Ok(page_images(&url, &html, book)
+    Ok(credited(page_images(&url, &html, book), &url, template))
+}
+
+/// The pictures a page shows in its own text, in order, then the one it shares, which is often
+/// a card; or all of an X post's photographs. More than `from_page` gives, for a writer to look
+/// at and choose from.
+pub(crate) async fn shown(state: &AppState, page: &str) -> Result<Vec<NewsImage>> {
+    let template = NewsImage::default();
+    let url = Url::parse(page).expect("validated image page");
+    if let Some(id) = reads::x_status(&url) {
+        let post = x::read_post(state, &id).await?;
+        return Ok(photographs(&post, page, &template).collect());
+    }
+    let (url, bytes) = reads::download(state, url, reads::Content::Html).await?;
+    let html = String::from_utf8_lossy(&bytes);
+    Ok(credited(shown_images(&url, &html), &url, &template))
+}
+
+/// A post's photographs large enough to show, credited to its author; none of a sensitive post.
+fn photographs<'a>(
+    post: &'a x::Post,
+    page: &'a str,
+    template: &'a NewsImage,
+) -> impl Iterator<Item = NewsImage> + 'a {
+    post.photos()
+        .filter(|(_, size)| {
+            !post.sensitive()
+                && size.width >= media::MIN_IMAGE_DIMENSION
+                && size.height >= media::MIN_IMAGE_DIMENSION
+        })
+        .map(move |(key, size)| NewsImage {
+            url: x::photo_url(&key),
+            source_url: page.into(),
+            credit: post.user.name.clone(),
+            width: Some(size.width),
+            height: Some(size.height),
+            ..template.clone()
+        })
+}
+
+/// A page's pictures, credited to its site.
+fn credited(images: Vec<String>, page: &Url, template: &NewsImage) -> Vec<NewsImage> {
+    images
         .into_iter()
         .map(|image| NewsImage {
             url: image,
-            source_url: url.to_string(),
-            credit: url.host_str().unwrap_or_default().into(),
+            source_url: page.to_string(),
+            credit: page.host_str().unwrap_or_default().into(),
             ..template.clone()
         })
-        .collect())
+        .collect()
+}
+
+/// The pictures in a page's own text, under the first container an article, a post or a README
+/// keeps its words in, then the pictures it shares. What a page decorates itself with is left
+/// out where the markup tells: logos, vector marks and pictures declared small.
+fn shown_images(base: &Url, text: &str) -> Vec<String> {
+    const BODIES: [&str; 8] = [
+        ".markdown-body",
+        "[itemprop='articleBody']",
+        ".entry-content",
+        ".post-content",
+        ".article-body",
+        ".post-body",
+        "article",
+        "main",
+    ];
+    let html = Html::parse_document(text);
+    let select = |query| Selector::parse(query).expect("static selector");
+    let mut images: Vec<String> = Vec::new();
+    let body = BODIES
+        .iter()
+        .find_map(|query| html.select(&select(query)).next());
+    let pictures = select("img");
+    for image in body.iter().flat_map(|body| body.select(&pictures)) {
+        let small = ["width", "height"].iter().any(|side| {
+            image
+                .attr(side)
+                .and_then(|length| length.trim_end_matches("px").parse::<u32>().ok())
+                .is_some_and(|length| length < media::MIN_IMAGE_DIMENSION)
+        });
+        let address = [image.attr("data-src"), image.attr("src")]
+            .into_iter()
+            .flatten()
+            .find_map(|src| base.join(src.trim()).ok().filter(media::is_public_origin));
+        if let Some(address) = address
+            && !small
+            && !address.path().ends_with(".svg")
+            && !super::source::is_logo(address.as_str())
+        {
+            images.push(address.into());
+        }
+    }
+    images.extend(super::source::meta_images(&html, base));
+    let mut seen = std::collections::HashSet::new();
+    images.retain(|image| seen.insert(image.clone()));
+    images
 }
 
 fn page_images(base: &Url, text: &str, book: bool) -> Vec<String> {
@@ -220,6 +290,35 @@ fn page_images(base: &Url, text: &str, book: bool) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_page_shows_the_pictures_of_its_own_text_before_the_one_it_shares() {
+        let base = Url::parse("https://code.example/owner/tool").unwrap();
+        let html = r#"<meta property="og:image" content="https://cards.example/owner/tool.png">
+            <nav><img src="/menu.png"></nav>
+            <article class="markdown-body">
+              <img src="https://img.shields.example/badge.svg"><img src="/assets/logo.png">
+              <img src="/docs/screenshot.png" alt="The editor"><img data-src="/docs/demo.gif" src="/lazy.png">
+              <img src="/docs/icon.png" width="32" height="32"><img src="/docs/screenshot.png">
+              <img src="http://127.0.0.1/private.png">
+            </article>"#;
+        assert_eq!(
+            shown_images(&base, html),
+            [
+                "https://code.example/docs/screenshot.png",
+                "https://code.example/docs/demo.gif",
+                "https://cards.example/owner/tool.png",
+            ]
+        );
+        // A page without a text of its own shows what it shares.
+        assert_eq!(
+            shown_images(
+                &base,
+                r#"<meta name="twitter:image" content="/card.jpg"><img src="/a.png">"#
+            ),
+            ["https://code.example/card.jpg"]
+        );
+    }
 
     #[test]
     fn uses_real_page_images_and_prefers_the_publishers_book_cover() {

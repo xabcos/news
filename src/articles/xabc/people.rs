@@ -193,7 +193,7 @@ async fn profile(
     };
     let Some(due) = due else {
         let material = format!("{material}线索：\n{}", listed(finds));
-        let drafted = comic(draft(state, writing, &material).await?, None, company);
+        let drafted = comic(draft(state, writing, &material, &[]).await?, None, company);
         found.usage += drafted.usage;
         found.known.extend(drafted.cited);
         let mut article = finish(state, drafted.article, found.known, &[], false).await?;
@@ -226,7 +226,13 @@ async fn profile(
         listed(finds)
     );
     let drafted = comic(
-        draft(state, &format!("{writing}{REVISING}{KEEPING}"), &material).await?,
+        draft(
+            state,
+            &format!("{writing}{REVISING}{KEEPING}"),
+            &material,
+            &[],
+        )
+        .await?,
         shown,
         company,
     );
@@ -294,7 +300,7 @@ pub(super) fn comic(mut drafted: Drafted, shown: Option<usize>, company: bool) -
     let drawing = if keeps {
         None
     } else {
-        placed(&body, article.pictures.len(), usize::MAX)
+        placed(&body, &article.pictures, usize::MAX)
             .into_iter()
             .find(|number| asks(&article.pictures[number - 1]))
     };
@@ -690,7 +696,7 @@ mod tests {
             let wanted = |page: &str, prompt: &str| Wanted {
                 page: page.into(),
                 prompt: prompt.into(),
-                caption: String::new(),
+                ..Wanted::default()
             };
             let drafted = Drafted {
                 article: super::super::Article {
