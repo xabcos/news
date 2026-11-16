@@ -73,14 +73,6 @@ function bindEvents() {
   }));
   $("#newTopicButton").addEventListener("click", () => openEditor());
   $("#refreshButton").addEventListener("click", () => withBusy($("#refreshButton"), null, () => refresh(session)));
-  $("#runBriefingButton").addEventListener("click", () => {
-    const control = $("#runBriefingButton");
-    void withBusy(control, "生成中…", () => runBriefing(session)).then(() => {
-      if (session?.briefing?.status === "running") control.disabled = true;
-    });
-  });
-  $("#copyWechatButton").addEventListener("click", () => copyBriefingDraft("wechatDraft", "copyWechatButton"));
-  $("#copyXButton").addEventListener("click", () => copyBriefingDraft("xDraft", "copyXButton"));
   $("#refreshItemsButton").addEventListener("click", () => withBusy($("#refreshItemsButton"), null, () => loadItems(session)));
   $("#itemsDay").addEventListener("change", () => void loadItems(session));
   $("#latestButton").addEventListener("click", () => { $("#itemsDay").value = ""; void loadItems(session); });
@@ -155,15 +147,6 @@ function endSession() {
   $("#itemsDay").value = "";
   $("#accountEmail").textContent = "";
   $("#statusLine").textContent = "";
-  $("#briefingPanel").classList.add("hidden");
-  $("#briefingImages").classList.add("hidden");
-  $("#briefingImages").replaceChildren();
-  $("#briefingDrafts").classList.add("hidden");
-  $("#briefingMessage").textContent = "";
-  $("#briefingMeta").textContent = "";
-  $("#wechatDraft").value = "";
-  $("#xDraft").value = "";
-  $("#runBriefingButton").disabled = false;
   $("#confirmActionButton").onclick = null;
 }
 
@@ -179,7 +162,6 @@ async function enterApp(data) {
     user: data.user, usage: data.usage, admin: data.user.role === "admin",
     controller: new AbortController(), topics: [], running: new Set(), selected: null,
     itemsVersion: 0, runsVersion: 0, timer: null, refreshing: false,
-    briefing: null,
     timezone: data.usage.timezone, today: { runs: data.usage.runs_today, cost_ticks: 0 },
     users: null,
   };
@@ -207,7 +189,6 @@ async function enterApp(data) {
   $("#accountButton").classList.toggle("hidden", s.admin);
   $("#dateTools").classList.toggle("hidden", !s.admin);
   $("#runsPanel").classList.toggle("hidden", !s.admin);
-  $("#briefingPanel").classList.toggle("hidden", !s.admin);
   $("#newTopicButton").disabled = true;
   message("topicsMessage", "");
   try { await refresh(s); }
@@ -245,7 +226,6 @@ async function refresh(s) {
       if (finished || contentChanged) await loadItems(s);
     }
     if (s.admin && $("#runsPanel").open) await loadRuns(s);
-    if (s.admin) await loadBriefing(s);
   } finally {
     s.refreshing = false;
     if (session === s) scheduleRefresh(s);
@@ -260,102 +240,6 @@ function scheduleRefresh(s) {
     if (document.visibilityState !== "visible") return;
     try { await refresh(s); } catch { /* The next scheduled refresh retries. */ }
   }, 3 * 60 * 1000);
-}
-
-async function loadBriefing(s) {
-  if (!s || session !== s || !s.admin) return;
-  try {
-    const payload = await s.request("/api/admin/insight");
-    if (session !== s) return;
-    s.briefing = payload.briefing;
-    renderBriefing(s);
-  } catch (error) {
-    if (session === s) message("briefingMessage", error.message);
-  }
-}
-
-function renderBriefing(s) {
-  const briefing = s.briefing;
-  if (!briefing) {
-    message("briefingMessage", "还没有生成过 XAI 日报。");
-    $("#briefingMeta").textContent = "每日 06:00 开始采集，完成后生成日报；也可重新生成最近一期";
-    $("#briefingDrafts").classList.add("hidden");
-    $("#runBriefingButton").disabled = false;
-    renderBriefingImages([]);
-    return;
-  }
-  const labels = { running: "采集与生成中", ok: "已完成", failed: "失败", interrupted: "已中断" };
-  const day = briefing.briefing_day || "";
-  const time = briefing.finished_at || briefing.started_at;
-  const hasDraft = Boolean(briefing.wechat_article || briefing.x_article);
-  const fallbackLabel = hasDraft && briefing.status !== "ok" ? " · 显示上一份可用稿" : "";
-  $("#briefingMeta").textContent = `${day}${time ? ` · ${formatTime(time, s.timezone)}` : ""} · ${labels[briefing.status] || briefing.status}${fallbackLabel}`;
-  $("#runBriefingButton").disabled = briefing.status === "running";
-  message("briefingMessage", briefing.error || "");
-  $("#briefingDrafts").classList.toggle("hidden", !hasDraft);
-  $("#wechatDraft").value = briefing.wechat_article || "";
-  $("#xDraft").value = briefing.x_article || "";
-  renderBriefingImages(briefing.images || []);
-}
-
-function renderBriefingImages(images) {
-  const container = $("#briefingImages");
-  container.replaceChildren();
-  container.classList.toggle("is-two", images.length === 2);
-  container.classList.toggle("hidden", !images.length);
-  if (!images.length) return;
-  container.append(...images.map((image) => {
-    const card = node("figure", "briefing-image");
-    const url = safeUrl(image.url);
-    if (url) {
-      const img = node("img");
-      img.src = url;
-      img.alt = image.caption || "日报配图";
-      img.loading = "lazy";
-      img.referrerPolicy = "no-referrer";
-      card.append(img);
-    }
-    const label = image.cover ? "封面" : "正文配图";
-    const caption = node("figcaption", "briefing-image-caption", `${label}${image.archived ? " · 资料图" : ""} · ${image.caption || "日报配图"}`);
-    const origin = safeUrl(image.source_url);
-    if (origin) {
-      const source = node("a", "briefing-image-source", `${image.credit || "图片来源"} ↗`);
-      source.href = origin;
-      source.target = "_blank";
-      source.rel = "noopener noreferrer";
-      caption.append(source);
-    }
-    card.append(caption);
-    return card;
-  }));
-}
-
-async function runBriefing(s) {
-  if (!s || session !== s || !s.admin) return;
-  await s.request("/api/admin/insight", { method: "POST" });
-  toast("XAI 日报已开始生成，完成后会自动刷新");
-  await loadBriefing(s);
-}
-
-function copyBriefingDraft(id, buttonId) {
-  const value = $(`#${id}`).value;
-  if (!value) return;
-  void withBusy($(`#${buttonId}`), "复制中…", async () => {
-    const text = value.replace(/\r\n?/g, "\n").replace(/\n[ \t]*\n(?:[ \t]*\n)+/g, "\n\n").trim();
-    const html = id === "xDraft" ? session?.briefing?.x_html : "";
-    if (html && typeof ClipboardItem !== "undefined" && navigator.clipboard.write) {
-      try {
-        await navigator.clipboard.write([new ClipboardItem({
-          "text/plain": new Blob([text], { type: "text/plain" }),
-          "text/html": new Blob([html], { type: "text/html" }),
-        })]);
-        toast("已复制排版稿，可直接粘贴到 X Articles");
-        return;
-      } catch { /* Some browsers only allow plain-text clipboard writes. */ }
-    }
-    await navigator.clipboard.writeText(text);
-    toast(html ? "已复制纯文本稿" : "稿件已复制");
-  });
 }
 
 function message(id, text) {

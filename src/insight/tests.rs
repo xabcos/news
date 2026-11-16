@@ -1,8 +1,9 @@
 use super::*;
-use articles::StoryStatus;
+use axum::{Json, http::StatusCode};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::TimeZone;
 use std::time::Duration;
+use stories::StoryStatus;
 
 fn analysis() -> InsightAnalysis {
     serde_json::from_value(json!({
@@ -28,7 +29,6 @@ fn story(index: usize, status: StoryStatus) -> Story {
         title_en: "Title".into(),
         summary: "完整事实\n\n及适用范围。".into(),
         summary_en: "Summary".into(),
-        short_summary: "紧凑事实及限制。".into(),
         angle: String::new(),
         angle_en: String::new(),
         status,
@@ -320,7 +320,7 @@ fn schema_allows_quiet_days_without_inventing_sources_or_images() {
 }
 
 #[test]
-fn formats_consistent_articles_without_empty_html_paragraphs() {
+fn citations_follow_reading_order() {
     let sources = vec![
         source(0, "x", true),
         source(1, "gossip", true),
@@ -333,9 +333,6 @@ fn formats_consistent_articles_without_empty_html_paragraphs() {
         story(0, StoryStatus::Confirmed),
     ];
     draft.gossip = vec![story(1, StoryStatus::Unconfirmed)];
-    draft.hotspots[0].angle = "调用门槛随之下降。".into();
-    draft.headline = "模型降价与工具开放，AI 应用的成本门槛下降".into();
-    draft.changes = "第一条趋势。\n\n第二条趋势。".into();
     draft.changes_source_indexes = vec![0];
     draft.figures = vec![
         serde_json::from_value(json!({ "value": "5.5 元", "value_en": "5.5 yuan",
@@ -348,72 +345,8 @@ fn formats_consistent_articles_without_empty_html_paragraphs() {
             "summary_en": "Apps on the old API must migrate.", "source_indexes": [2] }))
         .unwrap(),
     ];
-    let edition_label = "XAI 日报 · 2026-09-21";
-    let articles = articles::render(edition_label, &draft, &sources, &[], vec![]);
-    assert_eq!(articles.title, draft.headline);
-    assert!(
-        articles
-            .wechat
-            .starts_with(&format!("# {}\n\n", draft.headline))
-    );
-    assert!(articles.x.starts_with(&format!("{}\n\n", draft.headline)));
-    assert!(
-        articles
-            .x_html
-            .starts_with(&format!("<h1>{}</h1>", draft.headline))
-    );
-    for text in [&articles.wechat, &articles.x, &articles.x_html] {
-        let sections = [
-            "趋势分析",
-            "今日热点",
-            "今日数字",
-            "AI 圈热议",
-            "机会与风险",
-            "参考来源",
-        ]
-        .map(|label| text.find(label).unwrap());
-        assert!(sections.windows(2).all(|pair| pair[0] < pair[1]));
-        assert!(!text.contains("图片新闻"));
-        assert!(!text.contains("\n\n\n"));
-        assert_eq!(text.matches(edition_label).count(), 1);
-        assert!(text.find(&draft.headline) < text.find(edition_label));
-        assert!(text.find(edition_label) < text.find("今日热点"));
-        assert!(!text.contains("采样说明"));
-        assert!(!text.contains("新闻："));
-        assert!(!text.contains("最近 7 天"));
-    }
-    assert!(
-        articles
-            .wechat
-            .contains("完整事实 及适用范围。 看点：调用门槛随之下降。")
-    );
-    assert!(
-        articles
-            .x
-            .contains("紧凑事实及限制。 看点：调用门槛随之下降。\n2.")
-    );
-    assert!(articles.x.contains("紧凑事实及限制。\n\n今日数字"));
-    assert!(articles.x.contains("【未证实】"));
-    assert!(articles.x.contains("1. 5.5 元 — 同一流程的单次成本"));
-    assert!(
-        articles
-            .x
-            .contains("1. 【风险】旧接口下线 — 依赖旧接口的应用需要迁移。")
-    );
-    assert!(articles.x_html.contains("A &lt; B &amp; C"));
-    assert!(!articles.x_html.contains("<p></p>"));
-    assert!(!articles.x_html.contains("<br"));
-    assert_eq!(
-        articles
-            .x_html
-            .matches("href=\"https://example.com/0\"")
-            .count(),
-        1
-    );
-    // References follow reading order: trend and headlines, figures, buzz, then the outlook.
-    let references = &articles.x[articles.x.find("参考来源").unwrap()..];
-    let order = [0, 3, 1, 2].map(|index| references.find(&format!("新闻{index}：")).unwrap());
-    assert!(order.windows(2).all(|pair| pair[0] < pair[1]));
+    // The trend and the headlines, the figures, the buzz, then the outlook, each source once.
+    assert_eq!(stories::citation_indexes(&draft), [0, 3, 1, 2]);
     assert_eq!(cited_sources(&draft, sources, &[]).len(), 4);
 }
 
@@ -446,38 +379,6 @@ fn image_selection_is_explicit_and_survives_mirror_url_changes() {
     assert!(chosen[0].cover);
     assert_eq!(chosen[0].url, "https://cdn.example.com/new");
     assert!(chosen[1].archived);
-    let articles = articles::render("XAI 日报 · 2026-09-21", &draft, &sources, &[], chosen);
-    assert!(
-        articles
-            .wechat
-            .contains("![演示现场](<https://cdn.example.com/new>)")
-    );
-    assert!(articles.wechat.contains("资料图"));
-    assert!(articles.wechat.find("图片新闻") < articles.wechat.find("参考来源"));
-}
-
-#[test]
-fn structured_facts_render_both_article_formats() {
-    let mut draft = analysis();
-    draft.headline = "模型降价与工具开放，AI 应用的成本门槛下降".into();
-    draft.hotspots = vec![story(0, StoryStatus::Confirmed)];
-    let stored: StoredInsight = serde_json::from_value(json!({
-        "analysis": draft, "sources": [source(0, "x", true)], "research_sources": [],
-        "stats": {"current_items":32,"seven_day_items":213,"observed_days":5}
-    }))
-    .unwrap();
-    let articles = render_articles(&stored, NaiveDate::from_ymd_opt(2026, 9, 21).unwrap());
-    assert_eq!(articles.title, stored.analysis.headline);
-    for text in [&articles.wechat, &articles.x, &articles.x_html] {
-        assert!(text.contains(&stored.analysis.headline));
-        assert!(text.contains("XAI 日报 · 2026-09-21"));
-        assert!(text.contains("今日热点"));
-        assert!(!text.contains("Asia/Shanghai"));
-        assert!(!text.contains("最近 7 天"));
-    }
-    assert!(articles.wechat.contains("完整事实 及适用范围。"));
-    assert!(articles.x.contains("紧凑事实及限制。"));
-    assert_eq!(stored.stats.current_items, 32);
 }
 
 #[test]
@@ -959,19 +860,11 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
     let stored: StoredInsight = serde_json::from_value(completed).unwrap();
     assert_eq!(stored.stats.current_items, 8);
     assert_eq!(stored.stats.seven_day_items, 10);
-    let articles = render_articles(&stored, day);
-    assert_eq!(articles.title, stored.analysis.headline);
-    for text in [&articles.wechat, &articles.x, &articles.x_html] {
-        assert!(text.contains(&stored.analysis.headline));
-        assert!(!text.contains("采样说明"));
-        assert!(!text.contains("新闻："));
-        assert!(!text.contains("最近 7 天"));
-    }
     assert_eq!(stored.analysis.hotspots.len(), 1);
-    assert_eq!(articles.images.len(), 1);
-    assert!(articles.images[0].cover);
-    assert_eq!(articles.images[0].url, "https://cdn.example.com/robot.avif");
-    assert!(articles.wechat.contains("图片新闻"));
+    let images = selected_article_images(&stored.analysis, &stored.sources);
+    assert_eq!(images.len(), 1);
+    assert!(images[0].cover);
+    assert_eq!(images[0].url, "https://cdn.example.com/robot.avif");
     assert!(
         stored
             .sources
@@ -1024,7 +917,6 @@ async fn postgres_daily_pipeline_retries_with_one_slot_and_counts_full_seven_day
         public["insight"]["sampling"],
         json!({"current_items":8,"seven_day_items":10,"observed_days":3})
     );
-    assert!(public["insight"].get("wechat_article").is_none());
     let before = call_count();
     tick(&state).await.unwrap();
     assert!(!is_running(&state));
@@ -1410,9 +1302,9 @@ async fn check_media_renewal(state: &mut AppState) {
         .unwrap();
     assert!(stored.get("articles").is_none());
     let stored: StoredInsight = serde_json::from_value(stored).unwrap();
-    let articles = render_articles(&stored, day);
-    assert!(articles.wechat.contains(&fresh.url));
-    assert!(!articles.wechat.contains(&old.url));
+    let images = selected_article_images(&stored.analysis, &stored.sources);
+    assert!(images.iter().any(|image| image.url == fresh.url));
+    assert!(images.iter().all(|image| image.url != old.url));
     media::startup_sync(state).await.unwrap();
     assert_eq!(
         state

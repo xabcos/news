@@ -210,9 +210,9 @@ Reads 默认按收录时间连续展示，不按天分组，每页 24 篇。列�
 
 统计范围为 **`x`、`p`、`china-ai`、`overseas-ai`、`gossip`、`cases`**。本期数量、栏目与标签分布、7 天统计和此前 6 日日均均使用这一范围：先筛选启用的公共栏目、有效发布时间和可见条目，再按原文 URL 指纹去重。统计表示报道收录数量，Gossip 被收录不代表其说法已证实。
 
-日报保存结构化事实、引用、图片选择和统计快照。网页、公众号 Markdown、X Articles 纯文本及 HTML 从这些内容生成，共用主标题。页面依次呈现主标题、趋势分析、配图、今日热点、今日数字、AI 圈热议、机会与风险、后续观察和参考来源；空分组省略。趋势分析是全篇的主判断：先亮出判断，再写依据、影响和接下来看什么，主标题就是这一判断。每条热点附一句「看点」，说明它为什么重要。今日数字是当天最有分量的 2–4 个数字，数字必须原样出现在所引资料的标题或摘要中，核对不过的直接丢弃。机会与风险把商业机会、岗位与技能、风险和现在能做的事合为一组，每条带类别标签。来源与性质靠“宣布”“称”“指控”“自称”等措辞交代，正文不逐条附免责句；热议用状态标签区分爆料、未证实与回应。
+日报保存结构化事实、引用、图片选择和统计快照，网页从这些内容生成。页面依次呈现主标题、趋势分析、配图、今日热点、今日数字、AI 圈热议、机会与风险、后续观察和参考来源；空分组省略。趋势分析是全篇的主判断：先亮出判断，再写依据、影响和接下来看什么，主标题就是这一判断。每条热点附一句「看点」，说明它为什么重要。今日数字是当天最有分量的 2–4 个数字，数字必须原样出现在所引资料的标题或摘要中，核对不过的直接丢弃。机会与风险把商业机会、岗位与技能、风险和现在能做的事合为一组，每条带类别标签。来源与性质靠“宣布”“称”“指控”“自称”等措辞交代，正文不逐条附免责句；热议用状态标签区分爆料、未证实与回应。
 
-配图优先使用 `p` 栏目。模型查看最多 12 张候选图，选择至多 1 张封面和 2 张正文图，按内容哈希或原始地址去重。网页配图优先请求 AVIF，原样转存并自动续期。日报生成时单独向原站请求 JPEG、PNG、WebP 或 GIF，完整解码校验并缩放至 1024 像素以内后，以临时静态 JPEG 直接输入模型；无法获取兼容版本的图片不参与模型选图。发布内容继续使用原图地址。公众号稿可直接使用图片链接，X 稿提供图片顺序、图说、署名和原文链接。
+配图优先使用 `p` 栏目。模型查看最多 12 张候选图，选择至多 1 张封面和 2 张正文图，按内容哈希或原始地址去重。网页配图优先请求 AVIF，原样转存并自动续期。日报生成时单独向原站请求 JPEG、PNG、WebP 或 GIF，完整解码校验并缩放至 1024 像素以内后，以临时静态 JPEG 直接输入模型；无法获取兼容版本的图片不参与模型选图。发布内容继续使用原图地址。
 
 ## 运行与部署
 
@@ -291,7 +291,7 @@ GET /sitemap.xml
 
 管理员登录后，前台也能阅读启用但不公开的站点主题。页面对所有人只有一个地址，公开页面管理员也直接阅读；信息流、主题目录、日期列表和页面脚本读取的数据使用 `/api/admin/preview` 前缀复用原接口，打开访客看不到的 Reads、Travel、Culture、𝑮𝒂𝒅𝒈𝒆𝒕𝒔 或 LLM 页面时自动跳到预览。真实会话逐次鉴权，响应为 `private, no-store`。管理员和普通信息流共用主题内容缓存：管理员访问可回填，采集与编辑统一刷新；公开目录、订阅和站点地图仍只含公开内容。
 
-账户与个人主题使用 `/api/auth/*`、`/api/me/*`；公共主题管理使用 `/api/admin/topics`；日报状态和生成使用 `GET /api/admin/insight`、`POST /api/admin/insight`；𝑳𝑳𝑴 状态使用 `GET /api/admin/llm`，暂停服务商和隐藏模型分别使用 `PATCH /api/admin/llm/vendors/{id}`、`PATCH /api/admin/llm/models/{vendor}/{model}`。分享的写作使用 `PUT /api/author` 和 `/api/articles*`，审核使用 `GET /api/admin/articles`、`PATCH /api/admin/articles/{id}`，阅读计数是 `POST /api/articles/{id}/views`。调研的提问、列表、公开切换和取消使用 `POST`/`GET /api/research` 与 `PATCH`/`DELETE /api/research/{id}`（管理员提交时带上 `article`，就是让 XABC 更新那篇文章），时代与追踪的点名分别使用 `POST /api/admin/people`、`POST /api/admin/tracker`。套餐、订单和支付回调分别位于 `/api/plans`、`/api/orders`、`/api/webhooks/payment`。Free 用户阅读公共内容，Pro 用户可创建最多 4 个个人主题。
+账户与个人主题使用 `/api/auth/*`、`/api/me/*`；公共主题管理使用 `/api/admin/topics`；𝑳𝑳𝑴 状态使用 `GET /api/admin/llm`，暂停服务商和隐藏模型分别使用 `PATCH /api/admin/llm/vendors/{id}`、`PATCH /api/admin/llm/models/{vendor}/{model}`。分享的写作使用 `PUT /api/author` 和 `/api/articles*`，审核使用 `GET /api/admin/articles`、`PATCH /api/admin/articles/{id}`，阅读计数是 `POST /api/articles/{id}/views`。调研的提问、列表、公开切换和取消使用 `POST`/`GET /api/research` 与 `PATCH`/`DELETE /api/research/{id}`（管理员提交时带上 `article`，就是让 XABC 更新那篇文章），时代与追踪的点名分别使用 `POST /api/admin/people`、`POST /api/admin/tracker`。套餐、订单和支付回调分别位于 `/api/plans`、`/api/orders`、`/api/webhooks/payment`。Free 用户阅读公共内容，Pro 用户可创建最多 4 个个人主题。
 
 每个账户可以在工作台「分享」里生成一把给 agent 用的密钥（`POST /api/auth/key`，只显示一次，再生成一把即让旧的失效），请求带 `Authorization: Bearer xabc_…`，不需要 Cookie 和同源。持密钥的是这个账户的普通作者：只能新建、保存、配图、预览和提交自己的文章（`/api/articles` 之下的 `POST` 与 `PATCH`），提交后由 AI 审核，其余写操作一律拒绝；管理员的密钥另外能读 `/api/admin/` 之下的编辑后台，仅此而已。写给 agent 的说明在 `/llms.txt`：公开的读取地址、写文章的步骤和管理员密钥能读的后台。
 

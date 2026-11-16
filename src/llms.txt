@@ -38,6 +38,6 @@
 - `/api/admin/topics`：全部栏目的设置与关注方向
 - `/api/admin/topics/{id}/runs`、`/api/admin/topics/{id}/items?day=`：一个栏目的运行记录与条目，含隐藏的
 - `/api/admin/status`：正在运行的栏目、今天的运行次数与费用
-- `/api/admin/insight`、`/api/admin/llm`：日报与大模型目录的状态
+- `/api/admin/llm`：大模型目录的状态
 - `/api/admin/articles`：待审与最近公开的文章；`?day=`、`?q=` 找更早的
 - `/api/admin/preview{公开地址}`：读者还看不到的栏目和它们的页面，以及待审的文章（草稿不在其中），如 `/api/admin/preview/digest?topic={id}`、`/api/admin/preview/articles/{id}`

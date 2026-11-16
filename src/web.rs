@@ -1,7 +1,7 @@
 use crate::{
     auth, digest,
     error::{AppError, Result},
-    insight, payment,
+    payment,
     state::AppState,
     topics,
 };
@@ -45,10 +45,6 @@ pub(crate) fn router(state: AppState) -> Router {
         )
         .route("/api/orders/{out_trade_no}", get(payment::get_order))
         .route("/api/orders/{out_trade_no}/qr.svg", get(payment::order_qr))
-        .route(
-            "/api/admin/insight",
-            get(insight::admin_latest).post(insight::admin_run),
-        )
         .route("/api/webhooks/payment", post(payment::payment_webhook))
         .merge(topics::router())
         .merge(digest::router())
