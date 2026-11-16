@@ -1391,7 +1391,6 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
     for (method, path) in [
         (reqwest::Method::POST, "/api/admin/people"),
         (reqwest::Method::POST, "/api/auth/key"),
-        (reqwest::Method::DELETE, "/api/auth/key"),
         (reqwest::Method::PUT, "/api/author"),
         (reqwest::Method::DELETE, draft.as_str()),
     ] {
@@ -1424,7 +1423,7 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
     assert_eq!(submitted["status"], "published");
     assert_eq!(reviews.lock().unwrap().len(), asked + 1);
 
-    // A new key puts out the one before it, and taken away, a key opens nothing.
+    // A new key puts out the one before it.
     let renewed: Value = send(reqwest::Method::POST, "/api/auth/key", &boss)
         .send()
         .await
@@ -1433,20 +1432,10 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
         .await
         .unwrap();
     assert_eq!(status(read("/api/me").send().await.unwrap()), 401);
-    let fresh = || {
-        http.get(format!("{base}/api/me"))
-            .bearer_auth(renewed["key"].as_str().unwrap())
-    };
-    assert_eq!(status(fresh().send().await.unwrap()), 200);
-    let gone: Value = send(reqwest::Method::DELETE, "/api/auth/key", &boss)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(gone, json!({ "key": null }));
-    assert_eq!(status(fresh().send().await.unwrap()), 401);
+    let fresh = http
+        .get(format!("{base}/api/me"))
+        .bearer_auth(renewed["key"].as_str().unwrap());
+    assert_eq!(status(fresh.send().await.unwrap()), 200);
 }
 
 /// XABC's lines from start to finish against stand-ins for the AI service and tmpfile: a 分享

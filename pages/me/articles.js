@@ -21,13 +21,19 @@ export function createArticles(session) {
     editName();
     toast("写文章前先设置笔名");
   }, { signal });
-  // The server keeps only the key's hash: a new one shows until the page is left, and replaces
+  // The server keeps only the key's hash: a new one shows until the page is left, and puts out
   // the one before it.
-  for (const [id, action] of [
-    ["keyMake", () => setKey("POST")],
-    ["keyRevoke", () => setKey("DELETE")],
-    ["keyCopy", async () => { await navigator.clipboard.writeText($("#keyValue").value); toast("密钥已复制"); }],
-  ]) $(`#${id}`).addEventListener("click", () => withBusy($(`#${id}`), null, action), { signal });
+  $("#keyMake").addEventListener("click", () => withBusy($("#keyMake"), null, async () => {
+    const { key } = await session.request("/api/auth/key", { method: "POST" });
+    showKey(true, key);
+    toast("密钥已生成，只显示这一次");
+    // A list asked for before this knows nothing of it: a new one takes its place.
+    await load();
+  }), { signal });
+  $("#keyCopy").addEventListener("click", () => withBusy($("#keyCopy"), null, async () => {
+    await navigator.clipboard.writeText($("#keyValue").value);
+    toast("密钥已复制");
+  }), { signal });
   // What an administrator names joins the picked line's list, written before its own rounds: a
   // person or a company 时代 writes about, or an event 追踪 follows.
   const lines = {
@@ -65,19 +71,10 @@ export function createArticles(session) {
     if (document.visibilityState === "visible") void load().catch(reportError);
   }, { signal });
 
-  async function setKey(method) {
-    const { key } = await session.request("/api/auth/key", { method });
-    showKey(Boolean(key), key || "");
-    toast(key ? "密钥已生成，只显示这一次" : "密钥已撤销");
-    // A list asked for before this knows nothing of it: a new one takes its place.
-    await load();
-  }
-
   function showKey(has, key) {
     $("#keyValue").value = key;
     $("#keyValue").placeholder = has ? "已有密钥，只在生成时显示一次" : "还没有密钥";
     $("#keyCopy").classList.toggle("hidden", !key);
-    $("#keyRevoke").classList.toggle("hidden", !has);
   }
 
   function editName() {

@@ -291,7 +291,7 @@ GET /sitemap.xml
 
 账户与个人主题使用 `/api/auth/*`、`/api/me/*`；公共主题管理使用 `/api/admin/topics`；日报状态和生成使用 `GET /api/admin/insight`、`POST /api/admin/insight`；𝑳𝑳𝑴 状态使用 `GET /api/admin/llm`，暂停服务商和隐藏模型分别使用 `PATCH /api/admin/llm/vendors/{id}`、`PATCH /api/admin/llm/models/{vendor}/{model}`。分享的写作使用 `PUT /api/author` 和 `/api/articles*`，审核使用 `GET /api/admin/articles`、`PATCH /api/admin/articles/{id}`，阅读计数是 `POST /api/articles/{id}/views`。调研的提问、列表、公开切换和取消使用 `POST`/`GET /api/research` 与 `PATCH`/`DELETE /api/research/{id}`，时代与追踪的点名分别使用 `POST /api/admin/people`、`POST /api/admin/tracker`。套餐、订单和支付回调分别位于 `/api/plans`、`/api/orders`、`/api/webhooks/payment`。Free 用户阅读公共内容，Pro 用户可创建最多 4 个个人主题。
 
-每个账户可以在工作台「分享」里生成一把给 agent 用的密钥（`POST`/`DELETE /api/auth/key`，只显示一次，重新生成即替换），请求带 `Authorization: Bearer xabc_…`，不需要 Cookie 和同源。持密钥的是这个账户的普通作者：只能新建、保存、配图、预览和提交自己的文章（`/api/articles` 之下的 `POST` 与 `PATCH`），提交后由 AI 审核，其余写操作一律拒绝；管理员的密钥另外能读 `/api/admin/` 之下的编辑后台，仅此而已。写给 agent 的说明在 `/llms.txt`：公开的读取地址、写文章的步骤和管理员密钥能读的后台。
+每个账户可以在工作台「分享」里生成一把给 agent 用的密钥（`POST /api/auth/key`，只显示一次，再生成一把即让旧的失效），请求带 `Authorization: Bearer xabc_…`，不需要 Cookie 和同源。持密钥的是这个账户的普通作者：只能新建、保存、配图、预览和提交自己的文章（`/api/articles` 之下的 `POST` 与 `PATCH`），提交后由 AI 审核，其余写操作一律拒绝；管理员的密钥另外能读 `/api/admin/` 之下的编辑后台，仅此而已。写给 agent 的说明在 `/llms.txt`：公开的读取地址、写文章的步骤和管理员密钥能读的后台。
 
 ## 验证
 

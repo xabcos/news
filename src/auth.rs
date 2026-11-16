@@ -142,17 +142,16 @@ pub(crate) fn keyed(headers: &HeaderMap) -> bool {
     headers.contains_key(header::AUTHORIZATION)
 }
 
-/// Makes the account's key for an agent in place of the one it had, or on DELETE takes that
-/// away. Only its hash is kept, so the key is told this once.
+/// Makes the account's key for an agent in place of the one it had. Only its hash is kept, so
+/// the key is told this once.
 pub(crate) async fn key(
     State(state): State<AppState>,
     user: User,
-    method: Method,
 ) -> Result<Json<serde_json::Value>> {
-    let key = (method == Method::POST).then(|| format!("xabc_{}", new_token()));
+    let key = format!("xabc_{}", new_token());
     sqlx::query("UPDATE users SET key_hash = $2 WHERE id = $1")
         .bind(user.id)
-        .bind(key.as_deref().map(hash_token))
+        .bind(hash_token(&key))
         .execute(&state.pool)
         .await?;
     Ok(Json(serde_json::json!({ "key": key })))

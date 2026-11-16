@@ -36,7 +36,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/api/auth/email/start", post(auth::start_email_login))
         .route("/api/auth/email/consume", post(auth::consume_email_login))
         .route("/api/auth/logout", post(auth::logout))
-        .route("/api/auth/key", post(auth::key).delete(auth::key))
+        .route("/api/auth/key", post(auth::key))
         .route("/api/me", get(auth::me))
         .route("/api/plans", get(payment::list_plans))
         .route(
