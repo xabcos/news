@@ -730,10 +730,9 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
     assert_eq!(status(submit(1).send().await.unwrap()), 409);
     let submitted: Value = submit(2).send().await.unwrap().json().await.unwrap();
     assert_eq!(submitted["status"], "pending");
-    assert_eq!(
-        status(anonymous(&format!("/articles/{id}")).send().await.unwrap()),
-        404
-    );
+    for page in [format!("/articles/{id}"), format!("/articles/{id}.md")] {
+        assert_eq!(status(anonymous(&page).send().await.unwrap()), 404);
+    }
     // The AI was shown the title, the body and the one picture, the cover too, and held it.
     let shown = reviews.lock().unwrap()[0]["input"][0]["content"].clone();
     assert!(
@@ -1549,7 +1548,8 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                         // figure it showed and one more, and a new cover only when asked for one;
                         // asked to replace the figures it keeps none, and told to wait it does.
                         // Shown pictures, it takes the first for a picture it never places,
-                        // then twice more, and one it was never shown.
+                        // then twice more, and one it was never shown; and it writes a place
+                        // short, as the writing model now and then does.
                         if request["text"]["format"]["name"] == "article"
                             && instructions.contains("管理员要你更新")
                         {
@@ -1564,7 +1564,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
                                     Json(reply(
                                         json!({
                                             "title": "更新后的文章",
-                                            "body": format!("{}\n\n![](img:2)\n\n![](img:3)\n\n![](img:4)", "看着图写的内容，".repeat(80)),
+                                            "body": format!("{}\n\n![img:2]\n\n![](img:3)\n\n![](img:4)", "看着图写的内容，".repeat(80)),
                                             "pictures": [
                                                 { "page": "", "prompt": "", "caption": "没放进正文的", "pick": 1 },
                                                 { "page": "", "prompt": "", "caption": "看得见的图", "pick": 1 },
@@ -2138,6 +2138,28 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     assert!(page.contains("class=article-cover"));
     assert!(page.contains("<em>一只猫（AI 生成）</em>"));
     assert!(page.contains(&format!("/articles?by={author}\">XABC</a>")));
+    // At its address with `.md` it reads as it was written, for agents rather than search
+    // engines: its title, whose it is and where, its pictures still `image:<id>`.
+    let written = http
+        .get(format!("{base}/articles/{id}.md"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            written.headers()["content-type"].to_str().unwrap(),
+            written.headers()["x-robots-tag"].to_str().unwrap(),
+        ),
+        ("text/markdown; charset=utf-8", "noindex")
+    );
+    let written = written.text().await.unwrap();
+    assert!(
+        written.starts_with(&format!("# {title}\n\n> XABC · http"))
+            && written.contains(&format!("/articles/{id}\n\n"))
+            && written.contains("](image:")
+            && written.contains("*一只猫（AI 生成）*"),
+        "{written}"
+    );
     let list = http
         .get(format!("{base}/articles?by={author}"))
         .send()
@@ -5040,6 +5062,7 @@ async fn postgres_handbook_writes_checks_and_serves() {
     assert!(!sitemap.contains(&hooks.id.to_string()));
     let (_, shared) = get("/articles".into()).await;
     assert!(!shared.contains(&hooks.id.to_string()));
+    assert_eq!(get(format!("/articles/{}.md", hooks.id)).await.0, 404);
     let (_, worth) = get("/articles/worth.json".into()).await;
     assert!(!worth.contains(&hooks.id.to_string()));
 

@@ -1037,6 +1037,9 @@ async fn detail(
     Query(params): Query<Params>,
     headers: HeaderMap,
 ) -> Result<Response> {
+    if let Some(id) = id.strip_suffix(".md") {
+        return written(&state, parse(id)?, &headers).await;
+    }
     let mode = if reader.is_admin() {
         Mode::Review
     } else {
@@ -1048,6 +1051,40 @@ async fn detail(
         &Rendered::new(html),
         "text/html; charset=utf-8",
     ))
+}
+
+/// A public article at its address with `.md`: its title, whose it is and where, and its body
+/// as it was written, `image:<id>` where its pictures are, so an agent about to write one reads
+/// how one is written. A chapter has its own at the handbook's address.
+async fn written(state: &AppState, id: Uuid, headers: &HeaderMap) -> Result<Response> {
+    let (title, author, body): (String, String, String) =
+        QueryBuilder::<Postgres>::new("SELECT a.title, w.name, a.body")
+            .push(FROM)
+            .push(" AND a.status = 'published' AND a.kind <> 'chapter' AND a.id = ")
+            .push_bind(id)
+            .build_query_as()
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or_else(missing)?;
+    let page = absolute(state, &format!("/articles/{id}"));
+    Ok(twin(
+        headers,
+        format!("# {title}\n\n> {author} · {page}\n\n{body}"),
+    ))
+}
+
+/// A page's Markdown twin as cached; the page, not this, is for search engines.
+pub(super) fn twin(headers: &HeaderMap, text: String) -> Response {
+    let mut response = conditional(
+        headers,
+        &Rendered::new(text),
+        "text/markdown; charset=utf-8",
+    );
+    response.headers_mut().insert(
+        header::HeaderName::from_static("x-robots-tag"),
+        HeaderValue::from_static("noindex"),
+    );
+    response
 }
 
 /// The author's preview of their own article, or an administrator's of any, as it would read.

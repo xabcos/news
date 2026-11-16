@@ -983,6 +983,7 @@ async fn draft(
         .map_err(|_| AppError::Internal("文章写作超时".into()))??;
     let mut article: Article = serde_json::from_value(ai::parse_payload(&reply)?)
         .map_err(|_| AppError::Internal("文章不符合约定的结构".into()))?;
+    article.body = respelled(&article.body);
     // A picture taken by its number is the one the writer saw; a number never shown asks for
     // nothing.
     for picture in article
@@ -1566,6 +1567,39 @@ fn apply(body: &str, mut edits: Vec<(Range<usize>, String)>) -> String {
     }
     rewritten.push_str(&body[done..]);
     rewritten
+}
+
+/// The body with a picture's place the writer wrote short, a paragraph that is only `![img:1]`,
+/// as the rules write it, `![](img:1)`: now and then it slips so, and the place would stay in
+/// the article as text, its picture left out.
+fn respelled(body: &str) -> String {
+    let mut events = Parser::new_ext(body, MARKDOWN)
+        .into_offset_iter()
+        .peekable();
+    let mut places = Vec::new();
+    while let Some((event, range)) = events.next() {
+        let paragraph = &body[range.clone()];
+        if matches!(event, Event::Start(Tag::Paragraph))
+            && matches!(events.peek(), Some((Event::Text(_), _)))
+            && let Some(place) = paragraph
+                .trim()
+                .strip_prefix("![")
+                .and_then(|rest| rest.strip_suffix(']'))
+            && [PLACEHOLDER, KEPT].iter().any(|mark| {
+                place.strip_prefix(mark).is_some_and(|number| {
+                    !number.is_empty() && number.bytes().all(|digit| digit.is_ascii_digit())
+                })
+            })
+        {
+            let start = range.start + paragraph.len() - paragraph.trim_start().len();
+            places.push((start..start + paragraph.trim().len(), place));
+        }
+    }
+    let mut text = body.to_owned();
+    for (range, place) in places.into_iter().rev() {
+        text.replace_range(range, &format!("![]({place})"));
+    }
+    text
 }
 
 /// The body without the marks search answers leave after a sentence, a link named after its
@@ -2186,6 +2220,17 @@ mod tests {
                 identity("https://known.example/tool").unwrap(),
                 identity("https://x.com/maker/status/1").unwrap()
             ]
+        );
+    }
+
+    #[test]
+    fn a_place_written_short_is_read_as_the_rules_write_it() {
+        // Only a paragraph that is the place alone: not code, not a picture Markdown reads,
+        // not a place inside a sentence.
+        let rest = "`![img:3]`\n\n    ![img:4]\n\n![img:5](x)\n\n文字 ![img:6] 中间\n\n![img:]\n\n![图][img:7]\n\n![img:8]\n\n[img:8]: https://known.example/a.png\n";
+        assert_eq!(
+            respelled(&format!("开头\n\n![img:1]\n\n  ![keep:2]  \n\n{rest}")),
+            format!("开头\n\n![](img:1)\n\n  ![](keep:2)  \n\n{rest}")
         );
     }
 

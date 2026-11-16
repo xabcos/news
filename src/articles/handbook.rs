@@ -7,7 +7,7 @@
 //! Markdown, which its 「复制页面」 copies for a reader to hand to an agent and agents read.
 use super::{
     image_id, missing,
-    pages::{Mode, render},
+    pages::{Mode, render, twin},
 };
 use crate::{
     digest::{Rendered, conditional},
@@ -19,7 +19,7 @@ use crate::{
 use axum::{
     Router,
     extract::{Path, Query, State},
-    http::{HeaderMap, HeaderValue, header},
+    http::HeaderMap,
     response::Response,
     routing::get,
 };
@@ -963,16 +963,7 @@ async fn markdown(
             .format("%Y-%m-%d"),
         with_pictures(&body, &images).trim()
     );
-    let mut response = conditional(
-        headers,
-        &Rendered::new(text),
-        "text/markdown; charset=utf-8",
-    );
-    response.headers_mut().insert(
-        header::HeaderName::from_static("x-robots-tag"),
-        HeaderValue::from_static("noindex"),
-    );
-    Ok(response)
+    Ok(twin(headers, text))
 }
 
 /// The body with each of its own pictures, `image:<id>`, at its address; one tmpfile no longer
