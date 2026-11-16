@@ -347,7 +347,7 @@ fn citations_follow_reading_order() {
     ];
     // The trend and the headlines, the figures, the buzz, then the outlook, each source once.
     assert_eq!(stories::citation_indexes(&draft), [0, 3, 1, 2]);
-    assert_eq!(cited_sources(&draft, sources, &[]).len(), 4);
+    assert_eq!(cited_sources(&draft, sources).len(), 4);
 }
 
 #[test]

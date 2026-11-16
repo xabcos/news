@@ -585,7 +585,7 @@ mod tests {
   work();
 </code></pre><ol start="3"><li>First<ul><li>Nested</li></ul></li><li>Second</li></ol><blockquote><p>Preserve this quotation.</p></blockquote><table><tr><th>Input</th><th>Output</th></tr><tr><td>2</td><td>4</td></tr></table><figure><img data-src="/plot.png" src="data:image/png;base64,x" alt="The result"><figcaption>Diagram by the author</figcaption></figure><img src="/plot.png" alt="Repeated"><figure><img src="/restricted.png" alt="Third party"><figcaption><a rel="license" href="/all-rights-reserved">Separate rights</a></figcaption></figure><img src="http://127.0.0.1/internal" alt="No private images"></article></html>"#
         );
-        let source = extract(url.clone(), &text).unwrap();
+        let source = extract(url, &text).unwrap();
         assert_eq!(source.images.len(), 2);
         assert_eq!(source.images[0].origin, "https://example.com/plot.png");
         assert_eq!(source.body.matches("reads-image:0").count(), 2);

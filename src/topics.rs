@@ -1183,7 +1183,7 @@ mod tests {
             local(2026, 9, 7, 22, 0)
         );
         // A cap reached after midnight waits for that day's next start, not the following day.
-        let mut capped = overnight.clone();
+        let mut capped = overnight;
         capped.daily_run_cap = 1;
         assert_eq!(
             next_run(

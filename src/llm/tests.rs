@@ -218,9 +218,7 @@ fn price_rows_keep_the_orderings_of_real_tables() {
     let long = row(Tier::Standard, Band::Long, Period::All, 4.0, 15.0);
     let batch = row(Tier::Batch, Band::Short, Period::All, 1.0, 5.0);
     let fast = row(Tier::Priority, Band::Short, Period::All, 4.0, 20.0);
-    assert!(
-        verify::consistent(&[standard.clone(), long.clone(), batch.clone(), fast.clone()]).is_ok()
-    );
+    assert!(verify::consistent(&[standard.clone(), long.clone(), batch, fast]).is_ok());
     let mut cached = standard.clone();
     cached.cached_input = Some(3.0);
     assert!(verify::consistent(&[cached]).is_err());
@@ -257,13 +255,9 @@ fn price_rows_keep_the_orderings_of_real_tables() {
     );
     assert!(verify::consistent(&[standard.clone(), standard]).is_err());
     assert_eq!(
-        headline(
-            &[off_peak, long, peak.clone()],
-            Currency::Usd,
-            Category::Text
-        )
-        .unwrap()
-        .period,
+        headline(&[off_peak, long, peak], Currency::Usd, Category::Text)
+            .unwrap()
+            .period,
         Period::Peak
     );
 }
