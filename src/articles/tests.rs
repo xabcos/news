@@ -675,11 +675,21 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
     assert_eq!(status(render(&admin, &unsaved).send().await.unwrap()), 200);
     // A long article renders as it saves, up to the same size.
     assert_eq!(
-        status(render(&author, &"长".repeat(100_000)).send().await.unwrap()),
+        status(
+            render(&author, &"长".repeat(BODY_CHARS))
+                .send()
+                .await
+                .unwrap()
+        ),
         200
     );
     assert_eq!(
-        status(render(&author, &"长".repeat(800_000)).send().await.unwrap()),
+        status(
+            render(&author, &"长".repeat(2 * BODY_CHARS))
+                .send()
+                .await
+                .unwrap()
+        ),
         413
     );
     assert_eq!(status(render(&reader, &unsaved).send().await.unwrap()), 404);
@@ -1214,15 +1224,13 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
         .await
         .unwrap();
 
-    // Ten articles and 64 pictures a day; deleting gives none back. Two are written already.
-    for _ in 2..DAILY_ARTICLES {
-        let response = send(reqwest::Method::POST, "/api/articles", &author)
-            .json(&first)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(status(response), 201);
-    }
+    // 1024 articles and as many pictures a day; deleting gives none back.
+    sqlx::query("UPDATE authors SET articles = $2 WHERE user_id = $1")
+        .bind(writer)
+        .bind(DAILY_ARTICLES)
+        .execute(&state.pool)
+        .await
+        .unwrap();
     let response = send(reqwest::Method::POST, "/api/articles", &author)
         .json(&first)
         .send()
