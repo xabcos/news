@@ -25,7 +25,7 @@ services:
       NEWS_MAX_CONCURRENT_RESEARCH: ${NEWS_MAX_CONCURRENT_RESEARCH:-8}
       REDIS_ADDR: news-redis:6379
       REDIS_DB: 1
-      AI_BASE_URL: https://api.zairouter.com
+      AI_BASE_URL: https://api.xsirouter.com
       AI_DEFAULT_MODEL: ${AI_DEFAULT_MODEL:-grok-4.7}
       AI_INSIGHT_MODEL: ${AI_INSIGHT_MODEL:-gpt-6-astra}
       AI_WRITING_MODEL: ${AI_WRITING_MODEL:-gpt-6.1-terra}

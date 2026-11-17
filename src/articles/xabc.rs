@@ -983,7 +983,7 @@ async fn draft(
         .map_err(|_| AppError::Internal("文章写作超时".into()))??;
     let mut article: Article = serde_json::from_value(ai::parse_payload(&reply)?)
         .map_err(|_| AppError::Internal("文章不符合约定的结构".into()))?;
-    article.body = respelled(&article.body);
+    article.body = mended(&article.body);
     // A picture taken by its number is the one the writer saw; a number never shown asks for
     // nothing.
     for picture in article
@@ -1569,16 +1569,25 @@ fn apply(body: &str, mut edits: Vec<(Range<usize>, String)>) -> String {
     rewritten
 }
 
-/// The body with a picture's place the writer wrote short, a paragraph that is only `![img:1]`,
-/// as the rules write it, `![](img:1)`: now and then it slips so, and the place would stay in
-/// the article as text, its picture left out.
-fn respelled(body: &str) -> String {
-    let mut events = Parser::new_ext(body, MARKDOWN)
+/// The body with two slips of the writing model mended, which it makes now and then: every line
+/// break written as the two characters `\n`, which leaves the article one paragraph, its
+/// headings and pictures lost; and a picture's place written short, a paragraph that is only
+/// `![img:1]`, which is read as the rules write it, `![](img:1)`, where it would stay in the
+/// article as text, its picture left out.
+fn mended(body: &str) -> String {
+    // Only a body without one real line break that writes a paragraph's end so: a single
+    // paragraph may speak of `\n` in its code.
+    let mut text = if body.contains('\n') || !body.contains("\\n\\n") {
+        body.to_owned()
+    } else {
+        body.replace("\\n", "\n")
+    };
+    let mut events = Parser::new_ext(&text, MARKDOWN)
         .into_offset_iter()
         .peekable();
     let mut places = Vec::new();
     while let Some((event, range)) = events.next() {
-        let paragraph = &body[range.clone()];
+        let paragraph = &text[range.clone()];
         if matches!(event, Event::Start(Tag::Paragraph))
             && matches!(events.peek(), Some((Event::Text(_), _)))
             && let Some(place) = paragraph
@@ -1592,12 +1601,14 @@ fn respelled(body: &str) -> String {
             })
         {
             let start = range.start + paragraph.len() - paragraph.trim_start().len();
-            places.push((start..start + paragraph.trim().len(), place));
+            places.push((
+                start..start + paragraph.trim().len(),
+                format!("![]({place})"),
+            ));
         }
     }
-    let mut text = body.to_owned();
     for (range, place) in places.into_iter().rev() {
-        text.replace_range(range, &format!("![]({place})"));
+        text.replace_range(range, &place);
     }
     text
 }
@@ -2008,7 +2019,7 @@ const RULES: &str = "- 不用套话：不写「在当今……」「值得一提
 const SEEING: &str = "
 候选图：输入最后附了一组候选图，每张前面写着编号和出处，是线索里的页面和帖子上的真实图片，你看得见。
 - 和正文对得上的就用：pictures 里这一项的 pick 填候选图的编号，page 和 prompt 留空；不用候选图的项 pick 填 0。同一张只用一次。
-- 候选图优先于自己另找页面和画插图。看不清的，只是标志、头像、徽章、广告的，和正文无关的，都不用；没有合适的就一张也不选。
+- 候选图里有对得上的，优先用它；看不清的，只是标志、头像、徽章、广告的，和正文无关的，都不用。没有对得上的，或者还需要别的图，照上面的办法另指带图的页面或画插图。
 - 选中的图 caption 写清画面里是什么、和正文哪一处有关，不猜图里看不出的事；出处仍由程序注明。";
 
 #[cfg(test)]
@@ -2224,14 +2235,27 @@ mod tests {
     }
 
     #[test]
-    fn a_place_written_short_is_read_as_the_rules_write_it() {
+    fn the_writers_slips_are_mended() {
         // Only a paragraph that is the place alone: not code, not a picture Markdown reads,
         // not a place inside a sentence.
         let rest = "`![img:3]`\n\n    ![img:4]\n\n![img:5](x)\n\n文字 ![img:6] 中间\n\n![img:]\n\n![图][img:7]\n\n![img:8]\n\n[img:8]: https://known.example/a.png\n";
         assert_eq!(
-            respelled(&format!("开头\n\n![img:1]\n\n  ![keep:2]  \n\n{rest}")),
+            mended(&format!("开头\n\n![img:1]\n\n  ![keep:2]  \n\n{rest}")),
             format!("开头\n\n![](img:1)\n\n  ![](keep:2)  \n\n{rest}")
         );
+        // A body whose every line break came as the two characters is given its lines back, and
+        // its places are then places; one with real lines, or of a single paragraph, keeps a
+        // `\n` it writes about.
+        assert_eq!(
+            mended(r"开头\n\n## 小标题\n\n![](img:1)\n\n![img:2]\n\n结尾"),
+            "开头\n\n## 小标题\n\n![](img:1)\n\n![](img:2)\n\n结尾"
+        );
+        for right in [
+            "写作 `printf(\"hi\\n\")`\n\n结尾",
+            r#"只有一段：`printf("hi\n")` 和 C:\new"#,
+        ] {
+            assert_eq!(mended(right), right);
+        }
     }
 
     #[test]

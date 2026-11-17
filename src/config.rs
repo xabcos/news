@@ -154,7 +154,7 @@ impl Config {
                 "启用调度时必须配置 AI_API_KEY（或设置 NEWS_SCHEDULER_ENABLED=false）".into(),
             ));
         }
-        let ai_base_url = Url::parse(&env_value("AI_BASE_URL", "https://api.zairouter.com"))
+        let ai_base_url = Url::parse(&env_value("AI_BASE_URL", "https://api.xsirouter.com"))
             .map_err(|_| AppError::Config("AI_BASE_URL 必须是有效的 URL".into()))?;
         let timezone = env_value("NEWS_TIMEZONE", "Asia/Shanghai")
             .parse::<Tz>()
