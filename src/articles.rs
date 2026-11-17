@@ -52,7 +52,7 @@ const IMAGE_BYTES: usize = 10 * 1024 * 1024;
 const TITLE_CHARS: usize = 100;
 const BODY_CHARS: usize = 960_000;
 /// A save carries the body as JSON, which stays below this even at four bytes a character;
-/// nginx lets as much through (`client_max_body_size 4m`).
+/// nginx lets more through (`client_max_body_size 64m`).
 const SAVE_BYTES: usize = 4 * 1024 * 1024;
 const EXCERPT_CHARS: usize = 120;
 /// How the body names one of the article's pictures: `![…](image:<id>)`.
