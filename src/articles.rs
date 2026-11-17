@@ -44,7 +44,7 @@ const DAILY_ARTICLES: i16 = 1024;
 const DAILY_IMAGES: i16 = 1024;
 /// AI reviews an author's articles get in a day; past them a submit waits for an administrator,
 /// so no one keeps the AI busy.
-const DAILY_REVIEWS: i16 = 30;
+const DAILY_REVIEWS: i16 = 1024;
 /// Pictures one article may show, its cover included.
 const ARTICLE_IMAGES: usize = 128;
 /// The largest picture: nginx lets ten megabytes through (`client_max_body_size 10m`).
