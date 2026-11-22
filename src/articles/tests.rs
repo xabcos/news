@@ -1226,8 +1226,9 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
         .await
         .unwrap();
 
-    // An account starts articles once it is 7 days old; then a Free author starts 2 a day, a Pro
-    // one 1024; pictures are 1024 a day for all, and deleting gives none back.
+    // A Free author starts articles once the account is 7 days old, a Pro one at any age; then a
+    // Free author starts 2 a day, a Pro one 1024; pictures are 1024 a day for all, and deleting
+    // gives none back.
     let started = |count: i16, pro: bool, age: i32| {
         let state = state.clone();
         let request = send(reqwest::Method::POST, "/api/articles", &author).json(&first);
@@ -1247,7 +1248,8 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
             status(request.send().await.unwrap())
         }
     };
-    assert_eq!(started(0, true, SETTLED_DAYS - 1).await, 403);
+    assert_eq!(started(0, false, SETTLED_DAYS - 1).await, 403);
+    assert_eq!(started(0, true, 0).await, 201);
     assert_eq!(started(FREE_DAILY_ARTICLES, true, SETTLED_DAYS).await, 201);
     assert_eq!(started(DAILY_ARTICLES, true, SETTLED_DAYS).await, 429);
     assert_eq!(started(FREE_DAILY_ARTICLES, false, SETTLED_DAYS).await, 429);

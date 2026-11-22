@@ -42,7 +42,7 @@ use uuid::Uuid;
 const DAILY_ARTICLES: i16 = 1024;
 /// Articles any other author may start in a day.
 const FREE_DAILY_ARTICLES: i16 = 2;
-/// Days an account other than an administrator's must have existed before it starts an article.
+/// Days an account must have existed before it starts an article, unless it is Pro or an administrator's.
 const SETTLED_DAYS: i32 = 7;
 /// Pictures an author may upload in a day.
 const DAILY_IMAGES: i16 = 1024;
@@ -370,12 +370,13 @@ async fn create(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| AppError::Conflict("请先在工作台设置笔名".into()))?;
-    if !admin && !settled {
+    let trusted = admin || user.is_pro();
+    if !trusted && !settled {
         return Err(AppError::Forbidden(
             format!("注册满 {SETTLED_DAYS} 天后才能发分享").into(),
         ));
     }
-    let limit = if admin || user.is_pro() {
+    let limit = if trusted {
         DAILY_ARTICLES
     } else {
         FREE_DAILY_ARTICLES
