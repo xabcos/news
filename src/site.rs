@@ -27,7 +27,7 @@ const PAGE_TOPICS: [&str; 2] = ["reads", "llm"];
 pub(crate) const ARTICLES_WEIGHT: i32 = 42;
 
 /// What every public page loads, with the versions that refresh caches.
-const STYLES: &str = "/styles.css?v=margins";
+const STYLES: &str = "/styles.css?v=fill";
 const PUBLIC_SCRIPT: &str = "/public.js?v=12";
 const STATS_SCRIPT: &str = "/stats.js?v=3";
 /// How the news page introduces the site where it is found and shared.
@@ -119,7 +119,7 @@ async fn home(
   <script src="{STATS_SCRIPT}" data-track-url="{track_url}" defer></script>
   <script src="{PUBLIC_SCRIPT}" defer></script>
   <script src="/travel.js?v=13" defer></script>
-  <script src="/app.js?v=59" defer></script>
+  <script src="/app.js?v=60" defer></script>
   <!-- async: a slow third-party banner must not hold back DOMContentLoaded, which starts app.js. -->
   <script src="https://broadcast.xairouter.com/embed.js" async></script>
 </body>

@@ -655,6 +655,8 @@ fn listed_page(headers: &HeaderMap, html: String, search: &Search) -> Response {
 struct Worth {
     id: Uuid,
     title: String,
+    /// The opening, which fills a card without a cover.
+    excerpt: String,
     views: i64,
     kind: Kind,
     cover: Option<String>,
@@ -698,10 +700,10 @@ async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Resp
     }
     let articles: Vec<Worth> = query
         .push(
-            ") SELECT p.id, p.title, p.views, p.kind,
+            ") SELECT p.id, p.title, p.excerpt, p.views, p.kind,
                       CASE WHEN i.expires_at > now() THEN i.url END AS cover, i.width, i.height
                FROM (
-                   SELECT a.id, a.title, a.views, a.kind, a.cover, coalesce(h.part, 3) AS part,
+                   SELECT a.id, a.title, a.excerpt, a.views, a.kind, a.cover, coalesce(h.part, 3) AS part,
                           row_number() OVER (ORDER BY h.part, h.dated DESC, h.id DESC, ",
         )
         .push(HOT)

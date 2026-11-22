@@ -1021,6 +1021,7 @@ function renderWorth() {
     name.className = "item-title";
     name.append(link(article.title, `/articles/${article.id}`));
     card.append(meta, name);
+    if (!article.cover) card.append(Object.assign(document.createElement("p"), { className: "item-summary", textContent: article.excerpt }));
     return card;
   }));
   el.worth.replaceChildren(heading, cards);
