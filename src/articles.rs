@@ -38,8 +38,10 @@ use sqlx::{FromRow, PgPool};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-/// Articles an author may start in a day, by the site's date.
+/// Articles a Pro author or an administrator may start in a day, by the site's date.
 const DAILY_ARTICLES: i16 = 1024;
+/// Articles any other author may start in a day.
+const FREE_DAILY_ARTICLES: i16 = 2;
 /// Pictures an author may upload in a day.
 const DAILY_IMAGES: i16 = 1024;
 /// AI reviews an author's articles get in a day; past them a submit waits for an administrator,
@@ -356,14 +358,26 @@ async fn create(
     }
     let content = checked(&content.title, &content.body, None)?;
     let mut tx = state.pool.begin().await?;
-    if !sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM authors WHERE user_id = $1)")
-        .bind(user.id)
-        .fetch_one(&mut *tx)
-        .await?
-    {
-        return Err(AppError::Conflict("请先在工作台设置笔名".into()));
-    }
-    take(&mut *tx, user.id, state.digest.today(), Quota::Articles).await?;
+    // A key writes as an ordinary author, so the allowance follows the account's own role.
+    let admin: bool = sqlx::query_scalar(
+        "SELECT u.role = 'admin' FROM authors w JOIN users u ON u.id = w.user_id WHERE w.user_id = $1",
+    )
+    .bind(user.id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| AppError::Conflict("请先在工作台设置笔名".into()))?;
+    let limit = if admin || user.is_pro() {
+        DAILY_ARTICLES
+    } else {
+        FREE_DAILY_ARTICLES
+    };
+    take(
+        &mut *tx,
+        user.id,
+        state.digest.today(),
+        Quota::Articles(limit),
+    )
+    .await?;
     let article: Draft = sqlx::query_as(
         "INSERT INTO articles (id, author_id, title, body, excerpt) VALUES ($1, $2, $3, $4, $5)
          RETURNING id, title, body, cover, status, revision, views, updated_at, published_at",
@@ -799,7 +813,7 @@ async fn ask(user: User, request: Name, line: xabc::Line) -> Result<Json<Value>>
 /// review articles and ask for research, as many as their plan allows.
 #[derive(Clone, Copy)]
 enum Quota {
-    Articles,
+    Articles(i16),
     Images,
     Reviews,
     Research(u8),
@@ -809,10 +823,10 @@ impl Quota {
     /// Its count among the author's, how many a day allows and what a refusal says.
     fn allowance(self) -> (&'static str, i16, String) {
         match self {
-            Self::Articles => (
+            Self::Articles(limit) => (
                 "articles",
-                DAILY_ARTICLES,
-                format!("每天最多新建 {DAILY_ARTICLES} 篇文章，明天再来吧"),
+                limit,
+                format!("每天最多新建 {limit} 篇文章，明天再来吧"),
             ),
             Self::Images => (
                 "images",

@@ -1224,19 +1224,28 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
         .await
         .unwrap();
 
-    // 1024 articles and as many pictures a day; deleting gives none back.
-    sqlx::query("UPDATE authors SET articles = $2 WHERE user_id = $1")
-        .bind(writer)
-        .bind(DAILY_ARTICLES)
-        .execute(&state.pool)
-        .await
-        .unwrap();
-    let response = send(reqwest::Method::POST, "/api/articles", &author)
-        .json(&first)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(status(response), 429);
+    // A Free author starts 2 articles a day, a Pro one 1024; pictures are 1024 a day for all,
+    // and deleting gives none back.
+    let started = |count: i16, pro: bool| {
+        let state = state.clone();
+        let request = send(reqwest::Method::POST, "/api/articles", &author).json(&first);
+        async move {
+            sqlx::query(
+                "WITH plan AS (UPDATE users SET pro_until = CASE WHEN $3 THEN now() + INTERVAL '1 day' END WHERE id = $1)
+                 UPDATE authors SET articles = $2 WHERE user_id = $1",
+            )
+            .bind(writer)
+            .bind(count)
+            .bind(pro)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+            status(request.send().await.unwrap())
+        }
+    };
+    assert_eq!(started(FREE_DAILY_ARTICLES, true).await, 201);
+    assert_eq!(started(DAILY_ARTICLES, true).await, 429);
+    assert_eq!(started(FREE_DAILY_ARTICLES, false).await, 429);
     sqlx::query("UPDATE authors SET images = $2 WHERE user_id = $1")
         .bind(writer)
         .bind(DAILY_IMAGES)
@@ -1292,9 +1301,14 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
         .execute(&state.pool)
         .await
         .unwrap();
-    take(&state.pool, writer, yesterday, Quota::Articles)
-        .await
-        .unwrap();
+    take(
+        &state.pool,
+        writer,
+        yesterday,
+        Quota::Articles(DAILY_ARTICLES),
+    )
+    .await
+    .unwrap();
     assert_eq!(counts().await, (today, 4, 5));
     take(&state.pool, writer, yesterday, Quota::Images)
         .await
@@ -1412,7 +1426,15 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
         assert_eq!(status(response), 403, "{path}");
     }
 
-    // What it writes the AI reviews, though an administrator's own submit goes straight out.
+    // What it writes the AI reviews, though an administrator's own submit goes straight out; it
+    // starts articles by the administrator's allowance, not a Free author's.
+    sqlx::query("UPDATE authors SET articles = $2, day = $3 WHERE user_id = $1")
+        .bind(chief)
+        .bind(FREE_DAILY_ARTICLES)
+        .bind(state.digest.today())
+        .execute(&state.pool)
+        .await
+        .unwrap();
     let asked = reviews.lock().unwrap().len();
     let written = json!({ "author": chief, "title": "来自 agent", "body": "正文" });
     let created: Value = agent(reqwest::Method::POST, "/api/articles")
