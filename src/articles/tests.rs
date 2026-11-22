@@ -347,7 +347,9 @@ async fn account(state: &AppState, role: &str) -> (i64, String) {
     use sha2::{Digest, Sha256};
     let token = Uuid::new_v4().to_string();
     let id: i64 =
-        sqlx::query_scalar("INSERT INTO users (email, role) VALUES ($1, $2) RETURNING id")
+        sqlx::query_scalar(
+            "INSERT INTO users (email, role, created_at) VALUES ($1, $2, now() - INTERVAL '8 days') RETURNING id",
+        )
             .bind(format!("{token}@articles.example.test"))
             .bind(role)
             .fetch_one(&state.pool)
@@ -1224,28 +1226,31 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
         .await
         .unwrap();
 
-    // A Free author starts 2 articles a day, a Pro one 1024; pictures are 1024 a day for all,
-    // and deleting gives none back.
-    let started = |count: i16, pro: bool| {
+    // An account starts articles once it is 7 days old; then a Free author starts 2 a day, a Pro
+    // one 1024; pictures are 1024 a day for all, and deleting gives none back.
+    let started = |count: i16, pro: bool, age: i32| {
         let state = state.clone();
         let request = send(reqwest::Method::POST, "/api/articles", &author).json(&first);
         async move {
             sqlx::query(
-                "WITH plan AS (UPDATE users SET pro_until = CASE WHEN $3 THEN now() + INTERVAL '1 day' END WHERE id = $1)
+                "WITH plan AS (UPDATE users SET pro_until = CASE WHEN $3 THEN now() + INTERVAL '1 day' END,
+                     created_at = now() - make_interval(days => $4) WHERE id = $1)
                  UPDATE authors SET articles = $2 WHERE user_id = $1",
             )
             .bind(writer)
             .bind(count)
             .bind(pro)
+            .bind(age)
             .execute(&state.pool)
             .await
             .unwrap();
             status(request.send().await.unwrap())
         }
     };
-    assert_eq!(started(FREE_DAILY_ARTICLES, true).await, 201);
-    assert_eq!(started(DAILY_ARTICLES, true).await, 429);
-    assert_eq!(started(FREE_DAILY_ARTICLES, false).await, 429);
+    assert_eq!(started(0, true, SETTLED_DAYS - 1).await, 403);
+    assert_eq!(started(FREE_DAILY_ARTICLES, true, SETTLED_DAYS).await, 201);
+    assert_eq!(started(DAILY_ARTICLES, true, SETTLED_DAYS).await, 429);
+    assert_eq!(started(FREE_DAILY_ARTICLES, false, SETTLED_DAYS).await, 429);
     sqlx::query("UPDATE authors SET images = $2 WHERE user_id = $1")
         .bind(writer)
         .bind(DAILY_IMAGES)
@@ -1414,27 +1419,44 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
     let response = agent(reqwest::Method::PATCH, &draft).json(&change);
     assert_eq!(status(response.send().await.unwrap()), 404);
 
-    // A key changes nothing but its author's articles: no line of XABC's, no key, no pen name,
-    // and it deletes nothing.
+    // A key changes nothing but articles: no line of XABC's, no key, no pen name.
     for (method, path) in [
         (reqwest::Method::POST, "/api/admin/people"),
         (reqwest::Method::POST, "/api/auth/key"),
         (reqwest::Method::PUT, "/api/author"),
-        (reqwest::Method::DELETE, draft.as_str()),
     ] {
         let response = agent(method, path).send().await.unwrap();
         assert_eq!(status(response), 403, "{path}");
     }
+    // A reader's key deletes no one else's article, and an administrator's deletes anyone's,
+    // public or not.
+    sqlx::query(
+        "UPDATE articles SET status = 'published', published_at = now() WHERE id = $1::uuid",
+    )
+    .bind(&draft["/api/articles/".len()..])
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    let response = http
+        .delete(format!("{base}{draft}"))
+        .bearer_auth(theirs["key"].as_str().unwrap());
+    assert_eq!(status(response.send().await.unwrap()), 404);
+    let response = agent(reqwest::Method::DELETE, &draft);
+    assert_eq!(status(response.send().await.unwrap()), 204);
 
     // What it writes the AI reviews, though an administrator's own submit goes straight out; it
-    // starts articles by the administrator's allowance, not a Free author's.
-    sqlx::query("UPDATE authors SET articles = $2, day = $3 WHERE user_id = $1")
-        .bind(chief)
-        .bind(FREE_DAILY_ARTICLES)
-        .bind(state.digest.today())
-        .execute(&state.pool)
-        .await
-        .unwrap();
+    // starts articles by the administrator's allowance, not a Free author's, however new the
+    // account.
+    sqlx::query(
+        "WITH fresh AS (UPDATE users SET created_at = now() WHERE id = $1)
+         UPDATE authors SET articles = $2, day = $3 WHERE user_id = $1",
+    )
+    .bind(chief)
+    .bind(FREE_DAILY_ARTICLES)
+    .bind(state.digest.today())
+    .execute(&state.pool)
+    .await
+    .unwrap();
     let asked = reviews.lock().unwrap().len();
     let written = json!({ "author": chief, "title": "来自 agent", "body": "正文" });
     let created: Value = agent(reqwest::Method::POST, "/api/articles")

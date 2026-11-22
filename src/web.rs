@@ -96,10 +96,12 @@ async fn validate_origin(State(state): State<AppState>, request: Request, next: 
             Method::GET | Method::HEAD | Method::OPTIONS
         )
     {
-        // A key writes its author's articles and nothing else.
+        // A key writes and deletes articles and nothing else.
         if auth::keyed(request.headers()) {
-            let writes = matches!(*request.method(), Method::POST | Method::PATCH)
-                && request.uri().path().starts_with("/api/articles");
+            let writes = matches!(
+                *request.method(),
+                Method::POST | Method::PATCH | Method::DELETE
+            ) && request.uri().path().starts_with("/api/articles");
             return if writes {
                 next.run(request).await
             } else {

@@ -42,6 +42,8 @@ use uuid::Uuid;
 const DAILY_ARTICLES: i16 = 1024;
 /// Articles any other author may start in a day.
 const FREE_DAILY_ARTICLES: i16 = 2;
+/// Days an account other than an administrator's must have existed before it starts an article.
+const SETTLED_DAYS: i32 = 7;
 /// Pictures an author may upload in a day.
 const DAILY_IMAGES: i16 = 1024;
 /// AI reviews an author's articles get in a day; past them a submit waits for an administrator,
@@ -358,14 +360,21 @@ async fn create(
     }
     let content = checked(&content.title, &content.body, None)?;
     let mut tx = state.pool.begin().await?;
-    // A key writes as an ordinary author, so the allowance follows the account's own role.
-    let admin: bool = sqlx::query_scalar(
-        "SELECT u.role = 'admin' FROM authors w JOIN users u ON u.id = w.user_id WHERE w.user_id = $1",
+    // A key writes as an ordinary author, so what the account may start follows its own role.
+    let (admin, settled): (bool, bool) = sqlx::query_as(
+        "SELECT u.role = 'admin', u.created_at <= now() - make_interval(days => $2)
+         FROM authors w JOIN users u ON u.id = w.user_id WHERE w.user_id = $1",
     )
     .bind(user.id)
+    .bind(SETTLED_DAYS)
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| AppError::Conflict("请先在工作台设置笔名".into()))?;
+    if !admin && !settled {
+        return Err(AppError::Forbidden(
+            format!("注册满 {SETTLED_DAYS} 天后才能发分享").into(),
+        ));
+    }
     let limit = if admin || user.is_pro() {
         DAILY_ARTICLES
     } else {

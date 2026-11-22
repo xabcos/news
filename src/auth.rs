@@ -120,15 +120,20 @@ struct PublicUser<'a> {
 impl FromRequestParts<AppState> for User {
     type Rejection = AppError;
 
-    /// A key is its account as an ordinary author; an administrator's also reads the editorial
-    /// back office, which is every GET under /api/admin.
+    /// A key is its account as an ordinary author, which deletes its own articles; an
+    /// administrator's also reads the editorial back office, which is every GET under /api/admin,
+    /// and deletes anyone's article.
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self> {
         let mut user = authenticate(state, &parts.headers).await?;
-        let office = matches!(parts.method, Method::GET | Method::HEAD)
-            && parts
-                .extensions
-                .get::<OriginalUri>()
-                .is_some_and(|uri| uri.path().starts_with("/api/admin/"));
+        let path = parts
+            .extensions
+            .get::<OriginalUri>()
+            .map_or("", |uri| uri.path());
+        let office = match parts.method {
+            Method::GET | Method::HEAD => path.starts_with("/api/admin/"),
+            Method::DELETE => path.starts_with("/api/articles/"),
+            _ => false,
+        };
         if keyed(&parts.headers) && !office {
             user.role = "user".into();
         }
