@@ -953,8 +953,8 @@ function sourceList(sources) {
   return list;
 }
 
-// 精选 opens ALL's latest day: XABC's newest 分享, then the hottest 分享, 解说, 时代, 追踪 and 评测,
-// ranked by the server as 热读, then the articles that head 追踪's list and 时代's.
+// 精选 opens ALL's latest day: the two articles at the top of 分享's list and of 调研's, then the
+// hottest of all the lists, ranked by the server as 热读, then the two at the top of 追踪's and 时代's.
 async function loadWorth() {
   if (!worthShown()) {
     el.worth.hidden = true;

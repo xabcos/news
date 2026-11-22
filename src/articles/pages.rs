@@ -662,65 +662,68 @@ struct Worth {
     height: Option<i32>,
 }
 
-/// 精选, which opens ALL, in twelve cards: the four newest 分享 readers wrote, XABC's and XAI's
-/// own left to the hottest; the four hottest of the last 30 days of 分享 and XABC's other lists
-/// together, ranked as 热读 is, the newest filling the places while few are read; then the two
-/// articles that head 追踪's list
-/// and the two that head 时代's, in the lists' order. An article shows once, where it heads a
-/// list if it does, and while a list has fewer the hottest make up the twelve. 解说 is among
-/// the hottest, and its list among the page's links, while 影视, whose works it explains, is
-/// public. The handbook's chapters, kept up to date rather than news, are not.
+/// 精选, which opens ALL, in twelve cards: the two articles at the top of 分享's list, whoever
+/// wrote them, and the two at the top of 调研's; the four hottest of the last 30 days of all the
+/// lists together, ranked as 热读 is, the newest filling the places while few are read; then the
+/// two at the top of 追踪's list and the two at the top of 时代's. An article shows once, where
+/// it heads a list if it does, and while a list has fewer the hottest make up the twelve. 解说
+/// is among the hottest, and its list among the page's links, while 影视, whose works it
+/// explains, is public. The handbook's chapters, kept up to date rather than news, are not.
 async fn worth(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
+    /// The lists whose first two articles head 精选, each with its part of it; the hottest are
+    /// part 3.
+    const HEADS: [(Kind, i32); 4] = [
+        (Kind::Share, 1),
+        (Kind::Question, 2),
+        (Kind::Event, 4),
+        (Kind::Person, 5),
+    ];
     let commentary = state
         .digest
         .topics()
         .iter()
         .any(|topic| topic.id == "movie");
-    let articles: Vec<Worth> = QueryBuilder::<Postgres>::new(
-        "WITH heads AS (
-             (SELECT a.id, 1 AS part, a.published_at AS dated
-              FROM articles a JOIN users u ON u.id = a.author_id
-              WHERE u.status AND a.status = 'published' AND a.kind = 'share' AND u.email <> ALL(",
-    )
-    .push_bind(super::xabc::SHARING)
-    .push(
-        ") ORDER BY a.published_at DESC, a.id DESC LIMIT 4)
-             UNION ALL
-             (SELECT a.id, 3, a.updated_at
-              FROM articles a JOIN users u ON u.id = a.author_id
-              WHERE u.status AND a.status = 'published' AND a.kind = 'event'
-              ORDER BY a.updated_at DESC, a.id DESC LIMIT 2)
-             UNION ALL
-             (SELECT a.id, 4, a.updated_at
-              FROM articles a JOIN users u ON u.id = a.author_id
-              WHERE u.status AND a.status = 'published' AND a.kind = 'person'
-              ORDER BY a.updated_at DESC, a.id DESC LIMIT 2))
-         SELECT p.id, p.title, p.views, p.kind,
-                CASE WHEN i.expires_at > now() THEN i.url END AS cover, i.width, i.height
-         FROM (
-             SELECT a.id, a.title, a.views, a.kind, a.cover, coalesce(h.part, 2) AS part,
-                    row_number() OVER (ORDER BY h.part, h.dated DESC, h.id DESC, ",
-    )
-    .push(HOT)
-    .push(
-        " DESC, a.published_at DESC, a.id DESC) AS place
-             FROM articles a JOIN users u ON u.id = a.author_id
-             LEFT JOIN heads h ON h.id = a.id
-             WHERE u.status AND a.status = 'published' AND a.kind <> 'chapter'
-               AND (h.id IS NOT NULL OR a.published_at >= NOW() - INTERVAL '30 days')",
-    )
-    .push(if commentary {
-        ""
-    } else {
-        " AND a.kind <> 'film'"
-    })
-    .push(
-        ") p LEFT JOIN article_images i ON i.id = p.cover
-         WHERE p.place <= 12 ORDER BY p.part, p.place",
-    )
-    .build_query_as()
-    .fetch_all(&state.pool)
-    .await?;
+    let mut query = QueryBuilder::<Postgres>::new("WITH heads AS (");
+    for (i, (kind, part)) in HEADS.into_iter().enumerate() {
+        query
+            .push(if i == 0 { "(" } else { " UNION ALL (" })
+            .push(format_args!(
+                "SELECT a.id, {part} AS part, {} AS dated
+                 FROM articles a JOIN users u ON u.id = a.author_id
+                 WHERE u.status AND a.status = 'published' AND a.kind = ",
+                kind.dated()
+            ))
+            .push_bind(kind)
+            .push(" ORDER BY dated DESC, a.id DESC LIMIT 2)");
+    }
+    let articles: Vec<Worth> = query
+        .push(
+            ") SELECT p.id, p.title, p.views, p.kind,
+                      CASE WHEN i.expires_at > now() THEN i.url END AS cover, i.width, i.height
+               FROM (
+                   SELECT a.id, a.title, a.views, a.kind, a.cover, coalesce(h.part, 3) AS part,
+                          row_number() OVER (ORDER BY h.part, h.dated DESC, h.id DESC, ",
+        )
+        .push(HOT)
+        .push(
+            " DESC, a.published_at DESC, a.id DESC) AS place
+                   FROM articles a JOIN users u ON u.id = a.author_id
+                   LEFT JOIN heads h ON h.id = a.id
+                   WHERE u.status AND a.status = 'published' AND a.kind <> 'chapter'
+                     AND (h.id IS NOT NULL OR a.published_at >= NOW() - INTERVAL '30 days')",
+        )
+        .push(if commentary {
+            ""
+        } else {
+            " AND a.kind <> 'film'"
+        })
+        .push(
+            ") p LEFT JOIN article_images i ON i.id = p.cover
+               WHERE p.place <= 12 ORDER BY p.part, p.place",
+        )
+        .build_query_as()
+        .fetch_all(&state.pool)
+        .await?;
     Ok(conditional(
         &headers,
         &Rendered::new(json!({ "articles": articles, "commentary": commentary }).to_string()),

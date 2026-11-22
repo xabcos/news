@@ -822,7 +822,7 @@ impl Quota {
             Self::Reviews => (
                 "reviews",
                 DAILY_REVIEWS,
-                format!("每天最多由 AI 审核 {DAILY_REVIEWS} 次"),
+                format!("每天最多提交审核 {DAILY_REVIEWS} 次"),
             ),
             Self::Research(limit) => (
                 "research",

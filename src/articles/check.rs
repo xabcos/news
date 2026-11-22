@@ -89,7 +89,7 @@ async fn review(state: &AppState, id: Uuid, revision: i32) -> Result<()> {
     match take(&state.pool, author, state.digest.today(), Quota::Reviews).await {
         Ok(_) => {}
         Err(AppError::TooManyRequests(_)) => {
-            return hold(state, id, approvals, "作者今天的 AI 审核次数已用完").await;
+            return hold(state, id, approvals, "作者今天的审核次数已用完").await;
         }
         Err(error) => return Err(error),
     }
@@ -114,7 +114,7 @@ async fn review(state: &AppState, id: Uuid, revision: i32) -> Result<()> {
             .map(|url| json!({ "type": "input_image", "image_url": url, "detail": "low" })),
     );
     if let Some(reason) = refusal(state, ARTICLE, content).await? {
-        return hold(state, id, approvals, &format!("AI：{reason}")).await;
+        return hold(state, id, approvals, &reason).await;
     }
     let published = sqlx::query(
         "UPDATE articles SET status = 'published', published_at = COALESCE(published_at, now())

@@ -51,9 +51,8 @@ use uuid::Uuid;
 pub(super) const EMAIL: &str = "xabc@xabcnews.invalid";
 /// XAI's, which writes 分享 on what X talks about (`Line::Trending`).
 const XAI: &str = "xai@xabcnews.invalid";
-/// The accounts whose 分享 are the site's own: each leaves out what the other wrote lately, and
-/// 精选 opens with their newest.
-pub(super) const SHARING: [&str; 2] = [EMAIL, XAI];
+/// The accounts whose 分享 are the site's own: each leaves out what the other wrote lately.
+const SHARING: [&str; 2] = [EMAIL, XAI];
 /// After a failure XABC waits half an hour, twice as long after each failure in a row, eight
 /// hours at most: a lasting fault costs a few tries a day, not one every half hour.
 const RETRY_SECONDS: i64 = 30 * 60;

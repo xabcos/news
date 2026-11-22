@@ -104,7 +104,7 @@ export function createResearch(session) {
       box.disabled = true;
       try {
         const { status } = await session.request(`/api/research/${encodeURIComponent(id)}`, { method: "PATCH", body: { public: box.checked } });
-        if (status === "pending") toast("已交给 AI 审核，通过后公开");
+        if (status === "pending") toast("已提交，审核通过后公开");
       } catch (error) {
         toast(error.message, "error");
       }

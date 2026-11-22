@@ -788,7 +788,7 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
         .unwrap();
     assert_eq!(queue["pending"][0]["id"], id.as_str());
     assert_eq!(queue["pending"][0]["author"], "小明");
-    assert_eq!(queue["pending"][0]["held"], "AI：测试拦下");
+    assert_eq!(queue["pending"][0]["held"], "测试拦下");
     let mine: Value = get("/api/articles", &author)
         .send()
         .await
@@ -1161,7 +1161,7 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
     assert_eq!(submitted["status"], "pending");
     assert_eq!(
         standing().await,
-        ("pending".to_owned(), Some("AI：测试拦下".to_owned()))
+        ("pending".to_owned(), Some("测试拦下".to_owned()))
     );
     gated.store(false, Ordering::SeqCst);
     assert_eq!(status(heart(&admin, true, 12).send().await.unwrap()), 200);
@@ -1190,7 +1190,7 @@ async fn postgres_articles_are_written_reviewed_published_and_counted() {
         .json()
         .await
         .unwrap();
-    assert_eq!(queue["pending"][0]["held"], "作者今天的 AI 审核次数已用完");
+    assert_eq!(queue["pending"][0]["held"], "作者今天的审核次数已用完");
     assert_eq!(status(heart(&admin, true, 13).send().await.unwrap()), 200);
 
     // A disabled account's articles leave every public page.
@@ -2455,8 +2455,8 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         "<a class=tab href=\"/culture\" data-last=\"/culture/book\" aria-current=\"true\">文娱</a>"
     ));
 
-    // 精选 opens with the newest 分享 a reader wrote, however well a 解说 is read; the rest,
-    // XABC's own 分享 among them, rank together as 热读 does, unread ones following newest first.
+    // 精选 opens with the two newest 分享, XABC's as well as a reader's, however well a 解说 is
+    // read; the rest rank together as 热读 does, unread ones following newest first.
     sqlx::query("UPDATE articles SET views = 100 WHERE id = $1")
         .bind(explained)
         .execute(&state.pool)
@@ -2489,10 +2489,13 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         .collect();
     assert_eq!(ranked.len(), 6);
     assert_eq!(
-        ranked[..2],
-        [(readers.to_string(), false), (explained.to_string(), true)]
+        ranked[..3],
+        [
+            (id.to_string(), false),
+            (readers.to_string(), false),
+            (explained.to_string(), true)
+        ]
     );
-    assert!(ranked[2..].contains(&(id.to_string(), false)));
     let films: Vec<&str> = ranked
         .iter()
         .filter(|(_, film)| *film)
@@ -2782,7 +2785,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     assert!(article.contains(&format!("\"datePublished\":\"{}\"", published.to_rfc3339())));
     assert!(article.contains("<a class=tab href=\"/people\" aria-current=\"true\">时代</a>"));
     assert!(!article.contains("class=article-cover"));
-    // 精选 ranks profiles with the rest.
+    // 精选 shows the profile.
     let worth: Value =
         serde_json::from_str(&page(format!("{base}/articles/worth.json")).await).unwrap();
     assert!(
@@ -3426,7 +3429,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
             .unwrap();
     assert_eq!(
         (status.as_str(), held.as_deref()),
-        ("pending", Some("AI：涉及赌博"))
+        ("pending", Some("涉及赌博"))
     );
     // Pro switches its research public, through the AI's review, and back; Free can't.
     let publicize = |id: &Value, public: bool, cookie: &str| {
@@ -3862,9 +3865,9 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
             .await
             .contains("/tracker</loc>")
     );
-    // 精选 opens with the reader's 分享, ranks XABC's own and 调研 with the rest, and closes
+    // 精选 opens with the two newest 分享, XABC's among them, and the two newest 调研, and closes
     // with the two articles that head 追踪's list, then the two that head 时代's: however well
-    // read, they show there and not among the hottest.
+    // read, they show there and not among the hottest, where an older 调研 read more ranks.
     sqlx::query("UPDATE articles SET views = 80 WHERE id = $1 OR id = $2")
         .bind(selloff)
         .bind(Uuid::parse_str(first["id"].as_str().unwrap()).unwrap())
@@ -3873,21 +3876,28 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         .unwrap();
     let worth: Value =
         serde_json::from_str(&page(format!("{base}/articles/worth.json")).await).unwrap();
-    let worth = worth["articles"].as_array().unwrap();
-    assert_eq!(worth.len(), 12);
-    assert_eq!(worth[0]["id"], readers.to_string());
-    let (ranked, heads) = worth.split_at(8);
-    assert!(
-        ranked
-            .iter()
-            .any(|article| { article["id"] == first["id"] && article["kind"] == "question" })
-    );
-    assert!(ranked.iter().all(|article| article["kind"] != "event"));
+    let worth: Vec<&str> = worth["articles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|article| article["id"].as_str().unwrap())
+        .collect();
     assert_eq!(
-        heads
-            .iter()
-            .map(|article| article["id"].clone())
-            .collect::<Vec<_>>(),
+        worth.iter().collect::<std::collections::HashSet<_>>().len(),
+        12
+    );
+    assert_eq!(
+        worth[..4],
+        [
+            id.to_string(),
+            readers.to_string(),
+            busy_id.to_string(),
+            after["id"].as_str().unwrap().into()
+        ]
+    );
+    assert!(worth[4..8].contains(&first["id"].as_str().unwrap()));
+    assert_eq!(
+        worth[8..],
         [selloff, followed, firm, satya].map(|id| id.to_string())
     );
 
@@ -4244,7 +4254,7 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
     // XAI writes 分享 on what X's tech circle talks about most, from its own brief and under its
     // own pen name: its scouts hear what both pen names shared lately, and a find about a page
     // XABC linked to is left out. It goes by its own clock, so XABC's 分享 just out holds it
-    // back no more than its own would XABC, and 精选 opens with the newest of either pen name's.
+    // back no more than its own would XABC; and just out, it opens 精选 as anyone's would.
     let asked_before = asked_log.lock().unwrap().len();
     let talked = xabc::write(
         &state,
@@ -4266,6 +4276,9 @@ async fn postgres_xabc_shares_explains_profiles_and_tracks() {
         (title.as_str(), name.as_str()),
         ("大家都在聊的一件事", "XAI")
     );
+    let worth: Value =
+        serde_json::from_str(&page(format!("{base}/articles/worth.json")).await).unwrap();
+    assert_eq!(worth["articles"][0]["id"], talked.to_string());
     let requests = asked_log.lock().unwrap()[asked_before..].to_vec();
     let searches: Vec<&Value> = requests
         .iter()

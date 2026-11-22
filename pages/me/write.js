@@ -62,7 +62,7 @@ async function start() {
 function update(note = "") {
   const status = article?.status || "draft";
   const button = $("#publishButton");
-  button.textContent = busy ? (admin ? "处理中…" : "AI 审核中…")
+  button.textContent = busy ? "处理中…"
     : status === "published" ? "更新" : status === "pending" ? "审核中" : admin ? "发布" : "提交审核";
   button.disabled = !ready || busy || Boolean(stopped) || (status !== "draft" && !dirty);
   $("#previewButton").disabled = !ready || busy;
@@ -70,8 +70,7 @@ function update(note = "") {
   $("#saveState").textContent = note || stopped || (dirty
     ? (status === "published" ? "有未更新的修改" : "未保存")
     : article ? `${statusText[status]} · 已保存` : "");
-  const notice = status === "pending" ? "等待管理员审核。修改会撤回提交，改完需要重新提交。"
-    : status === "published" && !admin ? "已公开。点「更新」后由 AI 重新审核，通过即公开。" : "";
+  const notice = status === "pending" ? "等待管理员审核。修改会撤回提交，改完需要重新提交。" : "";
   $("#notice").textContent = notice;
   $("#notice").classList.toggle("hidden", !notice);
 }
