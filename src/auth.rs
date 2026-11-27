@@ -392,13 +392,50 @@ pub async fn cleanup(state: &AppState) -> Result<()> {
     let session_result = cleanup_expired_sessions(state).await;
     let login_token_result = cleanup_login_tokens(state).await;
     match (session_result, login_token_result) {
-        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Ok(())) => forget_idle_accounts(state).await,
         (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
         (Err(session_error), Err(login_token_error)) => {
             tracing::warn!(error = %login_token_error, "login token cleanup also failed");
             Err(session_error)
         }
     }
+}
+
+/// An account that never paid, wrote, kept a topic or took an agent key holds nothing but
+/// its address, and signing in makes it anew. A closed one is kept: forgetting it would let
+/// it back in.
+async fn forget_idle_accounts(state: &AppState) -> Result<()> {
+    delete_in_batches("users", || {
+        sqlx::query(
+            r#"
+            WITH idle AS (
+                SELECT id
+                FROM users
+                WHERE status AND role = 'user'
+                  AND COALESCE(last_login_at, created_at) <= NOW() - INTERVAL '1 year'
+                  AND pro_until IS NULL
+                  AND key_hash IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.user_id = users.id)
+                  AND NOT EXISTS (SELECT 1 FROM orders WHERE orders.user_id = users.id)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM payment_events WHERE payment_events.user_id = users.id
+                  )
+                  AND NOT EXISTS (SELECT 1 FROM topics WHERE topics.owner_user_id = users.id)
+                  AND NOT EXISTS (SELECT 1 FROM authors WHERE authors.user_id = users.id)
+                ORDER BY id
+                LIMIT $1
+                FOR UPDATE SKIP LOCKED
+            )
+            DELETE FROM users
+            USING idle
+            WHERE users.id = idle.id
+            "#,
+        )
+        .bind(CLEANUP_BATCH_SIZE)
+        .execute(&state.pool)
+    })
+    .await?;
+    Ok(())
 }
 
 async fn cleanup_expired_sessions(state: &AppState) -> Result<()> {
